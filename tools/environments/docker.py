@@ -195,7 +195,7 @@ def reap_orphan_containers(
         return 0
 
     # Per-container inspect keeps the failure blast radius to one container.
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     removed = 0
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
@@ -642,14 +642,14 @@ class DockerEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
-        volumes: list = None,
+        volumes: list | None = None,
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
         host_cwd: Optional[str] = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
-        extra_args: list = None,
+        extra_args: list | None = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",

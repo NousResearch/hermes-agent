@@ -77,7 +77,7 @@ class TestInterruptModule:
     def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(
         self, callback_should_fail, monkeypatch
     ):
-        import tools.interrupt as interrupt
+        from tools import interrupt
 
         class CallbackFailure(Exception):
             pass

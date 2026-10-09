@@ -124,20 +124,20 @@ moa:
         raise AssertionError("MoA restore must not build a real OpenAI client")
 
     monkeypatch.setattr(agent, "_create_openai_client", fail_openai_rebuild)
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
 
     assert agent._restore_primary_runtime() is True
-    assert getattr(agent, "provider") == "moa"
-    assert getattr(agent, "model") == "review"
+    assert agent.provider == "moa"
+    assert agent.model == "review"
     assert agent.client is not primary_client
     assert hasattr(agent.client.chat, "completions")
-    assert getattr(agent, "_fallback_activated") is False
+    assert agent._fallback_activated is False
 
 
 def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):
@@ -181,12 +181,12 @@ moa:
     )
 
     # Simulate a fallback to a real provider, then restore.
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
     assert agent._restore_primary_runtime() is True
 
@@ -515,7 +515,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text, _acct = _run_reference(
+    _label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -669,7 +669,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
 
     # The chokepoint preserves anthropic identity despite the explicit base_url,
     # so call_llm routes through the anthropic provider branch (not custom).
-    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+    resolved_provider, _model, _base_url, _api_key, _mode = _resolve_task_provider_model(
         task="moa_reference",
         provider="anthropic",
         model="claude-opus-4-8",
@@ -725,7 +725,7 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
         lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
     )
 
-    label, text, acct = _run_reference(
+    _label, text, acct = _run_reference(
         {"provider": "openrouter", "model": "vendor/adv-model"},
         [{"role": "user", "content": "state?"}],
     )

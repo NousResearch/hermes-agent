@@ -193,7 +193,11 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
     """
     if incomplete:
         # A newly retired completion hook has no complete captured worklist.
-        # It must not start another update or invent a successful receipt.
+        # It must not start another update or invent a successful receipt. It names its stop on
+        # the receipt the loaded update_receipt keeps open (an older one lacks the call: no-op).
+        record = getattr(sys.modules.get("hermes_cli.update_receipt"), "record_stop_reason", None)
+        if record is not None:
+            record("old_version_handoff")
         print(
             "You're updating from an older version of Hermes Agent. "
             "To complete this update, run `hermes update` again.",

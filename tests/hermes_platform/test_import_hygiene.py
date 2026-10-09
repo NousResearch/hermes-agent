@@ -12,6 +12,7 @@ def test_platform_modules_only_import_stdlib_and_hermes_platform() -> None:
 import sys
 before = set(sys.modules)
 import hermes_platform.host.facts
+import hermes_platform.host.gpu_adapters
 import hermes_platform.host.runtime
 import hermes_platform.host.products
 import hermes_platform.declaration

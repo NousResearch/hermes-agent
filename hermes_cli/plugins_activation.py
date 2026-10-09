@@ -28,7 +28,7 @@ _GATEWAY_TRANSFORM_HOOKS = frozenset({
 })
 
 
-def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
+def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     """``{name, key, activated_now: {kind: [names]}, deferred: {kind: [names]}}`` for one loaded plugin,
     read from what it actually registered (ownership ledger + handler registries), not from what its
     manifest promises. Keys appear only when non-empty.
@@ -42,10 +42,10 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
     manifest = getattr(loaded, "manifest", None)
     name = getattr(manifest, "name", None) or plugin_key
     regs = [r for r in manager._ownership_ledger.get(plugin_key, []) if getattr(r, "active", True)]
-    kinds: Dict[str, List[str]] = {}
+    kinds: dict[str, list[str]] = {}
     for reg in regs:
         kinds.setdefault(reg.kind, []).append(str(reg.key))
-    now: Dict[str, List[str]] = {}
+    now: dict[str, list[str]] = {}
     if kinds.get("command"):
         now["gateway_commands"] = sorted(kinds["command"])
     hooks = set(kinds.get("hook", ()))
@@ -60,7 +60,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
         now["callbacks"] = callbacks
     if kinds.get("locale"):  # language-pack layers: the i18n caches reset on registration, so live at once
         now["locales"] = sorted(kinds["locale"])
-    deferred: Dict[str, List[str]] = {}
+    deferred: dict[str, list[str]] = {}
     tools = sorted(set(kinds.get("tool", ())) | set(getattr(loaded, "tools_registered", None) or ())
                    | set(getattr(manifest, "provides_tools", None) or ()))
     if tools:
@@ -74,7 +74,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
     return {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
 
 
-def activation_summaries(manager: Any) -> List[Dict[str, Any]]:
+def activation_summaries(manager: Any) -> list[dict[str, Any]]:
     """One summary per loaded (non-deferred-platform, non-errored) plugin — the ``on_plugin_loaded`` payload."""
     out = []
     for key, loaded in list(manager._plugins.items()):
@@ -84,7 +84,7 @@ def activation_summaries(manager: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def find_activation(summaries: Optional[List[Dict[str, Any]]], name: str) -> Optional[Dict[str, Any]]:
+def find_activation(summaries: Optional[list[dict[str, Any]]], name: str) -> Optional[dict[str, Any]]:
     """The summary for ``name`` (manifest name, canonical key, or bare leaf of the key)."""
     for entry in summaries or ():
         key = str(entry.get("key") or "")
@@ -93,7 +93,7 @@ def find_activation(summaries: Optional[List[Dict[str, Any]]], name: str) -> Opt
     return None
 
 
-def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]:
+def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]:
     """After an install/enable/update: load the plugin in THIS process (so ``on_plugin_loaded``
     subscribers here — the TUI/Desktop server — see it), connect its MCP servers and hand them plus
     its skills to the open chats of this profile (:func:`load_and_go_live`), and nudge the running
@@ -106,7 +106,7 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]
     for the next session. ``restart_required`` is True only when no gateway answered (old gateway, not
     running)."""
     from hermes_constants import get_hermes_home
-    activation: Optional[Dict[str, Any]] = load_and_go_live(name) if in_process else None
+    activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
         activation = (notify_serve_backend(name, Path(get_hermes_home())) or {}).get("activation")
     answer = None
@@ -127,7 +127,7 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> Dict[str, Any]
     return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
 
 
-def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
+def load_and_go_live(name: str) -> Optional[dict[str, Any]]:
     """Force-rediscover plugins in THIS process under the caller's profile scope, connect ``name``'s
     MCP servers and hand them (and its skills) to this profile's open chats with a turn note. Returns
     the activation summary with ``live_now: {mcp_servers, skills}``; ``deferred`` then keeps only what
@@ -140,7 +140,7 @@ def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
         return _go_live(name)
 
 
-def _go_live(name: str) -> Optional[Dict[str, Any]]:
+def _go_live(name: str) -> Optional[dict[str, Any]]:
     from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
     try:
         from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
@@ -183,7 +183,7 @@ def _serve_backend_record():
     return None
 
 
-def notify_serve_backend(name: str, home: Path) -> Optional[Dict[str, Any]]:
+def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
     """Ask the running dashboard / Desktop backend (``hermes serve``, found through its host record) to
     run :func:`load_and_go_live` for ``name`` in ``home``. None when no backend answers. Never raises."""
     try:
@@ -200,14 +200,14 @@ def notify_serve_backend(name: str, home: Path) -> Optional[Dict[str, Any]]:
             "/api/dashboard/agent-plugins/activate",
             data=json.dumps({"name": name, "home": str(home)}).encode("utf-8"), method="POST",
             headers={"Content-Type": "application/json", "X-Hermes-Session-Token": token})
-        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 — loopback http
+        with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except Exception:
         logger.debug("serve backend activation for %r failed", name, exc_info=True)
         return None
 
 
-def activation_hint(result: Dict[str, Any]) -> str:
+def activation_hint(result: dict[str, Any]) -> str:
     """One honest sentence for CLI surfaces from an :func:`activate_plugin_now` result."""
     act = result.get("activation") or {}
     live = act.get("live_now") or {}
@@ -227,7 +227,7 @@ def activation_hint(result: Dict[str, Any]) -> str:
     if now:
         parts.append("active in the running gateway now: " + ", ".join(sorted(now)))
     if deferred:
-        labels: Dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",
+        labels: dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",
                                   "mcp_servers": "MCP servers (next session)"}
         parts.append("deferred: " + ", ".join(labels.get(k, k) for k in sorted(deferred)))
     if not parts:

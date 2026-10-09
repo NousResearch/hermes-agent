@@ -77,6 +77,15 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+_TERMINAL_TASK_SQL = (
+    f"SELECT 1 FROM tasks WHERE id = ? AND status IN {_TERMINAL_STATUSES_SQL}"
+)
+
+
+def _is_terminal_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    return conn.execute(_TERMINAL_TASK_SQL, (task_id,)).fetchone() is not None
+
+
 _OTHER_LIVE_PATHS_SQL = (
     "SELECT workspace_path FROM tasks "
     "WHERE id != ? AND workspace_path IS NOT NULL "
@@ -505,6 +514,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 not row
                 or row["workspace_kind"] not in _REMOVABLE_KINDS
                 or not row["workspace_path"]
+                or not _is_terminal_task(conn, parent_id)
                 or _has_active_children(conn, parent_id)
             ):
                 continue
@@ -829,4 +839,4 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

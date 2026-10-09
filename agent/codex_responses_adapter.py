@@ -144,7 +144,7 @@ def _field(obj: Any, name: str, default: Any = None) -> Any:
     return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, default)
 
 
-def _part_type(part: Dict[str, Any]) -> str:
+def _part_type(part: dict[str, Any]) -> str:
     return str(part.get("type") or "").strip().lower()
 
 
@@ -215,7 +215,7 @@ def _iter_content_parts(content: list) -> Iterator[tuple[str, Any]]:
                 yield "image", part
 
 
-def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[Dict[str, Any]]:
+def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[dict[str, Any]]:
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
     replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``; an inline
@@ -240,13 +240,13 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
             url, mime = png_url, None
     if mime is not None:
         return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
-    image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+    image_part: dict[str, Any] = {"type": "input_image", "image_url": url}
     if _nonblank(detail):
         image_part["detail"] = detail.strip()
     return image_part
 
 
-def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
+def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> list[dict[str, Any]]:
     """Chat-style multimodal content → Responses API input parts ([] if not a list). Text is
     ``input_text`` (user) / ``output_text`` (assistant) — the API rejects the wrong type per role;
     ``input_image`` is only legal on user messages (see :func:`_input_image_part`). Unsupported
@@ -257,7 +257,7 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
                 f"Codex Responses does not support {ptype} input; use a video-capable provider."
             )
     text_type = _text_type_for(role)
-    converted: List[Dict[str, Any]] = []
+    converted: list[dict[str, Any]] = []
     for kind, payload in _iter_content_parts(_as_list(content)):
         if kind == "text":
             converted.append({"type": text_type, "text": payload})
@@ -341,7 +341,7 @@ def _derive_responses_function_call_id(call_id: str, response_item_id: Optional[
 
 # --- Schema conversion --------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+def _responses_tools(tools: Optional[list[dict[str, Any]]] = None) -> Optional[list[dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     fns = [item.get("function", {}) if isinstance(item, dict) else {} for item in tools or []]
     converted = [
@@ -365,10 +365,10 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
 
 
 def _message_item(
-    content: List[Dict[str, Any]], *, status: str, item_id: Optional[str] = None, phase: Optional[str] = None,
-) -> Dict[str, Any]:
+    content: list[dict[str, Any]], *, status: str, item_id: Optional[str] = None, phase: Optional[str] = None,
+) -> dict[str, Any]:
     """Assistant ``message`` item; ``id``/``phase`` are added only when non-empty."""
-    item: Dict[str, Any] = {"type": "message", "role": "assistant", "status": status, "content": content}
+    item: dict[str, Any] = {"type": "message", "role": "assistant", "status": status, "content": content}
     item.update({k: v for k, v in (("id", item_id), ("phase", phase)) if v})
     return item
 
@@ -376,7 +376,7 @@ def _message_item(
 _ROLE_MESSAGE_PHASES = frozenset({"commentary", "final_answer"})
 
 
-def _role_message_item(role: str, content: Any, phase: Any = None) -> Dict[str, Any]:
+def _role_message_item(role: str, content: Any, phase: Any = None) -> dict[str, Any]:
     """Plain ``message`` input item for ``role``. ``type`` is required: llama.cpp's ``/v1/responses``
     parser rejects a typeless assistant item ("Cannot determine type of 'item'"). Assistant ``phase``
     is forwarded only for values the API accepts on input messages; others would 400."""
@@ -387,9 +387,9 @@ def _role_message_item(role: str, content: Any, phase: Any = None) -> Dict[str, 
 
 
 def _assistant_message_item(
-    raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool,
+    raw: dict[str, Any], content: list[dict[str, Any]], *, is_github_responses: bool,
     current_issuer_kind: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never for
     GitHub Copilot (ids bind to a backend connection; stale → 401); ``phase`` is preserved per OpenAI's cache guidance.
     The ChatGPT Codex backend additionally rejects ids that do not begin with ``msg`` (foreign Responses issuers
@@ -405,16 +405,16 @@ def _assistant_message_item(
 
 
 def _replay_reasoning_items(
-    msg: Dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
+    msg: dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
     another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
     matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
-    replayed: List[Dict[str, Any]] = []
+    replayed: list[dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
         if not (isinstance(ri, dict) and ri.get("encrypted_content")):
             continue
@@ -446,8 +446,8 @@ def _replay_reasoning_items(
 
 
 def _replay_message_items(
-    msg: Dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    msg: dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Replay exact assistant message items (id/phase) for prefix-cache hits.
 
     A ``msg_*`` id minted in the same response as a ``reasoning`` item is bound to that item's ``rs_*`` id,
@@ -457,7 +457,7 @@ def _replay_message_items(
     trimmed by the transport (``codex_reasoning_trimmed``) — and the message goes out as content/status/phase
     only. Reasoning-free turns keep their id.
     """
-    replayed: List[Dict[str, Any]] = []
+    replayed: list[dict[str, Any]] = []
     linked_to_reasoning = bool(msg.get("codex_reasoning_trimmed")) or any(
         isinstance(ri, dict) and ri.get("encrypted_content") for ri in _as_list(msg.get("codex_reasoning_items"))
     )
@@ -490,8 +490,8 @@ class _WireCallIds:
     """
 
     def __init__(self) -> None:
-        self._seen: Dict[str, int] = {}
-        self._queue: Dict[str, List[str]] = {}
+        self._seen: dict[str, int] = {}
+        self._queue: dict[str, list[str]] = {}
 
     def for_call(self, call_id: str) -> str:
         base = _clamp_responses_call_id(call_id)
@@ -508,10 +508,10 @@ class _WireCallIds:
 
 
 def _replay_tool_call_items(
-    msg: Dict[str, Any], *, start_index: int, wire_ids: Optional[_WireCallIds] = None,
-) -> List[Dict[str, Any]]:
+    msg: dict[str, Any], *, start_index: int, wire_ids: Optional[_WireCallIds] = None,
+) -> list[dict[str, Any]]:
     """Convert an assistant message's ``tool_calls`` into ``function_call`` items."""
-    replayed: List[Dict[str, Any]] = []
+    replayed: list[dict[str, Any]] = []
     for tc in _as_list(msg.get("tool_calls")):
         if not isinstance(tc, dict):
             continue
@@ -529,7 +529,7 @@ def _replay_tool_call_items(
     return replayed
 
 
-def _tool_output_items(msg: Dict[str, Any], *, wire_ids: Optional[_WireCallIds] = None) -> List[Dict[str, Any]]:
+def _tool_output_items(msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] = None) -> list[dict[str, Any]]:
     """Convert a tool-role message to ``[function_call_output]`` (``[]`` if unpairable)."""
     raw_tool_call_id = msg.get("tool_call_id")
     call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
@@ -550,10 +550,10 @@ def _tool_output_items(msg: Dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
 
 
 def _chat_messages_to_responses_input(
-    messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
+    messages: list[dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
@@ -591,13 +591,13 @@ def _chat_messages_to_responses_input(
     Hermes' local history is never truncated by native compaction, so the full conversation is still on the
     wire.
     """
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     # Parallel to ``items``: source chat message per item. Pruning reads a summary
     # carrier's provenance from the source; the converted item may be a lossy shape.
     # Pruning needs this to read a canonical summary carrier's up-to-date, provenance-tagged content
     # directly — the converted `item` can be a lossy shape (stale exact-replay, or a typed
     # `function_call_output` wrapper) that no longer carries it (#90976).
-    item_sources: List[Optional[Dict[str, Any]]] = []
+    item_sources: list[Optional[dict[str, Any]]] = []
     seen_item_ids: set = set()
     wire_ids = _WireCallIds()
     # The ChatGPT Codex backend rejects a role message whose ``content`` is a plain string with
@@ -605,7 +605,7 @@ def _chat_messages_to_responses_input(
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
     # there; other Responses routes keep the string shorthand they have always received.
     typed_text_only = current_issuer_kind == "codex_backend"
-    def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
+    def emit(new_items: list[dict[str, Any]], msg: dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
     for msg in messages:
@@ -701,8 +701,8 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
 
 
 def _native_responses_replay_items(
-    agent: Any, messages: List[Dict[str, Any]]
-) -> Optional[List[Dict[str, Any]]]:
+    agent: Any, messages: list[dict[str, Any]]
+) -> Optional[list[dict[str, Any]]]:
     """Build the native-compaction-eligible wire items, or ``None`` when ineligible."""
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
@@ -731,7 +731,7 @@ def _native_responses_replay_items(
 
 
 def has_replayable_native_compaction_checkpoint(
-    agent: Any, messages: List[Dict[str, Any]]
+    agent: Any, messages: list[dict[str, Any]]
 ) -> bool:
     """Whether the current route would replay a persisted native checkpoint."""
     items = _native_responses_replay_items(agent, messages)
@@ -742,7 +742,7 @@ def has_replayable_native_compaction_checkpoint(
 
 
 def estimate_native_responses_preflight_tokens(
-    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
+    agent: Any, messages: list[dict[str, Any]], *, system_prompt: str = "", tools: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[int]:
     """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
     session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
@@ -760,12 +760,14 @@ def estimate_native_responses_preflight_tokens(
 
 # --- Input preflight / validation --------------------------------------------
 
-_PreflightCtx = NamedTuple("_PreflightCtx", [
-    ("sanitize_text", Callable[[str], str]), ("sanitize_harmony_tokens", bool), ("is_github_responses", bool), ("seen_ids", set),
-])
+class _PreflightCtx(NamedTuple):
+    sanitize_text: Callable[[str], str]
+    sanitize_harmony_tokens: bool
+    is_github_responses: bool
+    seen_ids: set
 
 
-def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+def _preflight_function_call(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
     call_id, name = item.get("call_id"), item.get("name")
     if not _nonblank(call_id):
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
@@ -777,14 +779,14 @@ def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx)
     }
 
 
-def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+def _preflight_function_call_output(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
     call_id = item.get("call_id")
     if not _nonblank(call_id):
         raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
     output = item.get("output", "")
     if isinstance(output, list):
         # Multimodal tool result: keep recognised input_text/input_image parts, drop the rest (4xx otherwise).
-        cleaned: List[Dict[str, Any]] = []
+        cleaned: list[dict[str, Any]] = []
         for part in output:
             ptype = part.get("type") if isinstance(part, dict) else None
             if ptype == "input_text" and _nonempty_str(part.get("text")):
@@ -797,7 +799,7 @@ def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _Prefli
     return {"type": "function_call_output", "call_id": call_id.strip(), "output": output_value}
 
 
-def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Optional[Dict[str, Any]]:
+def _preflight_encrypted(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> Optional[dict[str, Any]]:
     """``reasoning`` / ``compaction`` items: opaque, issuer-sealed; forward only API-defined fields."""
     encrypted = item.get("encrypted_content")
     if not _nonempty_str(encrypted):
@@ -817,7 +819,7 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
     }
 
 
-def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
     # Only replayed assistant output (a list-content item carrying id/status) takes the strict path
     # below. Phase alone is no replay marker: the converter's plain role items carry it too, and
     # preflight must not synthesize a status or reject user image parts for them.
@@ -843,7 +845,7 @@ def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Di
     return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
 
 
-def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
     """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
     if role not in {"user", "assistant"}:
@@ -856,7 +858,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
     # Parts are already Responses-shaped; validate and re-type text for the role.
     # Unlike history conversion, empty text / empty image urls are kept, not dropped.
     text_type = _text_type_for(role)
-    validated: List[Dict[str, Any]] = []
+    validated: list[dict[str, Any]] = []
     for part_idx, part in enumerate(content):
         if isinstance(part, str):
             if part:
@@ -876,7 +878,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
     return _role_message_item(role, validated, item.get("phase"))
 
 
-_PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {
+_PREFLIGHT_ITEM_HANDLERS: dict[str, Callable[..., Optional[dict[str, Any]]]] = {
     "function_call": _preflight_function_call, "function_call_output": _preflight_function_call_output,
     "reasoning": _preflight_encrypted, "compaction": _preflight_encrypted, "message": _preflight_message,
 }
@@ -884,12 +886,12 @@ _PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {
 
 def _preflight_codex_input_items(
     raw_items: Any, *, is_github_responses: bool = False, sanitize_harmony_tokens: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
     sanitize_text = _neutralize_harmony_tokens if sanitize_harmony_tokens else (lambda text: text)
     ctx = _PreflightCtx(sanitize_text, sanitize_harmony_tokens, is_github_responses, set())
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     for idx, item in enumerate(raw_items):
         if not isinstance(item, dict):
             raise ValueError(f"Codex Responses input[{idx}] must be an object.")
@@ -901,7 +903,7 @@ def _preflight_codex_input_items(
     return normalized
 
 
-def _preflight_tool(tool: Any, idx: int) -> Dict[str, Any]:
+def _preflight_tool(tool: Any, idx: int) -> dict[str, Any]:
     if not isinstance(tool, dict):
         raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
     tool_type = tool.get("type")
@@ -945,7 +947,7 @@ _PREFLIGHT_ALLOWED_KEYS = {
 }
 
 
-def _optional_dict(api_kwargs: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+def _optional_dict(api_kwargs: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
     value = api_kwargs.get(key)
     if value is not None and not isinstance(value, dict):
         raise ValueError(f"Codex Responses request '{key}' must be an object.")
@@ -955,7 +957,7 @@ def _optional_dict(api_kwargs: Dict[str, Any], key: str) -> Optional[Dict[str, A
 def _preflight_codex_api_kwargs(
     api_kwargs: Any, *, allow_stream: bool = False, is_github_responses: bool = False,
     sanitize_harmony_tokens: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
     if missing := sorted(key for key in ("model", "instructions", "input") if key not in api_kwargs):
@@ -969,7 +971,7 @@ def _preflight_codex_api_kwargs(
     input_items = _preflight_codex_input_items(
         api_kwargs.get("input"), is_github_responses=is_github_responses, sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
-    normalized: Dict[str, Any] = {
+    normalized: dict[str, Any] = {
         "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
     }
     tools = api_kwargs.get("tools")
@@ -1019,7 +1021,7 @@ def _preflight_codex_api_kwargs(
 
 # --- Response extraction helpers ----------------------------------------------
 
-def _text_chunks(parts: Any, types: Optional[set] = None) -> List[str]:
+def _text_chunks(parts: Any, types: Optional[set] = None) -> list[str]:
     """Non-empty ``.text`` of each part (optionally filtered by ``.type``); [] if not a list."""
     selected = [part for part in _as_list(parts) if types is None or getattr(part, "type", None) in types]
     return [text for text in (getattr(part, "text", None) for part in selected) if _nonempty_str(text)]
@@ -1076,13 +1078,13 @@ def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespac
 
 def _capture_encrypted_item(
     item: Any, item_type: str, issuer_kind: Optional[str], issuer_model: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """``{type, encrypted_content[, _issuer_kind, _issuer_model]}`` for replay, or None without a blob. Reasoning
     items also carry ``id`` + ``summary`` (required by the API on replay); transient ``rs_tmp_`` skip."""
     encrypted = getattr(item, "encrypted_content", None)
     if not _nonempty_str(encrypted):
         return None
-    raw_item: Dict[str, Any] = {"type": item_type, "encrypted_content": encrypted}
+    raw_item: dict[str, Any] = {"type": item_type, "encrypted_content": encrypted}
     if issuer_kind:
         raw_item["_issuer_kind"] = issuer_kind
     if issuer_model:
@@ -1112,7 +1114,7 @@ class _OutputScan:
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
 
-    def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
+    def scan(self, output: list[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
         for item in output:
             item_type = getattr(item, "type", None)
             item_status = _lower_or_none(getattr(item, "status", None))
@@ -1176,7 +1178,7 @@ def _normalize_codex_response(
         if out_text:
             msg = "Codex response has empty output but output_text is present (%d chars); synthesizing output item."
             logger.debug(msg, len(out_text))
-            content: List[Any] = [SimpleNamespace(type="output_text", text=out_text)]
+            content: list[Any] = [SimpleNamespace(type="output_text", text=out_text)]
         elif response_incomplete_content_filter:
             # Provider safety block, not a partial answer: finish content_filter, not incomplete.
             content = []

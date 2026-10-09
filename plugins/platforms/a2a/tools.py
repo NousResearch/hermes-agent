@@ -51,7 +51,7 @@ def _auth_header(auth: dict) -> dict:
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -346,7 +346,7 @@ def _a2a_tools_available() -> bool:
             return True
         a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
         return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

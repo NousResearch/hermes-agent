@@ -33,49 +33,6 @@ JSON_HEADERS = {"Accept": "application/json"}
 # drift seen in the field (#47815) without meaningfully extending token lifetime.
 DEFAULT_TOKEN_LEEWAY_SECONDS = 60.0
 
-# Defense against a hostile/compromised IdP serving unbounded responses to the
-# dashboard auth providers: refuse to buffer past this size (issue #55121).
-_OIDC_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
-_OIDC_RESPONSE_CHUNK_BYTES = 64 * 1024
-
-
-def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Response:
-    """``httpx.request`` that never buffers an unbounded IdP response body.
-
-    Content-Length is prechecked when declared; the streamed body is capped
-    chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
-    Returns a fully-read ``httpx.Response`` with the same status/headers.
-    """
-    with httpx.stream(method, url, **kwargs) as response:
-        declared = response.headers.get("content-length")
-        if declared:
-            try:
-                if int(declared) > _OIDC_RESPONSE_BODY_LIMIT_BYTES:
-                    raise ProviderError(
-                        f"endpoint response exceeds {_OIDC_RESPONSE_BODY_LIMIT_BYTES} bytes"
-                    )
-            except ValueError:
-                pass  # malformed header — the chunk cap below still bounds the read
-
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_bytes(chunk_size=_OIDC_RESPONSE_CHUNK_BYTES):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > _OIDC_RESPONSE_BODY_LIMIT_BYTES:
-                raise ProviderError(
-                    f"endpoint response exceeds {_OIDC_RESPONSE_BODY_LIMIT_BYTES} bytes"
-                )
-            chunks.append(chunk)
-
-        return httpx.Response(
-            status_code=response.status_code,
-            headers=response.headers,
-            content=b"".join(chunks),
-            request=response.request,
-        )
-
 
 # ---- Config / env resolution ----
 
@@ -86,7 +43,7 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
         from hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         logger.debug("%s: load_config() raised %s; falling back to env-only configuration", tag, exc)
         return {}
     section = cfg_get(cfg, *path, default=None)
@@ -190,7 +147,7 @@ def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect
         cookie_payload={"hermes_session_pkce": f"state={state};verifier={code_verifier}"})
 
 
-def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
+def parse_json_body(response: httpx.Response) -> dict[str, Any]:
     """JSON object body, or ``{}`` for non-JSON content-type / parse error / non-dict."""
     if not response.headers.get("content-type", "").startswith("application/json"):
         return {}
@@ -202,8 +159,8 @@ def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
 
 
 def exchange_token(
-    url: str, data: Dict[str, str], *, headers: Optional[Dict[str, str]] = None, bad_request_exc: type[Exception],
-    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, Dict[str, Any]]:
+    url: str, data: dict[str, str], *, headers: Optional[dict[str, str]] = None, bad_request_exc: type[Exception],
+    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, dict[str, Any]]:
     """POST a token grant and return ``(token, payload)``.
 
     A 400 (OAuth-shaped error envelope) raises ``bad_request_exc`` — ``InvalidCodeError``
@@ -213,8 +170,7 @@ def exchange_token(
     deliberately NOT followed: the body carries an auth code / refresh token.
     """
     try:
-        response = _request_limited_response(
-            "POST", url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
+        response = httpx.post(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
     except httpx.RequestError as exc:
         raise ProviderError(f"{endpoint} unreachable: {exc}") from exc
     if response.status_code == 400:
@@ -232,7 +188,7 @@ def exchange_token(
     return token, payload
 
 
-def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
+def refresh_token_from(payload: dict[str, Any], fallback: str = "") -> str:
     """The token response's refresh token, or ``fallback`` when absent/non-string
     (the session then behaves as access-token-only until expiry)."""
     rt = payload.get("refresh_token")
@@ -240,7 +196,7 @@ def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
 
 
 def session_from_claims(
-    provider: str, claims: Dict[str, Any], *, access_token: str, refresh_token: str,
+    provider: str, claims: dict[str, Any], *, access_token: str, refresh_token: str,
     label: str = "token", email: str = "", display_name: str = "", org_id: str = "") -> Session:
     """Map verified JWT claims onto a Session; ``sub`` is mandatory."""
     user_id = str(claims.get("sub", ""))
@@ -266,7 +222,7 @@ def make_jwks_client(jwks_url: str) -> Any:
 def verify_jwt(
     token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str,
     leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Verify ``token`` against ``jwks_client`` with pinned ``aud``/``iss``.
 
     ``leeway`` is seconds of clock-skew tolerance on the time claims (default

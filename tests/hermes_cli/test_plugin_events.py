@@ -26,7 +26,7 @@ class _Peer:
 
 
 def test_broadcast_reaches_a_registered_client_as_a_namespaced_global_event():
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     peer = _Peer()
     server.register_live_transport(peer)
@@ -53,7 +53,7 @@ def test_broadcast_from_a_turn_isolation_child_reaches_the_parent_gateways_clien
     import os
     import threading
 
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tui_gateway import compute_host
 
     monkeypatch.setenv("HERMES_COMPUTE_HOST_HEARTBEAT_SECS", "0")
@@ -126,7 +126,7 @@ def test_broadcast_without_a_gateway_module_is_a_logged_no_op(monkeypatch, caplo
     ],
 )
 def test_names_that_cannot_form_a_namespaced_event_are_refused_before_emit(monkeypatch, plugin_id, event, payload, exc):
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     monkeypatch.setattr(server, "_broadcast_global_event", lambda *_a, **_k: pytest.fail("must not emit"))
     with pytest.raises(exc):

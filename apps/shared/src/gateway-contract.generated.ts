@@ -643,6 +643,7 @@ export interface FreeTierStatusResult {
   retryable?: boolean | null
   retry_after?: number | null
   challenge?: FreeTierChallengePayload | null
+  nudge_due_in?: number | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -673,6 +674,9 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface FreeTierClaimNudgeResult {
+  claimed: boolean
 }
 /** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered once more with the reason. */
 export interface SharedMetricsConsentResult {
@@ -1978,7 +1982,6 @@ export interface ProfileRow {
   display_name?: string
   skill_count?: number
   previous_names?: string[]
-  role?: 'setup' | null
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -2145,27 +2148,6 @@ export interface ProfilesGetAssetResult {
   size?: number | null
   data?: string | null
 }
-export interface ProfilesRememberOnboardingParams {
-  profile?: string | null
-  answers?: OnboardingAnswers | null
-}
-/** ``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding. */
-export interface OnboardingAnswers {
-  name?: string | null
-  context?: string | null
-  theme?: string | null
-  accent?: string | null
-  layout?: string | null
-  focus?: string[] | null
-  connectors?: string[] | null
-  plugins?: string[] | null
-  [key: string]: unknown
-}
-export interface ProfilesRememberOnboardingResult {
-  saved?: boolean
-  profile?: string
-  target?: string
-}
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
 /** ``created`` is false when an existing setup profile was found (and returned untouched). */
@@ -2173,8 +2155,23 @@ export interface OnboardingEnsureSetupProfileResult {
   name: string
   path: string
   created: boolean
-  role?: 'setup'
 }
+export interface OnboardingEnsureSetupSessionParams {
+  messages?: Record<string, unknown>[] | null
+}
+export interface OnboardingEnsureSetupSessionResult {
+  profile: string
+  session_id: string
+  empty: boolean
+}
+export interface OnboardingStateResult {
+  eligible: boolean
+  intro: OnboardingIntro
+  failed_starts: number
+  completed_at?: string | null
+  profile?: string | null
+}
+export type OnboardingIntro = 'unseen' | 'seen'
 export interface OnboardingResetSetupProfileResult {
   name: string
   path: string
@@ -2687,6 +2684,7 @@ export interface PromptSubmitParams {
   queued?: boolean | null
   surface?: string | null
   voice_context?: string | null
+  voice_turn?: boolean | null
   title_preview?: string | null
   truncate_before_user_ordinal?: number | null
   truncate_before_row_id?: number | null
@@ -3331,6 +3329,7 @@ export interface SessionCloseParams {
 }
 export interface SessionCloseResult {
   closed: boolean
+  messages?: string[]
 }
 export interface SessionBranchParams {
   session_id: string
@@ -3606,6 +3605,30 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
+/** ``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only). */
+export interface SessionStartChatParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  args: StartChatArgs
+}
+/** The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``). */
+export interface StartChatArgs {
+  message: string
+  title?: string | null
+  profile?: string | null
+}
+/** ``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same arguments may succeed on another try (``retryable``). A call already retried returns that retry's result. */
+export interface SessionStartChatResult {
+  status: StartChatStatus
+  session_id?: string | null
+  profile?: string | null
+  title?: string | null
+  message?: string | null
+  reason?: string | null
+  retryable?: boolean | null
+}
+export type StartChatStatus = 'started' | 'rejected'
 export interface SystemBatteryParams {
   profile?: string | null
 }
@@ -4419,6 +4442,25 @@ export interface ClarifyQuestion {
 export interface ClarifyResult {
   answers?: Record<string, string | null> | null
 }
+export interface SetupChooseRequestParams {
+  session_id: string
+  kind: SetupChooseKind
+  question: string
+  options?: SetupChooseOption[] | null
+  multi_select?: boolean
+  preselected?: string[] | null
+}
+export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'fork' | 'machine_use'
+export interface SetupChooseOption {
+  id: string
+  label: string
+  detail?: string | null
+}
+export interface SetupChooseResult {
+  picked?: string | string[] | null
+  label?: string | string[] | null
+  said?: string | null
+}
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
@@ -5072,6 +5114,8 @@ export interface RpcMethods {
   'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
   /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
   'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
+  /** Claim the due sign-in offer; true for exactly one caller each time an offer comes due. */
+  'free_tier.claim_nudge': { params: ProfileParams; result: FreeTierClaimNudgeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -5176,10 +5220,14 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
-  /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
+  /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
+  'onboarding.ensure_setup_session': { params: OnboardingEnsureSetupSessionParams; result: OnboardingEnsureSetupSessionResult }
+  'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
+  'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
+  'onboarding.state': { params: Params; result: OnboardingStateResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -5238,8 +5286,6 @@ export interface RpcMethods {
   'profiles.get_asset': { params: ProfilesGetAssetParams; result: ProfilesGetAssetResult }
   /** Roster of profiles with previews so a client paints without N follow-up calls. */
   'profiles.list': { params: ProfilesListParams; result: ProfilesListResult }
-  /** Write the onboarding facts into the default profile's user memory and confirm they landed. */
-  'profiles.remember_onboarding': { params: ProfilesRememberOnboardingParams; result: ProfilesRememberOnboardingResult }
   /** Store or clear a profile asset (avatar) atomically. */
   'profiles.set_asset': { params: ProfilesSetAssetParams; result: ProfilesSetAssetResult }
   /** Structured project facts for a cwd so UIs don't re-sniff the workspace. */
@@ -5346,6 +5392,8 @@ export interface RpcMethods {
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
+  /** Run a start_chat request again from the session that made it (the handoff card's Retry). */
+  'session.start_chat': { params: SessionStartChatParams; result: SessionStartChatResult }
   /** Rendered /status text for the session. */
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
@@ -5522,6 +5570,7 @@ export const RPC_METHODS = [
   'file.attach',
   'free_tier.ack_notice',
   'free_tier.challenge_result',
+  'free_tier.claim_nudge',
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',
@@ -5575,7 +5624,11 @@ export const RPC_METHODS = [
   'model.options',
   'model.save_key',
   'onboarding.ensure_setup_profile',
+  'onboarding.ensure_setup_session',
+  'onboarding.mark_seen',
+  'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',
+  'onboarding.state',
   'paste.collapse',
   'pdf.attach',
   'pet.cancel',
@@ -5605,7 +5658,6 @@ export const RPC_METHODS = [
   'profiles.describe',
   'profiles.get_asset',
   'profiles.list',
-  'profiles.remember_onboarding',
   'profiles.set_asset',
   'project.facts',
   'projects.add_folder',
@@ -5659,6 +5711,7 @@ export const RPC_METHODS = [
   'session.resume',
   'session.save',
   'session.set_hidden',
+  'session.start_chat',
   'session.status',
   'session.steer',
   'session.title',
@@ -5733,6 +5786,7 @@ export interface ServerRequestMap {
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
+  setup_choose: { params: SetupChooseRequestParams; result: SetupChooseResult }
   /** Masked sudo password for the terminal tool. */
   sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
@@ -5756,6 +5810,7 @@ export const SERVER_REQUEST_METHODS = [
   'preview.act',
   'preview.read',
   'secret',
+  'setup_choose',
   'sudo',
   'terminal.read',
   'tour',

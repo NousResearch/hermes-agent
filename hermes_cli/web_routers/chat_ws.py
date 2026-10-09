@@ -39,7 +39,7 @@ _ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_c
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = LateState("_DASHBOARD_EMBEDDED_CHAT_ENABLED")
 
 
-def _get_event_state(app: "FastAPI"):
+def _get_event_state(app: FastAPI):
     """(event_channels, event_lock) from app.state, lazily initialised when the
     lifespan hasn't run (TestClient without a ``with`` block). The lifespan path
     is preferred because it creates the Lock on the correct event loop."""
@@ -62,7 +62,7 @@ def _unlink_active_session_file(path: Optional[Path]) -> None:
         pass
 
 
-def _discard_active_session_file(app: "FastAPI", channel: Optional[str], path: Optional[Path]) -> None:
+def _discard_active_session_file(app: FastAPI, channel: Optional[str], path: Optional[Path]) -> None:
     _unlink_active_session_file(path)
     if not channel or path is None:
         return
@@ -222,7 +222,7 @@ class _ConsoleSender:
         self.ws = ws
         self.lock = asyncio.Lock()
 
-    async def send(self, payload: Dict[str, Any]) -> None:
+    async def send(self, payload: dict[str, Any]) -> None:
         async with self.lock:
             await self.ws.send_json(payload)
 
@@ -232,7 +232,7 @@ class _ConsoleSender:
     async def error(self, message: str, *, id: Optional[int] = None, command: Optional[str] = None,
                     prompt: Optional[str] = None) -> None:
         # Key order matches the historical frames: type, id, message, command, prompt.
-        frame: Dict[str, Any] = {"type": "error"}
+        frame: dict[str, Any] = {"type": "error"}
         if id is not None:
             frame["id"] = id
         frame["message"] = message
@@ -341,7 +341,7 @@ async def console_ws(ws: WebSocket) -> None:
         except asyncio.CancelledError:
             await _unwind_console_worker(worker, scope, "cancelled")
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await _unwind_console_worker(worker, scope, "timed out")
             if command_id == command_generation:
                 pending_confirmation = None
@@ -479,7 +479,7 @@ def _lease_holder_pid(session_id: Optional[str], *, registry_home: Optional[str]
     return None
 
 
-async def _pump_keepalive_input(ws: "WebSocket", session: Any) -> None:
+async def _pump_keepalive_input(ws: WebSocket, session: Any) -> None:
     """Writer loop for a keep-alive /api/pty socket: forward client input to the
     session's bridge, consuming resize escapes locally. On child EOF the drain
     task closes the attached socket with 4410, which unparks ws.receive()."""

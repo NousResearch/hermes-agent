@@ -90,9 +90,9 @@ def _run_media_tool(cmd: list, *, timeout: int, text: bool = False):
     return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
-def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
+def _matrix_voice_metadata_for_file(path: Path) -> dict[str, Any]:
     """Best-effort duration + MSC1767 waveform for voice bubbles; must work without ffprobe/ffmpeg."""
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     ffprobe = shutil.which("ffprobe")
     if ffprobe:
         try:
@@ -385,7 +385,7 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
-def _content_bytes(content: Dict[str, Any]) -> int:
+def _content_bytes(content: dict[str, Any]) -> int:
     """Size of event content as the homeserver counts it (canonical JSON is UTF-8, not \\u-escaped)."""
     return _utf8_len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
 
@@ -499,10 +499,10 @@ def _check_e2ee_deps() -> bool:
     ``Database.create``). See #31116.
     """
     try:
-        from mautrix.crypto import OlmMachine  # noqa: F401
-        from mautrix.crypto.store.asyncpg import PgCryptoStore  # noqa: F401
-        import asyncpg  # noqa: F401
-        import aiosqlite  # noqa: F401
+        from mautrix.crypto import OlmMachine
+        from mautrix.crypto.store.asyncpg import PgCryptoStore
+        import asyncpg
+        import aiosqlite
         return True
     except (ImportError, AttributeError):
         return False
@@ -517,7 +517,7 @@ def _normalize_e2ee_mode(value: Any) -> str:
     return "off"
 
 
-def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
+def _resolve_e2ee_mode(extra: Optional[dict[str, Any]] = None) -> str:
     """Resolve E2EE mode with MATRIX_ENCRYPTION backwards compatibility."""
     extra = extra or {}
     explicit = extra.get("e2ee_mode") or _get_scoped_secret("MATRIX_E2EE_MODE", "")
@@ -540,7 +540,7 @@ def _env_number(name: str, default, cast):
         return default
 
 
-def _csv_set(raw: Any) -> Set[str]:
+def _csv_set(raw: Any) -> set[str]:
     """Normalize a comma-separated string or list into a set of stripped tokens."""
     if isinstance(raw, list):
         return {str(r).strip() for r in raw if str(r).strip()}
@@ -552,7 +552,7 @@ def _thread_root(relates_to: dict) -> Optional[str]:
     return relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
 
 
-def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
+def _extra_csv_set(config, key: str, env_name: str) -> set[str]:
     """Resolve a room/user list: scoped env var → config.extra[key] → empty."""
     return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
 
@@ -837,29 +837,29 @@ class MatrixAdapter(BasePlatformAdapter):
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
-        self._invite_join_tasks: Dict[str, asyncio.Task] = {}
+        self._invite_join_tasks: dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
-        self._dm_rooms: Dict[str, bool] = {}
-        self._room_identities: Dict[str, MatrixRoomIdentity] = {}
-        self._room_identity_cached_at: Dict[str, float] = {}
+        self._dm_rooms: dict[str, bool] = {}
+        self._room_identities: dict[str, MatrixRoomIdentity] = {}
+        self._room_identity_cached_at: dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
-        self._joined_rooms: Set[str] = set()
+        self._joined_rooms: set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
         # Rooms already warned for dropping encrypted events this process lifetime (#131778).
-        self._warned_encrypted_drop_rooms: Set[str] = set()
+        self._warned_encrypted_drop_rooms: set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
-        self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
+        self._free_rooms: set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
-        self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
+        self._allowed_rooms: set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
@@ -874,7 +874,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
         self._reaction_redaction_delay_seconds = 5.0
-        self._reaction_redaction_tasks: Set[asyncio.Task] = set()
+        self._reaction_redaction_tasks: set[asyncio.Task] = set()
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
             logger.info("Matrix: proxy configured — %s", self._proxy_url)
@@ -885,17 +885,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_reaction_map = {
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
-        self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: Dict[str, str] = {}
+        self._approval_prompts_by_event: dict[str, _MatrixApprovalPrompt] = {}
+        self._approval_prompt_by_session: dict[str, str] = {}
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
-        self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
+        self._model_picker_prompts_by_event: dict[str, _MatrixPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: dict[str, _MatrixPickerPrompt] = {}
         # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
         # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
         # which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
-        self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
+        self._allowed_user_ids: set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
+        self._allowed_room_ids: set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
             try:
@@ -1382,7 +1382,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
         last_event_id = None
@@ -1406,7 +1406,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
-    async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
+    async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
@@ -1429,11 +1429,11 @@ class MatrixAdapter(BasePlatformAdapter):
         await self._threads.mark_async(str(root))  # replies in this thread bypass require_mention, like inbound roots
         return str(root)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
         return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}
 
-    def get_diagnostics(self) -> Dict[str, Any]:
+    def get_diagnostics(self) -> dict[str, Any]:
         now = time.time()
         token_present = bool(self._access_token)
         user_id = self._user_id or getattr(self._client, "mxid", "") or ""
@@ -1464,7 +1464,7 @@ class MatrixAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._client.set_typing(RoomID(chat_id), timeout=timeout)
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         await self._set_typing(chat_id, 30000)
 
     async def stop_typing(self, chat_id: str) -> None:
@@ -1473,7 +1473,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
-        msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
+        msg_content: dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
@@ -1498,7 +1498,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
@@ -1575,11 +1575,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, image_path, "m.image", caption, reply_to, metadata=metadata)
 
     async def send_multiple_images(
-        self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[dict[str, Any]] = None,
         human_delay: float = 0.0) -> SendResult:
         if not images:
             return SendResult(success=False, error="no images to send")
@@ -1602,12 +1602,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, file_path, "m.file", caption, reply_to, file_name, metadata)
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None, is_voice: Optional[bool] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None, is_voice: Optional[bool] = None) -> SendResult:
         """Upload audio. The base media dispatch calls this with ``is_voice``: True for a voice-tagged
         attachment → MSC3245 voice bubble; False for an audio-ext MEDIA attachment → plain ``m.audio``
         in the original format. Voice bubbles need Ogg/Opus but callers pass any format (e.g. TTS
@@ -1634,7 +1634,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_local_file(chat_id, video_path, "m.video", caption, reply_to, metadata=metadata)
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
@@ -1642,7 +1642,7 @@ class MatrixAdapter(BasePlatformAdapter):
     _EA_CMD_BUDGET = 2000
 
     @property
-    def _EA_HEADER(self) -> str:  # noqa: N802 — base class attr name; resolved per call for the active language
+    def _EA_HEADER(self) -> str:
         return f"⚠️ **{t('gateway.exec_approval.header')}**\n"
 
     async def _send_reaction_prompt(
@@ -1702,7 +1702,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
-        on_model_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        on_model_selected, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         flat_choices = [
@@ -1742,7 +1742,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Reaction-based choice picker (/reasoning, /fast); choice = {value, label, is_current}."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -1768,8 +1768,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _upload_and_send(
         self, room_id: str, data: bytes, filename: str, content_type: str, msgtype: str,
-        caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-        is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+        is_voice: bool = False, voice_metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:
             return self._media_too_large(len(data))
         upload_data = data
@@ -1787,7 +1787,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Matrix: upload failed: %s", exc)
             return SendResult(success=False, error=str(exc))
-        msg_content: Dict[str, Any] = {
+        msg_content: dict[str, Any] = {
             "msgtype": msgtype, "body": caption or filename, "info": {"mimetype": content_type, "size": len(data)}}
         if encrypted_file is not None:
             msg_content["file"] = {**encrypted_file.serialize(), "url": str(mxc_url)}
@@ -1820,7 +1820,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
-    async def _send_content_event(self, room_id: str, msg_content: Dict[str, Any]) -> SendResult:
+    async def _send_content_event(self, room_id: str, msg_content: dict[str, Any]) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
@@ -1830,7 +1830,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
         is_voice: bool = False) -> SendResult:
         p = Path(file_path).expanduser()
         if not p.exists():
@@ -1875,7 +1875,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
 
-    async def _absorb_sync(self, client: Any, sync_data: Dict[str, Any], *, initial: bool = False) -> Optional[str]:
+    async def _absorb_sync(self, client: Any, sync_data: dict[str, Any], *, initial: bool = False) -> Optional[str]:
         """Apply one sync response: joined rooms, next_batch, event dispatch, pending invites. Returns next_batch.
         The initial (full-state) sync also seeds the DM cache and dispatches so the OlmMachine sees
         to-device key shares queued while offline."""
@@ -1898,7 +1898,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._schedule_pending_invite_joins(sync_data)
         return nb
 
-    def _warn_encrypted_drops(self, rooms_join: Dict[str, Any], client: Any) -> None:
+    def _warn_encrypted_drops(self, rooms_join: dict[str, Any], client: Any) -> None:
         """Fail loud when encrypted room events arrive but no decryptor is attached (#131778).
 
         With E2EE off, or after the optional mode degraded (missing deps / failed setup) and
@@ -1925,7 +1925,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Without it, messages in encrypted rooms never reach the agent.",
                     room_id, cause)
 
-    async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
+    async def _dispatch_sync(self, sync_data: dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
@@ -2354,13 +2354,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 joined = await asyncio.wait_for(self._join_room_by_id(room_id), timeout=45.0)
                 if joined and is_direct and inviter:
                     await self._record_dm_room(room_id, inviter)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Matrix: timed out joining invite %s", room_id)
             finally:
                 self._invite_join_tasks.pop(room_id, None)
         self._invite_join_tasks[room_id] = asyncio.create_task(_join_invite())
 
-    def _schedule_pending_invite_joins(self, sync_data: Dict[str, Any]) -> None:
+    def _schedule_pending_invite_joins(self, sync_data: dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""
         invites = (sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}).get("invite", {})
         if not isinstance(invites, dict):
@@ -2856,7 +2856,7 @@ class MatrixAdapter(BasePlatformAdapter):
         *inviter*, write it back so ``_refresh_dm_cache`` sees the DM."""
         if not self._client:
             return
-        dm_data: Dict[str, list] = await self._fetch_m_direct(require_dict=True) or {}
+        dm_data: dict[str, list] = await self._fetch_m_direct(require_dict=True) or {}
         rooms_for_user = dm_data.get(inviter, [])
         rooms_for_user = rooms_for_user if isinstance(rooms_for_user, list) else []
         if room_id not in rooms_for_user:
@@ -2871,9 +2871,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms[room_id] = True
         self._invalidate_room_identities(room_id)
 
-    def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> Dict[str, Any]:
+    def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> dict[str, Any]:
         """Build Matrix text content with HTML and outbound mention metadata."""
-        msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
+        msg_content: dict[str, Any] = {"msgtype": msgtype, "body": text}
         mention_user_ids = self._extract_outbound_mentions(text)
         if mention_user_ids:
             msg_content["m.mentions"] = {"user_ids": mention_user_ids}
@@ -2889,8 +2889,8 @@ class MatrixAdapter(BasePlatformAdapter):
         return msg_content
 
     def _apply_relation_metadata(
-        self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> None:
+        self, msg_content: dict[str, Any], *, reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
         if reply_to:
@@ -3137,7 +3137,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             for payload in _standalone_payloads(message):
                 try:
                     result = await asyncio.wait_for(_do_send(payload), timeout=30)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     return send_error("Matrix API timeout (30s)")
                 if not result.get("success"):
                     return result
@@ -3146,7 +3146,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error(f"Matrix send failed: {e}")
 
 
-def _standalone_payloads(message: str) -> list[Dict[str, Any]]:
+def _standalone_payloads(message: str) -> list[dict[str, Any]]:
     """One m.room.message content per chunk. The caller chunks on characters, and a chunk of
     non-Latin text can still exceed the homeserver's byte cap, so re-chunk on UTF-8 bytes."""
     _md = None

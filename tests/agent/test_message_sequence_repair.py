@@ -571,7 +571,7 @@ def test_sanitize_deduplicates_duplicate_assistant_tool_call_ids():
         {"role": "tool", "tool_call_id": "call_Y", "content": "r"},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     ids = [tc["id"] for tc in assistant["tool_calls"]]
     assert ids == ["call_Y"]  # duplicate collapsed
 
@@ -592,7 +592,7 @@ def test_sanitize_preserves_distinct_tool_call_ids():
         {"role": "tool", "tool_call_id": "call_B", "content": "rb"},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
 
@@ -760,7 +760,7 @@ def test_sanitize_drops_empty_tool_calls_array():
         {"role": "assistant", "content": "answer", "tool_calls": []},
     ]
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     assert "tool_calls" not in assistant
     assert assistant["content"] == "answer"
 
@@ -1428,7 +1428,13 @@ def test_leading_assistant_summary_gets_user_bridge():
     assert api_messages[2]["role"] == "assistant"       # assistant->tool intact
     assert api_messages[2]["tool_calls"][0]["id"] == "t1"
     assert api_messages[3]["tool_call_id"] == "t1"      # pairing preserved
-
+    out = sanitize_api_messages(list(messages))
+    result = next(m for m in out if m.get("role") == "tool")
+    assert result["name"] == "tool_call"
+    # The internal name stays available for the session DB / UI, and the
+    # caller's own message objects are untouched (per-call copy only).
+    assert result["tool_name"] == "mcp__github__create_issue"
+    assert messages[2]["name"] == "mcp__github__create_issue"
 
 def test_well_formed_payload_is_noop():
     api_messages = [

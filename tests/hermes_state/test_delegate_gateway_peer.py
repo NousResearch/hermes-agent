@@ -1,12 +1,15 @@
 """Gateway peer writes and recovery never promote delegate children (#134522)."""
 
+import pytest
+
 from hermes_state import SessionDB
 
 
-def test_gateway_peer_write_preserves_delegate_provenance(tmp_path):
+@pytest.mark.parametrize("child_source", ["subagent", "delegate"])
+def test_gateway_peer_write_preserves_delegate_provenance(tmp_path, child_source):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("parent", source="discord", session_key="agent:main:discord:thread:one")
-    db.create_session("child", source="subagent", parent_session_id="parent")
+    db.create_session("child", source=child_source, parent_session_id="parent")
 
     db.record_gateway_session_peer(
         "child", source="discord", session_key="agent:main:discord:thread:one",
@@ -14,7 +17,7 @@ def test_gateway_peer_write_preserves_delegate_provenance(tmp_path):
     )
 
     row = db.get_session("child")
-    assert row["source"] == row["created_source"] == "subagent"
+    assert row["source"] == row["created_source"] == child_source
     assert row["session_key"] is None
 
 
@@ -36,11 +39,12 @@ def test_gateway_peer_write_rejects_delegate_marker_even_if_birth_source_is_plat
     assert row["session_key"] is None
 
 
-def test_peer_recovery_excludes_an_already_promoted_child(tmp_path):
+@pytest.mark.parametrize("child_source", ["subagent", "delegate"])
+def test_peer_recovery_excludes_an_already_promoted_child(tmp_path, child_source):
     db = SessionDB(db_path=tmp_path / "state.db")
     key = "agent:main:discord:thread:one"
     db.create_session("parent", source="discord", session_key=key, chat_id="one", chat_type="thread")
-    db.create_session("child", source="subagent", parent_session_id="parent")
+    db.create_session("child", source=child_source, parent_session_id="parent")
     db._write_sql(
         "UPDATE sessions SET source = ?, session_key = ?, chat_id = ?, chat_type = ? WHERE id = ?",
         ("discord", key, "one", "thread", "child"),
@@ -55,11 +59,12 @@ def test_peer_recovery_excludes_an_already_promoted_child(tmp_path):
     assert by_origin == "parent"
 
 
-def test_legacy_child_peer_cleanup_restores_execution_identity_only(tmp_path):
+@pytest.mark.parametrize("child_source", ["subagent", "delegate"])
+def test_legacy_child_peer_cleanup_restores_execution_identity_only(tmp_path, child_source):
     db = SessionDB(db_path=tmp_path / "state.db")
     key = "agent:main:discord:thread:one"
     db.create_session("parent", source="discord", session_key=key, chat_id="one")
-    db.create_session("child", source="subagent", parent_session_id="parent")
+    db.create_session("child", source=child_source, parent_session_id="parent")
     db._write_sql(
         "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
         "chat_type = ?, thread_id = ?, origin_json = ? WHERE id = ?",
@@ -69,7 +74,7 @@ def test_legacy_child_peer_cleanup_restores_execution_identity_only(tmp_path):
     assert db.clear_poisoned_delegate_gateway_peer("child", key)
 
     child = db.get_session("child")
-    assert child["source"] == child["created_source"] == "subagent"
+    assert child["source"] == child["created_source"] == child_source
     assert all(child[field] is None for field in
                ("session_key", "user_id", "chat_id", "chat_type", "thread_id", "origin_json"))
     assert child["ended_at"] is None

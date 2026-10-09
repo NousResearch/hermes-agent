@@ -68,7 +68,7 @@ def is_internal_subagent_row(row: Optional[dict[str, Any]]) -> bool:
     """
     if not isinstance(row, dict):
         return False
-    if any(str(row.get(field) or "").strip().lower() == "subagent"
+    if any(str(row.get(field) or "").strip().lower() in {"subagent", "delegate"}
            for field in ("source", "created_source")):
         return True
     raw_config = row.get("model_config")

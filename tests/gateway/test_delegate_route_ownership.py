@@ -25,11 +25,11 @@ def discord_store(tmp_path, monkeypatch):
     return store, entry, store._db_for_key(entry.session_key)
 
 
-def test_switch_session_rejects_a_delegate_child_before_ending_the_chat(discord_store):
+@pytest.mark.parametrize("child_source", ["subagent", "delegate"])
+def test_switch_session_rejects_a_delegate_child_before_ending_the_chat(discord_store, child_source):
     store, parent, db = discord_store
     db.create_session(
-        "delegate-child", source="subagent", parent_session_id=parent.session_id,
-        model_config={"_delegate_from": parent.session_id},
+        "delegate-child", source=child_source, parent_session_id=parent.session_id,
     )
 
     result = store.switch_session(parent.session_key, "delegate-child", expected_session_id=parent.session_id)
@@ -38,11 +38,12 @@ def test_switch_session_rejects_a_delegate_child_before_ending_the_chat(discord_
     assert store.lookup_by_session_key(parent.session_key).session_id == parent.session_id
     assert db.get_session(parent.session_id)["ended_at"] is None
     child = db.get_session("delegate-child")
-    assert child["source"] == child["created_source"] == "subagent"
+    assert child["source"] == child["created_source"] == child_source
     assert child["session_key"] is None
 
 
-def test_inbound_restores_a_poisoned_route_without_waiting_on_the_child_lease(discord_store):
+@pytest.mark.parametrize("child_source", ["subagent", "delegate"])
+def test_inbound_restores_a_poisoned_route_without_waiting_on_the_child_lease(discord_store, child_source):
     """Recreate the legacy on-disk hijack, including a still-running delegate's lease."""
     from gateway.session import SessionSource, SessionStore
 
@@ -54,7 +55,7 @@ def test_inbound_restores_a_poisoned_route_without_waiting_on_the_child_lease(di
         thread_id="other-thread", user_id=source.user_id,
     )
     sibling = store.get_or_create_session(sibling_source)
-    db.create_session("delegate-child", source="subagent", parent_session_id=parent.session_id)
+    db.create_session("delegate-child", source=child_source, parent_session_id=parent.session_id)
     db._write_sql(
         "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
         "chat_type = ?, thread_id = ? WHERE id = ?",
@@ -77,7 +78,7 @@ def test_inbound_restores_a_poisoned_route_without_waiting_on_the_child_lease(di
     assert db.get_session(parent.session_id)["end_reason"] is None
     child_row = db.get_session("delegate-child")
     assert child_row["ended_at"] is None
-    assert child_row["source"] == "subagent" and child_row["session_key"] is None
+    assert child_row["source"] == child_source and child_row["session_key"] is None
     assert not db.try_acquire_session_turn_lease("delegate-child", "human", ttl_seconds=60)
     assert db.try_acquire_session_turn_lease(parent.session_id, "human", ttl_seconds=60)
     assert store.lookup_by_session_key(sibling.session_key).session_id == sibling.session_id

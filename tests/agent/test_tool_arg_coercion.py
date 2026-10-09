@@ -567,7 +567,7 @@ class TestForceBypassIntegration:
              patch("model_tools._emit_post_tool_call_hook"), \
              patch("hermes_cli.lifecycle.has_hook", return_value=False), \
              patch("hermes_cli.middleware.run_tool_execution_middleware") as _mw_mock, \
-             patch("tools.file_tools.notify_other_tool_call"):
+             patch("tools.file_tools_read_tracking.notify_other_tool_call"):
             _mw_mock.side_effect = lambda name, args, dispatch, **kw: dispatch(args)
             handle_function_call(
                 function_name="terminal",

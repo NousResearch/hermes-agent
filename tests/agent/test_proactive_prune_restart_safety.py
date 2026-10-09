@@ -430,3 +430,113 @@ def test_rewrite_pruned_rows_refuses_user_rows(tmp_path: Path) -> None:
     with pytest.raises(PruneRowUnresolvedError):
         db.rewrite_pruned_rows(session_id, [(messages[0], {**messages[0], "content": "rewritten"})])
     assert _rows(db, session_id) == rows_before
+
+
+def test_a_stale_generation_with_an_unstamped_trailing_row_still_aborts(tmp_path: Path) -> None:
+    """The stale check must run for the durable prefix an unstamped trailing row cannot suppress.
+
+    A lease-less writer can hold an exact persisted prefix plus a trailing message with no stamps (a live
+    turn this process authored and has not flushed yet). The early return that caps the watermark for that
+    trailing row must not also skip the version check for the rows the caller does hold exactly (#124102).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_PREFIX"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id) + [{"role": "user", "content": "live turn"}]
+    db._conn.execute(
+        "UPDATE messages SET content = 'edited elsewhere' WHERE session_id = ? AND tool_call_id = 'call_0'",
+        (session_id,))
+    db._conn.commit()
+    rows_before = _rows(db, session_id)
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited elsewhere") == 1
+
+
+def _history_with_padded_text() -> list[dict]:
+    """A history whose user/assistant rows carry surrounding whitespace, the resume projection's lens."""
+    messages: list[dict] = [{"role": "user", "content": "  start \n"}]
+    for index in range(8):
+        call_id = f"call_{index}"
+        messages.append(_assistant_call(call_id))
+        content = chr(65 + index) * 24_000 if index < 3 else "ok"
+        messages.append(_tool_result(call_id, content))
+    messages.append({"role": "assistant", "content": "  done \n"})
+    messages.append({"role": "user", "content": "wrap up"})
+    return messages
+
+
+@pytest.mark.parametrize("loader", ["plain", "resume"], ids=["reload", "resume_projection"])
+def test_a_freshly_resumed_unchanged_transcript_is_not_stale(tmp_path: Path, loader: str) -> None:
+    """The loader lens (sanitize + strip on user/assistant strings) is not a rewrite (#124102).
+
+    Stored user/assistant content with surrounding whitespace loads stripped; the pre-repair head compared
+    raw storage bytes against that loaded view and falsely reported every such unchanged row as rewritten,
+    silently disabling the prune. Through the lens it must pass, and the prune must still reclaim.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_NOT_STALE_WHITESPACE"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history_with_padded_text())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    if loader == "resume":
+        messages = db.get_resume_conversations(session_id)[0]
+    else:
+        messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+
+    assert db.rewritten_held_row_ids(session_id, messages) == []
+
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert (result, count) != (messages, 0)
+    assert full_rewrite.call_count == 0  # committed in place, not through the generation writer
+
+
+def test_an_assistant_tool_calls_rewrite_is_stale_with_and_without_a_snapshot(tmp_path: Path) -> None:
+    """The old guard compared ids and tool content only; changed ``tool_calls`` arguments slipped through.
+
+    A named assistant row whose stored call arguments moved on is a lost race. It must fail closed in the
+    row-local writer through the loader-lens identity compare (which covers the arguments), and equally
+    through the lease-less gate — aborting the whole prune, not just the row (#124102).
+    """
+    from hermes_state_errors import PruneRowStaleError
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_TOOL_CALLS"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    held_assistant = next(m for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
+    # Another writer changes the stored arguments of that row; the content (empty) is untouched.
+    db._conn.execute(
+        "UPDATE messages SET tool_calls = ? WHERE session_id = ? AND id = ?",
+        (json.dumps([{**held_assistant["tool_calls"][0],
+                      "function": {**held_assistant["tool_calls"][0]["function"],
+                                   "arguments": '{"cmd":"winner"}'}}]), session_id,
+         held_assistant["_row_id"]))
+    db._conn.commit()
+
+    # The row-local writer names the row exactly and fails closed through the lens compare.
+    stale = dict(held_assistant)
+    with pytest.raises(PruneRowStaleError):
+        db.rewrite_pruned_rows(session_id, [(stale, {**stale, "content": "pruned stub"})])
+    # The lease-less gate sees the same race: the prune must be a true no-op.
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    rows_before = _rows(db, session_id)
+    with patch.object(db, "archive_and_compact", wraps=db.archive_and_compact) as full_rewrite:
+        result, count = agent.context_compressor.prune_tool_results_only(messages, current_tokens=120_000)
+    assert (result, count) == (messages, 0)
+    assert full_rewrite.call_count == 0
+    assert _rows(db, session_id) == rows_before

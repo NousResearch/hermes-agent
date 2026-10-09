@@ -1,6 +1,6 @@
 name: penny
 repo: https://github.com/HelperLabs/penny-hermes
-sha: 5f040f2037c9b186ce14b83f0cd067e1d6be14b2
+sha: 0887dae11062165a78be9fb6c7b85c810a3353b5
 version: "0.1.0"
 description: >-
   Penny core memory and private notes for Hermes. Disclosure — automatic recall

@@ -192,8 +192,13 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 
 
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
+# The login probe must not hinge on type=password alone: some sites ship the password box as
+# type=text masked in CSS, which makes the real login tab unmatchable (and the any-origin tab
+# search then lands on an unrelated site's login page).
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
+    "login": ("!!document.querySelector('input[type=password], input[autocomplete=current-password], "
+              "input[autocomplete=new-password], input[id*=password i], input[name*=password i], "
+              "input[placeholder*=password i], input[placeholder*=密码]')"),
     "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
@@ -211,6 +216,12 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
     return (origin or focused.get("url")) if focused.get("ok") else None
+
+
+def _current_page_has(task_id: str, probe: str) -> bool:
+    """Whether the page the supervisor's session is currently attached to matches ``probe``."""
+    res = _eval_js(task_id, probe)
+    return bool(res.get("success") and res.get("result"))
 
 
 # ---------------------------------------------------------------------------
@@ -296,8 +307,11 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
-    # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
+    # the daemon's blank tab); the login form usually lives in another tab, so search for it. But the
+    # page the session already sits on wins when it holds a login form: an any-origin search would
+    # otherwise land on an unrelated site's login tab and bind the save to that site's origin.
+    if not _current_page_has(effective_task_id, _TAB_PROBES["login"]):
+        _focus_bound_origin(effective_task_id, "", "login")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})

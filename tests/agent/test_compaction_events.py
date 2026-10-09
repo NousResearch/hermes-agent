@@ -148,6 +148,18 @@ def test_failed_summary_is_an_attempt_mark_not_a_compaction(published):
     assert payload["cache_break"] is False and payload["in_place"] is None
 
 
+def test_an_engine_that_returns_an_empty_transcript_publishes_one_failed_attempt_mark(published):
+    agent = _Agent(_compressor())
+
+    with patch.object(agent.context_compressor, "compress", return_value=[]):
+        returned, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+
+    assert returned == _messages()
+    [(session_id, name, payload)] = published
+    assert (session_id, name) == ("session-events-test", "compaction.attempt")
+    assert (payload["outcome"], payload["failure_class"], payload["method"]) == ("failed", "empty_transcript", "none")
+
+
 def test_a_raising_emitter_never_changes_the_compaction_result(monkeypatch, caplog):
     def explode(*_args, **_kwargs):
         raise RuntimeError("relay down")

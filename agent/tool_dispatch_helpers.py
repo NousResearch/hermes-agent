@@ -16,22 +16,22 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_choose"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
-    "ha_get_state",
-    "ha_list_entities",
-    "ha_list_services",
+    "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
     "image_generate",
     "read_file",
     "search_files",
@@ -66,6 +66,38 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
+def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
+    """Paths whose values contain model-visible context-compression artifacts.
+
+    A minted marker is identified by its prefix plus the first rendered numeric
+    count. This catches a marker cut short before its fixed sentence while still
+    letting Hermes edit source/docs that mention the bare prefix or template.
+    Unknown/plugin/MCP tools stay effect-capable by default; known read-only
+    tools may inspect or quote compressed history.
+    """
+    if not tool_may_have_side_effect(tool_name):
+        return []
+
+    found: list[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            if _COMPRESSION_MARKER_ARTIFACT_RE.search(value):
+                found.append(path)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
+                _walk(child, child_path)
+            return
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                _walk(child, f"{path}[{index}]")
+
+    _walk(args, "$")
+    return found
+
 
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
@@ -86,21 +118,51 @@ _PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
 
 
 def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to ``(underlying_name, underlying_args)`` so
-    admission is decided on the real tool (as the executors' unwrap does). An unparseable
-    bridge call is returned unchanged: it stays a sequential barrier and fails at dispatch."""
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
     try:
-        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
-        if tool_name == TOOL_CALL_NAME:
-            underlying, underlying_args, err = resolve_underlying_call(function_args)
-            if err is None and underlying:
+        from tools.tool_search import (
+            CONNECTOR_BATCH_SENTINEL,
+            TOOL_CALL_NAME,
+            is_connector_name,
+            resolve_underlying_call,
+        )
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        if underlying == CONNECTOR_BATCH_SENTINEL:
+            # Only a PURE connector batch is parallel-safe (network-bound,
+            # no local state, own idempotency key). A batch containing any
+            # local entry keeps the sequential barrier: its entries never
+            # went through per-tool admission here, so treating the batch
+            # as parallel-safe would bypass path-overlap serialization for
+            # local writers and the per-server MCP parallel opt-in.
+            entries = underlying_args.get("calls") or []
+            if entries and all(
+                isinstance(e, dict) and is_connector_name(e.get("name"))
+                for e in entries
+            ):
                 return underlying, underlying_args
+            return tool_name, function_args
+        return underlying, underlying_args
     except Exception:
-        pass
-    return tool_name, function_args
+        return tool_name, function_args
 
 
-def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, List[Path], bool] | None:
+def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, list[Path], bool] | None:
     """Classify one call for the planner: ``None`` = sequential barrier, else
     ``(effective_name, scoped_paths, is_writer)`` (empty paths = unscoped parallel-safe)."""
     tool_name = tool_call.function.name
@@ -130,7 +192,7 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
     return None
 
 
-def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
+def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> list[tuple]:
     """Split a tool-call batch into ordered ``("parallel"|"sequential", calls)`` segments.
 
     Call order is preserved exactly (a later call never crosses an earlier barrier), so
@@ -141,7 +203,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
     the call starts a NEW run after the conflicting one lands. Runs shorter than two calls
     demote to sequential (it owns the richer inline dispatch); adjacent sequential merge.
     """
-    segments: List[tuple] = []
+    segments: list[tuple] = []
     current: list = []
     reserved_paths: list[tuple[Path, bool]] = []  # (canonical_path, is_writer) for the current run
 
@@ -200,7 +262,7 @@ def _extract_parallel_scope_paths(
     tool_name: str,
     function_args: dict,
     execution_cwd: Optional[Path] = None,
-) -> List[Path]:
+) -> list[Path]:
     """Every canonical path this call reserves for overlap checks. *execution_cwd* is the cwd
     the tool will actually use (may differ from the process cwd on WSL / sandboxed backends);
     V4A ``patch`` scope comes from patch-body headers. Empty = unknown scope = barrier."""
@@ -261,7 +323,7 @@ def _multimodal_text_summary(value: Any) -> str:
         return str(value)
 
 
-def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
+def _append_subdir_hint_to_multimodal(value: dict[str, Any], hint: str) -> None:
     """Append a subdir hint to the envelope's first text part (and ``text_summary``) in place."""
     if not _is_multimodal_tool_result(value):
         return
@@ -283,7 +345,7 @@ _V4A_FILE_HEADER = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$'
 _V4A_MOVE_HEADER = re.compile(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
-def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
+def _extract_file_mutation_targets(tool_name: str, args: dict[str, Any]) -> list[str]:
     """File paths a ``write_file`` / ``patch`` call targets: ``args["path"]`` in replace mode,
     every ``*** Update/Add/Delete/Move File:`` header in V4A patch mode."""
     if tool_name not in _FILE_MUTATING_TOOLS:
@@ -305,9 +367,9 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
 
 def _extract_landed_file_mutation_paths(
     tool_name: str,
-    args: Dict[str, Any],
+    args: dict[str, Any],
     result: Any,
-) -> List[str]:
+) -> list[str]:
     """Concrete file paths a successful mutation reports (``files_modified`` /
     ``resolved_path`` in the JSON result), falling back to the declared targets."""
     targets = _extract_file_mutation_targets(tool_name, args)
@@ -343,7 +405,7 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
-def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
+def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
     """Shallow copy for trajectory saving: multimodal results become their text summary,
     image parts become ``[screenshot]``."""
     if not isinstance(msg, dict):
@@ -447,13 +509,22 @@ def _detect_upstream_elision(content: Any) -> bool:
 
 
 def _maybe_append_elision_notice(name: str, content: Any) -> Any:
-    """Append the incompleteness notice to untrusted string results with elision markers."""
-    if _is_untrusted_tool(name) and _detect_upstream_elision(content):
+    """Append the incompleteness notice to untrusted results with elision markers. A multimodal part list (an MCP
+    result that also carries images) is judged by its first text part, which is where the notice goes."""
+    if not _is_untrusted_tool(name):
+        return content
+    if isinstance(content, list):
+        idx = next((i for i, item in enumerate(content) if _is_text_item(item)), None)
+        if idx is not None and _detect_upstream_elision(content[idx]["text"]):
+            return [*content[:idx], {**content[idx], "text": content[idx]["text"] + _UPSTREAM_ELISION_NOTICE},
+                    *content[idx + 1:]]
+        return content
+    if _detect_upstream_elision(content):
         return content + _UPSTREAM_ELISION_NOTICE
     return content
 
 
-def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, Any]]:
+def _tool_output_risk_metadata(name: str, content: Any) -> Optional[dict[str, Any]]:
     """Internal-only advisory classification of attacker-controlled output: deterministic
     finding ids, never blocks or redacts, omits the scanned text."""
     if not _is_untrusted_tool(name):
@@ -467,7 +538,7 @@ def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, An
     if not text_parts:
         return None
 
-    findings: List[str] = []
+    findings: list[str] = []
     for text in text_parts:
         for finding in scan_for_threats(text, scope="context"):
             if finding not in findings:
@@ -511,12 +582,29 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 
 
 __all__ = [
-    "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
-    "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_is_destructive_command",
-    "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
-    "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
-    "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",
-    "_extract_file_mutation_targets", "_extract_landed_file_mutation_paths", "_extract_error_preview",
-    "_trajectory_normalize_msg", "_detect_upstream_elision", "_maybe_append_elision_notice",
+    "_DESTRUCTIVE_PATTERNS",
+    "_NEVER_PARALLEL_TOOLS",
+    "_PARALLEL_SAFE_TOOLS",
+    "_PATH_SCOPED_READERS",
+    "_PATH_SCOPED_TOOLS",
+    "_PATH_SCOPED_WRITERS",
+    "_REDIRECT_OVERWRITE",
+    "_append_subdir_hint_to_multimodal",
+    "_canonical_path",
+    "_context_pruned_argument_paths",
+    "_detect_upstream_elision",
+    "_extract_error_preview",
+    "_extract_file_mutation_targets",
+    "_extract_landed_file_mutation_paths",
+    "_extract_parallel_scope_path",
+    "_extract_parallel_scope_paths",
+    "_is_destructive_command",
+    "_is_multimodal_tool_result",
+    "_maybe_append_elision_notice",
+    "_multimodal_text_summary",
+    "_paths_overlap",
+    "_plan_tool_batch_segments",
+    "_should_parallelize_tool_batch",
+    "_trajectory_normalize_msg",
     "make_tool_result_message",
 ]

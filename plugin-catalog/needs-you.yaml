@@ -1,0 +1,22 @@
+name: needs-you
+repo: https://github.com/aydnOktay/hermes-needs-you
+sha: f903b8eb8f166b609e2ee3c535209fb4602b60d3
+description: Hermes is waiting — full Desktop page for pending approvals.
+  Queue, chip, OS notify. Redacted previews only. No API keys.
+maintainer: aydnOktay
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/aydnOktay/hermes-needs-you
+version: "0.1.0"
+image: https://raw.githubusercontent.com/aydnOktay/hermes-needs-you/f903b8eb8f166b609e2ee3c535209fb4602b60d3/logo.png
+platforms: []
+capabilities:
+  provides_tools:
+  - needs_you_list
+  - needs_you_clear
+  provides_hooks:
+  - pre_approval_request
+  - post_approval_response
+  provides_middleware: []
+  requires_env: []

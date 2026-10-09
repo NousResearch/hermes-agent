@@ -21,6 +21,10 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+# Expanded by initialize() against the profile that opens it. A concrete path is copied by a profile clone
+# and outlives a rename, so it keeps naming the old profile's DB.
+_DEFAULT_DB_PATH = "$HERMES_HOME/memory_store.db"
+
 
 FACT_STORE_SCHEMA = {
     "name": "fact_store",
@@ -113,21 +117,20 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def save_config(self, values, hermes_home):
         """Write config to config.yaml under plugins.hermes-memory-store."""
-        config_path = Path(hermes_home) / "config.yaml"
-        try:
-            import yaml
-            from hermes_cli.config import read_user_config_raw  # raw read: merged defaults must not be persisted
-            existing = read_user_config_raw(config_path)
-            existing.setdefault("plugins", {})["hermes-memory-store"] = values
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(existing, f, default_flow_style=False)
-        except Exception:
-            pass
+        # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.
+        # ``merge_existing`` keeps every other section; *hermes_home* is the active profile already.
+        from hermes_cli.config import save_config
+        values = dict(values)
+        # This profile's own DB spelled out (older setups wrote it; the dashboard form re-submits what it
+        # read) pins every clone and rename of the profile to this file, so it is stored as the placeholder.
+        db_path = values.get("db_path")
+        if isinstance(db_path, str) and Path(db_path).expanduser() == Path(hermes_home) / "memory_store.db":
+            values["db_path"] = _DEFAULT_DB_PATH
+        save_config({"plugins": {"hermes-memory-store": values}}, merge_existing=True)
 
     def get_config_schema(self):
-        from hermes_constants import display_hermes_home
         return [
-            {"key": "db_path", "description": "SQLite database path", "default": f"{display_hermes_home()}/memory_store.db"},
+            {"key": "db_path", "description": "SQLite database path", "default": _DEFAULT_DB_PATH},
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
@@ -170,10 +173,10 @@ class HolographicMemoryProvider(MemoryProvider):
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")
         try:
@@ -183,7 +186,7 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as exc:
             return tool_error(str(exc))
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         # is_truthy_value: auto_extract is a string enum ("false"/"true"); plain truthiness would treat "false" as on.
         if is_truthy_value(self._config.get("auto_extract", False)) and self._store and messages:
             self._auto_extract_facts(messages)

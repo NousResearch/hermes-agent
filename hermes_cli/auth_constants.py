@@ -9,6 +9,8 @@ import base64
 import json
 from typing import Any, Callable, Dict, Optional
 
+from hermes_cli.version_info import get_version_info
+
 # httpx is imported lazily (~30ms) because hermes_cli.auth is on the interactive-CLI startup path
 # (credential_pool -> auxiliary_client -> cli_commands_mixin). The proxy resolves on first attribute
 # access; ``from __future__ import annotations`` keeps ``httpx.Client`` annotations unevaluated.
@@ -52,6 +54,10 @@ AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
+# The free tier's (anonymous account) inference host. NAS hands it to the client on every token
+# exchange (``inference_base_url``); this literal is the fallback when that field is absent or fails
+# the host allowlist, because the paid host cross-refuses an anonymous JWT with a 400.
+DEFAULT_NOUS_WELCOME_URL = "https://welcome-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
@@ -83,11 +89,7 @@ STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.
-    from hermes_cli import __version__ as _HERMES_CLI_VERSION
-except Exception:  # pragma: no cover - version import should always succeed
-    _HERMES_CLI_VERSION = "unknown"
-CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
+CODEX_OAUTH_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
@@ -101,21 +103,13 @@ XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
-DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
-DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
-DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
-SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
-SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
-SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# OpenRouter PKCE (https://openrouter.ai/docs/guides/overview/auth/oauth): the "token" endpoint
+# mints a plain user-controlled API key; there is no refresh token.
+OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+OPENROUTER_AUTH_KEYS_URL = "https://openrouter.ai/api/v1/auth/keys"
+OPENROUTER_OAUTH_DOCS_URL = "https://openrouter.ai/docs/guides/overview/auth/oauth"
 
 OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh"
-DEFAULT_SPOTIFY_SCOPE = " ".join((
-    "user-modify-playback-state", "user-read-playback-state", "user-read-currently-playing",
-    "user-read-recently-played", "playlist-read-private", "playlist-read-collaborative",
-    "playlist-modify-public", "playlist-modify-private", "user-library-read", "user-library-modify",
-))
-SERVICE_PROVIDER_NAMES: Dict[str, str] = {"spotify": "Spotify"}
-
 # LM Studio's default no-auth mode still needs *some* non-empty bearer for the API-key code paths to
 # treat the provider as configured. Sent only to LM Studio, never to a remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
@@ -131,11 +125,17 @@ class AuthError(RuntimeError):
 
     def __init__(
         self, message: str, *, provider: str = "", code: Optional[str] = None, relogin_required: bool = False,
+        retry_after: Optional[float] = None, retryable: Optional[bool] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.relogin_required = relogin_required
+        # Optional wait hint in seconds (a server ``Retry-After`` or a client cooldown) and whether a
+        # later attempt can succeed at all. None = the raiser did not say; callers treat None as
+        # "retryable, no hint" for transport-shaped errors and as terminal for auth refusals.
+        self.retry_after = retry_after
+        self.retryable = retryable
 
 
 def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
@@ -149,12 +149,12 @@ def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
 _nous_err = _provider_error_factory("nous")
 _xai_err = _provider_error_factory("xai-oauth")
 _codex_err = _provider_error_factory("openai-codex")
-_spotify_err = _provider_error_factory("spotify")
 _qwen_err = _provider_error_factory("qwen-oauth")
 _minimax_err = _provider_error_factory("minimax-oauth")
+_openrouter_err = _provider_error_factory("openrouter")
 
 
-def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
+def _decode_jwt_claims(token: Any) -> dict[str, Any]:
     if not isinstance(token, str) or token.count(".") != 2:
         return {}
     payload = token.split(".")[1]

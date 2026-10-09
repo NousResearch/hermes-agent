@@ -5,8 +5,7 @@ Chat tab died with a 502 / "[session ended]". Root cause: the image installs
 only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
 so the actualized node_modules permanently disagrees with the canonical
 package-lock.json. Without HERMES_TUI_DIR set, ``_make_tui_argv`` falls
-through to ``_tui_need_npm_install`` (which returns True forever) and tries a
-runtime ``npm install`` that can never converge and races itself across
+through to source dependency preparation, racing itself across
 concurrent /api/pty connections → ENOTEMPTY.
 
 The fix is ``ENV HERMES_TUI_DIR=/opt/hermes/ui-tui`` in the Dockerfile, which
@@ -31,7 +30,7 @@ def _exec_py(image: str, py: str) -> str:
     # Drop to the hermes user (UID 10000) so we exercise the same path the
     # dashboard PTY child runs as — not root.
     cmd = [
-        "docker", "run", "--rm", "--entrypoint", "su", image,
+        "docker", "run", "--rm", "--network=none", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -39,17 +38,24 @@ def _exec_py(image: str, py: str) -> str:
     return r.stdout.strip()
 
 
-def test_hermes_tui_dir_env_is_set(built_image: str) -> None:
-    """HERMES_TUI_DIR must point at the prebuilt bundle dir in the image."""
-    r = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", built_image,
-         "-c", 'printf "%s" "$HERMES_TUI_DIR"'],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert r.returncode == 0, r.stderr[-2000:]
-    assert r.stdout.strip() == "/opt/hermes/ui-tui", (
-        f"HERMES_TUI_DIR={r.stdout.strip()!r} (expected /opt/hermes/ui-tui)"
-    )
+
+
+def test_photon_baked_dependencies_load_without_writes_or_network(built_image: str) -> None:
+    """The non-root runtime uses the baked sidecar, including its npm patch."""
+    py = '''
+import subprocess
+from plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
+sidecar = resolve_sidecar_dir()
+assert sidecar == SOURCE_SIDECAR_DIR, sidecar
+assert not dir_writable(sidecar / 'node_modules')
+child = subprocess.run(['node', '--input-type=module', '-e',
+    "import {patchSpectrumTs} from './patch-spectrum-mixed-attachments.mjs'; "
+    "patchSpectrumTs(); await import('spectrum-ts'); console.log('PHOTON_LOADED')"],
+    cwd=sidecar, capture_output=True, text=True, timeout=30)
+assert child.returncode == 0, child.stderr
+print(child.stdout.strip())
+'''
+    assert _exec_py(built_image, py).endswith('PHOTON_LOADED')
 
 
 def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> None:
@@ -58,12 +64,11 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
     py = (
         "import json\n"
         "from pathlib import Path\n"
-        "from hermes_cli.main_tui_launch import _tui_need_npm_install, _find_bundled_tui, _make_tui_argv\n"
+        "from hermes_cli.main_tui_launch import _make_tui_argv\n"
         "ui = Path('/opt/hermes/ui-tui')\n"
         "argv, cwd = _make_tui_argv(ui, tui_dev=False)\n"
         "out = {\n"
         "  'dist_entry_exists': (ui / 'dist' / 'entry.js').is_file(),\n"
-        "  'need_npm_install': _tui_need_npm_install(ui),\n"
         "  'argv': argv,\n"
         "  'uses_prebuilt': ('dist/entry.js' in ' '.join(argv)) and ('npm' not in argv[0].lower()),\n"
         "}\n"
@@ -77,3 +82,44 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
     assert "npm" not in out["argv"][0].lower(), (
         f"launcher resolved to an npm invocation, not the prebuilt bundle: {out['argv']!r}"
     )
+
+
+def test_tui_gateway_child_uses_packaged_python(built_image: str) -> None:
+    """The TUI child must inherit the image's dependency environment."""
+    py = '''
+import json
+import os
+import subprocess
+import sys
+from hermes_cli.main_tui_launch import _apply_tui_python_env
+
+env = dict(os.environ)
+_apply_tui_python_env(env)
+child = subprocess.run(
+    [env["HERMES_PYTHON"], "-c",
+     "import os, sys; print(os.path.realpath(sys.executable), flush=True); import tui_gateway.entry"],
+    cwd="/opt/hermes", env=env, capture_output=True, text=True, timeout=30,
+)
+print(json.dumps({
+    "parent": os.path.realpath(sys.executable),
+    "child": child.stdout.strip().splitlines()[0] if child.stdout.strip() else "",
+    "returncode": child.returncode,
+    "stderr": child.stderr[-1000:],
+}))
+'''
+    # Run as the image user without `su`, which would erase Docker's
+    # HERMES_PYTHON and hide the broken runtime environment.
+    inner = (
+        "source /opt/hermes/.venv/bin/activate && "
+        "cd /opt/hermes && "
+        f"python3 -c {shlex.quote(py)}"
+    )
+    r = subprocess.run(
+        ["docker", "run", "--rm", "--network=none", "--user", "hermes",
+         "--entrypoint", "/bin/bash", built_image, "-c", inner],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    out = json.loads(r.stdout.strip())
+    assert out["returncode"] == 0, out["stderr"]
+    assert out["child"] == out["parent"], out

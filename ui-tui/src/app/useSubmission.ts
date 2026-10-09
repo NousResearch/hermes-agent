@@ -1,8 +1,9 @@
+import { looksLikeSlashCommand, parseSlashCommand } from '@hermes/shared/slash'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens } from '../domain/attachments.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
@@ -10,6 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
+import { reportSlashCommand } from './createSlashHandler.js'
 import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
@@ -276,6 +278,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
           parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
         if (queued) {
+          // Handled here, before the slash handler, so it is counted here.
+          reportSlashCommand(gw, parsed.name, getUiState().sid)
           composerActions.enqueue(queued.text, queued.display)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
@@ -348,6 +352,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage,
       composerActions,
       composerRefs,
+      gw,
       handleBusyInput,
       interpolate,
       send,
@@ -435,7 +440,7 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
+  slashRef: MutableRefObject<(cmd: string, typed?: boolean) => boolean>
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

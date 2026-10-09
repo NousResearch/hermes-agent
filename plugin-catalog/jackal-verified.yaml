@@ -5,6 +5,7 @@ description: 'Typed adapter for the reproducible JACKAL v1.7.3 release: 41 catal
   tools (exact, numerical, Lean-checked bounded lanes, claim replay).'
 maintainer: AnubisQuantumCipher
 tier: community
+category: tools
 docs_url: https://github.com/AnubisQuantumCipher/hermes-jackal-verified
 platforms: []
 capabilities:

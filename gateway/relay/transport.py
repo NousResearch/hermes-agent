@@ -4,7 +4,7 @@ The ``RelayAdapter`` delegates all wire I/O to a ``RelayTransport``. The gateway
 dials OUT to the connector, so production is a WebSocket client (``ws_transport.py``)
 and tests use an in-memory stub (``tests/gateway/relay/stub_connector.py``). This
 module defines the protocol surface only. May change without a deprecation cycle
-until >=2 Class-1 platforms validate it. See docs/relay-connector-contract.md.
+until >=2 Class-1 platforms validate it. See website/docs/developer-guide/relay-connector-contract.md.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class RelayTransport(Protocol):
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         ...
 
-    def set_passthrough_handler(self, handler: "PassthroughHandler") -> None:
+    def set_passthrough_handler(self, handler: PassthroughHandler) -> None:
         """Register the callback for each forwarded passthrough request (§5.1).
 
         The connector answers the provider's edge ACK itself, then forwards the real
@@ -52,8 +52,8 @@ class RelayTransport(Protocol):
         ...
 
     async def send_outbound(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
         Returns a result dict; for ``op == "send"`` it carries ``success`` and
@@ -63,7 +63,7 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Proxy a chat-info lookup to the connector."""
         ...
 
@@ -84,8 +84,8 @@ class RelayTransport(Protocol):
         ...
 
     async def send_follow_up(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 
         A credential acting on the SHARED bot identity (e.g. a Discord interaction

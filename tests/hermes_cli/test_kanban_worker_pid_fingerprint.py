@@ -77,7 +77,10 @@ def test_matching_fingerprint_keeps_the_live_worker(board):
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = ?", (tid,))
     kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
-    assert killed and killed[0] == (os.getpid(), signal.SIGTERM)
+    pid = os.getpid()
+    # Wrapped group leaders are signalled as a group; legacy workers retain PID delivery.
+    target = -pid if hasattr(os, "getpgid") and os.getpgid(pid) == pid else pid
+    assert killed and killed[0] == (target, signal.SIGTERM)
 
 
 def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):

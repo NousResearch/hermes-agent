@@ -924,9 +924,16 @@ def _open_launch_stderr_log(path: str):
     return handle
 
 
+# Chrome throttles, freezes and discards tabs it judges idle by visibility, not CDP traffic, so the
+# hidden tabs of parallel named browser_exec sessions on one shared Chrome stall without these (#135435).
+CHROME_ANTI_BACKGROUNDING_ARGS = ("--disable-background-timer-throttling",
+                                  "--disable-backgrounding-occluded-windows",
+                                  "--disable-renderer-backgrounding")
+
+
 def _chrome_debug_args(port: int) -> list[str]:
     return [f"--remote-debugging-port={port}", f"--user-data-dir={chrome_debug_data_dir()}",
-            "--no-first-run", "--no-default-browser-check"]
+            "--no-first-run", "--no-default-browser-check", *CHROME_ANTI_BACKGROUNDING_ARGS]
 
 
 def _tcp_open(host: str, port: int, timeout: float) -> bool:
@@ -1007,7 +1014,7 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     if system == "Darwin":
         return (f'open -a "Google Chrome" --args --remote-debugging-port={port} '
                 f'--user-data-dir="{chrome_debug_data_dir()}" --no-first-run '
-                "--no-default-browser-check")
+                f"--no-default-browser-check {' '.join(CHROME_ANTI_BACKGROUNDING_ARGS)}")
     return None
 
 

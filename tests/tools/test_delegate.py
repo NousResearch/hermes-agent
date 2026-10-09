@@ -204,6 +204,29 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_inherits_turn_resource_budget_but_not_iteration_budget(self):
+        parent = _make_mock_parent(depth=0)
+        shared_budget = object()
+        parent.turn_resource_budget = shared_budget
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Share only the originating turn budget",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=7,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIs(kwargs["turn_resource_budget"], shared_budget)
+        self.assertIsNone(kwargs["iteration_budget"])
+
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
         """#81267: children must not share the parent's SessionDB object.
 

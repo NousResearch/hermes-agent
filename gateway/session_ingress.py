@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+_admission_resource_budget = ContextVar('admission_resource_budget', default=None)
+
+
+def current_admission_resource_budget():
+    """Exact One Gateway admission fence for the currently executing local turn."""
+    return _admission_resource_budget.get()
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
 
@@ -107,6 +113,10 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    budget_token = _admission_resource_budget.set({
+        'db': authority.db, 'epoch': authority.epoch,
+        'admission_id': row['admission_id'], 'generation': row['generation'],
+    })
     try:
         with scope:
             if is_api:
@@ -146,6 +156,7 @@ async def execute_admission(authority, ref, row):
                         adapter, event, live.route, response, home)
             return response
     finally:
+        _admission_resource_budget.reset(budget_token)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)

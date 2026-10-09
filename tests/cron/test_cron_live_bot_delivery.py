@@ -50,7 +50,7 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot", lease_id="lease",
                  live_session_id="live")
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: owner)
-    monkeypatch.setattr(delivery._sched, "load_config", lambda: {})
+    monkeypatch.setattr(delivery._sched, "load_config", dict)
     monkeypatch.setattr(config, "load_gateway_config", lambda: None)
     monkeypatch.setattr(delivery, "_run_bot_chat_turn", Mock(side_effect=AssertionError("CLI")))
     updates = []

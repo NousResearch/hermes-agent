@@ -103,7 +103,7 @@ def get_state() -> Optional[dict]:
             continue
         found = True
         with suppress(OSError, ValueError, AttributeError):
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
                 state = {"reason": raw.get("reason") or None, "engaged_at": raw.get("engaged_at") or None}
                 break
@@ -136,11 +136,3 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
             component, suffix, sentinel_path(),
         )
     return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

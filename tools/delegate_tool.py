@@ -14,20 +14,21 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
+from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
-from tools.delegate_tool_child_run import (  # noqa: F401
+from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
-from tools.delegate_tool_config import (  # noqa: F401
+from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
@@ -35,28 +36,61 @@ from tools.delegate_tool_config import (  # noqa: F401
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
-from tools.delegate_tool_progress import (  # noqa: F401
+from tools.delegate_tool_progress import (
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
-from tools.delegate_tool_registry import (  # noqa: F401
+from tools.delegate_tool_registry import (
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
     _handle_control_action, _is_descendant_of, _owns_subagent_record, _register_subagent, _unregister_subagent,
     get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
     steer_subagent,
 )
-from tools.delegate_tool_tasks import (  # noqa: F401
+from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
-from tools.delegate_tool_toolsets import (  # noqa: F401
+from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
-from tools.delegate_tool_results import (  # noqa: F401
+from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
 
 _ROLES = frozenset({"leaf", "orchestrator"})
+
+
+def _parent_live_home(parent_agent: Any) -> Optional[Path]:
+    """Resolve the live transcripts' profile home from parent-owned state.
+
+    The parent's per-profile SessionDB sits directly under its profile home
+    (``<home>/state.db``), so the db path's parent IS the home. Returns None
+    when the parent exposes no usable SessionDB — the caller then falls back
+    to the ambient resolve, which is exactly the #91996 failure mode, so the
+    skip is logged rather than silent.
+    """
+    parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    # Concrete str/Path only — NOT the os.PathLike protocol: MagicMock (and any
+    # duck-typed test double) registers __fspath__ and so IS PathLike, which is
+    # how a Mock "home" slipped through and transcripts landed at
+    # str(<MagicMock>) paths (PR #131931 side-effect screen).
+    if isinstance(parent_db, (str, Path)):
+        return Path(parent_db).parent
+    if parent_db is not None:
+        logger.debug(
+            "delegate_task: parent _session_db.db_path is %r (not a str/Path); "
+            "live-transcript home pinning skipped, falling back to ambient "
+            "HERMES_HOME resolve (transcripts may land in a different profile, #91996)",
+            parent_db,
+        )
+        return None
+    logger.warning(
+        "delegate_task: parent agent exposes no _session_db; live-transcript "
+        "home pinning skipped, falling back to ambient HERMES_HOME resolve "
+        "(transcripts may land in a different profile, #91996)"
+    )
+    return None
+
 
 # Nested delegation is granted by depth/role in _build_child_agent, never by the
 # model naming toolsets (there is no model-facing toolsets argument).
@@ -76,6 +110,10 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # tools can finish.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
+# After the stale verdict ends the wait, keep polling the worker this long for its real
+# result (#113222): a child that already wrote its final answer often finishes unwinding a
+# moment later, and that recorded result must be collected instead of a synthesized timeout.
+_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
@@ -157,7 +195,7 @@ def _build_child_agent(
     task_index: int,
     goal: str,
     context: Optional[str],
-    toolsets: Optional[List[str]],
+    toolsets: Optional[list[str]],
     model: Optional[str],
     max_iterations: int,
     task_count: int,
@@ -167,15 +205,15 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    override_request_overrides: Optional[Dict[str, Any]] = None,
+    override_request_overrides: Optional[dict[str, Any]] = None,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
-    override_acp_args: Optional[List[str]] = None,
+    override_acp_args: Optional[list[str]] = None,
     # Configuration block that owns the selected provider/model route. Internal
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
-    routing_cfg: Optional[Dict[str, Any]] = None,
+    routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -210,7 +248,7 @@ def _build_child_agent(
 
     # Shared ref: session_id once the child exists, delegation_id once
     # delegate_task stamps it — both ride on every relayed event.
-    child_session_ref: Dict[str, Any] = {}
+    child_session_ref: dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
@@ -237,6 +275,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                side_agent=True,
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -275,7 +314,9 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(rt["provider"], parent_agent, rt["base_url"])
+    child_pool = _resolve_child_credential_pool(
+        rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
+    )
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -296,7 +337,7 @@ def _build_child_agent(
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a pre-built child agent (called from a worker thread) and return its result entry.
 
     Contract, derived from the child's structured completion fields:
@@ -360,10 +401,10 @@ def _run_single_child(
 
 
 def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
-) -> tuple[List[tuple], Optional[str]]:
+    task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
+    top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
+    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
@@ -406,7 +447,7 @@ def _build_children(
             child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
             child._live_transcript_path = str(_writer.path)
         if live_deleg_id:
-            setattr(child, "_delegation_id", live_deleg_id)
+            child._delegation_id = live_deleg_id
             _ident_ref = getattr(child, "_progress_identity_ref", None)
             if isinstance(_ident_ref, dict):
                 _ident_ref["delegation_id"] = live_deleg_id
@@ -435,11 +476,11 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
 
 
 def delegate_task(
-    goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
+    goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -509,9 +550,22 @@ def delegate_task(
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+    #
+    # The transcripts' profile home is resolved from stable parent-owned
+    # state (the parent's per-profile SessionDB path), NOT ambient
+    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
+    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
+    # and process-wide HERMES_HOME is unstable under concurrent
+    # multi-profile workers — either way transcripts could land in the
+    # wrong profile (#91996). state.db sits directly under the home, so
+    # its parent IS the home; None falls back to today's ambient resolve
+    # (with a warning — that fallback is exactly the #91996 failure mode).
+    _live_home = _parent_live_home(parent_agent)
+
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        home=_live_home,
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
@@ -525,6 +579,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_home=_live_home,
     )
     return _run_batch(batch, background)
 
@@ -746,41 +801,3 @@ registry.register(
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FuturesTimeoutError  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import enum  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-from urllib.parse import urlsplit  # noqa: F401,E402
-from urllib.parse import urlunsplit  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_CHILD_TIMEOUT': ('tools.delegate_tool_config', 'DEFAULT_CHILD_TIMEOUT'),
-    'DEFAULT_MAX_SUMMARY_CHARS': ('tools.delegate_tool_results', 'DEFAULT_MAX_SUMMARY_CHARS'),
-    'DEFAULT_TOOLSETS': ('tools.delegate_tool_toolsets', 'DEFAULT_TOOLSETS'),
-    'MAX_DEPTH': ('tools.delegate_tool_config', 'MAX_DEPTH'),
-    'TOOLSETS': ('toolsets', 'TOOLSETS'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'file_state': ('tools', 'file_state'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

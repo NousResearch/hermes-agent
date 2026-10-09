@@ -26,7 +26,16 @@ _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 
-_INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
+_INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
+# Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
+_WINDOWS_EXE_SUFFIX_RE = re.compile(r"\.(?:exe|bat|cmd)$", re.IGNORECASE)
+# The same interpreter is reached as `python3`, `python3.12`, `/usr/bin/python3.12`, or
+# `env python3`. Matching only the bare token recorded no evidence for the invocation shapes
+# the verify-on-stop nudge itself hands the agent, so a passing run left the workspace
+# "unverified" and the nudge returned every turn.
+_INTERPRETER_NAME_RE = re.compile(
+    r"^(?:" + "|".join(sorted(_INTERPRETERS, key=len, reverse=True)) + r")(?:[0-9]+(?:\.[0-9]+)*)?$"
+)
 _TARGET_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java")
 _TARGET_PREFIXES = ("test_", "tests", "spec", "__tests__")
 # Ordered: first matching keyword group wins; "check" only counts when the
@@ -302,6 +311,18 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
     return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
 
 
+def _is_interpreter_token(token: str) -> bool:
+    """Whether a command word names a shell interpreter.
+
+    ``python3``, ``python3.12`` and ``/usr/bin/python3.12`` are the same interpreter; matching
+    only the bare token left the ad-hoc branch blind to the invocation shapes the nudge hands
+    the agent, so a passing run recorded no evidence and the workspace stayed ``unverified``.
+    """
+    # Basename by hand: on POSIX ``Path`` treats a Windows backslash path as one component.
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_INTERPRETER_NAME_RE.match(_WINDOWS_EXE_SUFFIX_RE.sub("", name)))
+
+
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
     candidate_tokens = _strip_command_prefix(tokens)
     if not candidate_tokens:
@@ -309,7 +330,10 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     command = candidate_tokens[0]
     if _is_temp_script_path(command, root):
         return candidate_tokens[1:]
-    if command in _INTERPRETERS:
+    if Path(command).name == "env" and len(candidate_tokens) > 1 and _is_interpreter_token(candidate_tokens[1]):
+        # `/usr/bin/env python3 script` names the same interpreter as `python3 script`.
+        candidate_tokens, command = candidate_tokens[1:], candidate_tokens[1]
+    if _is_interpreter_token(command):
         # Skip interpreter flags; the first positional must be the script.
         for idx, token in enumerate(candidate_tokens[1:], start=1):
             if _is_temp_script_path(token, root):
@@ -487,6 +511,15 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
+        # A full passing ``hermes verify`` proves the workspace. Partial or
+        # failed runs must not wipe another session's edit record (#103650).
+        if e.kind == "verify" and e.status == "passed" and e.scope == "full":
+            conn.execute(
+                "UPDATE verification_state"
+                " SET last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
+                " WHERE root = ? AND session_id != ?",
+                (event_id, e.root, e.session_id),
+            )
         _prune_old_events(conn, session_id=e.session_id, root=e.root)
         conn.commit()
 
@@ -530,10 +563,32 @@ def mark_workspace_edited(
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
 
+def _newest_workspace_verify(
+    conn: sqlite3.Connection, *, root: str, since: str | None
+) -> Optional[sqlite3.Row]:
+    """Latest full passing ``hermes verify`` for ``root``, optionally not older than ``since``."""
+    if since:
+        return conn.execute(
+            "SELECT * FROM verification_events"
+            " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+            " AND created_at >= ?"
+            " ORDER BY id DESC LIMIT 1",
+            (root, since),
+        ).fetchone()
+    return conn.execute(
+        "SELECT * FROM verification_events"
+        " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+        " ORDER BY id DESC LIMIT 1",
+        (root,),
+    ).fetchone()
+
+
 def verification_status(*, session_id: str | None, cwd: str | Path | None) -> dict[str, Any]:
     """Return the best known verification state for a session/workspace.
 
-    Evidence recorded before the latest edit is reported as ``stale``.
+    Evidence recorded before the latest edit is reported as ``stale``. A
+    ``hermes verify`` event for the same ``root`` that is at least as new as
+    that edit satisfies the guard even if another session recorded it.
     """
     if not _ledger_enabled():
         return {"status": "disabled", "evidence": None}
@@ -554,13 +609,20 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
         event = None
         if state["last_event_id"] is not None:
             event = conn.execute("SELECT * FROM verification_events WHERE id = ?", (state["last_event_id"],)).fetchone()
+        last_edit_at = state["last_edit_at"]
+        stale = bool(event is not None and last_edit_at and last_edit_at > event["created_at"])
+        if event is None or stale:
+            shared = _newest_workspace_verify(conn, root=root, since=last_edit_at)
+            if shared is not None:
+                event = shared
+                stale = False
 
-    result = {
-        "evidence": None, "root": root, "session_id": sid, "changed_paths": _load_changed_paths(state["changed_paths_json"])
-    }
-    if event is None:
-        return {"status": "unverified", **result}
+        result = {
+            "evidence": None, "root": root, "session_id": sid,
+            "changed_paths": _load_changed_paths(state["changed_paths_json"]),
+        }
+        if event is None:
+            return {"status": "unverified", **result}
 
-    evidence = dict(event)
-    stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
-    return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}
+        evidence = dict(event)
+        return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}

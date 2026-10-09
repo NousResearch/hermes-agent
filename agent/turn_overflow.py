@@ -23,7 +23,7 @@ from agent.conversation_compression import (
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
-    get_context_length_from_provider_error, is_output_cap_error,
+    get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -61,8 +61,8 @@ class OverflowVerdict:
     fields are the loop locals the handler may have rebound."""
 
     action: str
-    result: Optional[Dict[str, Any]]
-    messages: List[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     approx_tokens: int
@@ -84,11 +84,11 @@ class _Recovery(OverflowVerdict):
     api_call_count: int
     max_compression_attempts: int
     action: str = "fallthrough"
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     provider_overflow_recovery_pending: bool = False
     is_context_length_error: bool = False
 
-    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> OverflowVerdict:
+    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> OverflowVerdict:
         self.action, self.result = action, result
         return self
 
@@ -161,7 +161,7 @@ class _Recovery(OverflowVerdict):
         before = self.messages
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
-            task_id=self.effective_task_id, bypass_cooldown=True,
+            task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
         )
         if self.messages is before:
             deferred = None
@@ -186,7 +186,7 @@ class _Recovery(OverflowVerdict):
 
     def compress_scored_by_tokens(
         self, request_tokens: int, *, fail_on_timeout: bool = False,
-    ) -> Tuple[Optional[OverflowVerdict], bool, int]:
+    ) -> tuple[Optional[OverflowVerdict], bool, int]:
         """``compress`` scored in message count / tokens (context-overflow errors ARE
         token-budget errors). Same-message-count compression (tool-result pruning,
         in-place summarization) can shrink the request, so re-estimate rather than trust
@@ -402,11 +402,14 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # request — a background review from an earlier session — holds their context. Name that,
     # keep the turn retryable and transient: no "conversation too long", no gateway auto-reset.
     # Only when the server quoted NO measurement of its own: "prompt is too long: 233153 tokens
-    # > 200000" is the server's count and beats the local estimate.
+    # > 200000" is the server's count and beats the local estimate. Local endpoints only: a hosted
+    # route has no shared slot, so the same rejection means its real window is smaller than the one
+    # Hermes assumes, and "wait and /retry" would fail identically forever; compress instead.
     window = agent.context_compressor.context_length
     request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
     if (
-        not re.search(r"\d{4,}", error_msg)
+        is_local_endpoint(agent.base_url)
+        and not re.search(r"\d{4,}", error_msg)
         and isinstance(window, int) and window > 0
         and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION
     ):
@@ -458,7 +461,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 def recover_from_overflow(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_msg: str, wrapped_output_cap_budget: Optional[int],
-    messages: List[Dict[str, Any]], api_messages: Any, system_message: Any,
+    messages: list[dict[str, Any]], api_messages: Any, system_message: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: int,
     compression_attempts: int, max_compression_attempts: int, api_call_count: int,
     effective_task_id: Any,

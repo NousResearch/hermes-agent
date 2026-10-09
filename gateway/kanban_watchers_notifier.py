@@ -30,6 +30,17 @@ def _kbn():
     from hermes_cli import kanban_db_notify
     return kanban_db_notify
 
+
+def _pin_first():
+    """Machine-flow board resolution: env pins outrank the enumerated slug.
+
+    The slug here came from ``list_boards()``, not from a user — on a box whose
+    env pins ``HERMES_KANBAN_DB`` every board must resolve to the pinned file
+    or the notifier reads per-slug DBs nobody writes (see
+    ``kanban_db.pin_first_board_resolution``)."""
+    from hermes_cli import kanban_db
+    return kanban_db.pin_first_board_resolution()
+
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
@@ -160,16 +171,12 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     profile = owner_profile or getattr(runner, "_kanban_notifier_profile", None)
     primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
     profile = profile or primary_profile
-    # Empty maps are startup placeholders for route-only profiles; a connected
-    # secondary on ANY platform establishes an independent credential boundary.
-    if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
-        _warn_unroutable_sub_once(
-            sub, platform,
-            "kanban notifier: subscription for %s on %s chat %s is pinned to profile %s, which runs "
-            "other-platform adapters but none for %s; it will not be delivered. Give that profile a %s "
-            "adapter or make it route-only, then re-subscribe with `hermes kanban notify-subscribe ... "
-            "--notifier-profile <a profile that holds a %s credential>`.",
-            profile, platform.value, platform.value, platform.value)
+    # A profile holding its OWN adapter for this platform is an independent credential boundary —
+    # ``_authorization_adapter`` already answered for it, so the primary never stands in. Adapters
+    # on OTHER platforms do not gate this one: the primary bot is the only credential serving the
+    # pinned chat, for inbound turns and for these notifications alike (#115460).
+    own_adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
+    if getattr(platform, "value", str(platform)).lower() in _platform_names(own_adapters):
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")
@@ -247,21 +254,24 @@ class _Collector:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
+        # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
+        # on a dispatcher-pinned box each enumerated slug must map to the pinned
+        # DB, never to that slug's own (empty) physical file.
         kb = self.kb
-        seen_db_paths: set[str] = set()
-        for board_meta in _list_boards(kb):
-            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-            db_path = board_meta.get("db_path")
-            try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
-            except Exception:
-                resolved_db_path = f"slug:{slug}"
-            if resolved_db_path in seen_db_paths:
-                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
-                continue
-            seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+        with _pin_first():
+            seen_db_paths: set[str] = set()
+            for board_meta in _list_boards(kb):
+                slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+                db_path = board_meta.get("db_path")
+                try:
+                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                except Exception:
+                    resolved_db_path = f"slug:{slug}"
+                if resolved_db_path in seen_db_paths:
+                    logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                    continue
+                seen_db_paths.add(resolved_db_path)
+                self.collect_board(slug)
         return self.deliveries
 
     def _board_has_subs(self, slug: str) -> bool:
@@ -365,10 +375,11 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
-def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
-    """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
+def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
+    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
+    value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return fmt.format(str(value)[:limit]) if value else ""
+    return t(msg_key, value=str(value)[:limit]) if value else ""
 
 
 _NL = "\n{}"
@@ -388,7 +399,7 @@ def _fmt_completed(ev, n) -> tuple:
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
-    return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
@@ -401,7 +412,7 @@ def _fmt_review_requested(ev, n) -> tuple:
         summary = str(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
-    return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_changes_requested(ev, n) -> tuple:
@@ -409,11 +420,12 @@ def _fmt_changes_requested(ev, n) -> tuple:
     reason = _safe_review_reason(payload.get("reason"))
     reviewer = _safe_review_reason(payload.get("reviewer"), 48)
     implementer = _safe_review_reason(payload.get("implementer"), 48)
-    reason_text = reason or "reviewer feedback requires changes"
-    provenance = f" — reviewer @{reviewer}" if reviewer else ""
+    reason_text = reason or t("gateway.kanban.ping.changes_default_reason")
+    provenance = t("gateway.kanban.ping.reviewer_suffix", reviewer=reviewer) if reviewer else ""
     if implementer:
-        provenance += f" → implementer @{implementer}"
-    msg = f"🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
+        provenance += t("gateway.kanban.ping.implementer_suffix", implementer=implementer)
+    msg = t("gateway.kanban.ping.changes_requested",
+            board_tag=n.board_tag, task_id=n.task_id, reason=reason_text, provenance=provenance)
     return msg, None, reason_text
 
 
@@ -429,10 +441,11 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     """
     kind = _payload(ev, "kind")
     decision = kind == "needs_input"
-    msg = (
-        f"🛑 {n.head} routed to TRIAGE — "
-        f"{'needs a human decision' if decision else 'for orchestration attention'}"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    msg = t(
+        "gateway.kanban.ping.triage", head=n.head,
+        why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
+        recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
     )
     return msg, None, None
 
@@ -441,20 +454,17 @@ def _fmt_gave_up(ev, n) -> tuple:
     # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
     # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
     failures = _payload(ev, "failures")
-    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
-    last = _clip(ev, "error", " (last: {})", 160)
-    return (
-        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
-        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
-        None, None,
-    )
+    count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
+             else t("gateway.kanban.ping.kept_failing"))
+    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
-    span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
+    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -462,13 +472,14 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
+    "blocked": lambda ev, n: (
+        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        None, None,
     ),
+    "gave_up": _fmt_gave_up,
+    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
-    "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
+    "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
@@ -498,10 +509,10 @@ class _KanbanNotification:
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
         self.title = (task.title if task else sub["task_id"])[:120]
-        self.board_tag = f"[{self.board_slug}] " if self.board_slug else ""
+        self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
-        tag = f"@{task.assignee} " if task and task.assignee else ""
-        self.head = f"{self.board_tag}{tag}Kanban {self.task_id}"
+        tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""
+        self.head = t("gateway.kanban.ping.head", board_tag=self.board_tag, assignee_tag=tag, task_id=self.task_id)
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")
         mode = sub.get("delivery_mode") or "notify"

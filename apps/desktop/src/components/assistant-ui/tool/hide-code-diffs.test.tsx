@@ -50,6 +50,7 @@ it('keeps edit counts without code in either display mode and restores disclosur
         <Thread />
       </ThreadRuntime>
     )
+
     await waitFor(() => expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull())
     const row = container.querySelector('[data-tool-row]')!
     // An explicitly open historical row must not override the preference.
@@ -71,6 +72,7 @@ it('keeps edit counts without code in either display mode and restores disclosur
       expect($hideCodeDiffs.get()).toBe(true)
       expect(localStorage.getItem('hermes.desktop.toolView.hideCodeDiffs')).toBe('true')
     }
+
     act(() => setHideCodeDiffs(false))
     await waitFor(() => expect(row.hasAttribute('data-tool-open')).toBe(true))
     cleanup()
@@ -80,11 +82,13 @@ it('keeps edit counts without code in either display mode and restores disclosur
 it('still discloses failed edits when code diffs are hidden', async () => {
   setHideCodeDiffs(true)
   setToolViewMode('technical')
+
   const { container } = render(
     <ThreadRuntime messages={[editMessage('patch', true)]}>
       <Thread />
     </ThreadRuntime>
   )
+
   const toggle = container.querySelector('[data-tool-row] button[aria-expanded]')!
   expect(toggle).not.toBeNull()
   fireEvent.click(toggle)

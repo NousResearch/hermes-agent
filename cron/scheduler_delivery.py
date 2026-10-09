@@ -18,11 +18,9 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -31,7 +29,7 @@ logger = logging.getLogger("cron.scheduler")
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "matrix", "mattermost", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao"})
 
@@ -724,64 +722,24 @@ _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
 _BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
-# After the child reports its turn, a child with nothing to linger for exits at once; give it
-# that long so its real exit code and stream tails are booked instead of the report's summary.
-_BOT_CHAT_EXIT_GRACE_SECONDS = 2.0
 
 
 def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) -> subprocess.CompletedProcess:
-    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process.
+    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process (#113608).
 
-    The child records its turn outcome at *report_path* (``hermes_cli.quiet_single_query``)
-    the moment the turn ends, then runs the one-shot exit linger for nested
-    ``notify_on_complete`` replies — bounded by ``terminal.oneshot_completion_wait_seconds``,
-    whose default equals this lane's cap, so waiting for process exit booked every delivered
-    turn that left a reply pending as a timeout and killed the linger (#113608). Once the
-    report exists the delivery is booked from it and the still-lingering child is left
-    running (a daemon thread drains and reaps it); only a turn that never ends is killed.
+    The booking policy lives with the report contract (``quiet_single_query.run_reported_turn``):
+    this lane needs only the outcome, so a child that reported its turn gets the exit grace and is
+    then left to its linger; only a turn that never ends is killed.
     """
-    from hermes_cli.quiet_single_query import read_turn_report
+    from hermes_cli.quiet_single_query import run_reported_turn
 
-    # Lossy decode everywhere; on Windows also decode as the UTF-8 the child writes.
-    # A stray non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a
-    # partial multi-byte write) must not raise UnicodeDecodeError in the drain
-    # thread and take both the reply and the failure tail with it (#105582; same
-    # errors= hardening as _run_job_script). On win32 the child is guaranteed
-    # UTF-8 — hermes_cli reconfigures its own streams via hermes_bootstrap even
-    # under PYTHONIOENCODING=cp1252 — while the gateway parent is NOT started in
-    # UTF-8 mode (its env overlay sets only PYTHONIOENCODING), so text=True alone
-    # decodes the pipes with the ANSI code page: accented replies come back
-    # mojibake'd, or the reader thread dies on bytes undefined in cp1252 and the
-    # captured reply is silently lost while the delivery still books as delivered
-    # (#115894). On POSIX the child keeps the locale codec, so the locale default
-    # stays correct there (#66566).
-    popen_kwargs: dict = {"errors": "replace"}
-    if sys.platform == "win32":
-        popen_kwargs["encoding"] = "utf-8"
-    proc = subprocess.Popen(
-        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags(), **popen_kwargs)
-    streams: dict = {}
-
-    def _drain() -> None:
-        streams["out"], streams["err"] = proc.communicate()
-
-    drain = threading.Thread(target=_drain, name=f"bot-chat-delivery-{proc.pid}", daemon=True)
-    drain.start()
-    deadline = time.monotonic() + timeout
-    report = None
-    while True:
-        drain.join(timeout=0.25 if report is None else _BOT_CHAT_EXIT_GRACE_SECONDS)
-        if not drain.is_alive():
-            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
-        if report is not None:
-            # Turn over, child still lingering for a nested reply: not this lane's wait.
-            return subprocess.CompletedProcess(argv, int(report["exit_code"]), "", report.get("error") or "")
-        report = read_turn_report(report_path, proc.pid)
-        if report is None and time.monotonic() >= deadline:
-            proc.kill()
-            drain.join(timeout=5.0)
-            raise subprocess.TimeoutExpired(argv, timeout)
+    # The scheduler may sit in a directory that no longer exists (a kanban worker whose
+    # scratch workspace was reaped): a child inheriting that cwd dies at CLI startup
+    # (#102941). The target home is the one directory this lane has already verified.
+    # Decoding is the runner's platform policy: lossy everywhere (#105582), UTF-8 only on
+    # win32 (#115894), the locale codec on POSIX (#66566).
+    return run_reported_turn(argv, env=env, report_path=report_path, timeout=timeout,
+                             cwd=env.get("HERMES_HOME") or None)
 
 
 def _format_failure_streams(result) -> str:
@@ -839,8 +797,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     # fail-closed scrub as the chat message and the session mirror. Rebind ``content`` itself so
     # the durable deferred record below also carries the scrubbed copy, not the raw output.
     content = _redact_cron_payload(content, "bot-chat payload")
+    job_name = _redact_cron_payload(job.get("name", job_id), "job name")
     message = (
-        f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
+        f'[Cronjob "{job_name}" output — '
         f"scheduled job, not the user. Review it, act on anything that needs action, and "
         f"summarize for the chat.]\n\n{content}"
     )
@@ -936,15 +895,29 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         return msg
 
     from agent.delegation_context import delegated_child_subprocess_env
-    from tools.environments.local import strip_launch_profile_env
-    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
+    from tools.environments.local import served_profile_child_env
     if not home.is_dir():
         return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
-    # Discovery (or deferred admission) owns the destination, not HOME or a
-    # subsequently changed active_profile. Do not resolve the name a second time.
-    env["HERMES_HOME"] = str(home)
+    # Built for ``home``, the DELIVERY TARGET — the only cron child that acts for a profile other
+    # than the one whose tick spawned it, so the launch residue cannot be resolved from the ambient
+    # override the way every other lane resolves it. Discovery (or deferred admission) owns the
+    # destination, not HOME or a subsequently changed active_profile: do not resolve it again.
+    # ``inherit_credentials``: the child runs a full agent turn as that profile, on its own secrets.
+    try:
+        env = served_profile_child_env(
+            delegated_child_subprocess_env(os.environ), target_home=home, inherit_credentials=True)
+    except Exception as exc:  # unreadable target home / secret source: refuse, never fall back
+        return _fail(f"bot-chat delivery to profile '{profile_label}' could not build the target "
+                     f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
     if home.parent.name != "profiles":
         argv += ["-p", "default"]
+    if argv[1:3] == ["-m", "hermes_cli.main"]:
+        # served_profile_child_env strips Hermes-owned PYTHONPATH entries; under a store-python
+        # shim the bare interpreter then cannot import the package find_spec just proved (#122487).
+        from pathlib import Path
+
+        from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+        pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
 
     query_file = None
     try:
@@ -961,7 +934,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
         report_file = f"{query_file}.turn.json"
         env[TURN_REPORT_FILE_ENV] = report_file
-        result = _run_bot_chat_turn(argv, env, report_file, _get_bot_chat_delivery_timeout())
+        timeout_s = _get_bot_chat_delivery_timeout()
+        result = _run_bot_chat_turn(argv, env, report_file, timeout_s)
         if result.returncode != 0:
             tail = _format_failure_streams(result)
             logger.warning(
@@ -974,11 +948,41 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:
+        # Replaying the full payload risks a duplicate (the killed turn may already have
+        # persisted it); staying silent loses the alert entirely (2026-09-19 docgen-deadman
+        # case). So queue a SHORT marker that points at the saved output, once per execution
+        # (stable key); the re-mark guard reads the record's ``degraded`` flag, never the text.
+        marker_queued = False
+        if not (deferred or {}).get("degraded"):
+            marker = (
+                f"DELIVERY DEGRADED: this alert's bot-chat turn timed out after "
+                f"{timeout_s}s, so the full output could NOT be posted here. Read the "
+                f"complete saved output with `hermes cron runs` (job '{job_id}'). "
+                f"Excerpt: {content.strip()[:280]}"
+            )
+            try:
+                from cron.bot_chat_delivery import defer as _defer_marker
+                # Deferred ids double as live-owner delivery ids, which must be 32-64 hex
+                # chars (tools.bot_live_delivery._delivery_id) — so the marker's id is a
+                # fresh digest derived from the execution key, not a suffixed one.
+                marker_key = hashlib.sha256(f"{key}:degraded".encode()).hexdigest()
+                _defer_marker(marker_key, dict(job), marker, profile, home,
+                              for_failure=for_failure, degraded=True)
+                marker_queued = True
+            except Exception as defer_exc:
+                logger.warning(
+                    "Job '%s': degraded-delivery marker could not be queued: %s",
+                    job_id, defer_exc)
+        hint = (
+            "a short degraded-delivery notice was queued to Bot Chat — posted once the "
+            f"session frees; full output stays saved, run `hermes cron runs` for job '{job_id}'"
+            if marker_queued else
+            "the result is saved; run `hermes cron runs` to see it, or `hermes doctor` "
+            "if this keeps happening")
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)")
+            f"after {timeout_s}s ({hint}; raise "
+            "cron.bot_chat_delivery_timeout_seconds if this recurs)")
     except Exception as e:
         logger.warning(
             "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,
@@ -1053,7 +1057,7 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
-def _expand_routing_tokens(part: str) -> List[str]:
+def _expand_routing_tokens(part: str) -> list[str]:
     """Expand ``all`` to every home-target platform with a configured chat_id; non-tokens pass
     through as a single-element list."""
     if part.lower() not in _ROUTING_TOKENS:
@@ -1072,7 +1076,7 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
     return job.get("deliver", "local")
 
 
-def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
+def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> list[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
@@ -1275,7 +1279,7 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
 
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
-    """Persist ``last_delivery_unverified``: list of ``platform:chat_id`` targets acked with no
+    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets acked with no
     evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
     delivery)."""
     new_value = list(unverified_targets) or None
@@ -1321,6 +1325,7 @@ class _TargetDelivery:
     inchannel_continuable: bool
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
+    live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
 
     @property
     def is_relay(self) -> bool:
@@ -1328,7 +1333,9 @@ class _TargetDelivery:
 
     @property
     def where(self) -> str:
-        return f"{self.platform_name}:{self.chat_id}"
+        # A topic-routed target without its thread id names the wrong lane in failure reports.
+        base = f"{self.platform_name}:{self.chat_id}"
+        return f"{base}:{self.thread_id}" if self.thread_id else base
 
 
 def _note_target_error(job: dict, msg: str, errors: list) -> None:
@@ -1455,13 +1462,13 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         if thread_id:
             media_metadata["thread_id"] = thread_id
 
-    # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
-    # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
-    # none.
-    if t.origin_target and t.origin.get("scope_id"):
-        route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
-        media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
+    # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
+    # after a restart. See cron/scheduler_delivery_origin.py.
+    _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
     return route_thread_id, route_metadata, media_metadata
+
+
+_LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
 
 
 def _live_send_text(
@@ -1471,7 +1478,7 @@ def _live_send_text(
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import DeliveryRouter, DeliveryTarget
+    from gateway.delivery import DeliveryRouter, DeliveryTarget, PartialDeliveryError
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
@@ -1481,19 +1488,33 @@ def _live_send_text(
     # Send through the already-authorized transport: re-resolving from the plain target_adapters
     # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
     # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
-    future = safe_schedule_threadsafe(
-        router._deliver_to_platform(
-            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
+    # cancel() cannot tell "never started" from "in flight": a run_coroutine_threadsafe future stays
+    # PENDING until the coroutine finishes, so cancel() returns True mid-send AND kills it. The send
+    # records its own start under a lock; a timeout abandons it only if it never began.
+    dispatch_lock = threading.Lock()
+    dispatch = {"started": False, "abandoned": False}
+
+    async def _send_once():
+        with dispatch_lock:
+            if dispatch["abandoned"]:
+                return None
+            dispatch["started"] = True
+        return await router._deliver_to_platform(route_target, text_to_send, route_metadata, transport=t.transport)
+
+    future = safe_schedule_threadsafe(_send_once(), t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
     try:
-        send_result = future.result(timeout=60)
+        send_result = future.result(timeout=_LIVE_SEND_CONFIRM_TIMEOUT_SECS)
     except TimeoutError:
-        # Slow confirmation != failure; future.cancel() disambiguates. False -> already in flight,
-        # cannot be un-sent, standalone resend would DUPLICATE: assume delivered. True -> never
-        # started (loop wedged): MUST fall through to standalone or it is silently dropped.
-        if future.cancel():
+        # Slow confirmation != failure. Never started (loop wedged): nothing was sent, so fall through
+        # to standalone or it is silently dropped. Started: in flight (a paced multi-chunk send can
+        # legitimately outlast the wait) — leave it running; a standalone resend would DUPLICATE.
+        with dispatch_lock:
+            dispatch["abandoned"] = not dispatch["started"]
+        if dispatch["abandoned"]:
+            future.cancel()
             msg = f"live adapter send to {t.where} timed out before the coroutine was dispatched"
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
@@ -1505,8 +1526,17 @@ def _live_send_text(
             "to avoid duplicate)",
             job["id"], t.platform_name, t.chat_id)
         return True, True, None
+    except PartialDeliveryError as ex:
+        # The head of a split send is already on screen: a standalone resend would duplicate it.
+        raw = getattr(ex.result, "raw_response", None) or {}
+        _note_target_error(
+            job, f"live adapter send to {t.where} delivered {raw.get('delivered_chunks', '?')} of "
+            f"{raw.get('total_chunks', '?')} chunks, then failed: {ex}", delivery_errors)
+        return True, False, None
     except Exception as ex:
-        # Real send error (not a slow confirmation): fall through to standalone.
+        # Real send error (not a slow confirmation): fall through to standalone. The router raises
+        # a failed SendResult's error string, so this is where send_path_degraded arrives.
+        t.live_error = str(ex)
         target_errors.append(f"live adapter send failed: {ex}")
         raise
 
@@ -1529,6 +1559,7 @@ def _live_send_text(
         else:
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
+        t.live_error = str(err) if err else None
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
@@ -1744,6 +1775,35 @@ def _standalone_send(
         return _failed(e)
 
 
+def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: list, delivery_errors: list) -> None:
+    """Hand a payload the live lane rejected as reconnect-only (``send_path_degraded``) and the
+    standalone lane then failed to send to the delivery ledger, as a failed reconnect-only row
+    owned by the adapter that rejected it: the post-reconnect sweep redelivers it (#125363). Only
+    reached after standalone failed, so nothing was sent and a replay cannot duplicate. The ledger
+    carries text only; dropped attachments are reported."""
+    try:
+        from gateway.delivery_ledger import (
+            compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
+        if not is_reconnect_only(t.live_error) or not ledger_enabled():
+            return
+        session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")
+        obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", content)
+        record_obligation(
+            obligation_id=obligation_id, session_key=session_key, platform=t.platform_name,
+            chat_id=str(t.chat_id), thread_id=t.thread_id, content=content,
+            adapter_profile=getattr(getattr(t.transport, "adapter", None), "_owner_profile", None))
+        mark_failed(obligation_id, str(t.live_error))
+    except Exception:
+        logger.warning("Job '%s': could not queue %s for post-reconnect redelivery",
+                       t.job.get("id"), t.where, exc_info=True)
+        return
+    note = f"queued text for {t.where} for redelivery once the live adapter reconnects"
+    if media_files:
+        note += f" ({len(media_files)} attachment(s) not queued)"
+    logger.warning("Job '%s': %s", t.job.get("id"), note)
+    delivery_errors.append(note)
+
+
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
 ) -> None:
@@ -1763,6 +1823,9 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
+        # A satellite profile's worker has no platform token, so standalone cannot stand in for a
+        # live adapter that is only waiting to reconnect: keep the payload for that adapter.
+        _queue_for_live_reconnect(t, content, media_files, delivery_errors)
         return
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
@@ -2062,6 +2125,7 @@ def _deliver_result(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
-from cron import scheduler_preflight as _preflight  # noqa: E402
-from cron import scheduler_script as _script  # noqa: E402
+from cron import scheduler as _sched
+from cron import scheduler_delivery_origin as _origin
+from cron import scheduler_preflight as _preflight
+from cron import scheduler_script as _script

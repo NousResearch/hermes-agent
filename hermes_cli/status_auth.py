@@ -10,6 +10,7 @@ from hermes_cli.nous_account import (
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_cli import config
+from hermes_time import safe_strftime
 
 
 def _format_iso_timestamp(value) -> str:
@@ -23,7 +24,7 @@ def _format_iso_timestamp(value) -> str:
         return value
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
 
 def _qwen_expiry(expires_at_ms) -> str:
@@ -98,7 +99,7 @@ def _render_api_keys(ctx):
 
 def _render_auth_providers(ctx):
     _status._section("Auth Providers")
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
     try:
         # Read-only display: the refresh-free snapshot, so `hermes status` never performs an OAuth
         # refresh or burns a single-use refresh token.
@@ -201,4 +202,4 @@ def _render_apikey_providers(ctx):
         _status._row("LM Studio", ok, msg, 16, " ")
 
 
-import hermes_cli.status as _status  # noqa: E402  (bottom: hermes_cli.status imports this module)
+import hermes_cli.status as _status

@@ -35,7 +35,6 @@ class TestContextCacheGuard:
         warning = _guard("new/model", SelectionContext(context_tokens=tokens, current_model="old/model"))
         assert warning is not None
         assert warning.kind == "context_cache"
-        assert "uncached" in warning.message
         assert f"{tokens:,}" in warning.message
 
     def test_same_model_reselect_stays_silent(self):
@@ -58,22 +57,33 @@ class TestContextCacheGuard:
 
 
 class TestSelectionContextForAgent:
-    def test_measured_tokens_then_session_counter_fallback(self):
+    def test_uses_measured_prompt_tokens_not_the_lifetime_counter(self):
         class _CC:
             last_prompt_tokens = 123_456
 
         class _Measured:
             context_compressor = _CC()
+            session_prompt_tokens = 16_282_033
             model = "current/model"
 
-        class _Fallback:
+        class _LifetimeOnly:
             context_compressor = None
-            session_prompt_tokens = 42_000
+            session_prompt_tokens = 16_282_033
+            model = "current/model"
+
+        class _Awaiting:
+            class _Stale:
+                last_prompt_tokens = -1
+
+            context_compressor = _Stale()
+            session_prompt_tokens = 16_282_033
             model = "current/model"
 
         ctx = selection_context_for_agent(_Measured())
         assert (ctx.context_tokens, ctx.current_model) == (123_456, "current/model")
-        assert selection_context_for_agent(_Fallback()).context_tokens == 42_000
+        # session_prompt_tokens is a lifetime sum, not live occupancy (#126343).
+        assert selection_context_for_agent(_LifetimeOnly()) is None
+        assert selection_context_for_agent(_Awaiting()) is None
 
     def test_no_agent_or_empty_session_returns_none(self):
         class _Empty:

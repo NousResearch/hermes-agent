@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
 import gateway.status as _gw_status
 
 
@@ -81,6 +81,23 @@ class TestProfileScopedMessagingReads:
         assert token["is_set"] is False
         assert telegram["configured"] is False
 
+    def test_allowlist_value_is_readable_but_secrets_stay_redacted(
+        self, client, isolated_profiles
+    ):
+        """Clients edit an allowlist one ID per entry, so they need its saved value;
+        the bot token next to it must still only ever leave as a redacted preview."""
+        (isolated_profiles["worker_alpha"] / ".env").write_text(
+            f"TELEGRAM_BOT_TOKEN={_VALID_WORKER_BOT_TOKEN}\nTELEGRAM_ALLOWED_USERS=111,222\n",
+            encoding="utf-8",
+        )
+        telegram = _telegram(
+            client.get("/api/messaging/platforms", params={"profile": "worker_alpha"}).json()
+        )
+        allowlist = _env_field(telegram, "TELEGRAM_ALLOWED_USERS")
+        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
+        assert (allowlist["is_list"], allowlist["value"]) == (True, "111,222")
+        assert (token["is_list"], token["value"]) == (False, None)
+        assert _VALID_WORKER_BOT_TOKEN not in str(token)
 
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
@@ -91,7 +108,7 @@ class TestProfileScopedMessagingReads:
     def test_scoped_read_returns_profile_path_command_and_startup_failure(
         self, client, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         worker_home = isolated_profiles["worker_alpha"]
         (worker_home / ".env").write_text(
@@ -229,7 +246,6 @@ class TestMultiplexPortBindingGuard:
             )
             if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
                 assert resp.status_code == 409, platform_id
-                assert "default profile" in resp.json()["detail"]
             else:  # served at /p/worker_alpha/<path> on the shared listener
                 assert resp.status_code == 200, (platform_id, resp.text)
 

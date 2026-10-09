@@ -1,0 +1,19 @@
+name: gbrain-pointer
+repo: https://github.com/praggybuilds/hermes-gbrain-pointer
+sha: 56212b086ed8dc134011440fc05cfc867586b9a4
+version: "0.1.0"
+title: GBrain Pointer
+description: "Read-only memory.provider for GBrain (garrytan/gbrain, MIT; not affiliated). After each non-trivial turn it searches a GBrain MCP server (`gbrain serve --http`) in the background and injects up to the configured limit (3 by default, capped at 10) of `[source:slug] title` pointers into the next turn as fallible background context. It never writes to GBrain and adds no tools or hooks. Disclosure — after each non-trivial turn, the first 500 characters of your message are sent to GBRAIN_MCP_URL (default http://127.0.0.1:3131/mcp; plain http to a non-loopback host is refused unless GBRAIN_POINTER_ALLOW_HTTP=1), and the profile's GBrain OAuth client id and secret go to that server's /token endpoint. Redirects and proxy settings are ignored. Only the slug, title and source id of up to 10 results are kept and injected into the next turn as background context; rows GBrain flags as suspected injection are skipped. Tokens and pointers stay in memory only. It never writes to GBrain; no other network calls, no telemetry."
+maintainer: praggybuilds
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/praggybuilds/hermes-gbrain-pointer#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GBRAIN_MCP_CLIENT_ID
+    - GBRAIN_MCP_CLIENT_SECRET

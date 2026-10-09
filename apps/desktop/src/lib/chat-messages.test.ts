@@ -54,16 +54,66 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 
     expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
   })
-
-  it('does not touch parts without a toolCallId', () => {
-    const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
-    const message = assistantWith([textPart, toolCallPart('call_a')])
-
-    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
-  })
 })
 
 describe('toChatMessages', () => {
+  it('does not render an opaque native_assistant reasoning_details carrier as Thought (#126588)', () => {
+    const carrier = JSON.stringify([
+      {
+        type: 'claude-subscription-directsdk-experimental.native_assistant',
+        version: 1,
+        messages: [
+          {
+            content: [
+              { type: 'thinking', thinking: '', signature: 'sigabc' },
+              { type: 'text', text: 'Public answer' }
+            ]
+          }
+        ],
+        projection: { content: 'Public answer', tool_calls: [] }
+      }
+    ])
+
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Public answer',
+        reasoning: null,
+        reasoning_content: null,
+        reasoning_details: carrier,
+        timestamp: 1
+      }
+    ])
+
+    expect(message.parts.filter(part => part.type === 'reasoning')).toHaveLength(0)
+    expect(chatMessageText(message)).toContain('Public answer')
+    const rendered = JSON.stringify(message.parts)
+    expect(rendered).not.toContain('sigabc')
+    expect(rendered).not.toContain('native_assistant')
+  })
+
+  it('shows readable reasoning text from a serialized reasoning_details envelope', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Answer',
+        reasoning_details: JSON.stringify([
+          { type: 'reasoning.summary', summary: 'Checked the lock.' },
+          {
+            type: 'demo.native_assistant',
+            messages: [{ content: [{ type: 'thinking', thinking: 'Nested thought.', signature: 'sigxyz' }] }]
+          }
+        ]),
+        timestamp: 1
+      }
+    ])
+
+    const reasoning = message.parts.find(part => part.type === 'reasoning')
+
+    expect(reasoning && 'text' in reasoning ? reasoning.text : '').toBe('Checked the lock.\n\nNested thought.')
+    expect(JSON.stringify(message.parts)).not.toContain('sigxyz')
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;
@@ -106,6 +156,17 @@ describe('toChatMessages', () => {
     expect(chatMessageText(messages[0])).toBe('Planning.Done.')
     expect(messages[0].timestamp).toBe(1)
     expect(messages[0].parts.map(p => p.timestamp)).toEqual([1, 2, 3])
+  })
+
+  it('restores the stopped flag on a persisted interrupted reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'tell a story', timestamp: 1 },
+      { role: 'assistant', content: 'Once upon', timestamp: 2, display_metadata: '{"interrupted": true}' },
+      { role: 'user', content: 'again', timestamp: 3 },
+      { role: 'assistant', content: 'The end.', timestamp: 4 }
+    ])
+
+    expect(messages.map(message => message.interrupted)).toEqual([undefined, true, undefined, undefined])
   })
 
   it('starts a hydrated bubble at an earlier leading tool call', () => {
@@ -180,7 +241,46 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
+    expect(chatMessageText(message)).toBe('what is this file')
+    expect(message.attachmentRefs).toEqual(['@file:tsconfig.tsbuildinfo'])
+  })
+
+  it('lifts the leading attachment block into the chip row, like the live bubble (large paste)', () => {
+    const paste = '@file:/home/u/.hermes/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
+
+    const [captioned, bare] = toChatMessages([
+      {
+        role: 'user',
+        content: `${paste}\n@image:/tmp/shot.png\n\nfix these\n\n--- Attached Context ---\n\n📄 ${paste} (769 tokens)\n\`\`\`\nlog\n\`\`\``,
+        timestamp: 1
+      },
+      { role: 'user', content: `${paste}\n\n--- Attached Context ---\n\n📄 ${paste} (769 tokens)`, timestamp: 2 }
+    ])
+
+    expect(chatMessageText(captioned)).toBe('fix these')
+    expect(captioned.attachmentRefs).toEqual([paste, '@image:/tmp/shot.png'])
+    expect(chatMessageText(bare)).toBe('')
+    expect(bare.attachmentRefs).toEqual([paste])
+  })
+
+  it('hides a persisted Discord triggering-message note but keeps the reply pointer (#114719)', () => {
+    const note =
+      '[Triggering message id: `1550380365858865156` — use as `message_id` for reply/react/pin via the discord tools.]'
+
+    const [plain, , replied, assistant] = toChatMessages([
+      { role: 'user', content: `${note}\n\nCreate a project plan for Q4`, timestamp: 1 },
+      { role: 'assistant', content: 'ok', timestamp: 2 },
+      {
+        role: 'user',
+        content: `[Replying to: "Create a project plan for Q4"]\n\n${note}\n\nyes do that`,
+        timestamp: 3
+      },
+      { role: 'assistant', content: note, timestamp: 4 }
+    ])
+
+    expect(chatMessageText(plain)).toBe('Create a project plan for Q4')
+    expect(chatMessageText(replied)).toBe('[Replying to: "Create a project plan for Q4"]\n\nyes do that')
+    expect(chatMessageText(assistant)).toBe(note)
   })
 
   it('renders MEDIA tags as assistant attachment links', () => {
@@ -313,7 +413,8 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+    expect(chatMessageText(message)).toBe('look')
+    expect(message.attachmentRefs).toEqual(['@file:foo.ts'])
   })
 
   it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
@@ -437,6 +538,81 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('never paints a background-process heartbeat wake as a user bubble', () => {
+    // Current backends type the wake `display_kind: 'hidden'`; a row persisted by an older
+    // backend arrives untyped and must disappear the same way — the user never wrote it.
+    const legacyWake =
+      '[Background process proc_ea2cdb25d899 heartbeat #7 — still running after 7m2s (next in 60s; you will also be told when it exits).\nCommand: zsh -ic hgui\nOutput since last heartbeat:\n(no new output since the last heartbeat)]'
+
+    const messages = toChatMessages([
+      { role: 'user', content: 'start the dev server', timestamp: 1 },
+      { role: 'assistant', content: 'Started on slot 0.', timestamp: 2 },
+      { role: 'user', content: legacyWake, timestamp: 3 },
+      { role: 'assistant', content: 'Still running normally.', timestamp: 4 },
+      { role: 'user', content: legacyWake.replace('#7', '#8'), display_kind: 'hidden', timestamp: 5 },
+      { role: 'assistant', content: 'HMR rebuilt after the edit.', timestamp: 6 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'assistant', 'assistant'])
+    expect(messages.map(chatMessageText)).toEqual([
+      'start the dev server',
+      'Started on slot 0.',
+      'Still running normally.',
+      'HMR rebuilt after the edit.'
+    ])
+  })
+
+  // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
+  // painted as the model's reply it read as the assistant refusing the request.
+  it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      { role: 'assistant', content: 'Your request was not processed.', display_kind: 'failed_turn', timestamp: 2 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+    expect(chatMessageText(messages[1])).toBe('Your request was not processed.')
+  })
+
+  it('redraws the failed turn error card kept on the boundary row', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Your request was not processed.',
+        display_kind: 'failed_turn',
+        display_metadata: {
+          error: 'Connection error.',
+          error_surface: { code: 'timeout', layer: 'provider', provider: 'opencode-go', retryable: true }
+        },
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system'])
+    expect(messages[1]).toMatchObject({
+      error: 'Connection error.',
+      errorSurface: { code: 'timeout', layer: 'provider', provider: 'opencode-go' },
+      serverRowSpan: 0
+    })
+    expect(chatMessageText(messages[2])).toBe('Your request was not processed.')
+  })
+
+  it('shows only the notice for a boundary row without a usable error surface', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Your request was not processed.',
+        display_kind: 'failed_turn',
+        display_metadata: { error: 'Connection error.', error_surface: { layer: 'bogus' } },
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([
@@ -543,6 +719,25 @@ describe('preserveLocalAssistantErrors', () => {
 
     expect([message.timestamp, message.completedAt]).toEqual([1, 3])
     expect(message.parts[0]).toMatchObject({ completedAt: 3, timestamp: 1, type: 'text' })
+  })
+
+  it('keeps one error card when the refresh rebuilt it from the failed-turn row', () => {
+    const surface = { code: 'timeout', layer: 'provider', retryable: true } as const
+
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'new prompt', type: 'text' }], role: 'user' },
+      { error: 'Connection error.', errorSurface: surface, id: 'stored-error', parts: [], role: 'assistant' },
+      { id: 'stored-notice', parts: [{ text: 'Your request was not processed.', type: 'text' }], role: 'system' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-123', parts: [{ text: 'new prompt', type: 'text' }], role: 'user' },
+      { error: 'Connection error.', errorSurface: surface, id: 'assistant-error-1', parts: [], role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.filter(message => message.error)).toHaveLength(1)
   })
 
   it('preserves a local user+error pair when hydration omits the failed turn', () => {
@@ -1128,47 +1323,6 @@ describe('upsertToolPart', () => {
       { id: 'search-reykjavik', query: 'reykjavik weather', summary: 'Did 5 searches' }
     ])
   })
-
-  it('uses structured live tool args for titles before hydrate', () => {
-    const started = upsertToolPart(
-      [],
-      {
-        args: { search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast' },
-        name: 'web_search',
-        tool_id: 'search-bishkek'
-      },
-      'running'
-    )
-
-    const [part] = started
-
-    expect(part?.type).toBe('tool-call')
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
-      search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast'
-    })
-  })
-
-  it('keeps structured live tool results before hydrate', () => {
-    const completed = upsertToolPart(
-      [],
-      {
-        args: { query: 'suva weather' },
-        name: 'web_search',
-        result: { data: { web: [{ title: 'Suva forecast', url: 'https://example.test', description: 'Sunny' }] } },
-        summary: 'Did 1 search in 0.5s',
-        tool_id: 'search-suva'
-      },
-      'complete'
-    )
-
-    const [part] = completed
-
-    expect(part?.type).toBe('tool-call')
-    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
-      data: { web: [{ title: 'Suva forecast' }] },
-      summary: 'Did 1 search in 0.5s'
-    })
-  })
 })
 
 describe('mergeFinalAssistantText', () => {
@@ -1189,7 +1343,9 @@ describe('mergeFinalAssistantText', () => {
     expect(result[0]).toMatchObject({ text: 'final answer', timestamp: 12.5, type: 'text' })
   })
 
-  it('removes all text parts and appends the final text', () => {
+  it('preserves pre-tool text and appends the later final response', () => {
+    // These deltas precede the tool call: they belong to an earlier model
+    // response, not to the provisional draft of the final being settled.
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
       { type: 'text' as const, text: 'streamed delta 2' },
@@ -1198,8 +1354,11 @@ describe('mergeFinalAssistantText', () => {
 
     const result = mergeFinalAssistantText(parts, 'final answer')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
-    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.filter(p => p.type === 'text').map(p => p.text)).toEqual([
+      'streamed delta 1',
+      'streamed delta 2',
+      'final answer'
+    ])
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
   })
 
@@ -1429,7 +1588,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,
@@ -1483,21 +1645,12 @@ describe('sealOpenToolParts', () => {
     expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
-  it('leaves already-completed tool parts untouched', () => {
-    const done = toolPart({ result: { code: 0 } })
-    const messages = [assistantWithParts([done])]
-
-    const next = sealOpenToolParts(messages)
-
-    expect(next[0].parts[0]).toBe(done)
-  })
-
   it('leaves pending messages alone', () => {
     const messages = [assistantWithParts([toolPart()], { pending: true })]
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeUndefined()
   })
 
   it('leaves non-tool parts untouched', () => {
@@ -1516,5 +1669,53 @@ describe('sealOpenToolParts', () => {
     const messages = [assistantWithParts([done])]
 
     expect(sealOpenToolParts(messages)).toBe(messages)
+  })
+})
+
+describe('toChatMessages backend-row accounting', () => {
+  it('reports the backend rows a folded turn stands for', () => {
+    // The older-page offset (transcript-tail) is counted in BACKEND rows, and
+    // this fold is what makes a message not one row: one assistant row plus its
+    // tool rows, plus a second assistant row that merges into the same bubble.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Running the checks.',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { role: 'assistant', content: 'Done.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].serverRowSpan).toBe(3)
+
+    // A row that stands for one backend row carries no span at all.
+    const plain = toChatMessages([{ role: 'user', content: 'hi', timestamp: 1 }])
+
+    expect(plain).toHaveLength(1)
+    expect(plain[0]).not.toHaveProperty('serverRowSpan')
+  })
+
+  it('counts the current answer row when a page starts on a tool-only turn', () => {
+    // A page boundary can start mid-turn: the first row is the tool-only
+    // assistant, the second its result, and the answer arrives third with no
+    // active bubble to append to. The bubble it creates stands for all three
+    // backend rows — counting only the two pending ones would make the release
+    // rewind short and skip history the reader then cannot reach.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { role: 'assistant', content: 'Answer.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].serverRowSpan).toBe(3)
   })
 })

@@ -3,7 +3,7 @@
 Sandboxes (Docker/Modal/SSH) hold only opaque proxy tokens; iron-proxy — a TLS-intercepting,
 default-deny egress firewall — swaps them for real credentials on the way out, so a leaked
 token is useless outside the trusted proxy boundary.  The pinned binary is auto-installed
-into ``<hermes_home>/bin``; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
+into the PM tool store; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
 ``<hermes_home>/proxy``.  Failures warn and never block agent startup.
 """
 
@@ -18,7 +18,6 @@ import platform
 import shutil
 import signal
 import subprocess
-import tarfile
 import tempfile
 import threading
 import time
@@ -33,15 +32,6 @@ from utils import atomic_json_write, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
-# Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
-_IRON_PROXY_VERSION = "0.39.0"
-_IRON_PROXY_RELEASE_BASE = f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
-_IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
-# Optional GPG verification of checksums.txt (SHA-256 alone trusts the release channel).
-_IRON_PROXY_CHECKSUM_SIG_NAME = "checksums.txt.asc"
-_IRON_PROXY_PUBKEY_NAME = "public-key.asc"
-
-_DOWNLOAD_TIMEOUT = 120  # binary is ~16MB
 _RUN_TIMEOUT = 30
 _STARTUP_GRACE_SECONDS = 5
 
@@ -55,13 +45,13 @@ _MGMT_RELOAD_TIMEOUT = 15
 _DEFAULT_TUNNEL_PORT = 9090
 
 # Hosts allowed by default for AI inference traffic.  Anything else is 403'd.
-_DEFAULT_ALLOWED_HOSTS: Tuple[str, ...] = (
+_DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = (
     "openrouter.ai", "*.openrouter.ai", "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
     "api.x.ai", "api.mistral.ai", "api.groq.com", "api.together.xyz", "api.deepseek.com", "inference.nousresearch.com",
 )
 
 # Provider env-var name -> upstream hosts on which the Authorization Bearer token is swapped.
-_BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
+_BEARER_PROVIDERS: dict[str, tuple[str, ...]] = {
     "OPENROUTER_API_KEY": ("openrouter.ai", "*.openrouter.ai"), "OPENAI_API_KEY": ("api.openai.com",),
     "GROQ_API_KEY": ("api.groq.com",), "TOGETHER_API_KEY": ("api.together.xyz",),
     "DEEPSEEK_API_KEY": ("api.deepseek.com",), "MISTRAL_API_KEY": ("api.mistral.ai",),
@@ -80,7 +70,7 @@ _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
 # interchangeable env-var names for the SAME upstream credential (Hermes' auth.py keys Google on both
 # GEMINI_API_KEY and GOOGLE_API_KEY). The sandbox receives the minted token under the canonical name AND
 # every alias so SDKs reading either work.
-_HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+_HEADER_AUTH_PROVIDERS: dict[str, dict[str, tuple[str, ...]]] = {
     "ANTHROPIC_API_KEY": {"hosts": ("api.anthropic.com",), "match_headers": ("x-api-key", "Authorization"), "aliases": ()},
     "AZURE_OPENAI_API_KEY": {"hosts": ("*.openai.azure.com", "*.cognitiveservices.azure.com", "*.services.ai.azure.com"),
                              "match_headers": ("api-key", "Authorization"), "aliases": ()},
@@ -88,11 +78,11 @@ _HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
 }
 
 # Creds that static header replacement can't swap (SigV4, SDK-minted OAuth): warning only.
-_NON_BEARER_PROVIDERS: Tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
+_NON_BEARER_PROVIDERS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 
 # Default SSRF deny list (docs promise: cloud metadata IPs refused regardless of allowlist);
 # callers pass [] to disable (hermetic tests only).
-_DEFAULT_UPSTREAM_DENY_CIDRS: Tuple[str, ...] = (
+_DEFAULT_UPSTREAM_DENY_CIDRS: tuple[str, ...] = (
     "127.0.0.0/8", "::1/128",                                       # loopback v4 / v6
     "169.254.0.0/16", "fe80::/10",                                  # link-local incl. AWS/GCP/Azure IMDS
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",    # RFC1918 + IPv6 ULA
@@ -103,12 +93,12 @@ _DEFAULT_UPSTREAM_DENY_CIDRS: Tuple[str, ...] = (
 
 # Minimal daemon env (SYSTEMROOT/USERPROFILE are Windows); everything else is stripped so
 # /proc/<pid>/environ never exposes operator secrets.
-_PROXY_SUBPROCESS_ENV_ALLOWLIST: Tuple[str, ...] = (
+_PROXY_SUBPROCESS_ENV_ALLOWLIST: tuple[str, ...] = (
     "PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMROOT", "USERPROFILE",
 )
 
 # Always stripped — these would recurse the proxy through itself or a corporate proxy.
-_PROXY_SUBPROCESS_ENV_STRIP: Tuple[str, ...] = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+_PROXY_SUBPROCESS_ENV_STRIP: tuple[str, ...] = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
 
 # SIGKILL doesn't exist on Windows; SIGTERM there is TerminateProcess() — same semantics.
 _KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -116,7 +106,7 @@ _KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # ``--version`` output keyed by binary path (get_status runs per container create).
-_VERSION_CACHE: Dict[str, str] = {}
+_VERSION_CACHE: dict[str, str] = {}
 
 # Nonce planted in the daemon env so ``_pid_alive`` can prove a PID is still *our* binary across
 # PID recycling (a fresh process can't inherit our arbitrary env value).
@@ -134,7 +124,7 @@ class ProxyStatus:
     pid: Optional[int] = None
     listening: bool = False
     tunnel_port: int = _DEFAULT_TUNNEL_PORT
-    warnings: List[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def installed(self) -> bool:
@@ -151,14 +141,9 @@ class TokenMapping:
     OWN env at egress; ``alias_env_names`` are extra SANDBOX names for the same token."""
     proxy_token: str
     real_env_name: str
-    upstream_hosts: Tuple[str, ...]
-    match_headers: Tuple[str, ...] = ("Authorization",)
-    alias_env_names: Tuple[str, ...] = ()
-
-
-def _hermes_bin_dir() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "bin"
+    upstream_hosts: tuple[str, ...]
+    match_headers: tuple[str, ...] = ("Authorization",)
+    alias_env_names: tuple[str, ...] = ()
 
 
 def _proxy_state_dir_ro() -> Path:  # without creating it (status probes, pidfile reads)
@@ -174,83 +159,32 @@ def _proxy_state_dir() -> Path:
     return d
 
 
-def _platform_binary_name() -> str:
-    return "iron-proxy.exe" if platform.system() == "Windows" else "iron-proxy"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch) -> ``iron-proxy_<version>_<os>_<arch>.tar.gz``; no Windows builds upstream."""
-    system, machine = platform.system(), platform.machine().lower()
-    if os_name := {"Linux": "linux", "Darwin": "darwin"}.get(system):
-        arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
-        return f"iron-proxy_{_IRON_PROXY_VERSION}_{os_name}_{arch}.tar.gz"
-    if system == "Windows":
-        raise RuntimeError(f"iron-proxy does not ship native Windows binaries as of v{_IRON_PROXY_VERSION}. Run the proxy on a Linux/macOS host, or inside WSL.")
-    raise RuntimeError(f"Unsupported platform for iron-proxy auto-install: {system} {machine}")
-
-
 def find_iron_proxy(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin`` copy first, then PATH; optionally auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
+    """External tools do not require PM platform support; acquire only on a miss."""
     if system := shutil.which("iron-proxy"):
         return Path(system)
-    if not install_if_missing:
-        return None
-    try:
-        return install_iron_proxy()
-    except Exception as exc:  # noqa: BLE001 — never block startup
-        logger.warning("iron-proxy auto-install failed: %s", exc)
-        return None
+    import pm
+
+    selected = pm.installed_package("iron-proxy")
+    if selected is not None:
+        return selected.binary
+    if install_if_missing:
+        try:
+            pm.ensure("iron-proxy")
+            return pm.installed_package("iron-proxy").binary
+        except Exception as exc:
+            logger.warning("iron-proxy auto-install failed: %s", exc)
+    return None
 
 
 def install_iron_proxy(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned binary; raises on any failure."""
-    (bin_dir := _hermes_bin_dir()).mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-    if target.exists() and not force:
-        return target
-    asset_name = _platform_asset_name()
-    with tempfile.TemporaryDirectory(prefix="hermes-iron-proxy-") as tmpdir:
-        archive_path, checksum_path = (tmp := Path(tmpdir)) / asset_name, tmp / _IRON_PROXY_CHECKSUM_NAME
-        logger.info("Downloading %s", f"{_IRON_PROXY_RELEASE_BASE}/{asset_name}")
-        _release_asset(asset_name, archive_path)
-        _release_asset(_IRON_PROXY_CHECKSUM_NAME, checksum_path)
-        # Best-effort GPG check of checksums.txt closes the release-channel tamper gap.
-        _verify_checksums_signature(tmp, checksum_path)
-        expected, actual = _expected_sha256(checksum_path, asset_name), _sha256_file(archive_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
-        with tarfile.open(archive_path, "r:gz") as tf:
-            member = _pick_tar_member(tf, _platform_binary_name())
-            # PEP 706 data filter rejects escaping links; < 3.12 relies on _pick_tar_member's sanitization.
-            try:
-                tf.extract(member, tmp, filter="data")  # noqa: S202
-            except TypeError:
-                tf.extract(member, tmp)  # noqa: S202
-            extracted = tmp / member.name
-        # Stage then atomically rename so the binary is never visible half-written.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".iron-proxy_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-    # A freshly-installed binary must re-probe --version on the next get_status().
+    """Explicit setup/repair; PM verifies and repairs existing entries too."""
+    import pm
+
+    pm.ensure("iron-proxy", explicit=True)
+    target = pm.installed_package("iron-proxy").binary
     _VERSION_CACHE.pop(str(target), None)
-    logger.info("Installed iron-proxy %s at %s", _IRON_PROXY_VERSION, target)
     return target
-
-
-def _release_asset(name: str, dest: Path) -> None:
-    """Download one pinned-release asset to ``dest``; RuntimeError on any URL error."""
-    url = f"{_IRON_PROXY_RELEASE_BASE}/{name}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
-        with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310
-            shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
 
 
 def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
@@ -259,59 +193,32 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     if not (gpg := shutil.which("gpg")):
         logger.warning("gpg not found on PATH — skipping iron-proxy release-signature verification (SHA-256 checksum check still enforced).")
         return False
-    sig_path, pubkey_path = tmp / _IRON_PROXY_CHECKSUM_SIG_NAME, tmp / _IRON_PROXY_PUBKEY_NAME
-    try:
-        _release_asset(_IRON_PROXY_CHECKSUM_SIG_NAME, sig_path)
-        _release_asset(_IRON_PROXY_PUBKEY_NAME, pubkey_path)
-    except RuntimeError as exc:
-        logger.warning("iron-proxy release signature assets unavailable (%s) — skipping GPG verification (SHA-256 checksum check still enforced).", exc)
+    sig_path, pubkey_path = tmp / "checksums.txt.asc", tmp / "public-key.asc"
+    if not sig_path.is_file() or not pubkey_path.is_file():
+        logger.warning("iron-proxy release signature assets unavailable — skipping GPG verification (SHA-256 checksum check still enforced).")
         return False
-    (gnupg_home := tmp / "gnupg").mkdir(mode=0o700, exist_ok=True)
-    gpg_base = [gpg, "--homedir", str(gnupg_home), "--batch", "--no-tty"]
-    if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
-        logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
-        return False
-    if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
-        raise RuntimeError(
-            f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
-        )
-    logger.info("Verified iron-proxy checksums.txt GPG signature.")
-    return True
+    with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as gnupg_home:
+        gpg_base = [gpg, "--homedir", gnupg_home, "--batch", "--no-tty"]
+        if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
+            logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
+            return False
+        if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
+            raise RuntimeError(
+                f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
+            )
+        logger.info("Verified iron-proxy checksums.txt GPG signature.")
+        return True
 
 
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
-
-
-def _sha256_file(path: Path) -> str:
-    with open(path, "rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def _pick_tar_member(tf: tarfile.TarFile, binary_name: str) -> tarfile.TarInfo:
-    """Find the binary in the archive (flat or one dir deep); reject abs paths and ``..``."""
-    candidates = [
-        m for m in tf.getmembers() if m.isfile() and not m.name.startswith("/") and ".." not in Path(m.name).parts and Path(m.name).name == binary_name
-    ]
-    if not candidates:
-        raise RuntimeError(f"Could not find {binary_name} inside downloaded archive (members: {[m.name for m in tf.getmembers()[:5]]}...)")
-    return min(candidates, key=lambda m: len(m.name))
-
-
-def _allowlisted_env() -> Dict[str, str]:
+def allowlisted_env() -> dict[str, str]:
     """Infrastructure-only env (PATH, HOME, locale) — never the operator's secrets."""
     return {n: os.environ[n] for n in _PROXY_SUBPROCESS_ENV_ALLOWLIST if n in os.environ}
 
 
-def _run(argv: List[str], *, timeout: int, text: bool = False, **kwargs) -> "subprocess.CompletedProcess":
+def _run(argv: list[str], *, timeout: int, text: bool = False, **kwargs) -> subprocess.CompletedProcess:
     if text:
         kwargs.update(text=True, encoding="utf-8", errors="replace")
-    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)  # noqa: S603
+    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
 
 
 def iron_proxy_version(binary: Path) -> str:
@@ -320,7 +227,7 @@ def iron_proxy_version(binary: Path) -> str:
         return _VERSION_CACHE[key]
     try:
         # Scrubbed env: a PATH-resolved binary must not see the host's API keys.
-        res = _run([str(binary), "--version"], timeout=_RUN_TIMEOUT, text=True, env=_allowlisted_env())
+        res = _run([str(binary), "--version"], timeout=_RUN_TIMEOUT, text=True, env=allowlisted_env())
     except (OSError, subprocess.TimeoutExpired):
         return ""
     if out := (res.stdout or res.stderr or "").strip():  # never cache empty output — it would poison status for the process lifetime
@@ -349,7 +256,7 @@ def _fd_owned_by_us(fd: int) -> bool:
         return True  # Windows
 
 
-def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
+def ensure_ca_cert(*, force: bool = False) -> tuple[Path, Path]:
     """Generate (or return existing) 10-year CA cert + key via the host ``openssl``."""
     state = _proxy_state_dir()
     ca_crt, ca_key = state / "ca.crt", state / "ca.key"
@@ -382,14 +289,27 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
 
+def _management_token_path() -> Path:
+    """Management-token location; resolving it never creates or changes state."""
+    return _proxy_state_dir_ro() / "management.token"
+
+
 def ensure_management_token(*, force: bool = False) -> str:
-    """Return the management-API bearer key (0600 at <proxy>/management.token), minting on first call."""
-    p = _proxy_state_dir() / "management.token"
+    """Return the management-API bearer key, minting it on first call.
+
+    Stored at the path from :func:`_management_token_path` with 0600 perms.
+    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    (named in the generated config's ``management.api_key_env``);
+    ``hermes egress reload`` reads the same file to authenticate.
+    """
+
+    _proxy_state_dir()
+    p = _management_token_path()
     if not force and (existing := _read_text_or_none(p)):
         return existing
     token = mint_proxy_token(prefix="hermes-mgmt")
@@ -398,16 +318,18 @@ def ensure_management_token(*, force: bool = False) -> str:
 
 
 def _yaml():
-    """PyYAML module or None (it is a Hermes dep, but never a hard requirement here)."""
+    """Shared YAML helpers or None (not a hard requirement for proxy discovery)."""
+
     try:
-        import yaml
+        import hermes_yaml as yaml
         return yaml
     except ImportError:
         return None
 
 
-def _parse_listen(listen) -> Optional[Tuple[str, int]]:
+def _parse_listen(listen) -> Optional[tuple[str, int]]:
     """``"host:port"`` -> ``(host, port)``; empty host means loopback."""
+
     if not isinstance(listen, str) or ":" not in listen:
         return None
     host, _, port_s = listen.rpartition(":")
@@ -418,21 +340,21 @@ def _parse_listen(listen) -> Optional[Tuple[str, int]]:
     return (host or "127.0.0.1", port)
 
 
-def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None) -> Optional[Tuple[str, int]]:
-    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/PyYAML is missing)."""
+def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None) -> Optional[tuple[str, int]]:
+    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/ruamel.yaml is missing)."""
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
-            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8-sig")) or {}
     block = data.get(section) or {}
     return _parse_listen(next((block[k] for k in keys if block.get(k)), ""))
 
 
-def _read_management_listen_from_config(config_path: Optional[Path] = None) -> Optional[Tuple[str, int]]:
+def _read_management_listen_from_config(config_path: Optional[Path] = None) -> Optional[tuple[str, int]]:
     return _config_listen("management", "listen", config_path=config_path)
 
 
-def _probe_target() -> Tuple[str, int]:
+def _probe_target() -> tuple[str, int]:
     """Configured bind host/port to probe — on Linux the docker bridge, where a loopback connect would report a healthy
     daemon as down.  ``tunnel_listen`` (CONNECT/MITM) falls back to ``http_listen`` for pre-listener-role-split configs."""
     return _config_listen("proxy", "tunnel_listen", "http_listen") or ("127.0.0.1", _DEFAULT_TUNNEL_PORT)
@@ -453,7 +375,7 @@ def reload_proxy() -> bool:
         raise RuntimeError(
             "The generated proxy.yaml has no management listener (written before reload support).  Re-run `hermes egress setup` and use `hermes egress restart` this one time."
         )
-    if not (token := _read_text_or_none(_proxy_state_dir_ro() / "management.token")):
+    if not (token := _read_text_or_none(_management_token_path())):
         raise RuntimeError("management.token is missing — re-run `hermes egress setup`, then `hermes egress restart`.")
     host, port = mgmt
     req = urllib.request.Request(f"http://{host}:{port}/v1/reload", method="POST", headers={"Authorization": f"Bearer {token}"}, data=b"")
@@ -475,7 +397,7 @@ def reload_proxy() -> bool:
         ) from exc
 
 
-def _default_http_listen(tunnel_port: int) -> List[str]:
+def _default_http_listen(tunnel_port: int) -> list[str]:
     """Single bind (v0.39 allows one): docker bridge on Linux (what ``host.docker.internal`` resolves to; loopback is
     unreachable from containers), loopback on Docker Desktop (VPNkit).  NEVER 0.0.0.0: a LAN peer with a leaked
     sandbox token could spend the operator's API quota."""
@@ -509,13 +431,13 @@ def _detect_docker_bridge_ip() -> Optional[str]:
 
 
 def build_proxy_config(
-    *, mappings: List[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
-    allowed_hosts: Optional[List[str]] = None, upstream_deny_cidrs: Optional[List[str]] = None, http_listen: Optional[List[str]] = None,
-) -> Dict:
+    *, mappings: list[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
+    allowed_hosts: Optional[list[str]] = None, upstream_deny_cidrs: Optional[list[str]] = None, http_listen: Optional[list[str]] = None,
+) -> dict:
     """iron-proxy YAML config dict (v0.39.0 schema).  Real secrets come from iron-proxy's OWN env (``source: {type: env}``);
     the sandbox never sees them.  ``upstream_deny_cidrs=None`` = default SSRF deny list, ``[]`` opts out.
     ``audit_log`` is forward-compat only (v0.39 rejects ``audit_path``)."""
-    hosts: List[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
+    hosts: list[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
     for h in (h for m in mappings for h in m.upstream_hosts):
         if h not in hosts:
             hosts.append(h)
@@ -579,18 +501,18 @@ def ensure_audit_log(audit_path: Path) -> None:
         ) from exc
 
 
-def write_proxy_config(config: Dict) -> Path:
+def write_proxy_config(config: dict) -> Path:
     """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags).
 
     The file holds proxy tokens: written 0600 from creation, never at process umask."""
     if (yaml := _yaml()) is None:
-        raise RuntimeError("PyYAML is required to write the iron-proxy config but is not installed.")
+        raise RuntimeError("ruamel.yaml is required to write the iron-proxy config but is not installed.")
     path = _proxy_state_dir() / "proxy.yaml"
     atomic_write_text(path, yaml.safe_dump(config, default_flow_style=False, sort_keys=False), mode=0o600)
     return path
 
 
-def write_mappings(mappings: List[TokenMapping]) -> Path:
+def write_mappings(mappings: list[TokenMapping]) -> Path:
     """Persist sandbox-visible tokens to ``mappings.json`` (read by the Docker backend, not iron-proxy)."""
     payload = {"version": 1, "tokens": [{
         "proxy_token": m.proxy_token, "env_name": m.real_env_name, "upstream_hosts": list(m.upstream_hosts),
@@ -601,16 +523,16 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
     return path
 
 
-def load_mappings() -> List[TokenMapping]:
+def load_mappings() -> list[TokenMapping]:
     """Read mappings.json, if it exists.  Empty list on any error."""
     if not (f := _proxy_state_dir() / "mappings.json").exists():
         return []
     try:
-        payload = json.loads(f.read_text(encoding="utf-8"))
+        payload = json.loads(f.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read iron-proxy mappings.json: %s", exc)
         return []
-    out: List[TokenMapping] = []
+    out: list[TokenMapping] = []
     for item in payload.get("tokens", []):
         with suppress(KeyError, TypeError):  # pre-header-auth files load with the bearer defaults they were written under
             out.append(TokenMapping(item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
@@ -618,7 +540,7 @@ def load_mappings() -> List[TokenMapping]:
     return out
 
 
-def discover_provider_mappings(*, available_env_names: Optional[List[str]] = None) -> List[TokenMapping]:
+def discover_provider_mappings(*, available_env_names: Optional[list[str]] = None) -> list[TokenMapping]:
     """One TokenMapping per known provider whose env var is set (bearer providers first).  Canonical OR any alias
     present -> ONE mapping on the canonical name (the subprocess-env builder mirrors aliases).
     ``available_env_names`` (Bitwarden adapter) overrides the non-empty names in the host env."""
@@ -633,13 +555,13 @@ def discover_provider_mappings(*, available_env_names: Optional[List[str]] = Non
     ]
 
 
-def discover_uncovered_providers(*, available_env_names: Optional[List[str]] = None) -> List[str]:
+def discover_uncovered_providers(*, available_env_names: Optional[list[str]] = None) -> list[str]:
     """Env names of recognized providers the proxy can't swap (SigV4 / SDK-minted OAuth)."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
     return [n for n in _NON_BEARER_PROVIDERS if n in names]
 
 
-def merge_mappings(*, existing: List[TokenMapping], discovered: List[TokenMapping], rotate: bool = False) -> List[TokenMapping]:
+def merge_mappings(*, existing: list[TokenMapping], discovered: list[TokenMapping], rotate: bool = False) -> list[TokenMapping]:
     """Existing tokens are preserved (containers baked with them keep working), hosts/headers/aliases refresh
     from ``discovered``; ``rotate=True`` re-mints; undiscovered providers drop."""
     by_name = {} if rotate else {m.real_env_name: m for m in existing}
@@ -652,8 +574,9 @@ def _pidfile() -> Path:
 
 def _read_pid() -> Optional[int]:
     try:
-        pid = int(_read_text_or_none(_proxy_state_dir_ro() / "iron-proxy.pid") or "")
-    except ValueError:
+        pid = int((_proxy_state_dir_ro() / "iron-proxy.pid").read_text(encoding="utf-8-sig", errors="replace").strip())
+    except (OSError, ValueError):
+
         return None
     return pid if pid > 0 else None
 
@@ -725,8 +648,8 @@ def _pid_alive(pid: int) -> bool:
 
 
 def start_proxy(
-    *, binary: Optional[Path] = None, config_path: Optional[Path] = None, extra_env: Optional[Dict[str, str]] = None,
-    install_if_missing: bool = True, refresh_secrets_from_bitwarden: bool = False, bitwarden_config: Optional[Dict] = None,
+    *, binary: Optional[Path] = None, config_path: Optional[Path] = None, extra_env: Optional[dict[str, str]] = None,
+    install_if_missing: bool = True, refresh_secrets_from_bitwarden: bool = False, bitwarden_config: Optional[dict] = None,
 ) -> ProxyStatus:
     """Spawn iron-proxy as a managed background subprocess (idempotent if already running).  ``refresh_secrets_from_bitwarden``
     re-fetches secrets from BWS — the ``credential_source: bitwarden`` rotation promise."""
@@ -767,7 +690,7 @@ def start_proxy(
         pidfile.unlink(missing_ok=True)
         raise KeyboardInterrupt()
 
-    _exited_error = lambda: _abort(f"iron-proxy exited immediately (code {proc.returncode}). ", kill=False)  # noqa: E731
+    _exited_error = lambda: _abort(f"iron-proxy exited immediately (code {proc.returncode}). ", kill=False)
     # Probe the CONFIGURED bind host (on Linux the docker bridge, where loopback never connects).
     probe_host, tunnel_port = _probe_target()
     with _interrupt_guard(_interrupt_handler):
@@ -796,7 +719,7 @@ def _interrupt_guard(handler):
             signal.signal(sig, old)
 
 
-def _spawn_daemon(bin_path: Path, cfg: Path, env: Dict[str, str], log_path: Path) -> "subprocess.Popen":
+def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path) -> subprocess.Popen:
     """Popen with stdout/stderr appended to ``log_path`` (0o600 from the first byte, O_NOFOLLOW so a planted
     symlink e.g. to authorized_keys can't receive output, owner-checked).  Our log fd closes after Popen — the child has its dup."""
     try:
@@ -809,7 +732,7 @@ def _spawn_daemon(bin_path: Path, cfg: Path, env: Dict[str, str], log_path: Path
         raise RuntimeError(f"iron-proxy log {log_path} has unexpected owner uid={uid}; refusing to write.")
     try:
         # start_new_session is POSIX-only (Windows isn't supported anyway — no upstream binary).
-        return subprocess.Popen(  # noqa: S603
+        return subprocess.Popen(
             [str(bin_path), "-config", str(cfg)], env=env, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
             **({} if platform.system() == "Windows" else {"start_new_session": True}),
         )
@@ -820,7 +743,7 @@ def _spawn_daemon(bin_path: Path, cfg: Path, env: Dict[str, str], log_path: Path
             os.close(log_fd)
 
 
-def _await_listening(proc: "subprocess.Popen", host: str, port: int, *, on_exit) -> bool:
+def _await_listening(proc: subprocess.Popen, host: str, port: int, *, on_exit) -> bool:
     """Poll until ``host:port`` accepts or the grace window lapses (do-while: >=1 check even at 0s); raises ``on_exit()`` if the child dies."""
     deadline = time.time() + _STARTUP_GRACE_SECONDS
     while True:
@@ -861,7 +784,7 @@ def _write_pidfile_safely(pidfile: Path, pid: int) -> None:
             _write_private_file(pidfile.with_suffix(".nonce"), _proxy_nonce.encode("utf-8"))
 
 
-def _kill_and_wait(proc: "subprocess.Popen", *, grace_seconds: int = 2) -> None:
+def _kill_and_wait(proc: subprocess.Popen, *, grace_seconds: int = 2) -> None:
     try:
         proc.terminate()
     except OSError:
@@ -876,12 +799,12 @@ def _kill_and_wait(proc: "subprocess.Popen", *, grace_seconds: int = 2) -> None:
 
 
 def _build_proxy_subprocess_env(
-    *, extra_env: Optional[Dict[str, str]] = None, refresh_from_bitwarden: bool = False, bitwarden_config: Optional[Dict] = None,
-) -> Dict[str, str]:
+    *, extra_env: Optional[dict[str, str]] = None, refresh_from_bitwarden: bool = False, bitwarden_config: Optional[dict] = None,
+) -> dict[str, str]:
     """Allowlisted infra vars + the secrets named in mappings.  With ``refresh_from_bitwarden`` and a populated
     ``bitwarden_config`` secrets come from BWS (the rotation guarantee); without ``allow_env_fallback`` any BWS
     shortfall fails closed instead of keeping stale host-env values."""
-    env, parent = _allowlisted_env(), os.environ
+    env, parent = allowlisted_env(), os.environ
     # Forward ONLY mapped secrets; the rule is keyed on the canonical name, so mirror an alias value into it.
     mappings = load_mappings()
     needed = {m.real_env_name for m in mappings}
@@ -909,7 +832,7 @@ def _bitwarden_shortfall(allow_env_fallback: bool, error: str, warning: str, *ar
     logger.warning(warning, *args)
 
 
-def _refresh_secrets_from_bitwarden(env: Dict[str, str], needed: set, bitwarden_config: Dict, allow_env_fallback: bool) -> None:
+def _refresh_secrets_from_bitwarden(env: dict[str, str], needed: set, bitwarden_config: dict, allow_env_fallback: bool) -> None:
     """Overwrite ``env[needed]`` with fresh (uncached) BWS values; only mapped names are injected so unrelated BWS secrets never leak."""
     try:
         # Lazy: the bitwarden module isn't importable in every install.
@@ -1028,17 +951,9 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
-    "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
+    "ProxyStatus", "TokenMapping", "allowlisted_env", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
     "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
     "merge_mappings", "mint_proxy_token", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import stat  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

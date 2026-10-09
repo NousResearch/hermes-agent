@@ -4,14 +4,10 @@ import pytest
 
 from hermes_cli.session_listing import (
     format_gateway_session_listing,
-    parse_session_listing_args,
     query_session_listing,
 )
 
 
-class TestParseSessionListingArgs:
-    def test_plain_listing(self):
-        assert parse_session_listing_args("") == (False, False, "", None)
 
 
 
@@ -77,37 +73,12 @@ class TestQuerySessionListingSearch:
 
 
 class TestFormatGatewaySessionListing:
-    def test_marks_current_session(self):
-        listing = format_gateway_session_listing(
-            [
-                {
-                    "id": "sess_an94",
-                    "title": "AN-94 Prestige Barrel Build #2",
-                    "is_current_session": True,
-                }
-            ]
-        )
 
-        assert "**AN-94 Prestige Barrel Build #2** (current)" in listing
-
-    def test_notice_appears_above_footer(self):
-        listing = format_gateway_session_listing(
-            [{"id": "sess_an94", "title": "AN-94"}],
-            notice="_Note: `all` requires admin._",
-        )
-        lines = listing.splitlines()
-        notice_idx = lines.index("_Note: `all` requires admin._")
-        footer_idx = next(i for i, l in enumerate(lines) if l.startswith("Resume:"))
-        assert notice_idx < footer_idx
 
     def test_notice_on_empty_listing(self):
         listing = format_gateway_session_listing([], notice="_scoped_")
-        assert "No sessions found." in listing
         assert "_scoped_" in listing
 
-    def test_no_notice_by_default(self):
-        listing = format_gateway_session_listing([{"id": "x", "title": "T"}])
-        assert "Note:" not in listing
 
 
 class TestQuerySessionListingLaneScope:

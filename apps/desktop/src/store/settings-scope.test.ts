@@ -68,15 +68,44 @@ describe('settings scope store', () => {
     expect($settingsScopeProfile.get()).toBe('default')
   })
 
-  it('exposes a request-shaped scope: undefined (never null) without an override', () => {
+  it('exposes a request-shaped scope: the concrete profile, never null', () => {
     // api/client.ts profileScoped() treats null as "target primary/default" —
     // the #90549 bug class. The request form must therefore never be null.
-    expect($settingsRequestProfile.get()).toBeUndefined()
+    expect($settingsRequestProfile.get()).toBe('default')
 
     setSettingsScope('research')
     expect($settingsRequestProfile.get()).toBe('research')
 
     setSettingsScope('default')
+    expect($settingsRequestProfile.get()).toBe('default')
+  })
+
+  it('names the profile the page displays even when that IS the active profile', () => {
+    // #118432: the "Changes on this page apply to 'x'" note reads
+    // $settingsScopeProfile, so the value handed to API helpers must carry the
+    // SAME key. An `undefined` request scope makes profileScoped() omit
+    // `?profile=` entirely, and the backend resolves an omitted profile to the
+    // home it was LAUNCHED under — not the profile being edited. With a pooled
+    // desktop backend (`hermes --profile a serve`, editing b) that mismatch
+    // made every settings page read a's values and write them back to a, while
+    // the note kept naming b.
+    $activeGatewayProfile.set('nash')
+    expect($settingsScopeProfile.get()).toBe('nash')
+    expect($settingsRequestProfile.get()).toBe('nash')
+
+    // Selecting the active profile stores no override — this is the exact case
+    // that used to collapse the request scope to undefined.
+    setSettingsScope('nash')
+    expect($settingsScopeOverride.get()).toBeNull()
+    expect($settingsRequestProfile.get()).toBe('nash')
+  })
+
+  it('leaves a custom HERMES_HOME on the ambient request path', () => {
+    // `custom` names a home outside profiles/: there is no profile directory to
+    // resolve, so the ambient path is the only correct answer.
+    $activeGatewayProfile.set('custom')
+
+    expect($settingsScopeProfile.get()).toBe('custom')
     expect($settingsRequestProfile.get()).toBeUndefined()
   })
 

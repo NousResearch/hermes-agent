@@ -1,4 +1,5 @@
 import { LONG_MSG } from '../config/limits.js'
+import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
@@ -13,7 +14,7 @@ export const userDisplay = (text: string) => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || '(message)'} [long message]`
+  return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
 }
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
@@ -51,21 +52,21 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'personality changed' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
       pending = []
 
       continue
@@ -77,10 +78,15 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
 
       const label =
         display_kind === 'process_complete'
-          ? 'background process finished'
+          ? t('libText.messages.backgroundProcessFinished')
           : count === undefined
-            ? 'background agent work finished'
-            : `${count} background agent${count === 1 ? '' : 's'} finished`
+            ? t('libText.messages.backgroundAgentWorkFinished')
+            : t(
+                count === 1
+                  ? 'libText.messages.backgroundAgentsFinishedOne'
+                  : 'libText.messages.backgroundAgentsFinishedOther',
+                count
+              )
 
       out.push({
         kind: 'event',

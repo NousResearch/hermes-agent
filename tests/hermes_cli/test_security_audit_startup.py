@@ -59,7 +59,7 @@ def test_log_startup_security_warnings_emits_and_is_idempotent(monkeypatch, tmp_
     import logging
 
     monkeypatch.setattr(audit, "_is_root", lambda: True)
-    monkeypatch.setattr(audit, "_iter_sshd_config_lines", lambda: [])
+    monkeypatch.setattr(audit, "_iter_sshd_config_lines", list)
     monkeypatch.setattr(audit, "_in_container", lambda: False)
 
     with caplog.at_level(logging.WARNING, logger="hermes.security_audit"):

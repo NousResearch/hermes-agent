@@ -16,7 +16,7 @@ import contextlib
 import functools
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -73,7 +73,7 @@ def write_drain_request(
     copy surviving a machine restart on the durable volume reads as stale.
     """
     payload = {
-        "action": "drain", "requested_at": datetime.now(timezone.utc).isoformat(), "principal": principal,
+        "action": "drain", "requested_at": datetime.now(UTC).isoformat(), "principal": principal,
         "epoch": current_instantiation_epoch(), "suppress_notification": bool(suppress_notification),
     }
     atomic_json_write(drain_request_path(home), payload)
@@ -105,7 +105,7 @@ def _marker_is_expired(body: dict[str, Any]) -> bool:
     requested_at = _parse_iso(raw)
     if requested_at is None:
         return False
-    age = (datetime.now(timezone.utc) - requested_at).total_seconds()
+    age = (datetime.now(UTC) - requested_at).total_seconds()
     if age <= DRAIN_REQUEST_MAX_AGE_SECONDS:
         return False
     if _expiry_logged_for != raw:
@@ -164,7 +164,7 @@ def read_drain_request(*, home: Optional[Path] = None) -> Optional[dict[str, Any
     """Return the marker payload, ``{}`` if present but unparseable, ``None`` if absent. Never raises."""
     path = drain_request_path(home)
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as e:
         if not isinstance(e, FileNotFoundError):
             _log.warning("drain-control: failed to read %s: %s", path, e)

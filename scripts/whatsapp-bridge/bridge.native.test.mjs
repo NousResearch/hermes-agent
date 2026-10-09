@@ -13,10 +13,10 @@ import path from 'node:path';
 import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 
 import {
+  addMentions,
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
-  appendMediaFailureNote,
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
@@ -81,6 +81,16 @@ import {
   assert.deepEqual(content, { text: 'plain text' });
   assert.deepEqual(options, {});
   console.log('  ✓ unresolved replyTo falls back to plain text');
+}
+
+{
+  const mentions = ['15550001111@s.whatsapp.net'];
+  const { content } = buildTextSendPayload('hello @15550001111', { mentions });
+  const media = addMentions({ image: Buffer.from('png'), caption: 'hello @15550001111' }, mentions);
+
+  assert.deepEqual(content.mentions, mentions);
+  assert.deepEqual(media.mentions, mentions);
+  console.log('  ✓ outbound text and media payloads preserve native mention JIDs');
 }
 
 // -- inbound quote/media/native metadata --------------------------------
@@ -479,22 +489,6 @@ import {
 }
 
 // -- media download failure containment (port of nanoclaw#2895) -----------
-{
-  assert.equal(appendMediaFailureNote('hello', []), 'hello');
-  assert.equal(
-    appendMediaFailureNote('check this out', ['image']),
-    'check this out\n[image could not be downloaded]',
-  );
-  // Regression guard: an uncaptioned failed image must still produce a
-  // non-empty body, or the empty-message guard drops the whole message.
-  assert.equal(appendMediaFailureNote('', ['image']), '[image could not be downloaded]');
-  assert.equal(
-    appendMediaFailureNote('', ['image', 'document']),
-    '[image could not be downloaded] [document could not be downloaded]',
-  );
-  console.log('  ✓ appendMediaFailureNote formats failure notes');
-}
-
 {
   // A throwing downloadMedia (expired CDN URL) must not reject out of
   // extractBridgeEvent — before this guard the whole upsert batch died and

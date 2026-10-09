@@ -116,35 +116,94 @@ async def test_stop_reaches_peer_run_in_per_sender_group():
 
 @pytest.mark.asyncio
 async def test_stop_does_not_reach_a_different_thread_of_the_same_channel():
-    # Another thread in the same channel is another conversation: exact key, thread sibling
-    # and chat-scope fallback must all leave it running.
+    # Another thread in the same channel is another conversation, while the caller's own thread
+    # stays reachable — proven in the same call so a matcher that returns nothing cannot pass.
+    same_thread = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     other_thread = build_session_key(_slack_source("thread", "C9", thread_id="170.200"))
     stop_source = _slack_source("thread", "C9", thread_id="170.100")
 
-    interrupted, result = await _stop(stop_source, other_thread)
+    interrupted, result = await _stop(stop_source, [same_thread, other_thread])
 
-    assert interrupted == []
-    assert result == t("gateway.stop.no_active")
+    assert interrupted == [(same_thread, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
 
 
 @pytest.mark.asyncio
 async def test_stop_does_not_reach_another_reply_thread_of_a_channel_keyed_run():
     # A top-level channel turn keeps chat_type "channel" with the relay-stamped reply-thread ts,
-    # so the SAME boundary must apply to it: a stop inside thread .100 must not reach the run
-    # whose reply thread is .200.
+    # so the SAME boundary must apply to it: a stop inside thread .100 interrupts the run whose
+    # reply thread is .100 and must not touch the one belonging to .200.
+    same_reply_thread = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     other_reply_thread = build_session_key(_slack_source("channel", "C9", thread_id="170.200"))
     stop_source = _slack_source("thread", "C9", thread_id="170.100")
 
-    interrupted, result = await _stop(stop_source, other_reply_thread)
+    interrupted, result = await _stop(stop_source, [same_reply_thread, other_reply_thread])
 
-    assert interrupted == []
-    assert result == t("gateway.stop.no_active")
+    assert interrupted == [(same_reply_thread, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_every_run_of_the_callers_thread():
+    # A per-user thread sibling AND the same-thread channel-keyed run (the #286 shape this fix
+    # exists for) are both live: the reply must not claim "Stopped" while one of them keeps going.
+    sibling = build_session_key(
+        _slack_source("thread", "C9", thread_id="170.100", user_id="U-bob"),
+        thread_sessions_per_user=True,
+    )
+    same_thread_channel_run = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
+    stop_source = _slack_source("thread", "C9", thread_id="170.100")
+
+    interrupted, result = await _stop(stop_source, [sibling, same_thread_channel_run])
+
+    assert sorted(key for key, _ in interrupted) == sorted([sibling, same_thread_channel_run])
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_a_lone_thread_sibling_keeps_its_own_invalidation_reason():
+    # With nothing else live in the chat, the stop IS a thread-sibling stop: hook consumers must
+    # still see that label rather than the wider chat-scope one.
+    sibling = build_session_key(
+        _slack_source("thread", "C9", thread_id="170.100", user_id="U-bob"),
+        thread_sessions_per_user=True,
+    )
+    stop_source = _slack_source("thread", "C9", thread_id="170.100")
+
+    interrupted, result = await _stop(stop_source, sibling)
+
+    assert interrupted == [(sibling, "stop_command_thread_sibling")]
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_stop_matches_a_canonicalised_whatsapp_dm_chat_id():
+    # build_session_key canonicalises a WhatsApp DM chat id, so the fallback must match the same
+    # text: a stop whose source carries the raw JID has to reach the canonicalised run.
+    running_key = build_session_key(
+        SessionSource(platform=Platform.WHATSAPP, chat_type="dm", chat_id="1234567890@s.whatsapp.net",
+                      user_id="1234567890@s.whatsapp.net")
+    )
+    stop_source = SessionSource(platform=Platform.WHATSAPP, chat_type="dm",
+                                chat_id="1234567890:7@s.whatsapp.net",
+                                user_id="1234567890:7@s.whatsapp.net", thread_id="t1")
+    assert build_session_key(stop_source) != running_key
+
+    interrupted, result = await _stop(stop_source, running_key)
+
+    assert interrupted == [(running_key, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
 
 
 @pytest.mark.asyncio
 async def test_stop_in_a_dm_does_not_reach_a_group_run_that_ends_in_the_same_user_id():
     # Non-Slack DMs key chat_id as the USER id (Telegram), and a per-sender group key ends with
-    # that same user id — the group run is a different chat and must stay untouched.
+    # that same user id — the group run is a different chat and must stay untouched, while the
+    # DM's own threaded run in the same chat is still reached.
+    same_chat = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_type="dm", chat_id="777",
+                      thread_id="42", user_id="777")
+    )
     group_run = build_session_key(
         SessionSource(platform=Platform.TELEGRAM, chat_type="group", chat_id="-100123",
                       user_id="777")
@@ -152,10 +211,10 @@ async def test_stop_in_a_dm_does_not_reach_a_group_run_that_ends_in_the_same_use
     dm_stop = SessionSource(platform=Platform.TELEGRAM, chat_type="dm", chat_id="777",
                             user_id="777")
 
-    interrupted, result = await _stop(dm_stop, group_run)
+    interrupted, result = await _stop(dm_stop, [same_chat, group_run])
 
-    assert interrupted == []
-    assert result == t("gateway.stop.no_active")
+    assert interrupted == [(same_chat, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
 
 
 @pytest.mark.asyncio

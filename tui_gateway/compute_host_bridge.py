@@ -49,7 +49,8 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
 
 def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -58,11 +59,19 @@ def _compute_host_turn_frame(
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
+        **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        # A model switch queued while the session was busy (config.set model ->
+        # pending_model_switch) must cross the process boundary — the live agent is in
+        # the compute host, and the server-side _apply_pending_model_switch would
+        # pop-and-drop it against agent=None. COPIED (not popped): the stash is
+        # cleared only after a successful isolated turn (_on_compute_host_turn_done),
+        # so the fail-open in-process path can still apply it if the host dispatch fails.
+        "pending_model_switch": session.get("pending_model_switch"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
@@ -127,6 +136,12 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
+    if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
+            and not params.get("session_id")):
+        # A session-less (global) event the child could not deliver itself: ``write_json`` would drop it
+        # on this process's stdio; fan it out to every connected client like a local broadcast.
+        _broadcast_global_event(str(params.get("type") or ""), params.get("payload"))
+        return True
     if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
@@ -179,7 +194,7 @@ def _relay_compute_host_response(frame: dict) -> bool:
     return True
 
 
-def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
     located = _compute_host_request_session(request_id)
@@ -233,6 +248,11 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
+    # The isolated turn carried the queued model switch to the compute host, whose
+    # turn thread applied it. Clear the server-side stash so it isn't re-forwarded
+    # (kept on error so the fail-open in-process path can still apply it).
+    if frame.get("type") != "turn.error":
+        session.pop("pending_model_switch", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -247,11 +267,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind)
+                                     display_kind=display_kind, display_metadata=display_metadata)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
@@ -293,6 +314,13 @@ def _send_compute_host_control(
     return _get_compute_host_supervisor().control(
         sid, route_name=route_name, payload=frame, wait=wait, timeout=timeout,
         on_late_ack=on_late_ack)
+
+
+def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
+    """``_err`` for a ``control.error``/``error`` ack, else None."""
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, code, str(ack.get("message") or default))
+    return None
 
 
 def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:

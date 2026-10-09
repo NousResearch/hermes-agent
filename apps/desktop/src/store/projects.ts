@@ -952,49 +952,110 @@ export type RepoScanOutcome =
    *  names the exact key it refused, so "the scan failed" alone is not worth reporting. */
   | { detail?: string; reason: 'disabled' | 'failed' | 'no-bridge' | 'no-roots' | 'rejected' | 'skipped' }
 
-export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome> {
-  if (isDesktopFsRemoteMode()) {
-    // On a remote backend the desktop can't crawl the host filesystem.
-    // Ask the host to scan its own discovery roots (`projects.discover_repos`
-    // with `scan: true` — added in #81723) so repos with zero Hermes
-    // sessions still surface, then refresh the tree so the sidebar picks up
-    // the merged session-derived + scanned list.
-    try {
-      const context = await activeProjectsContext()
+// On a remote backend the desktop can't crawl the host filesystem. Ask the host to scan its own
+// discovery roots (`projects.discover_repos` with `scan: true` — added in #81723) so repos with zero
+// Hermes sessions still surface, then refresh the tree so the sidebar picks up the merged
+// session-derived + scanned list.
+async function scanReposOnRemoteHost(): Promise<RepoScanOutcome> {
+  try {
+    const context = await activeProjectsContext()
 
-      const discovered = await gatewayRequestOn<{
-        repos?: unknown
-        discovery_policy?: unknown
-      }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
+    const discovered = await gatewayRequestOn<{
+      repos?: unknown
+      discovery_policy?: unknown
+    }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
 
-      // A resolved response must be the discovery shape. Anything else (an
-      // error/`accepted:false` body, or a backend that ignored `scan` and
-      // returned no repo list) means the scan didn't happen — bail out without
-      // touching the tree so the sidebar keeps its last known list instead of
-      // being blanked back to the silent, unpopulated state of #81723.
-      if (discovered?.repos === undefined) {
-        markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
-
-        return { reason: 'failed' }
-      }
-
-      // Remote scan succeeded: refresh the tree so the merged session-derived +
-      // scanned list surfaces. Skip if the user moved on — a stale scan must
-      // not publish into the newly focused profile.
-      if (stillOnProjectsContext(context)) {
-        await refreshProjectTreeOn(context)
-      }
-
-      return { found: Array.isArray(discovered.repos) ? discovered.repos.length : 0, reason: 'ok' }
-    } catch (err) {
-      // Surface the failure (stale backend, RPC error, gateway drop) instead
-      // of swallowing it: a silent return is exactly the "sidebar goes quiet"
-      // symptom `scan:true` was meant to fix (#81723). Keep the old list and
-      // let the sidebar show the error/absent state.
-      markProjectsRpcFailure(err)
+    // A resolved response must be the discovery shape. Anything else (an error/`accepted:false`
+    // body, or a backend that ignored `scan` and returned no repo list) means the scan didn't
+    // happen — bail out without touching the tree so the sidebar keeps its last known list instead
+    // of being blanked back to the silent, unpopulated state of #81723.
+    if (discovered?.repos === undefined) {
+      markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
 
       return { reason: 'failed' }
     }
+
+    // Remote scan succeeded: refresh the tree so the merged session-derived + scanned list surfaces.
+    // Skip if the user moved on — a stale scan must not publish into the newly focused profile.
+    if (stillOnProjectsContext(context)) {
+      await refreshProjectTreeOn(context)
+    }
+
+    return { found: Array.isArray(discovered.repos) ? discovered.repos.length : 0, reason: 'ok' }
+  } catch (err) {
+    // Surface the failure (stale backend, RPC error, gateway drop) instead of swallowing it: a
+    // silent return is exactly the "sidebar goes quiet" symptom `scan:true` was meant to fix
+    // (#81723). Keep the old list and let the sidebar show the error/absent state.
+    markProjectsRpcFailure(err)
+
+    return { reason: 'failed' }
+  }
+}
+
+/** A scan's resolved inputs: the policy as configured, the roots to walk (the profile workspace
+ *  stands in for an empty list — #53328 is why that stand-in is not `$HOME`), the signature that
+ *  decides whether this run is a repeat, and whether it is one. */
+async function resolveRepoScanPlan(
+  context: ActiveProjectsContext,
+  state: { completedSignature?: string; generation: number; runningSignature?: string },
+  force: boolean
+): Promise<{ policy: RepoDiscoveryPolicy; roots: string[]; signature: string; skip: boolean }> {
+  const config = await getHermesConfig(context.profile)
+  const policy = repoDiscoveryPolicyFromConfig(config)
+  const workspaceRoot = defaultRepoScanRoot(config)
+  const roots = policy.roots.length > 0 ? policy.roots : workspaceRoot ? [workspaceRoot] : []
+  // The workspace belongs in the signature: moving it must re-scan the same way a policy change does.
+  const signature = repoDiscoveryPolicySignature({ ...policy, roots })
+
+  return {
+    policy,
+    roots,
+    signature,
+    skip: !force && (state.completedSignature === signature || state.runningSignature === signature)
+  }
+}
+
+/** Record what a scan found, and report a refusal. `null` means the record landed and the caller
+ *  carries on; a returned outcome is the whole answer for this scan.
+ *
+ *  A scan that never ran — nothing configured to walk — must not be RECORDED either: `record_repos`
+ *  replaces the cache, so the empty list a no-roots scan would send wipes the last real scan. */
+async function recordRepoScanOutcome(
+  context: ActiveProjectsContext,
+  policy: RepoDiscoveryPolicy,
+  repos: readonly unknown[],
+  willScan: boolean
+): Promise<RepoScanOutcome | null> {
+  if (!willScan && policy.enabled) {
+    return null
+  }
+
+  // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
+  // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
+  // worth reporting rather than leaving the caller to look at an unchanged sidebar. Only an enabled
+  // policy can be "refused": with discovery off the backend answers `accepted: false` by design, and
+  // that is the `disabled` outcome, not a rejection.
+  const recorded = await gatewayRequestOn<{ accepted?: unknown }>(
+    context.gateway,
+    'projects.record_repos',
+    projectParams({ discovery_policy: policy, repos }, context.profile)
+  )
+
+  return policy.enabled && recorded?.accepted === false ? { reason: 'rejected' } : null
+}
+
+/** How a finished scan reports itself: discovery off, nothing to walk, or what it found. */
+function repoScanOutcome(policy: RepoDiscoveryPolicy, repos: readonly unknown[], willScan: boolean): RepoScanOutcome {
+  if (!policy.enabled) {
+    return { reason: 'disabled' }
+  }
+
+  return willScan ? { found: repos.length, reason: 'ok' } : { reason: 'no-roots' }
+}
+
+export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome> {
+  if (isDesktopFsRemoteMode()) {
+    return scanReposOnRemoteHost()
   }
 
   let context: ActiveProjectsContext
@@ -1016,16 +1077,9 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
   let generation: number | undefined
 
   try {
-    const config = await getHermesConfig(context.profile)
-    const policy = repoDiscoveryPolicyFromConfig(config)
-    // No configured roots: the profile's workspace stands in for them, so automatic discovery does
-    // something out of the box instead of silently returning nothing (#53328 is why it is not `$HOME`).
-    const workspaceRoot = defaultRepoScanRoot(config)
-    const roots = policy.roots.length > 0 ? policy.roots : workspaceRoot ? [workspaceRoot] : []
-    // The workspace belongs in the signature: moving it must re-scan the same way a policy change does.
-    const signature = repoDiscoveryPolicySignature({ ...policy, roots })
+    const { policy, roots, signature, skip } = await resolveRepoScanPlan(context, state, force)
 
-    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
+    if (skip) {
       return { reason: 'skipped' }
     }
 
@@ -1052,29 +1106,14 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
       }
     }
 
-    // A scan that never ran — nothing configured to walk — must not be RECORDED either: `record_repos`
-    // replaces the cache, so the empty list a no-roots scan would send wipes the last real scan.
-    let recorded: { accepted?: unknown } | undefined
-
-    if (willScan || !policy.enabled) {
-      // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
-      // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
-      // worth reporting rather than leaving the caller to look at an unchanged sidebar.
-      recorded = await gatewayRequestOn<{ accepted?: unknown }>(
-        context.gateway,
-        'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos }, context.profile)
-      )
-    }
+    const refused = await recordRepoScanOutcome(context, policy, repos, willScan)
 
     if (state.generation !== generation) {
       return { reason: 'skipped' }
     }
 
-    // Only an enabled policy can be "refused": with discovery off the backend answers `accepted:
-    // false` by design, and that is the `disabled` outcome below, not a rejection.
-    if (policy.enabled && recorded?.accepted === false) {
-      return { reason: 'rejected' }
+    if (refused) {
+      return refused
     }
 
     state.completedSignature = signature
@@ -1087,11 +1126,7 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
       await refreshProjectTree()
     }
 
-    if (!policy.enabled) {
-      return { reason: 'disabled' }
-    }
-
-    return willScan ? { found: repos.length, reason: 'ok' } : { reason: 'no-roots' }
+    return repoScanOutcome(policy, repos, willScan)
   } catch (error) {
     state.completedSignature = undefined
 

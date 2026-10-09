@@ -934,7 +934,9 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current):
+            if _session_has_active_delegations(sid, current) or (
+                    not current.get("running") and _session_owns_live_wakeup_schedule(current)):
+                # Live background work, or an active /loop or /heartbeat only this process's poller can fire.
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

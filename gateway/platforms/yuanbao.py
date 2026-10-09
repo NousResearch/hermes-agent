@@ -42,7 +42,6 @@ except ImportError:
     websockets = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
@@ -58,7 +57,7 @@ from gateway.platforms.yuanbao_media import (
 )
 from gateway.platforms.yuanbao_proto import (
     CMD_TYPE, WS_HEARTBEAT_RUNNING, WS_HEARTBEAT_FINISH, HERMES_INSTANCE_ID,
-    _fields_to_dict, _get_string, _get_varint, _parse_fields,
+    _decode_varint, _fields_to_dict, _get_string, _get_varint, _parse_fields,
     decode_conn_msg, decode_inbound_push, decode_forward_msg_data,
     decode_query_group_info_rsp, decode_get_group_member_list_rsp,
     encode_auth_bind, encode_ping, encode_push_ack, encode_send_c2c_message, encode_send_group_message,
@@ -96,20 +95,8 @@ NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}  # permanent err
 HEARTBEAT_TIMEOUT_THRESHOLD = 2  # consecutive missed pongs before reconnect
 REPLY_HEARTBEAT_INTERVAL_S = 2.0   # RUNNING cadence
 REPLY_HEARTBEAT_TIMEOUT_S = 30.0   # auto-FINISH after this much inactivity
-SLOW_RESPONSE_TIMEOUT_S = 120.0  # push slow_response_message() when the agent is silent this long
-
-
-def slow_response_message() -> str:
-    """Patience notice pushed after SLOW_RESPONSE_TIMEOUT_S of agent silence (localized; the
-    Chinese wording Yuanbao users historically saw lives in locales/zh.yaml)."""
-    return t("platform.yuanbao.slow_response_notice")
-
-
-# Cron wrapper markers, mirrored from cron/scheduler_delivery.py (``wrap_response``). The wrapper
-# is not keyed yet; when it is, import the same key here so ``strip_cron_wrapper`` keeps matching.
-CRON_WRAPPER_HEADER_PREFIX = "Cronjob Response: "
-CRON_WRAPPER_DIVIDER = "\n-------------\n\n"
-CRON_WRAPPER_FOOTER_PREFIX = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+SLOW_RESPONSE_TIMEOUT_S = 120.0  # push SLOW_RESPONSE_MESSAGE when the agent is silent this long
+SLOW_RESPONSE_MESSAGE = "任务有点复杂，正在努力处理中，请耐心等待..."
 
 # Transcript anchors: [image|ybres:abc]  [file:report.pdf|ybres:xyz]  [voice|ybres:…]
 _YB_RES_REF_RE = re.compile(r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]")
@@ -1029,7 +1016,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if matched_cmd and not is_owner:
             logger.info("[%s] Reject non-owner slash command: chat=%s from=%s cmd=%s", adapter.name, ctx.chat_id, ctx.from_account, matched_cmd)
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, t("platform.yuanbao.owner_command_denied", command=matched_cmd)),
+                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
                 name=f"yuanbao-owner-cmd-denial-{matched_cmd}"))
             return  # Stop pipeline
         if matched_cmd and is_owner and cmd_line:
@@ -2360,7 +2347,7 @@ class SlowResponseNotifier:
         try:
             await asyncio.sleep(SLOW_RESPONSE_TIMEOUT_S)
             logger.info("[%s] Agent response exceeded %ds for %s, sending wait notice", self._adapter.name, int(SLOW_RESPONSE_TIMEOUT_S), chat_id)
-            await self._sender.send_text_chunk(chat_id, slow_response_message())
+            await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -2411,6 +2398,9 @@ class MessageSender:
             chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
             logger.info("[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
                         adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK, len(chunks), [len(c) for c in chunks])
+            if any(len(c) > adapter.MAX_TEXT_CHUNK for c in chunks):
+                logger.error("[%s] unsplittable chunk exceeds MAX_TEXT_CHUNK", adapter.name)
+                return SendResult(success=False, error="Unsplittable message block exceeds MAX_TEXT_CHUNK")
             for i, chunk in enumerate(chunks):
                 result = await self.send_text_chunk(chat_id, chunk, reply_to if i == 0 else None, group_code=group_code)
                 if not result.success:
@@ -2532,15 +2522,105 @@ class MessageSender:
         ), req_id)
 
     @staticmethod
+    def _decode_varint_strict(data: bytes, pos: int) -> tuple[int, int]:
+        """Like ``_decode_varint`` but raises when the varint is truncated (continuation bit left on)."""
+        start = pos
+        value, pos = _decode_varint(data, pos)
+        if pos == start or data[pos - 1] & 0x80:
+            raise ValueError("truncated varint")
+        return value, pos
+
+    @staticmethod
+    def _decode_send_ack_payload(data: bytes) -> tuple[int, str]:
+        """Send-response protobuf: field 1 int32/varint ``code``, field 2 string ``message``.
+
+        Raises if the payload is truncated/malformed or has no decodable field-1 code.
+        """
+        pos = 0
+        code: Optional[int] = None
+        message = ""
+        while pos < len(data):
+            tag, pos = MessageSender._decode_varint_strict(data, pos)
+            fn, wt = tag >> 3, tag & 7
+            if wt == 0:
+                val, pos = MessageSender._decode_varint_strict(data, pos)
+                if fn == 1 and code is None:
+                    code = val
+            elif wt == 2:
+                length, pos = MessageSender._decode_varint_strict(data, pos)
+                if pos + length > len(data):
+                    raise ValueError("truncated length-delimited field")
+                val = data[pos:pos + length]
+                pos += length
+                if fn == 2 and not message:
+                    message = val.decode("utf-8", errors="replace")
+            elif wt in (1, 5):
+                n = 8 if wt == 1 else 4
+                if pos + n > len(data):
+                    raise ValueError("truncated fixed field")
+                pos += n
+            else:
+                raise ValueError(f"unknown wire type {wt}")
+        if code is None:
+            raise ValueError("missing business code")
+        return code, message
+
+    @staticmethod
+    def _format_send_nack(status: Optional[int], code: Optional[int], message: str) -> str:
+        msg = (message or "").replace("\n", " ").replace("\r", " ")[:160]
+        return (
+            f"send rejected: status={0 if status is None else status} "
+            f"code={'-' if code is None else code} message={msg}"
+        )
+
+    @staticmethod
+    def _ack_from_response(adapter: "YuanbaoAdapter", response: dict) -> dict:
+        """Map a WS Response dict ``{head, data?}`` to ``{success, msg_key|error}``.
+
+        Fail closed on nonzero ``head.status``, nonzero business ``code``, or nonempty
+        malformed ``data``. Fail open (success ACK) when status is missing/0 and ``data``
+        is absent or empty — no business rejection signal.
+        """
+        head = response.get("head") if isinstance(response.get("head"), dict) else {}
+        status = head.get("status")
+        data = response.get("data")
+        if status is not None and status != 0:
+            error = MessageSender._format_send_nack(status, None, "")
+            logger.warning("[%s] %s", adapter.name, error)
+            return {"success": False, "error": error}
+        if data:
+            if not isinstance(data, (bytes, bytearray)):
+                error = "malformed send response"
+                logger.warning("[%s] send rejected: status=%s malformed payload", adapter.name, 0 if status is None else status)
+                return {"success": False, "error": error}
+            try:
+                biz_code, biz_msg = MessageSender._decode_send_ack_payload(bytes(data))
+            except Exception:
+                error = "malformed send response"
+                logger.warning("[%s] send rejected: status=%s malformed payload", adapter.name, 0 if status is None else status)
+                return {"success": False, "error": error}
+            if biz_code:
+                error = MessageSender._format_send_nack(0 if status is None else status, biz_code, biz_msg)
+                logger.warning("[%s] %s", adapter.name, error)
+                return {"success": False, "error": error}
+        return {"success": True, "msg_key": head.get("msg_id", "")}
+
+    @staticmethod
     async def _dispatch_encoded(adapter: "YuanbaoAdapter", encoded: bytes, req_id: str) -> dict:
         """Send pre-encoded bytes via WS → ``{"success", "msg_key" | "error"}``."""
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            return {"success": True, "msg_key": response.get("msg_id", "")}
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+        if not isinstance(response, dict):
+            logger.warning(
+                "[%s] send rejected: non-dict response type=%s req_id=%s",
+                adapter.name, type(response).__name__, req_id,
+            )
+            return {"success": False, "error": "malformed send response"}
+        return MessageSender._ack_from_response(adapter, response)
 
     @staticmethod
     def validate_media(file_bytes: Optional[bytes], filename: str, max_size_mb: int = 20) -> Optional[str]:
@@ -2562,10 +2642,10 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip the scheduler's cron header/footer wrapper; unchanged when the shape doesn't match."""
-        if not content.startswith(CRON_WRAPPER_HEADER_PREFIX):
+        if not content.startswith("Cronjob Response: "):
             return content
-        divider = CRON_WRAPPER_DIVIDER
-        footer_prefix = CRON_WRAPPER_FOOTER_PREFIX
+        divider = "\n-------------\n\n"
+        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos or "\n(job_id: " not in content[:divider_pos]:
@@ -2594,7 +2674,7 @@ class OutboundManager:
 class YuanbaoAdapter(BasePlatformAdapter):
     """Yuanbao AI Bot adapter backed by a persistent WebSocket connection."""
     PLATFORM = Platform.YUANBAO
-    MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    MAX_TEXT_CHUNK: int = 1200  # character limit (openclaw DELIVER_TEXT_CHUNK_LIMIT)
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
@@ -2793,7 +2873,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         if not self._access_policy.is_dm_allowed(user_id):
             return SendResult(success=False, error="DM access denied for this user")
         if len(text) > self.DM_MAX_CHARS:
-            text = text[:self.DM_MAX_CHARS] + t("platform.shared.truncated_suffix")
+            text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
         return await self.send(f"direct:{user_id}", text, group_code=group_code)
 
     # Media sends delegate to MessageSender.send_media via the named handler strategy.
@@ -2818,3 +2898,205 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def _get_cached_token(self) -> dict:
         """Current valid sign token (module-level cache)."""
         return await SignManager.get_token(self._app_key, self._app_secret, self._api_domain, route_env=self._route_env)
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+AUTH_FAILED_CODES = {4001, 4002, 4003}      # permanent auth failure, re-sign token
+
+AUTH_RETRYABLE_CODES = {4010, 4011, 4099}   # transient, can retry with same token
+
+class FileUrlHandler(MediaSendHandler):
+    """Strategy: send file from a URL (download → COS → TIMFileElem)."""
+
+    async def acquire_file(self, adapter, **kwargs):
+        file_url: str = kwargs["file_url"]
+        logger.info("[%s] FileUrlHandler: downloading %s", adapter.name, file_url)
+        file_bytes, content_type = await media_download_url(
+            file_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
+        )
+        filename = kwargs.get("filename")
+        if not filename:
+            path_part = file_url.split("?")[0]
+            filename = os.path.basename(path_part) or "file"
+        if not content_type or content_type == "application/octet-stream":
+            content_type = guess_mime_type(filename) or "application/octet-stream"
+        return file_bytes, filename, content_type
+
+    def build_msg_body(self, upload_result, **kwargs):
+        return build_file_msg_body(
+            url=upload_result["url"],
+            filename=kwargs["filename"],
+            uuid=kwargs["file_uuid"],
+            size=upload_result["size"],
+        )
+
+class GroupQueryService:
+    """Encapsulates all group query operations (both low-level WS calls and
+    higher-level AI-tool-facing wrappers).
+
+    Responsibilities:
+      - Low-level WS encode/decode for group info and member list queries
+      - Chat-id parsing, error wrapping and result filtering for AI tools
+      - Member cache population on the adapter
+    """
+
+    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+        self._adapter = adapter
+
+    # ------------------------------------------------------------------
+    # Low-level WS query methods
+    # ------------------------------------------------------------------
+
+    async def query_group_info_raw(self, group_code: str) -> Optional[dict]:
+        """Query group info via WS (group name, owner, member count, etc.).
+
+        Returns:
+            Decoded dict or None on failure.
+        """
+        adapter = self._adapter
+        if adapter._connection.ws is None:
+            return None
+        encoded = encode_query_group_info(group_code)
+        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
+        decoded = _decode(encoded)
+        req_id = decoded["head"]["msg_id"]
+        try:
+            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
+            head = response.get("head", {})
+            status = head.get("status", 0)
+            if status != 0:
+                logger.warning("[%s] query_group_info failed: status=%d", adapter.name, status)
+                return None
+            biz_data = response.get("data", b"") or response.get("body", b"")
+            if biz_data and isinstance(biz_data, bytes):
+                return decode_query_group_info_rsp(biz_data)
+            return {"group_code": group_code}
+        except asyncio.TimeoutError:
+            logger.warning("[%s] query_group_info timeout: group=%s", adapter.name, group_code)
+            return None
+        except Exception as exc:
+            logger.warning("[%s] query_group_info failed: %s", adapter.name, exc)
+            return None
+
+    async def get_group_member_list_raw(
+        self, group_code: str, offset: int = 0, limit: int = 200
+    ) -> Optional[dict]:
+        """Query group member list via WS.
+
+        Returns:
+            Decoded dict or None on failure.  Also populates adapter._member_cache.
+        """
+        adapter = self._adapter
+        if adapter._connection.ws is None:
+            return None
+        encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
+        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
+        decoded = _decode(encoded)
+        req_id = decoded["head"]["msg_id"]
+        try:
+            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
+            head = response.get("head", {})
+            status = head.get("status", 0)
+            if status != 0:
+                logger.warning("[%s] get_group_member_list failed: status=%d", adapter.name, status)
+                return None
+            biz_data = response.get("data", b"") or response.get("body", b"")
+            if biz_data and isinstance(biz_data, bytes):
+                result = decode_get_group_member_list_rsp(biz_data)
+            else:
+                result = {"members": [], "next_offset": 0, "is_complete": True}
+            if result and result.get("members"):
+                adapter._member_cache[group_code] = (time.time(), result["members"])
+            return result
+        except asyncio.TimeoutError:
+            logger.warning("[%s] get_group_member_list timeout: group=%s", adapter.name, group_code)
+            return None
+        except Exception as exc:
+            logger.warning("[%s] get_group_member_list failed: %s", adapter.name, exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # AI-tool-facing wrappers (chat_id parsing + filtering)
+    # ------------------------------------------------------------------
+
+    async def query_group_info(self, chat_id: str) -> dict:
+        """AI tool: Query current group info.
+
+        No parameters needed (group_code extracted from session context).
+        Returns group name, owner, member count, etc.
+        """
+        if not chat_id.startswith("group:"):
+            return {"error": "This command is only available in group chats"}
+        group_code = chat_id[len("group:"):]
+        result = await self.query_group_info_raw(group_code)
+        if result is None:
+            return {"error": "Failed to query group info"}
+        return result
+
+    async def query_session_members(
+        self,
+        chat_id: str,
+        action: str = "list_all",
+        name: Optional[str] = None,
+    ) -> dict:
+        """AI tool: Query group member list.
+
+        Args:
+            chat_id: Chat ID (extracted from session context)
+            action: 'find' (search by name) | 'list_bots' (list bots) | 'list_all' (list all)
+            name: Search keyword when action='find'
+
+        Returns:
+            {"members": [...], "total": int, "mentionHint": str}
+        """
+        if not chat_id.startswith("group:"):
+            return {"error": "This command is only available in group chats"}
+        group_code = chat_id[len("group:"):]
+        result = await self.get_group_member_list_raw(group_code)
+        if result is None:
+            return {"error": "Failed to query group members"}
+
+        members = result.get("members", [])
+
+        if action == "find" and name:
+            query = name.lower()
+            members = [
+                m for m in members
+                if query in (m.get("nickname", "") or "").lower()
+                or query in (m.get("name_card", "") or "").lower()
+                or query in (m.get("user_id", "") or "").lower()
+            ]
+        elif action == "list_bots":
+            members = [m for m in members if "bot" in (m.get("nickname", "") or "").lower()]
+
+        # Construct mentionHint
+        mention_hint = ""
+        if members and len(members) <= 10:
+            names = [m.get("name_card") or m.get("nickname") or m.get("user_id", "") for m in members]
+            mention_hint = "Mention with @name: " + ", ".join(names)
+
+        return {
+            "members": members[:50],  # Limit return count
+            "total": len(members),
+            "mentionHint": mention_hint,
+        }
+
+REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
+
+def get_active_adapter() -> Optional["YuanbaoAdapter"]:
+    """Delegate to ``YuanbaoAdapter.get_active()``."""
+    return YuanbaoAdapter.get_active()
+
+async def send_yuanbao_direct(
+    adapter: "YuanbaoAdapter",
+    chat_id: str,
+    message: str,
+    media_files: Optional[List[Tuple[str, bool]]] = None,
+) -> Dict[str, Any]:
+    """Delegate to ``OutboundManager.send_direct``."""
+    return await adapter._outbound.sender.send_direct(chat_id, message, media_files)
+# ---- END PLUGIN-COMPAT ----

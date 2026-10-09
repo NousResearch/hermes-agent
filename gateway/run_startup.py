@@ -18,7 +18,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
-from gateway.config import Platform
+from gateway.config import HomeChannel, Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1720,6 +1720,38 @@ class GatewayStartupMixin:
             )
             raise RuntimeError(f"could not load config for profile '{profile_name}': {exc}") from exc
 
+    def _handoff_satellite_route_home(
+        self, profile_name: Optional[str], platform: Platform
+    ) -> Optional["HomeChannel"]:
+        """The home channel a shared-bot satellite's handoff delivers to: the concrete
+        ``profile_routes`` target that authorizes this profile on this platform.
+
+        A satellite's own config often carries no home channel (its platform block may be absent or
+        disabled once its credential is removed), and the route — not the primary's home — is its
+        delivery grant, so it is matched by exact platform+profile and must name a concrete chat. A
+        route with no destination (a catch-all such as ``telegram-fallback``) never qualifies, so the
+        first entry is never assumed to be the home. Returns ``None`` when no such route exists; the
+        caller then keeps its fail-closed home resolution."""
+        if not profile_name:
+            return None
+        platform_value = getattr(platform, "value", str(platform))
+        for route in (getattr(self.config, "profile_routes", None) or []):
+            if not getattr(route, "enabled", True):
+                continue
+            if getattr(route, "profile", None) != profile_name or getattr(route, "bot_profile", None) is not None:
+                continue
+            if str(getattr(route, "platform", "")).lower() != platform_value:
+                continue
+            chat_id = getattr(route, "chat_id", None) or getattr(route, "user_id", None)
+            if not chat_id:
+                continue
+            return HomeChannel(
+                platform=platform, chat_id=str(chat_id),
+                name=getattr(route, "name", None) or "Home",
+                thread_id=str(route.thread_id) if getattr(route, "thread_id", None) else None,
+            )
+        return None
+
     async def _handoff_resolve_destination(
         self, row: dict[str, Any], profile_name: Optional[str]
     ) -> "GatewayStartupMixin._HandoffDestination":
@@ -1734,12 +1766,29 @@ class GatewayStartupMixin:
         except (ValueError, KeyError):
             raise RuntimeError(f"unknown platform '{platform_name}'")
         handoff_config, handoff_adapters = self._handoff_resolve_scope(profile_name)
+        # A shared-bot satellite (a routed profile with no credential of its own) delivers through
+        # the PRIMARY's adapters, so its own platform block must not veto that delivery: no block, no
+        # explicit ``enabled`` (which defaults off) or ``enabled: false`` is a normal satellite config
+        # once its credential is removed. The transport and the destination are read from different
+        # places on purpose — the primary's platform config for the transport (the live adapter IS the
+        # primary's) and the ``profile_routes`` target for the chat (the route is the satellite's
+        # delivery grant, not the primary's home). Both only apply to a true satellite; a secondary
+        # that owns a credential and a profile with no route keep the fail-closed resolution below.
+        satellite = bool(
+            profile_name and profile_name != "default" and self._is_shared_bot_satellite(profile_name)
+        )
         # Alias-aware transport: a relay-fronted gateway registers ONE Platform.RELAY adapter fronting
         # N logical platforms, so a literal adapters.get() would miss a deliverable one.
-        transport = resolve_delivery_transport(platform, handoff_config, handoff_adapters)
+        transport = resolve_delivery_transport(
+            platform, self.config if satellite else handoff_config, handoff_adapters
+        )
         if not transport:
             raise RuntimeError(f"platform '{platform_name}' is not active in this gateway")
         home = handoff_config.get_home_channel(platform)
+        if satellite:
+            route_home = self._handoff_satellite_route_home(profile_name, platform)
+            if route_home is not None:
+                home = route_home
         if not home or not home.chat_id:
             raise RuntimeError(
                 f"no home channel configured for {platform_name}; run /sethome on the desired chat first"

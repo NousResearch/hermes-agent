@@ -20,9 +20,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import hermes_yaml as yaml
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.profile_routing import ProfileRoute
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 def _adapter(tag):
@@ -259,3 +262,131 @@ async def test_shared_bot_satellite_handoff_drains_through_primary(monkeypatch):
     assert captured["session_key"].startswith("agent:butler:"), (
         "the key must still carry the satellite's namespace"
     )
+
+
+# ---------------------------------------------------------------------------
+# The CONFIG half of a satellite handoff. The adapter-only regression above
+# patched BOTH the config loader and the transport resolver, so a satellite whose
+# own platform block is missing / not-enabled / disabled could not be observed to
+# fail — and a satellite's config routinely has no usable block once its
+# credential is removed. These keep the REAL loader and the REAL resolver.
+# ---------------------------------------------------------------------------
+
+_SATELLITE_CONFIG_SHAPES = {
+    # a satellite that kept an enabled block (plain token removal)
+    "block_enabled": {"telegram": {"enabled": True}},
+    # no platform block at all
+    "no_block": {},
+    # block present, no explicit ``enabled`` (the platform default is off)
+    "enabled_unset": {"telegram": {"reactions": False}},
+    # block explicitly disabled
+    "enabled_false": {"telegram": {"enabled": False}},
+}
+
+
+def _satellite_runner(monkeypatch):
+    """A multiplex runner whose ``butler`` is a shared-bot satellite (no credential of its own)."""
+    runner, captured = _make_multiplex_runner()
+    runner.config.profile_routes = [
+        ProfileRoute(name="butler-dm", platform="telegram", profile="butler",
+                     chat_id="6719571041", bot_profile=None),
+        # A catch-all that names no destination: it must never be taken as the home.
+        ProfileRoute(name="telegram-fallback", platform="telegram", profile="butler"),
+    ]
+    runner._profile_adapters = {"butler": {}}   # the startup placeholder
+    runner._profile_failed_platforms = {}
+    monkeypatch.setattr("gateway.run._multiplex_profile_homes", lambda cfg: [("butler", None)])
+    return runner, captured
+
+
+def _write_satellite_home(tmp_path, body):
+    home = tmp_path / "satellite"
+    home.mkdir()
+    config = {"gateway": {"multiplex_profiles": True}}
+    config.update(body)
+    (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    return home
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", sorted(_SATELLITE_CONFIG_SHAPES))
+async def test_satellite_handoff_resolves_route_target_across_config_shapes(
+    monkeypatch, tmp_path, shape,
+):
+    """A satellite's handoff must not depend on its own platform block.
+
+    Its transport is the primary's adapter (read from the primary's config, so an absent, unset or
+    disabled satellite block cannot veto the delivery), and its destination is the
+    ``profile_routes`` target — never the primary's home, never a destination-less catch-all.
+    """
+    sat_home = _write_satellite_home(tmp_path, _SATELLITE_CONFIG_SHAPES[shape])
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, captured = _satellite_runner(monkeypatch)
+        primary = runner.adapters[Platform.TELEGRAM]
+
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name="butler",
+        )
+
+        primary.create_handoff_thread.assert_awaited_once()
+        assert primary.create_handoff_thread.await_args.args[0] == "6719571041", (
+            "the satellite must hand off to its ROUTE target, not the primary's home (1111)"
+        )
+        assert captured["session_key"].startswith("agent:butler:"), (
+            "the key must still carry the satellite's namespace"
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_satellite_without_a_concrete_route_fails_closed(monkeypatch, tmp_path):
+    """A satellite with only a destination-less route has no home to hand off to: fail closed."""
+    sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, _ = _satellite_runner(monkeypatch)
+        runner.config.profile_routes = [
+            ProfileRoute(name="telegram-fallback", platform="telegram", profile="butler"),
+        ]
+        with pytest.raises(RuntimeError, match="no home channel configured"):
+            await runner._process_handoff(
+                {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+                profile_name="butler",
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_secondary_profile_keeps_its_own_home_with_real_resolver(monkeypatch, tmp_path):
+    """A secondary that OWNS a credential keeps its own adapter and its own home.
+
+    The satellite branch must not leak into a credential-owning secondary: this asserts the
+    un-satellited path with the real resolver and a real (non-empty) platform block.
+    """
+    own_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "2222")
+
+    token = set_hermes_home_override(str(own_home))
+    try:
+        runner, captured = _make_multiplex_runner()
+        # medicina owns an adapter, so it is NOT a satellite (no route for it).
+        own = runner._profile_adapters["medicina"][Platform.TELEGRAM]
+
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name="medicina",
+        )
+
+        own.create_handoff_thread.assert_awaited_once()
+        assert own.create_handoff_thread.await_args.args[0] == "2222", (
+            "an owning secondary must deliver to its own home, not the primary's"
+        )
+        assert captured["session_key"].startswith("agent:medicina:")
+    finally:
+        reset_hermes_home_override(token)

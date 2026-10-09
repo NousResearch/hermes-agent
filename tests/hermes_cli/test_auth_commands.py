@@ -569,6 +569,30 @@ def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_pat
     assert len(load_pool("openai-codex").entries()) == 2
 
 
+def test_auth_add_copilot_oauth_persists_device_code_credential(tmp_path, monkeypatch):
+    """Native Copilot OAuth must store its raw GitHub device-code token in the pool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    raw_token = "ghu_copilot_device_code_token"
+    monkeypatch.setattr("hermes_cli.copilot_auth.copilot_device_code_login", lambda: raw_token)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "copilot"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["copilot"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["auth_type"] == "oauth"
+    assert entry["access_token"] == raw_token
+
+
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store())

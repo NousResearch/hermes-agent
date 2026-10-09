@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -251,6 +252,42 @@ class TestKillStaleDashboardPosix:
 
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
+
+    @pytest.mark.platforms("windows")
+    def test_update_captures_fixed_port_backend_before_stopping(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        argv = [sys.executable, "-m", "hermes_cli.main", "serve", "--port", "9119"]
+        captured = []
+
+        def capture(pid):
+            captured.append(pid)
+            return argv
+
+        def stop(pids, killed, failed):
+            assert captured == pids
+            killed.extend(pids)
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=[6001]), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", side_effect=capture), \
+             patch.object(dashboard_procs, "_hermes_home_for_pid", return_value=str(tmp_path)), \
+             patch.object(dashboard_procs, "_kill_pids_windows", side_effect=stop), \
+             patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_called_once_with([argv])
+        assert result["unrecovered"] == []
+
+    @pytest.mark.platforms("windows")
+    def test_windows_cmdline_capture_preserves_argument_boundaries(self):
+        import psutil
+
+        argv = [sys.executable, "C:\\path with spaces\\main.py", "serve", "--port", "9119"]
+        with patch.object(psutil, "Process") as process:
+            process.return_value.cmdline.return_value = argv
+            assert main_dashboard._dashboard_cmdline_for_pid(6001) == argv
+            process.return_value.cmdline.side_effect = psutil.AccessDenied(6001)
+            assert main_dashboard._dashboard_cmdline_for_pid(6001) is None
 
     @pytest.mark.platforms("windows")
     def test_taskkill_invoked_for_each_pid(self, capsys):
@@ -492,10 +529,12 @@ class TestManualBackendRespawn:
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         spawned: list[list[str]] = []
+        launch_kwargs: list[dict] = []
 
         class _FakePopen:
             def __init__(self, cmd, **kwargs):
                 spawned.append(list(cmd))
+                launch_kwargs.append(kwargs)
 
             def poll(self):
                 return None
@@ -510,6 +549,11 @@ class TestManualBackendRespawn:
         assert failed == []
         assert spawned[0] == ["hermes", "dashboard", "--port", "8300", "--no-open"]
         assert spawned[1] == ["hermes", "serve", "--host", "0.0.0.0"]
+        if sys.platform == "win32":
+            assert all(kw["creationflags"] & subprocess.CREATE_NO_WINDOW for kw in launch_kwargs)
+            assert all(kw["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP for kw in launch_kwargs)
+        else:
+            assert all(kw["start_new_session"] for kw in launch_kwargs)
 
     def test_respawn_failure_returned(self, tmp_path, monkeypatch, capsys):
         live = self._live()

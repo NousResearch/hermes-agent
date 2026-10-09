@@ -80,6 +80,7 @@ class CLIChatTurnMixin:
         if agent is None:
             return None
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
+        original_message = message  # Preserve provenance before image/context enrichment.
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
@@ -90,6 +91,7 @@ class CLIChatTurnMixin:
             from agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
+        self._revive_blocked_goal_for_user_turn(original_message)
         self._chat_stage_user_message(agent, message)
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.

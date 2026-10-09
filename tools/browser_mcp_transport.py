@@ -121,7 +121,9 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
     raw = resp.text.strip()
     # SSE frame or plain JSON — accept both (gateway content-negotiates).
     if raw.startswith("data:") or "\ndata:" in raw:
-        last = [ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")][-1]
+        # SSE frames: split on LF ONLY. str.splitlines() also splits on U+0085/U+2028/U+2029,
+        # which appear inside JSON string values (page text) and would truncate the line.
+        last = [ln[5:].strip() for ln in raw.split("\n") if ln.startswith("data:")][-1]
         env = json.loads(last)
     else:
         env = json.loads(raw)

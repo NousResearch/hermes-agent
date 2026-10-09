@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planejando: {task}"
     ack_conversation: "Planejando a partir do contexto desta conversa…"
+  initiate_setup:
+    ack: "Iniciando a configuração…"
   init:
     start_failed: "Não foi possível iniciar /init — tente novamente."
     ack_update: "Atualizando AGENTS.md a partir de uma varredura do projeto…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Reexecutar um prompt em intervalo recorrente nesta sessão"
   plan:
     description: "Escrever um plano de implementação em markdown em .hermes/plans/ sem executar nada"
+  initiate-setup:
+    description: "Executar a configuração inicial: conhecer você e ajustar o Hermes para você"
   moa:
     description: "Executar um prompt com a predefinição padrão de Mixture of Agents e depois restaurar seu modelo"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planejando: {task}"
       from_conversation: "📋 Planejando a partir do contexto desta conversa..."
+    initiate_setup:
+      starting: "🧭 Iniciando a configuração..."
     init:
       updating: "⚡ Atualizando AGENTS.md a partir de uma varredura do projeto..."
       generating: "⚡ Gerando AGENTS.md a partir de uma varredura do projeto..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "O salvamento de trajetórias (--save-trajectories) captura rastros completos de uso de ferramentas para treinar modelos."
   t198: "Três tipos de plugin: geral (ferramentas/hooks), fornecedores de memória e motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins diretamente do GitHub."
-  t200: "Fornecedores de memória externos: OpenViking incluído; Honcho, Hindsight, Mem0 e outros via hermes plugins install."
+  t200: "Fornecedores de memória externos: Honcho, Hindsight, Mem0, OpenViking e outros via hermes plugins install."
   t201: "Os hooks de plugin incluem pre/post_tool_call, pre/post_llm_call e transform_terminal_output para canonicalizar a saída."
   t202: "O cache de prompt (Anthropic) reduz custos ao reutilizar prefixos de prompt do sistema em cache."
   t203: "O agente gera títulos de sessão automaticamente em um tópico em segundo plano — sem impacto na latência."

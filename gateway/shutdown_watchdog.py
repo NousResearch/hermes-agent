@@ -207,11 +207,11 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
 
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
-    home: Optional[Path] = None, extra: Optional[Dict[str, Any]] = None) -> Path:
+    home: Optional[Path] = None, extra: Optional[dict[str, Any]] = None) -> Path:
     """Atomically rewrite the loop-liveness heartbeat file; never raises.
     ``start_time`` (process start, epoch seconds) lets supervisors detect PID reuse."""
     path = get_loop_heartbeat_path(home)
-    payload: Dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
+    payload: dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
                                "updated_at": datetime.now(timezone.utc).isoformat(),
                                "monotonic": time.monotonic()}
     if start_time is not None:
@@ -237,7 +237,7 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
+                         snapshot: Optional[dict[str, Any]]) -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +263,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
 
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
-    snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
+    snapshot_fn: Optional[Callable[[], dict[str, Any]]] = None, exit_code: int = 1,
     dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.

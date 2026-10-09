@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planificando: {task}"
     ack_conversation: "Planificando a partir del contexto de esta conversación…"
+  initiate_setup:
+    ack: "Iniciando la configuración…"
   init:
     start_failed: "No se pudo iniciar /init — inténtalo de nuevo."
     ack_update: "Actualizando AGENTS.md a partir de un análisis del proyecto…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Volver a ejecutar un prompt a intervalos recurrentes en esta sesión"
   plan:
     description: "Escribir un plan de implementación en markdown en .hermes/plans/ sin ejecutar nada"
+  initiate-setup:
+    description: "Ejecutar la configuración inicial: conocerte y ajustar Hermes a ti"
   moa:
     description: "Ejecutar un prompt con el preset predeterminado de Mixture of Agents y luego restaurar tu modelo"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planificando: {task}"
       from_conversation: "📋 Planificando a partir del contexto de esta conversación..."
+    initiate_setup:
+      starting: "🧭 Iniciando la configuración..."
     init:
       updating: "⚡ Actualizando AGENTS.md a partir de un análisis del proyecto..."
       generating: "⚡ Generando AGENTS.md a partir de un análisis del proyecto..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "El guardado de trayectorias (--save-trajectories) captura trazas completas de uso de herramientas para entrenar modelos."
   t198: "Tres tipos de plugin: generales (herramientas/hooks), proveedores de memoria y motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins directamente desde GitHub."
-  t200: "Proveedores de memoria externos: OpenViking viene incluido; Honcho, Hindsight, Mem0 y otros vía hermes plugins install."
+  t200: "Proveedores de memoria externos: Honcho, Hindsight, Mem0, OpenViking y otros vía hermes plugins install."
   t201: "Los hooks de plugin incluyen pre/post_tool_call, pre/post_llm_call y transform_terminal_output para canonicalizar la salida."
   t202: "El caché de prompts (Anthropic) reduce costos reutilizando prefijos del prompt del sistema ya cacheados."
   t203: "El agente genera los títulos de sesión automáticamente en un hilo en segundo plano: sin impacto en la latencia."

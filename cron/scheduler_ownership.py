@@ -27,6 +27,9 @@ from hermes_constants import get_hermes_home, hermes_home_key
 # Home key -> home path for every profile this process ticks, republished each ticker cycle so a
 # profile created or tombstoned mid-run is reflected without a restart.
 _ticked_homes: dict[str, Path] = {}
+# Home key -> resolved cron store, taken while the home exists: a departed profile's home may be
+# gone by the time its store state is dropped, and a symlinked cron/ resolves elsewhere.
+_ticked_stores: dict[str, str] = {}
 _ticked_lock = threading.Lock()
 
 
@@ -37,21 +40,27 @@ def register_ticked_homes(homes) -> None:
     live until process exit, so serving (or churning) many profiles leaks one ThreadPoolExecutor
     and its worker threads per home ever ticked.
     """
-    resolved = {}
+    from cron.store_health import forget_stores, store_key
+
+    resolved, stores = {}, {}
     for home in homes:
         path = Path(home)
-        resolved[hermes_home_key(path)] = path
+        key = hermes_home_key(path)
+        resolved[key] = path
+        stores[key] = store_key(path)
     with _ticked_lock:
         departed = set(_ticked_homes) - set(resolved)
+        # A store another still-ticked profile reaches (cron/ symlinked to one place) keeps its state.
+        departed_stores = {_ticked_stores[k] for k in departed if k in _ticked_stores} - set(stores.values())
         _ticked_homes.clear()
         _ticked_homes.update(resolved)
+        _ticked_stores.clear()
+        _ticked_stores.update(stores)
     if departed:
         # Late import: cron.scheduler imports this module.
         from cron.scheduler import discard_parallel_pools
-        from cron.store_health import forget_homes
-
         discard_parallel_pools(departed)
-        forget_homes(departed)
+        forget_stores(departed_stores)
 
 
 def ticked_homes() -> dict:
@@ -139,7 +148,7 @@ def live_gateway_ticking(home: Optional[Union[Path, str]] = None) -> Optional[di
     return record if record_serves_profile(record, home) else None
 
 
-def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+def _claim_owner_is_dead(claim: dict[str, Any]) -> bool:
     """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
     ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
     or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""

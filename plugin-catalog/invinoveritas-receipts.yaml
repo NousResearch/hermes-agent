@@ -1,0 +1,19 @@
+name: invinoveritas-receipts
+repo: https://github.com/babyblueviper1/hermes-invinoveritas
+sha: 6a4f9c7b49beac69899f18f3bcf1d0b340297624
+description: "Signed, independently checkable receipts for Hermes approval verdicts and, since 0.2.0, for turns that stop on iteration exhaustion. Observe-only: a post_approval_response hook requests an invinoveritas decision receipt for each Guardian LLM verdict (or every approve/deny with scope=all); post_llm_call + on_session_end record, when a turn ends with max_iterations_reached, whether the turn's todo ledger (the last todo result or the list re-injected after compaction) was complete (turn_scope: exhausted by default, all, or off). Each receipt is a signed set of salted commitments that anyone can check for free at /verify-proof and that the holder can later open with the salt kept locally. Never approves, denies, delays, continues or blocks anything. Disclosure — one HTTPS POST per recorded approval decision or recorded turn to api.babyblueviper.com/decision-receipt (or the configured api_url) under INVINOVERITAS_API_KEY, paid automatically at 100 sats per receipt from your invinoveritas balance with no per-call confirmation (defaults: Guardian LLM verdicts, and only turns that stop on max_iterations_reached; scope: all adds every human approve/deny, turn_scope: all pays on every turn); sends a fixed question, the options, the choice, a nonce-salted SHA-256 of the context and the tool_call_id/turn_id, never the command text, todo contents or reply text; stores receipts, salts and the full contexts (including the command as Hermes passed it, and the todo ledger) in plugin-data/invinoveritas-receipts/receipts.jsonl."
+maintainer: babyblueviper1
+tier: community
+category: general
+docs_url: https://github.com/babyblueviper1/hermes-invinoveritas#readme
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_approval_response
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env:
+    - INVINOVERITAS_API_KEY

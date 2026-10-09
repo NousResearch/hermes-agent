@@ -798,6 +798,9 @@ gateway:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning from this conversation's context…"
 
+  initiate_setup:
+    ack: "Starting setup…"
+
   init:
     start_failed: "Could not start /init — please try again."
     ack_update: "Updating AGENTS.md from a project scan…"
@@ -1627,6 +1630,8 @@ slash:
     description: "Re-run a prompt on a recurring interval in this session"
   plan:
     description: "Write a markdown implementation plan to .hermes/plans/ without executing anything"
+  initiate-setup:
+    description: "Run the first-run setup: learn about you and set Hermes up around you"
   moa:
     description: "Run one prompt through the default Mixture of Agents preset, then restore your model"
   subgoal:
@@ -3014,6 +3019,8 @@ cli:
     plan:
       planning: "📋 Planning: {task}"
       from_conversation: "📋 Planning from this conversation's context..."
+    initiate_setup:
+      starting: "🧭 Starting setup..."
     init:
       updating: "⚡ Updating AGENTS.md from a project scan..."
       generating: "⚡ Generating AGENTS.md from a project scan..."
@@ -3791,7 +3798,7 @@ tips:
   t197: "Trajectory saving (--save-trajectories) captures full tool-use traces for model training."
   t198: "Three plugin types: general (tools/hooks), memory providers, and context engines."
   t199: "hermes plugins install owner/repo installs plugins directly from GitHub."
-  t200: "External memory providers: OpenViking bundled; Honcho, Hindsight, Mem0 and more via hermes plugins install."
+  t200: "External memory providers: Honcho, Hindsight, Mem0, OpenViking and more via hermes plugins install."
   t201: "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization."
   t202: "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes."
   t203: "The agent auto-generates session titles in a background thread — zero latency impact."

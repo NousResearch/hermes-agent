@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -516,6 +517,101 @@ def record_gateway_restart(**kwargs: Any) -> None:
     _record("gateway_restart_result", "gateway restart result", **kwargs)
 
 
+def record_stop_reason(reason: str) -> None:
+    """Name the exit that is about to stop this run, as one closed token (``stop_class``).
+
+    Called on the line before the ``sys.exit``/raise it names, so the last one recorded is the
+    exit that fired. The token must be one of ``shared_metrics_contract.UPDATE_STOP_CLASSES``
+    (anything else is ignored by the metric); the human ``stop_reason`` and printed text are
+    untouched. No-op when no receipt is open; never raises.
+    """
+    _record("fact", f"update stop {reason}", "stop_class", reason)
+
+
+#: git could not write a file it needs (``index.lock``'s directory, a tracked file): an OS permission
+#: error, not a lock another git holds. SSH's ``Permission denied (publickey)`` is an auth failure.
+_GIT_FILE_PERMISSION = re.compile(r"Permission denied(?! *\()|\bEACCES\b")
+
+
+def git_error_stop_class(exc: BaseException) -> Optional[str]:
+    """The closed stop token for a git ``CalledProcessError`` that is about to end the run, or None.
+
+    Reads only the failed argv and fixed git/Hermes phrases in its output, never stores either.
+    """
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return None
+    output = exc.stderr or exc.output or ""
+    output = output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
+    argv = [str(part) for part in exc.cmd] if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd or "").split()
+    return git_output_stop_class(output, argv, exc.returncode)
+
+
+def git_output_stop_class(output: str, argv: list[str], returncode: Optional[int] = None) -> Optional[str]:
+    """:func:`git_error_stop_class` for a git call that returned instead of raising (``_git_run``)."""
+    if "index.lock" in output and "File exists" in output:
+        return "git_index_locked"  # another git (or a killed one, #132089) holds the index lock
+    if _GIT_FILE_PERMISSION.search(output):
+        return "permission_denied"  # git may not write a file it needs (index.lock's dir, a tracked file)
+    if returncode == 124 and "timed out after" in output:
+        return "git_timeout"  # update_cmd._git_run's own timeout text
+    if "No space left on device" in output:
+        return "disk_full"
+    if "stash" in argv:
+        return "local_changes_blocked"  # update_cmd_stash._push_stash saved nothing
+    if {"checkout", "merge", "reset"} & set(argv):
+        return "checkout_move_failed"
+    return None
+
+
+def _started_by_handoff_partner() -> bool:
+    """True when the update marker names the Desktop hand-off this process runs under.
+
+    For an exit before the receipt opens, where this process may NOT hold the lock: at the
+    update-lock refusal the marker belongs to whichever update holds it, so "a pid other than
+    ours" (update_cmd._record_update_initiator, which runs under the lock) would call every
+    refusal Desktop-started. The claim is ours only when it names us as its delegate (the posix and
+    Windows hand-offs write that line before the update runs) or names our hand-off partner on
+    line 1 or the delegate line (``HERMES_UPDATE_HANDOFF_PID``, the Tauri updater; our parent, a
+    launcher between the hand-off and us). The marker is read raw: no liveness probe and no
+    cleanup (those are lock policy, not a metrics side effect).
+    """
+    from hermes_cli.update_lock import _handoff_pid, _parse_marker, update_marker_path
+
+    marker = _parse_marker(update_marker_path().read_bytes())
+    if marker.started_at is None:
+        return False
+    pid = os.getpid()
+    if marker.delegate_pid == pid:
+        return True
+    partners = {_handoff_pid(), os.getppid()} - {None, 0, 1, pid}
+    return bool(partners & {marker.pid, marker.delegate_pid})
+
+
+def record_stop_without_receipt(reason: str, outcome: str) -> None:
+    """Count an exit that fires before this run's receipt opens, in shared metrics only.
+
+    No receipt is written, so the exit behaves exactly as before: at the update-lock refusal
+    ``latest.json`` and the running record belong to the update holding the lock (opening one
+    would replace its pointer and reconcile its archive), and the Git-operation refusal runs before
+    the receipt, plan and snapshot by design. The row is derived from the same fields a final
+    receipt carries (``outcome`` is ``refused`` or ``failed``), including the initiator, so a
+    Desktop-started refusal reads ``kind=desktop`` like the same run's receipt would. Never raises.
+    """
+    with suppress(Exception):
+        now = _utc_now_iso()
+        data = {
+            "schema": 1, "update_id": uuid.uuid4().hex, "started_at": now, "finished_at": now,
+            "outcome": "refused" if outcome == "refused" else "failed",
+            "stop_class": reason, "pre_update": {}, "stages": [], "steps": [], "fleet": [],
+        }
+        with suppress(Exception):  # no marker, or an unreadable one: the CLI default
+            if _started_by_handoff_partner():
+                data["initiator"] = "desktop"
+        from hermes_cli.observability.shared_metrics_update import record_update_receipt
+
+        record_update_receipt(data)
+
+
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
     """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
 
@@ -627,10 +723,31 @@ def _collection_enabled_now() -> Optional[bool]:
     return isinstance(config, dict) and config.get("enabled") is True
 
 
+#: The leading label of a stop reason the parked copy may keep, exactly what the classifier reads:
+#: an exception type name (plus its errno token) or one of the fixed phrases Hermes writes
+#: (shared_metrics_update._STOP_REASON_PREFIX_CLASSES); never the message after it.
+_PARKED_REASON_LABEL = re.compile(
+    r"(?:[A-Z][A-Za-z0-9_]{0,63}:(?: \[(?:Errno|WinError) \d+\])?"
+    r"|historical takeover preparation failed|Windows gateway recovery failed)")
+_STOP_CLASS_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,39}")
+
+
 def _metric_receipt(data: dict[str, Any]) -> dict[str, Any]:
-    """Only what shared_metrics_update.update_receipt_fields reads; never argv or step text."""
-    pre = data.get("pre_update") if isinstance(data.get("pre_update"), dict) else {}
+    """Only what shared_metrics_update.update_receipt_fields reads; never argv or step text.
+
+    Every field the classifier reads is kept in closed form so a parked run classifies exactly as
+    the same run finalized in-process: the exit's ``stop_class`` token, the exit code, the stop
+    reason's leading label (``-`` for any other text), and flags for the restart/user-action facts.
+    """
+    raw_pre, raw_restart, raw_reason = (data.get(key) for key in ("pre_update", "gateway_restart", "stop_reason"))
+    pre: dict[str, Any] = raw_pre if isinstance(raw_pre, dict) else {}
+    restart: dict[str, Any] = raw_restart if isinstance(raw_restart, dict) else {}
+    reason: str = raw_reason if isinstance(raw_reason, str) else ""
+    label = _PARKED_REASON_LABEL.match(reason)
+    stop_class = data.get("stop_class")
+    exit_code = data.get("exit_code")
     return {
+        "schema": data.get("schema"),
         "update_id": data.get("update_id"), "started_at": data.get("started_at"),
         "finished_at": data.get("finished_at"), "outcome": data.get("outcome"),
         "initiator": "desktop" if data.get("initiator") == "desktop" else None,
@@ -644,29 +761,85 @@ def _metric_receipt(data: dict[str, Any]) -> dict[str, Any]:
             for step in data.get("steps") or () if isinstance(step, dict) and step.get("name") == "admission"
         ],
         "fleet": [{"state": row.get("state")} for row in data.get("fleet") or () if isinstance(row, dict)],
+        "stop_class": stop_class if isinstance(stop_class, str) and _STOP_CLASS_TOKEN.fullmatch(stop_class) else None,
+        "exit_code": exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        "stop_reason": label.group(0) if label else ("-" if reason else ""),
+        "user_action": bool(data.get("user_action")),
+        "gateway_restart": {key: bool(restart.get(key)) for key in ("incomplete", "phase_error", "failed_units")},
+        "runtime_outcomes": [
+            {"outcome": "failed"} for row in data.get("runtime_outcomes") or ()
+            if isinstance(row, dict) and row.get("outcome") == "failed"
+        ],
     }
 
 
+def _consent_reader_importable() -> bool:
+    """Whether this interpreter can load the config reader the recorder's consent gate uses.
+
+    False in the bare ``-I -S`` bootstrap interpreter that finalizes an update whose dependency
+    preparation failed (update_completion._settle_after_commit): it has the new tree but no
+    third-party packages, so ``hermes_cli.config`` dies on ``ruamel``. Only asked of an interpreter
+    that runs the new tree (never the pre-pull one, which must import nothing); the recorder's
+    pre-gate imports the same module next, so a working interpreter loads nothing extra."""
+    try:
+        import hermes_cli.config
+    except ImportError:  # ruamel and every other third-party package are missing here
+        return False
+    return True
+
+
+def _bare_collection_enabled() -> Optional[bool]:
+    """Consent as far as an interpreter without the config reader can tell: the loaded module's
+    answer if one is loaded, False when the profile has no config.yaml (the shipped default is off),
+    else None (unknowable here; the next normal start decides)."""
+    enabled = _collection_enabled_now()
+    if enabled is not None:
+        return enabled
+    from hermes_constants import get_hermes_home
+
+    try:
+        (get_hermes_home() / "config.yaml").stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return None
+
+
+def _park_metric_receipt(data: dict[str, Any], enabled: Optional[bool]) -> None:
+    """Keep the bounded fields for the next Hermes start (stdlib only): ``report_pending_updates``
+    records them when collection is on, ``begin_process`` purges them when it is off. Collection
+    known off: park nothing and purge what an earlier run parked."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.runtime_state import _atomic_bytes
+
+    pending = get_hermes_home() / "telemetry" / "shared_metrics" / "pending_updates"  # = PENDING_DIRNAME
+    if enabled is False:
+        import shutil
+
+        shutil.rmtree(pending, ignore_errors=True)  # opted out: nothing parked may be counted later
+        return
+    pending.mkdir(parents=True, exist_ok=True)
+    _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(_metric_receipt(data), default=str).encode())
+
+
 def _publish_shared_metrics(data: dict[str, Any]) -> None:
-    """hermes.update.run/stage from this FINAL receipt; must never fail or slow the update."""
+    """hermes.update.run/stage from this FINAL receipt; must never fail or slow the update.
+
+    Rows are emitted only by an interpreter that can read consent with the real config reader.
+    Any other interpreter parks the bounded fields instead, and the next normal start applies the
+    collection gate (records them, or purges them when collection is off)."""
     with suppress(Exception):
         pre, post = data.get("pre_update") or {}, data.get("post_update") or {}
         if data.get("pid") == os.getpid() and not (pre.get("sha") and pre.get("sha") == post.get("sha")):
             # This interpreter began the run before the checkout swap: importing now would load
-            # pulled code into it. Park the bounded fields (stdlib + loaded modules only); the next
-            # Hermes start records them.
-            from hermes_constants import get_hermes_home
-            from hermes_cli.runtime_state import _atomic_bytes
-
-            pending = get_hermes_home() / "telemetry" / "shared_metrics" / "pending_updates"  # = PENDING_DIRNAME
-            enabled = _collection_enabled_now()
-            if enabled is False:
-                import shutil
-
-                shutil.rmtree(pending, ignore_errors=True)  # opted out: nothing parked may be counted later
-            elif enabled:
-                pending.mkdir(parents=True, exist_ok=True)
-                _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(_metric_receipt(data), default=str).encode())
+            # pulled code into it. Consent comes from the config module it already has loaded.
+            _park_metric_receipt(data, _collection_enabled_now())
+            return
+        if not _consent_reader_importable():
+            # The bare bootstrap interpreter (dependency preparation failed): no config reader, so
+            # it can neither read consent nor emit. Park, unless consent is knowably off.
+            _park_metric_receipt(data, _bare_collection_enabled())
             return
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 

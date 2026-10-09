@@ -1409,6 +1409,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] tts_audio_tags       currently: auto / main model
+[ ] voice_chat           currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -1420,6 +1421,8 @@ $ hermes model
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
 The **Delegation** entry is special: it routes the model used by `delegate_task` subagents and persists to the top-level `delegation.*` section (`delegation.provider` / `delegation.model`) rather than `auxiliary.*`, because subagents are full child agents, not side-LLM calls. Its `auto` means "inherit the parent agent's provider, model, and credentials."
+
+The **Voice chat** entry picks the model that answers spoken voice-mode turns (tools included); typed turns stay on the main model. See [Voice chat model](features/voice-mode.md#voice-chat-model).
 
 If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
@@ -3055,7 +3058,7 @@ network:
 
 ## Onboarding
 
-First-touch onboarding hints and the structured profile-build offer:
+First-touch onboarding hints and the first-message offer:
 
 ```yaml
 onboarding:
@@ -3063,8 +3066,8 @@ onboarding:
   seen: {}               # internal latch — leave empty
 ```
 
-- `profile_build` — controls the profile-build path offered on a profile's first direct message through the gateway (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup and never reads connected accounts silently. `"off"` shows a plain intro only. The offer fires at most once per profile.
-- `seen` — internal state. Hermes latches each shown hint here so it never fires again; the profile-build offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
+- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. In the Microsoft Store desktop app the offer is instead one closing line that points at `/initiate-setup` (`/initiate_setup` on Telegram, `/hermes initiate-setup` on Slack). The offer is skipped when the first message is `/initiate-setup` itself, and always in the desktop app's setup profile. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile. `/initiate-setup` sends a short block of facts about the computer; see [What the setup chat knows about your computer](./desktop.md#what-the-setup-chat-knows-about-your-computer).
+- `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 
 ## Dashboard
 

@@ -14,8 +14,11 @@ from pm.store import Store, current_target
 def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, Path] | None:
     """Resolve uv and Python without host discovery or recursive worker dispatch.
 
-    A read-only probe never installs. Windows bundle builds need a verified
-    writable interpreter so their venv redirectors can run outside the MSIX.
+    A read-only probe never installs. A sealed Windows payload builds on a verified writable
+    copy of its Python: uv starts a venv's ``Scripts\\python.exe`` to query it, and that
+    redirector runs outside the package, so its target must too. A redirector naming the
+    packaged interpreter dies with exit 101 (#135236). Hermes itself still enters those venvs
+    on the packaged interpreter (``pm.environments.venv_command``).
     """
     from pm.install import (
         _install, _installed_location, _lockfile, _refuse_lazy,

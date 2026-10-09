@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
+  initiate_setup:
+    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -1556,6 +1558,8 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
+  initiate-setup:
+    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
+    initiate_setup:
+      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "يسجّل حفظ المسارات (--save-trajectories) آثار استخدام الأدوات كاملةً لتدريب النماذج."
   t198: "ثلاثة أنواع من الإضافات: عامة (أدوات/خطافات)، ومزوّدو الذاكرة، ومحرّكات السياق."
   t199: "يثبّت hermes plugins install owner/repo الإضافات مباشرة من GitHub."
-  t200: "مزوّدو الذاكرة الخارجيون: OpenViking مضمّن؛ وHoncho وHindsight وMem0 وغيرهم عبر hermes plugins install."
+  t200: "مزوّدو الذاكرة الخارجيون: Honcho وHindsight وMem0 وOpenViking وغيرهم عبر hermes plugins install."
   t201: "تشمل خطافات الإضافات pre/post_tool_call وpre/post_llm_call وtransform_terminal_output لتوحيد شكل المخرجات."
   t202: "يقلّل تخزين المطالبات مؤقتًا (Anthropic) التكاليف بإعادة استخدام بادئات موجّه النظام المخزّنة."
   t203: "يولّد الوكيل عناوين الجلسات تلقائيًا في خيط خلفي — دون أي تأثير على زمن الاستجابة."

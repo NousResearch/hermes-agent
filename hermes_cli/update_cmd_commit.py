@@ -36,6 +36,7 @@ from hermes_cli._early_recovery import (
     restore_interrupted_pull,
     write_durable_text,
 )
+from hermes_cli.update_cmd_common import _record_stop
 from hermes_cli.update_custody import run_git
 
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -180,7 +181,11 @@ def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | No
 
     ``None`` when both are durable; otherwise why not, with the obligations handed back
     (``disarm_commit_obligations``), and the caller must stop before git writes a file.
+    Linux/macOS gateways are paused first: this is every route's first checkout move.
     """
+    from hermes_cli.update_cmd_posix_pause import pause_at_commit_point
+    if refused := pause_at_commit_point():
+        return refused
     try:
         arm_commit_obligations(root, expected_sha)
         arm_tree_move(git_cmd, root, **move)
@@ -597,10 +602,12 @@ def preflight_refusal(git_cmd, root: Path, target_ref: str, critical_files) -> s
         except ImportError:
             pass
         except Exception as exc:  # health: allow BLE001 -- fail closed: any probe error refuses before the first move
+            _record_stop("venv_foreign_owner")
             return f"✗ {exc}"  # pm's refusal carries its own remediation text
     broken = target_syntax_error(git_cmd, root, target_ref, critical_files)
     if broken is not None:
         path, error = broken
+        _record_stop("target_syntax_error")
         return (f"✗ The update target has a syntax error in a critical file:\n  {path}\n    "
                 + "\n    ".join(error.splitlines()[:6]))
     return None

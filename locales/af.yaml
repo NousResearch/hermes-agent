@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning uit hierdie gesprek se konteks…"
+  initiate_setup:
+    ack: "Begin opstelling…"
   init:
     start_failed: "Kon nie /init begin nie — probeer asseblief weer."
     ack_update: "AGENTS.md word vanaf 'n projekskandering opgedateer…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Voer 'n prompt herhaaldelik met 'n vaste interval in hierdie sessie uit"
   plan:
     description: "Skryf 'n markdown-implementeringsplan na .hermes/plans/ sonder om enigiets uit te voer"
+  initiate-setup:
+    description: "Begin die eerste opstelling: leer jou ken en rig Hermes rondom jou in"
   moa:
     description: "Voer een prompt deur die verstek Mixture of Agents-voorafinstelling en herstel dan jou model"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Beplan: {task}"
       from_conversation: "📋 Beplan uit hierdie gesprek se konteks..."
+    initiate_setup:
+      starting: "🧭 Begin opstelling..."
     init:
       updating: "⚡ Werk AGENTS.md by vanaf 'n projekskandering..."
       generating: "⚡ Genereer AGENTS.md vanaf 'n projekskandering..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "Trajekstoor (--save-trajectories) vang volledige gereedskapsgebruik-spore vas vir modelopleiding."
   t198: "Drie plugin-tipes: algemeen (gereedskap/hooks), geheueverskaffers en konteksenjins."
   t199: "hermes plugins install owner/repo installeer plugins direk vanaf GitHub."
-  t200: "Eksterne geheueverskaffers: OpenViking saamgebundel; Honcho, Hindsight, Mem0 en meer via hermes plugins install."
+  t200: "Eksterne geheueverskaffers: Honcho, Hindsight, Mem0, OpenViking en meer via hermes plugins install."
   t201: "Plugin-hooks sluit pre/post_tool_call, pre/post_llm_call en transform_terminal_output vir uitvoer-kanonisering in."
   t202: "Prompt-kasing (Anthropic) verminder koste deur gekasde stelselprompt-voorvoegsels te hergebruik."
   t203: "Die agent genereer sessietitels outomaties in 'n agtergronddraad — nul impak op vertraging."

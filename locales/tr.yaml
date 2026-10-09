@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planlanıyor: {task}"
     ack_conversation: "Bu konuşmanın bağlamından plan yapılıyor…"
+  initiate_setup:
+    ack: "Kurulum başlatılıyor…"
   init:
     start_failed: "/init başlatılamadı — lütfen yeniden deneyin."
     ack_update: "AGENTS.md proje taramasıyla güncelleniyor…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Bir istemi bu oturumda yinelenen aralıklarla yeniden çalıştır"
   plan:
     description: ".hermes/plans/ altına hiçbir şey çalıştırmadan markdown uygulama planı yaz"
+  initiate-setup:
+    description: "İlk kurulumu çalıştır: seni tanı ve Hermes'i sana göre ayarla"
   moa:
     description: "Bir istemi varsayılan Mixture of Agents ön ayarıyla çalıştır, sonra modelinize geri dön"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planlanıyor: {task}"
       from_conversation: "📋 Bu konuşmanın bağlamından planlanıyor..."
+    initiate_setup:
+      starting: "🧭 Kurulum başlatılıyor..."
     init:
       updating: "⚡ AGENTS.md proje taramasından güncelleniyor..."
       generating: "⚡ AGENTS.md proje taramasından oluşturuluyor..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "Yörünge kaydı (--save-trajectories), model eğitimi için tam araç kullanım izlerini yakalar."
   t198: "Üç eklenti türü: genel (araçlar/kancalar), bellek sağlayıcıları ve bağlam motorları."
   t199: "hermes plugins install owner/repo, eklentileri doğrudan GitHub'dan kurar."
-  t200: "Harici bellek sağlayıcıları: OpenViking dahili gelir; Honcho, Hindsight, Mem0 ve diğerleri hermes plugins install ile kurulur."
+  t200: "Harici bellek sağlayıcıları: Honcho, Hindsight, Mem0, OpenViking ve diğerleri hermes plugins install ile kurulur."
   t201: "Eklenti kancaları arasında pre/post_tool_call, pre/post_llm_call ve çıktı normalleştirme için transform_terminal_output bulunur."
   t202: "İstem önbelleği (Anthropic), önbelleğe alınmış sistem istemi öneklerini yeniden kullanarak maliyetleri düşürür."
   t203: "Ajan oturum başlıklarını arka plan iş parçacığında otomatik oluşturur — gecikmeye sıfır etki."

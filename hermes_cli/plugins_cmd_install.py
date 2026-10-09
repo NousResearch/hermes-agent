@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 import tempfile
-import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -19,7 +18,6 @@ from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.plugin_install_phase import InstallPhase
-from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +385,15 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        link = plugins_dir / str(plugin_name)
+        from pm.filesystem import is_junction
+        if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
+            # A provider's own installer (e.g. `mnemosyne-hermes install`) links its package here; the
+            # name is fine, the slot is taken. Say so instead of blaming the manifest.
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' is already installed outside the catalog: {link} is a link to "
+                f"{os.path.realpath(link)}. Delete that link to install the catalog version.",
+                failure_class="already_installed")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -530,7 +537,6 @@ def cmd_install(
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
-    allow_live_gateway: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -560,10 +566,6 @@ def cmd_install(
             "This plugin may have been removed for security reasons.[/red]")
 
     try:
-        if force:
-            # `install --force` over an existing install replaces its code in place — the same
-            # destructive mutation of a loaded checkout that `update` is (#70473).
-            _pc()._refuse_live_gateway_mutation("reinstall", allow_live_gateway=allow_live_gateway)
         git_url, _subdir = _pc()._resolve_git_url(identifier)
         if not allow_removed:
             catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))
@@ -729,18 +731,14 @@ def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[
     Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
     matches a tree checked out at that commit."""
     from hermes_cli.plugins_cmd_catalog import catalog_install_record
-    enabled = _pc()._get_enabled_set()
-    for key in _pc()._read_install_metadata():
-        target = _pc()._plugins_dir() / key
-        record = catalog_install_record(target) if target.is_dir() else None
-        if not record or record["catalog_name"] != catalog_name:
-            continue
-        if ref and str(record["sha"]).lower() != ref.lower():
-            return None
-        manifest = _pc()._read_manifest(target)
-        installed_name = manifest.get("name") or target.name
-        return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
-    return None
+    target = _pc()._catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    if ref and str(catalog_install_record(target)["sha"]).lower() != ref.lower():
+        return None
+    manifest = _pc()._read_manifest(target)
+    installed_name = manifest.get("name") or target.name
+    return None if {installed_name, target.name} & _pc()._get_enabled_set() else (target, manifest, installed_name)
 
 
 def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
@@ -804,18 +802,6 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc)}
 
 
-# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
-# thread; without it every thread read the same config version and all but the first commit were
-# refused as stale. The version check in PM stays: it still catches an edit from another process.
-_ENABLE_LOCKS: dict[str, threading.Lock] = {}
-_ENABLE_LOCKS_GUARD = threading.Lock()
-
-
-def _enable_lock() -> threading.Lock:
-    with _ENABLE_LOCKS_GUARD:
-        return _ENABLE_LOCKS.setdefault(hermes_home_key(), threading.Lock())
-
-
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
     """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
     its Python dependencies."""
@@ -824,8 +810,8 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     if deps:
         step(InstallPhase.python_packages)
     try:
-        with _enable_lock():
-            _pc()._set_plugin_enabled(installed_name, enable=True)
+        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
+        _pc()._set_plugin_enabled(installed_name, enable=True)
     except AdmissionRefused as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None

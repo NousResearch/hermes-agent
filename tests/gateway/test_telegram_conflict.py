@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -573,7 +573,7 @@ async def test_disarm_sets_ptb_stop_event():
     stop_event = asyncio.Event()
     # PTB stores it name-mangled as _Updater__polling_task_stop_event.
     updater = SimpleNamespace(running=True)
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     adapter._app = SimpleNamespace(updater=updater)
 
     assert not stop_event.is_set()
@@ -616,7 +616,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
         stop=AsyncMock(),
         running=True,
     )
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
     app = SimpleNamespace(
         bot=bot,

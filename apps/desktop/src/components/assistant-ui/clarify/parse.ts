@@ -49,12 +49,14 @@ export interface ClarifyResponse {
 }
 
 /** Parse clarify tool JSON (`responses` array). */
-export function readClarifyResult(result: unknown): { responses: ClarifyResponse[] } {
+export function readClarifyResult(result: unknown): { outcome?: string; responses: ClarifyResponse[] } {
   const row = parseMaybeObject(result)
 
   if (!Array.isArray(row.responses)) {
     return { responses: [] }
   }
+
+  const outcome = typeof row.outcome === 'string' ? row.outcome : undefined
 
   const responses = row.responses.map((entry): ClarifyResponse => {
     const item = parseMaybeObject(entry)
@@ -67,5 +69,5 @@ export function readClarifyResult(result: unknown): { responses: ClarifyResponse
     }
   })
 
-  return { responses }
+  return { outcome, responses }
 }

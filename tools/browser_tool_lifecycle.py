@@ -23,7 +23,7 @@ from tools import browser_tool_install as _install
 from tools import browser_tool_real_profile as _real_profile
 
 
-def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
+def _session_expiry_timestamp(session_info: dict[str, Any]) -> Optional[float]:
     """Provider-authoritative session expiry as epoch seconds; None when absent or
     malformed (cloud providers may omit ``expires_at``; local browsers never have one)."""
     value = session_info.get("expires_at")
@@ -46,7 +46,7 @@ def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
 
 
 def _session_has_expired(
-    session_info: Dict[str, Any], *, now: Optional[float] = None
+    session_info: dict[str, Any], *, now: Optional[float] = None
 ) -> bool:
     """Whether a cached browser session crossed its provider deadline."""
     expires_at = _session_expiry_timestamp(session_info)
@@ -294,7 +294,7 @@ def _read_pid_file(path: str) -> Optional[int]:
         return None
 
 
-def _owner_pid_alive(socket_dir: str, session_name: str) -> Tuple[Optional[int], Optional[bool]]:
+def _owner_pid_alive(socket_dir: str, session_name: str) -> tuple[Optional[int], Optional[bool]]:
     """Read ``<session>.owner_pid`` and report ``(pid, alive)``; ``(None, None)`` when missing/corrupt."""
     owner_pid = _read_pid_file(os.path.join(socket_dir, f"{session_name}.owner_pid"))
     if owner_pid is None:
@@ -652,7 +652,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
         return False
 
 
-def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> None:
+def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> None:
     """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
 

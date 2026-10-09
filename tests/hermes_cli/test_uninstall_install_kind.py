@@ -180,7 +180,7 @@ def test_gui_summary_reports_steward_and_gate(monkeypatch, tmp_path):
 
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     # Sealed nix tree → steward named, code removal denied.
@@ -204,7 +204,7 @@ def test_gui_summary_classifies_the_agent_root(tmp_path, monkeypatch):
 
     seen = []
     monkeypatch.setattr(st, "classify_install", lambda root: seen.append(root) or ("git", True))
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     home = tmp_path / ".hermes"

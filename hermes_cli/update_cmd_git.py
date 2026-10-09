@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+from hermes_cli.update_cmd_common import _record_stop
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -134,6 +135,7 @@ def _park_detached_head(git_cmd, cwd, branch) -> None:
               f"to {rescue_ref} failed.")
         print(f"  Update stopped so those commits are not orphaned. Keep them with: "
               f"git -C {cwd} branch <name> {sha[:12]}")
+        _record_stop("detached_head")
         sys.exit(1)
     count = (_git_run(git_cmd, ["rev-list", "--count", sha, "--not", "--branches", "--tags", "--remotes"],
                       cwd).stdout or "").strip()

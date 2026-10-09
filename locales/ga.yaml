@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Ag pleanáil: {task}"
     ack_conversation: "Ag pleanáil ó chomhthéacs an chomhrá seo…"
+  initiate_setup:
+    ack: "Ag tosú an tsocraithe…"
   init:
     start_failed: "Níorbh fhéidir /init a thosú — bain triail eile as le do thoil."
     ack_update: "Ag nuashonrú AGENTS.md ó scanadh tionscadail…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Athrith leid ar eatramh athfhillteach sa seisiún seo"
   plan:
     description: "Scríobh plean cur i bhfeidhm markdown go .hermes/plans/ gan aon rud a rith"
+  initiate-setup:
+    description: "Rith an chéad socrú: foghlaim fút agus socraigh Hermes timpeall ort"
   moa:
     description: "Rith leid amháin tríd an réamhshocrú Mixture of Agents, ansin aischuir do shamhail"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Ag pleanáil: {task}"
       from_conversation: "📋 Ag pleanáil ó chomhthéacs an chomhrá seo..."
+    initiate_setup:
+      starting: "🧭 Ag tosú an tsocraithe..."
     init:
       updating: "⚡ Ag nuashonrú AGENTS.md ó scanadh tionscadail..."
       generating: "⚡ Ag giniúint AGENTS.md ó scanadh tionscadail..."
@@ -3677,7 +3683,7 @@ tips:
   t197: "Gabhann sábháil trajectóirí (--save-trajectories) rianta iomlána úsáide uirlisí le haghaidh oiliúna samhlacha."
   t198: "Trí chineál breiseáin: ginearálta (uirlisí/crúcaí), soláthraithe cuimhne, agus innill chomhthéacs."
   t199: "Suiteálann hermes plugins install owner/repo breiseáin go díreach ó GitHub."
-  t200: "Soláthraithe cuimhne seachtracha: OpenViking cuachta; Honcho, Hindsight, Mem0 agus tuilleadh trí hermes plugins install."
+  t200: "Soláthraithe cuimhne seachtracha: Honcho, Hindsight, Mem0, OpenViking agus tuilleadh trí hermes plugins install."
   t201: "I measc crúcaí breiseán tá pre/post_tool_call, pre/post_llm_call, agus transform_terminal_output le haghaidh canónú aschuir."
   t202: "Laghdaíonn taisceadh leideanna (Anthropic) costais trí réimíreanna taiscthe leid an chórais a athúsáid."
   t203: "Gineann an gníomhaire teidil seisiún go huathoibríoch i snáithe cúlra — gan aon tionchar ar aga freagartha."

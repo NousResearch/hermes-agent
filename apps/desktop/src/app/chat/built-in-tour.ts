@@ -10,13 +10,10 @@
 
 import type { TourPreset } from '@hermes/shared'
 
-import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
 import { runtimeTranslations } from '@/i18n'
-import { localSetupEligible } from '@/lib/tips/local-cta'
 import { startTour, type TourResult } from '@/lib/tour'
 import { $interfaceMode } from '@/store/interface-mode'
-import { $localModelsEnabled } from '@/store/local-models-flag'
-import { $connection } from '@/store/session'
+import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 
 const SELECTORS = {
   capabilities: '[data-tour="sidebar-nav-capabilities"]',
@@ -63,19 +60,12 @@ function onScreen(selector: string): boolean {
   return width >= 4 && height >= 4
 }
 
-/** Whether the model stop says this computer can run a local model. It is the
- *  local-setup tip's answer (the backend's catalog `fits` check, on a local
- *  connection, with nothing set up yet), and only where the Local Models pane
- *  exists to point at. */
+/** Whether the model stop says this computer can run a local model: the
+ *  local-setup offer's answer (the backend's catalog `fits` check, on a local
+ *  connection with Local Models on, with nothing set up yet). */
 async function canRunLocalModel(): Promise<boolean> {
-  const mode = $connection.get()?.mode ?? null
-
-  if (!$localModelsEnabled.get() || mode !== 'local') {
-    return false
-  }
-
-  const read = Promise.all([getLocalModelsStatus(), getLocalCatalog()]).then(
-    ([status, catalog]) => localSetupEligible(mode, status, catalog.models),
+  const read = readLocalSetupEligibility().then(
+    ({ fit }) => fit !== null,
     () => false
   )
 

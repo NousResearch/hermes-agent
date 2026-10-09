@@ -39,7 +39,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _voice_list_error_logged_once = late("_voice_list_error_logged_once")
 load_env = late("load_env", "hermes_cli.config")
 
-_AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
+_AUDIO_MIME_EXTENSIONS: dict[str, str] = {
     "audio/aac": ".aac", "audio/flac": ".flac", "audio/m4a": ".m4a", "audio/mp3": ".mp3",
     "audio/mp4": ".mp4", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/wav": ".wav",
     "audio/wave": ".wav", "audio/webm": ".webm", "audio/x-m4a": ".m4a", "audio/x-wav": ".wav",
@@ -205,7 +205,7 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     return {"ok": True, **result}
 
 
-def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
+def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()
 
@@ -248,7 +248,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     try:
         loop = asyncio.get_running_loop()
 
-        def _fetch() -> Dict[str, Any]:
+        def _fetch() -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return _read_dashboard_json_response(response)
 

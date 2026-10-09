@@ -104,11 +104,21 @@ export class CanonicalDesktopProtocol {
   // [owner, model payload] → the owner's one-time token from a `confirmation_required` model
   // answer (a guarded target: cost / data policy / large context; nothing was written). The
   // dialog's resend (`confirm_expensive_model: true`, the legacy handshake every Desktop surface
-  // speaks) carries it as `payload.confirm`; consumed once, so a re-refusal is never auto-confirmed.
-  private modelConfirmations = new Map<string, string>()
+  // speaks) carries it as `payload.confirm`. It is spent by the owner's ANSWER to that resend,
+  // not by sending it: until an answer (applied, refused, re-refused with a fresh token) arrives,
+  // `sent` keeps the token so a retry after a lost reply re-sends the exact same token-bearing
+  // request (same retained request id) instead of a new unconfirmed mutation. A re-refusal
+  // replaces it with an unsent token, so it is never auto-confirmed.
+  private modelConfirmations = new Map<string, { token: string; sent: boolean }>()
 
   failure(params: Record<string, unknown>, error: unknown) {
-    if ((error as { data?: { reason?: string } })?.data?.reason !== 'revision_conflict') { return }
+    const reason = (error as { data?: { reason?: string } })?.data?.reason
+
+    // The owner answered (a typed refusal): the confirmed request's outcome is known. A transport
+    // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
+    if (typeof reason === 'string') { this.settleModelConfirmation(params) }
+
+    if (reason !== 'revision_conflict') { return }
 
     // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
@@ -237,16 +247,28 @@ export class CanonicalDesktopProtocol {
     return JSON.stringify([canonicalSessionKey(params.session_id, params.profile), target])
   }
 
-  // A user-confirmed resend of a guarded model target presents the owner's token once.
+  // A user-confirmed resend of a guarded model target presents the owner's token. While that
+  // confirmed request's outcome is unknown (reply lost), any retry of the same target is the same
+  // confirmed intent and re-sends it verbatim: the token is part of the retained mutation's key,
+  // so the retry keeps its request id and the owner resolves it as an exact retry.
   private confirmedModel(params: Record<string, unknown>, payload: Record<string, unknown>): Record<string, unknown> {
-    if (!params.confirm_expensive_model) { return payload }
     const key = this.modelConfirmationKey(params, payload)
-    const token = this.modelConfirmations.get(key)
+    const confirmation = this.modelConfirmations.get(key)
 
-    if (!token) { return payload }
-    this.modelConfirmations.delete(key)
+    if (!confirmation || !(params.confirm_expensive_model || confirmation.sent)) { return payload }
+    confirmation.sent = true
 
-    return { ...payload, confirm: token }
+    return { ...payload, confirm: confirmation.token }
+  }
+
+  // The owner answered a token-bearing model request: that token is spent.
+  private settleModelConfirmation(params: Record<string, unknown>): void {
+    const payload = params.payload as Record<string, unknown> | undefined
+
+    if (params.operation !== 'model' || typeof payload?.confirm !== 'string') { return }
+    const key = this.modelConfirmationKey(params, payload)
+
+    if (this.modelConfirmations.get(key)?.token === payload.confirm) { this.modelConfirmations.delete(key) }
   }
 
   private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
@@ -379,11 +401,12 @@ export class CanonicalDesktopProtocol {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.settleModelConfirmation(params)
 
     if (params.operation === 'model' && value.status === 'confirmation_required' && typeof value.confirm === 'string') {
       // The owner wrote nothing: answer in the legacy handshake (`confirm_required` +
       // `confirm_message`) so the shared confirm dialog asks, and keep the token for its resend.
-      this.modelConfirmations.set(this.modelConfirmationKey(params, params.payload as Record<string, unknown>), value.confirm)
+      this.modelConfirmations.set(this.modelConfirmationKey(params, params.payload as Record<string, unknown>), { token: value.confirm, sent: false })
       const refusal = { ...value, confirm_required: true }
 
       return method === 'slash.exec' ? { ...refusal, type: 'exec', output: value.confirm_message } : refusal

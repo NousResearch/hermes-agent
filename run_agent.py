@@ -817,11 +817,20 @@ class AIAgent(
                 return
 
             from agent.background_review import review_prompt_for_scope
+            budgets = review_admission.review_budgets(
+                task_cfg, self, review_prompt_for_scope(self, review_memory, review_skills),
+            )
+            if budgets.unfunded:
+                # The fixed request parts alone exceed what one request may carry: no automatic
+                # review can ever run on this surface — a configuration problem, warned not INFO.
+                logger.warning(
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id),
+                    review_admission.REASON_OVERHEAD_EXCEEDS_BUDGET,
+                )
+                return
             messages_snapshot, replay_reason = review_admission.bounded_replay_history(
-                messages_snapshot,
-                review_admission.replay_token_budget(
-                    task_cfg, self, review_prompt_for_scope(self, review_memory, review_skills),
-                ),
+                messages_snapshot, budgets.replay,
             )
             if replay_reason:
                 if not messages_snapshot:

@@ -552,23 +552,28 @@ def _context_derived_review_input_budget(review_agent: Any = None) -> int:
     return min(_REVIEW_MAX_INPUT_TOKENS_CAP, max(1, int(context_window * _REVIEW_INPUT_CONTEXT_FRACTION)))
 
 
-def _review_input_token_budget(
-    task_cfg: Optional[dict[str, Any]] = None, review_agent: Any = None,
-) -> int:
-    """Aggregate input-token budget for one automatic review fork. Unset, boolean, malformed or
-    <= 0 ``max_input_tokens`` → derived from ``review_agent``'s resolved context window (75%,
-    capped at the 600k ceiling; 120k when the window is unknown). An explicit value is clamped to
-    the ceiling: an automatic review can be narrowed, never made unbounded (``/refine`` sets None)."""
+def explicit_review_input_budget(task_cfg: Optional[dict[str, Any]] = None) -> Optional[int]:
+    """The operator's ``max_input_tokens`` clamped to the ceiling, or None when unset, boolean,
+    malformed or <= 0 (the derived default then applies). An explicit cap can narrow an
+    automatic review, never make it unbounded — nor is it ever raised (``review_admission``)."""
     raw = _background_review_task_config(task_cfg).get("max_input_tokens")
     if raw is None or isinstance(raw, bool):
-        return _context_derived_review_input_budget(review_agent)
+        return None
     try:
         budget = int(raw)
     except (OverflowError, TypeError, ValueError):
-        return _context_derived_review_input_budget(review_agent)
-    if budget <= 0:
-        return _context_derived_review_input_budget(review_agent)
-    return min(budget, _REVIEW_MAX_INPUT_TOKENS_CAP)
+        return None
+    return min(budget, _REVIEW_MAX_INPUT_TOKENS_CAP) if budget > 0 else None
+
+
+def _review_input_token_budget(
+    task_cfg: Optional[dict[str, Any]] = None, review_agent: Any = None,
+) -> int:
+    """Aggregate input-token budget for one automatic review fork: the operator's explicit cap,
+    else derived from ``review_agent``'s resolved context window (75%, capped at the 600k
+    ceiling; 120k when the window is unknown). ``/refine`` sets None."""
+    explicit = explicit_review_input_budget(task_cfg)
+    return explicit if explicit is not None else _context_derived_review_input_budget(review_agent)
 
 
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
@@ -1313,6 +1318,7 @@ def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review", session_id: Optional[str] = None,
+    review_prompt: Optional[str] = None,
 ) -> tuple[Any, dict[str, Any], bool]:
     """Construct a detached AIAgent fork with warm prompt-cache parity (shared with ``/btw``): same
     runtime/credentials as the parent, byte-identical system prompt / tools[] / reasoning config on
@@ -1400,13 +1406,18 @@ def build_cache_parity_fork(
     review_agent._foreground_exempt_fork = True
     # Compaction bounds a single request; the aggregate budget bounds the WHOLE automatic review
     # and is reserved before every provider request, the first included (conversation_loop).
-    # /btw is one prefix-extension call (tools denied, three iterations at most) whose first
-    # request always reaches the provider, so it carries no aggregate budget.
-    review_agent._review_input_token_budget = (
-        _review_input_token_budget(task_cfg, review_agent)
-        if write_origin == "background_review"
-        else None
-    )
+    # Sized on the fork itself (its window, inherited prompt and tools[], ``review_prompt``) so it
+    # funds the replay the spawn admitted (review_admission.review_budgets). /btw is one
+    # prefix-extension call (tools denied, three iterations at most) whose first request always
+    # reaches the provider, so it carries no aggregate budget.
+    if write_origin == "background_review":
+        from agent.review_admission import review_budgets
+
+        review_agent._review_input_token_budget = review_budgets(
+            task_cfg, review_agent, review_prompt
+        ).aggregate
+    else:
+        review_agent._review_input_token_budget = None
     return review_agent, _rt, _routed
 
 
@@ -1569,6 +1580,7 @@ def _run_review_fork(
         task_cfg,
         max_iterations=_REVIEW_MAX_ITERATIONS,
         session_id=review_session_id,
+        review_prompt=prompt,
     )
     st.review_agent._review_attended = explicit
     if explicit:

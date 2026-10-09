@@ -29,6 +29,7 @@ import hashlib
 import itertools
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,10 @@ REASON_INPUT_BUDGET_REFUSED = "review_input_budget_refused"
 # declaring ``SUPPORTS_HERMES_TOOL_CALLS = False``) and the review is not routed elsewhere: the
 # fork could write nothing, so it is never spawned.
 REASON_PROVIDER_INCAPABLE = "provider_cannot_emit_tool_calls"
+# The fixed parts of every request (system prompt, tools[], review prompt, margin) alone exceed
+# what one request may carry — a request share of an explicit ``max_input_tokens``, or 75% of
+# the window — so no replay fits: a configuration problem, not a big turn (warned, not INFO).
+REASON_OVERHEAD_EXCEEDS_BUDGET = "review_overhead_exceeds_budget"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.
@@ -101,6 +106,14 @@ REQUEST_OVERHEAD_MARGIN_TOKENS = 2_048
 # enforces read-before-write), a write and a closing response; the tool results that grow the
 # later requests come out of the per-request margin.
 REVIEW_REQUEST_SHARES = 3
+# The replay the DERIVED aggregate (75% of the window) always funds while one request on the
+# window carries it: a few recent exchanges. On a small window the fixed parts alone (the default
+# toolset, the review prompt, a gateway system prompt: ~18k tokens) exceed a third of the derived
+# aggregate (16,384 at 65,536), which left no replay at all and skipped every automatic review
+# there; the aggregate is raised to fund REVIEW_REQUEST_SHARES requests of the fixed parts plus
+# this floor instead. Below it only when the window itself carries less. An explicit
+# ``max_input_tokens`` is never raised.
+REPLAY_FLOOR_TOKENS = 12_288
 
 _lock = threading.RLock()
 _live_turns: dict[tuple[str, str], set[int]] = {}
@@ -324,33 +337,89 @@ def request_overhead_tokens(agent: Any, review_prompt: Optional[str] = None) -> 
     )
 
 
+@dataclass(frozen=True)
+class ReviewBudgets:
+    """What one automatic review may send: ``replay`` tokens of verbatim history on every
+    request (never below 1) and ``aggregate`` input tokens over the fork's whole loop.
+    ``overhead`` is what every request carries besides the replay; ``unfunded`` says the fixed
+    parts alone leave no replay room, so the spawn is skipped (``REASON_OVERHEAD_EXCEEDS_BUDGET``)."""
+
+    replay: int
+    aggregate: int
+    overhead: int
+    unfunded: bool
+
+
+def _context_window(agent: Any) -> Optional[int]:
+    """The agent's resolved context window, or None when unknown (the fallback aggregate then
+    answers alone)."""
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    return window
+
+
+def review_budgets(
+    task_cfg: Optional[dict[str, Any]],
+    agent: Any,
+    review_prompt: Optional[str] = None,
+) -> ReviewBudgets:
+    """Size one automatic review for a read, a write and a closing request.
+
+    Every provider request the fork makes carries the replay plus :func:`request_overhead_tokens`
+    (system prompt, tools[], ``review_prompt``, margin) and is charged in full, so the replay is
+    one of :data:`REVIEW_REQUEST_SHARES` equal shares of the aggregate input budget net of that
+    overhead: a replay sized for the first request alone would leave no second request — a
+    review that reads but never writes. It never exceeds the operator ceiling, nor what one
+    request carries on the window (75% of it, the headroom the derived aggregate keeps).
+
+    The derived aggregate (75% of the window) is raised — up to the 600k cap — to fund the three
+    requests of overhead plus :data:`REPLAY_FLOOR_TOKENS` when its share cannot: on a small
+    window the fixed parts alone are wider than a share, and the old share arithmetic left no
+    replay and no review at all. An explicit ``max_input_tokens`` is the operator's cap and is
+    never raised. When the fixed parts exceed a whole request nothing fits (``unfunded``). The
+    fork resolves the same context window as its parent on the same-model path, so the parent
+    answers for it at replay-bounding time; the fork re-derives the same aggregate when built.
+    """
+    from agent.background_review import (
+        _REVIEW_INPUT_CONTEXT_FRACTION,
+        _REVIEW_MAX_INPUT_TOKENS_CAP,
+        _review_input_token_budget,
+        explicit_review_input_budget,
+    )
+
+    overhead = request_overhead_tokens(agent, review_prompt)
+    aggregate = _review_input_token_budget(task_cfg, agent)
+    window = _context_window(agent)
+    request_fit = (
+        None if window is None else int(window * _REVIEW_INPUT_CONTEXT_FRACTION) - overhead
+    )
+    if explicit_review_input_budget(task_cfg) is None:
+        floor = REPLAY_FLOOR_TOKENS if request_fit is None else min(REPLAY_FLOOR_TOKENS, request_fit)
+        if floor > 0:
+            aggregate = min(
+                _REVIEW_MAX_INPUT_TOKENS_CAP,
+                max(aggregate, REVIEW_REQUEST_SHARES * (overhead + floor)),
+            )
+    replay = min(_replay_ceiling(task_cfg), aggregate // REVIEW_REQUEST_SHARES - overhead)
+    if request_fit is not None:
+        replay = min(replay, request_fit)
+    return ReviewBudgets(
+        replay=max(1, replay), aggregate=aggregate, overhead=overhead, unfunded=replay < 1
+    )
+
+
 def replay_token_budget(
     task_cfg: Optional[dict[str, Any]],
     agent: Any = None,
     review_prompt: Optional[str] = None,
 ) -> int:
-    """Resolve the operator setting without permitting automatic replay to become unbounded.
-
-    With ``agent`` (the spawning parent) the replay is also never wider than one of
-    :data:`REVIEW_REQUEST_SHARES` equal shares of the aggregate input budget net of
-    :func:`request_overhead_tokens` (system prompt, tools[], ``review_prompt``): every provider
-    request the fork makes carries the replay plus that overhead and is charged in full, so the
-    first request alone fitting the budget would leave no second request — a review that reads
-    but never writes. A projection above the budget with nothing consumed is refused before any
-    provider call (a zero-request review). The fork resolves the same context window as its
-    parent on the same-model path, so the parent answers for it at replay-bounding time. Never
-    below 1: when the fixed parts alone exceed a share no replay fits, and
-    :func:`bounded_replay_history` skips the review as ``oversized_snapshot``.
-    """
-    ceiling = _replay_ceiling(task_cfg)
+    """Resolve the operator setting without permitting automatic replay to become unbounded:
+    the ceiling alone without ``agent``, else :func:`review_budgets`'s replay for the spawning
+    parent (never below 1)."""
     if agent is None:
-        return ceiling
-    from agent.background_review import _review_input_token_budget
-
-    request_share = _review_input_token_budget(task_cfg, agent) // REVIEW_REQUEST_SHARES
-    return max(
-        1, min(ceiling, request_share - request_overhead_tokens(agent, review_prompt))
-    )
+        return _replay_ceiling(task_cfg)
+    return review_budgets(task_cfg, agent, review_prompt).replay
 
 
 def _replay_ceiling(task_cfg: Optional[dict[str, Any]]) -> int:

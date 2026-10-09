@@ -451,8 +451,8 @@ hashed owner tag and a stable reason (`live_turn_active`,
 `review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
 `review_lease_renewal_locked`,
 `review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`,
-`review_input_budget_refused`, `provider_cannot_emit_tool_calls`, …), never the
-session id or any message text.
+`review_input_budget_refused`, `review_overhead_exceeds_budget`,
+`provider_cannot_emit_tool_calls`, …), never the session id or any message text.
 
 Same-model reviews replay an ordinary conversation verbatim for prompt-cache
 reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes
@@ -490,10 +490,21 @@ a replay sized for the first request alone would leave room for exactly one
 request: the review could read but never write. Three shares leave it a read
 (the review prompt enforces read-before-write), a write and a closing response;
 on a 200k-token model with the default budget that is roughly 30k tokens of
-replay on a gateway surface. When the fixed parts alone leave no room, the
-automatic review is skipped as `oversized_snapshot`; a first request that is
-still refused by the budget makes no provider call and is logged as
-`review_input_budget_refused`.
+replay on a gateway surface. The replay is also never wider than one request
+can carry on the model's window (75% of it, the headroom the derived budget
+keeps).
+
+On a small window the fixed parts alone can eat the whole share: the default
+toolset, the review prompt and a gateway system prompt are ~18k tokens, more
+than a third of the 49,152-token budget a 65,536-token window derives. When the
+budget is the derived default, Hermes raises it to fund three requests of the
+fixed parts plus a 12,288-token replay floor (within one request on the window
+and the 600,000 ceiling), so small-window models still review their newest
+exchanges; an explicit `max_input_tokens` is the operator's cap and is never
+raised. When the fixed parts alone exceed what one request may carry, nothing
+can be replayed and the automatic review is skipped with a warning as
+`review_overhead_exceeds_budget`; a first request that is still refused by the
+budget makes no provider call and is logged as `review_input_budget_refused`.
 
 ### Disabling automatic reviews (`enabled`)
 
@@ -524,8 +535,10 @@ auxiliary:
 
 When the key is unset, the budget is derived from the review model's resolved
 context window: 75% of the window, capped at 600,000 tokens — so it also binds
-on small local models (a 65,536-token model gets 49,152), where a fixed
-cloud-scale default would never bite. If the window cannot be resolved, a
+on small local models (a 65,536-token model gets 49,152, raised only as far as
+three requests of the fixed parts plus the replay floor need; see "Replay and
+foreground bounds" above), where a fixed cloud-scale default would never bite.
+If the window cannot be resolved, a
 conservative 120,000-token fallback applies. `600000` is a hard ceiling for
 automatic reviews: a larger explicit value is clamped to it, and zero, negative,
 or non-numeric values fall back to the derived default instead of lifting the

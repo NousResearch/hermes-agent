@@ -1560,9 +1560,9 @@ def test_replay_budget_is_the_ceiling_or_a_request_share_net_of_the_overhead(
 def test_first_request_overhead_alone_above_the_aggregate_skips_the_review(
     review_forks, monkeypatch, caplog
 ):
-    """When the parent's system prompt and tools[] leave no room under the aggregate budget,
-    no replay can make the fork's first request fit: the review is skipped as oversized instead
-    of spawning a fork that is refused at its first request."""
+    """When the parent's system prompt and tools[] leave no room under the operator's aggregate
+    cap, no replay can make the fork's first request fit: the review is skipped under its own
+    slug (a warning) instead of spawning a fork that is refused at its first request."""
     _patch_config(monkeypatch, _config(max_input_tokens=1_000))
     agent = _bare_agent()
     # ~2k tokens of system prompt: wider than the whole aggregate on its own.
@@ -1575,7 +1575,7 @@ def test_first_request_overhead_alone_above_the_aggregate_skips_the_review(
         )
 
     assert review_forks == []
-    assert review_admission.REASON_OVERSIZED in caplog.text
+    assert review_admission.REASON_OVERHEAD_EXCEEDS_BUDGET in caplog.text
 
 
 def test_replay_never_exceeds_the_forks_aggregate_input_budget(

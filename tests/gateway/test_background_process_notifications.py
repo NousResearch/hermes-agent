@@ -528,6 +528,120 @@ async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
     assert sent_text.startswith("✅ Background task finished")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface_child", [False, True])
+async def test_gateway_watch_drain_uses_child_process_policy(monkeypatch, tmp_path, surface_child):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  background_process_notifications: all\n"
+        f"delegation:\n  surface_child_process_notifications: {str(surface_child).lower()}\n",
+        encoding="utf-8",
+    )
+    inject = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "_inject_watch_notification", inject)
+    events = queue.Queue()
+    events.put({**_watch_event(), "owner_task_id": "sa-child", "task_id": "parent-container"})
+    await runner._drain_watch_notifications(events)
+    assert inject.await_count == int(surface_child)
+    assert events.empty()
+
+
+@pytest.mark.asyncio
+async def test_gateway_watch_policy_uses_each_events_profile(monkeypatch, tmp_path):
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True, sessions_dir=tmp_path / "sessions"))
+    homes = {name: get_profile_dir(name) for name in ("a", "b")}
+    for name, home in homes.items():
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(
+            "display:\n  background_process_notifications: all\n"
+            f"delegation:\n  surface_child_process_notifications: {str(name == 'a').lower()}\n",
+            encoding="utf-8",
+        )
+    seen = []
+    async def inject(_text, event):
+        seen.append((event["session_key"], get_hermes_home()))
+        return True
+    monkeypatch.setattr(runner, "_inject_watch_notification", inject)
+    events = queue.Queue()
+    for name in ("a", "b", "a"):
+        events.put({**_watch_event(), "session_key": f"agent:{name}:telegram:dm:123:42",
+                    "owner_task_id": "sa-child"})
+
+    await runner._drain_watch_notifications(events)
+
+    assert seen == [("agent:a:telegram:dm:123:42", homes["a"])] * 2
+    assert events.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_notify", [False, True])
+async def test_live_watcher_suppresses_unhanded_child_process(monkeypatch, tmp_path, agent_notify):
+    import tools.process_registry as pr_module
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    watcher = {**_watcher_dict(), "notify_on_complete": agent_notify,
+               "owner_task_id": "sa-child", "session_key": "agent:main:telegram:dm:123"}
+    session = SimpleNamespace(
+        output_buffer="READY\n", exited=True, exit_code=0, command="build",
+        started_at=1.0, completion_reason="exited", parent_session_id="worker",
+        owner_task_id="sa-child", task_id="parent-container",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([session]))
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    enqueue = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "_enqueue_process_completion_notification", enqueue)
+    monkeypatch.setattr(runner, "_launching_turn_active", AsyncMock(return_value=False))
+
+    await runner._run_process_watcher(watcher)
+
+    enqueue.assert_not_awaited()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_watcher_rechecks_owner_after_child_handoff(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    child = SimpleNamespace(
+        output_buffer="READY\n", exited=False, exit_code=None,
+        command="build", started_at=1.0, owner_task_id="sa-child", task_id="container",
+    )
+    handed_off = SimpleNamespace(
+        output_buffer="READY\nDONE\n", exited=True, exit_code=0,
+        command="build", started_at=1.0, owner_task_id="parent-owner", task_id="container",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([child, handed_off]))
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    await runner._run_process_watcher({**_watcher_dict(), "owner_task_id": "sa-child"})
+
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_awaited_once()
+    assert "finished" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_child_completion_is_filtered_before_gateway_batch(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    async def accept_batch(key):
+        entries = runner._completion_notification_batches.pop(key, [])
+        runner._settle_batch_waiters(entries, True)
+    monkeypatch.setattr(runner, "_flush_process_completion_batch", accept_batch)
+    event = {**_watch_event(), "type": "completion", "owner_task_id": "sa-child"}
+
+    assert await runner._enqueue_process_completion_notification("raw child result", event) is None
+    assert not getattr(runner, "_completion_notification_batches", {})
+
+
 # ---------------------------------------------------------------------------
 # _parse_session_key helper
 # ---------------------------------------------------------------------------

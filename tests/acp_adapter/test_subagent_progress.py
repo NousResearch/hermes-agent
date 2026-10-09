@@ -28,7 +28,7 @@ class RecordingClient:
 
 
 def snapshots(client):
-    return [update["_meta"]["hermes"]["subagentProgress"] for _, update in client.updates if "_meta" in update]
+    return [update["_meta"]["hermes"]["subagentProgress"] for _, update in client.updates if "subagentProgress" in update.get("_meta", {}).get("hermes", {})]
 
 
 @pytest.mark.asyncio
@@ -40,9 +40,9 @@ async def test_parallel_nested_children_keep_identity_across_turns_and_replay(tm
     state = SessionState("root", SimpleNamespace(), cwd=str(tmp_path))
     loop = asyncio.get_running_loop()
     first = server._wire_turn_callbacks(state, "root", client, loop).tool_progress_cb
-    alpha = _ChildProgressRelay(0, "DO NOT SEND PROMPT", None, first, 2, "alpha", None, 1, None, None, {})
-    beta = _ChildProgressRelay(1, "DO NOT SEND PROMPT", None, first, 2, "beta", None, 1, None, None, {})
-    nested = _ChildProgressRelay(0, "DO NOT SEND PROMPT", None, alpha, 1, "nested", "alpha", 2, None, None, {})
+    alpha = _ChildProgressRelay(0, "DO NOT SEND PROMPT", None, first, 2, "alpha", None, 0, None, None, {})
+    beta = _ChildProgressRelay(1, "DO NOT SEND PROMPT", None, first, 2, "beta", None, 0, None, None, {})
+    nested = _ChildProgressRelay(0, "DO NOT SEND PROMPT", None, alpha, 1, "nested", "alpha", 1, None, None, {})
 
     def run(relay):
         relay("subagent.start")
@@ -81,21 +81,28 @@ async def test_journal_is_bounded_private_and_cold_restore_does_not_claim_live_c
     journal.bind(asyncio.get_running_loop(), lambda: client, metadata=True)
     callback = make_tool_progress_cb(client, "root", asyncio.get_running_loop(), {}, {}, subagent_progress=journal.record)
     with ThreadPoolExecutor(4) as pool:
-        list(pool.map(lambda index: callback("subagent.start", subagent_id=f"child-{index}", depth=1), range(70)))
+        list(pool.map(lambda index: callback("subagent.start", subagent_id=f"child-{index}", depth=0), range(70)))
     callback("subagent.text", preview="x" * 20000, subagent_id="child-0")
     for _ in range(40):
         callback("subagent.tool", "read_file", args={"private": "DO NOT SEND"}, subagent_id="child-0")
     await journal.drain()
-    rows = json.loads(journal.path.read_text(encoding="utf-8-sig"))
+    data = json.loads(journal.path.read_text(encoding="utf-8-sig"))
+    rows = data["children"]
     assert journal.path.parent == tmp_path and len(rows) == 64
     child = next(node for node in rows if node["id"] == "child-0")
     assert len(child["text"]) == 16384 and len(child["tools"]) == 32
+    assert child["outputLimited"] and child["activitiesLimited"]
+    assert data["childLimit"]["childrenOmitted"] is True
+    assert any("subagentLimit" in update.get("_meta", {}).get("hermes", {}) for _, update in client.updates)
     restored = SubagentProgress("../../untrusted-id", tmp_path)
     replay = RecordingClient()
     restored.bind(asyncio.get_running_loop(), lambda: replay, metadata=True)
     await restored.replay()
     assert len(snapshots(replay)) == 64
     assert all(node["status"] == "failed" for node in snapshots(replay))
+    replayed_child = next(node for node in snapshots(replay) if node["id"] == "child-0")
+    assert replayed_child["outputLimited"] and replayed_child["activitiesLimited"]
+    assert replay.updates[0][1]["_meta"]["hermes"]["subagentLimit"]["childrenOmitted"] is True
     assert "DO NOT SEND" not in journal.path.read_text(encoding="utf-8-sig")
 
 
@@ -104,7 +111,7 @@ async def test_legacy_clients_receive_standard_tool_lifecycle_without_extension(
     journal = SubagentProgress("legacy", tmp_path)
     client = RecordingClient()
     journal.bind(asyncio.get_running_loop(), lambda: client, metadata=False)
-    journal.record("subagent.start", subagent_id="child", depth=1)
+    journal.record("subagent.start", subagent_id="child", depth=0)
     await journal.drain()
     journal.record("subagent.complete", subagent_id="child", status="timeout")
     await journal.drain()
@@ -126,7 +133,7 @@ async def test_slow_connection_gets_latest_cumulative_state_without_a_chunk_back
     client = SlowClient()
     journal = SubagentProgress("slow", tmp_path)
     journal.bind(asyncio.get_running_loop(), lambda: client, metadata=True)
-    journal.record("subagent.start", subagent_id="child", depth=1)
+    journal.record("subagent.start", subagent_id="child", depth=0)
     await asyncio.wait_for(entered.wait(), timeout=1)
     for _ in range(100):
         journal.record("subagent.text", preview="x", subagent_id="child")
@@ -137,3 +144,54 @@ async def test_slow_connection_gets_latest_cumulative_state_without_a_chunk_back
     assert len(client.updates) == 2
     assert snapshots(client)[-1]["text"] == "x" * 100
     assert snapshots(client)[-1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_public_task_title_is_a_fixed_vocabulary_projection_and_replayed(tmp_path):
+    from acp_adapter.subagents import public_task_title
+
+    goal = "Count files\nBearer abcdefghijklmnopqrstuvwxyz123456 private customer instructions " + "x" * 1000
+    assert public_task_title(goal) == "Count files"
+    assert public_task_title("private secret account contents") == "Delegated task"
+    journal = SubagentProgress("titles", tmp_path)
+    client = RecordingClient()
+    journal.bind(asyncio.get_running_loop(), lambda: client, metadata=True)
+    journal.record("subagent.start", subagent_id="child", goal=goal)
+    await journal.drain()
+    journal.record("subagent.text", subagent_id="child", preview="Public", goal="Rewrite everything")
+    await journal.drain()
+    journal.record("subagent.tool", "sk-abcdefghijklmnopqrstuvwxyz123456", subagent_id="child")
+    await journal.drain()
+    restored = SubagentProgress("titles", tmp_path)
+    restored.bind(asyncio.get_running_loop(), lambda: client, metadata=True)
+    await restored.replay()
+    assert all(node["title"] == "Count files" for node in snapshots(client))
+    assert all(len(node["title"]) <= 80 and "\n" not in node["title"] for node in snapshots(client))
+    assert "private customer" not in json.dumps(client.updates)
+    assert "abcdefghijklmnopqrstuvwxyz123456" not in json.dumps(client.updates)
+
+
+@pytest.mark.asyncio
+async def test_limits_remain_visible_without_metadata_and_old_journals_still_load(tmp_path):
+    journal = SubagentProgress("compatibility", tmp_path)
+    client = RecordingClient()
+    journal.bind(asyncio.get_running_loop(), lambda: client, metadata=False)
+    for index in range(65):
+        journal.record("subagent.start", subagent_id=f"child-{index}", goal="Count files")
+    journal.record("subagent.text", subagent_id="child-0", preview="x" * 16384)
+    for _ in range(32):
+        journal.record("subagent.tool", "terminal", subagent_id="child-0")
+    await journal.drain()
+    assert all("_meta" not in update for _, update in client.updates)
+    assert any(update["title"] == "Count files [record limited]" for _, update in client.updates)
+    assert any("64-child display limit" in update["title"] for _, update in client.updates)
+    rows = json.loads(journal.path.read_text())["children"]
+    for row in rows:
+        for field in ("title", "outputLimited", "activitiesLimited"):
+            row.pop(field)
+    journal.path.write_text(json.dumps(rows))  # original v1 on-disk list, before additive fields
+    restored = SubagentProgress("compatibility", tmp_path)
+    restored.bind(asyncio.get_running_loop(), lambda: client, metadata=True)
+    await restored.replay()
+    assert len(snapshots(client)) == 64
+    assert all(node["title"] == "Delegated task" for node in snapshots(client))

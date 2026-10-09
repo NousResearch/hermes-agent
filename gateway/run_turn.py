@@ -1624,7 +1624,31 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     ) -> Any:
         """Poll the executor future (inactivity timeout + backup interrupt checks); return its result,
         or a synthetic failed run dict on inactivity timeout. Polls even with an unlimited timeout
-        so the backup interrupt check runs if monitor_for_interrupt() silently died."""
+        so the backup interrupt check runs if monitor_for_interrupt() silently died.
+
+        Cancelling this await (adapter.cancel_session_processing) does not stop the executor
+        thread, and the turn's finally then releases the slot a later /stop finds the agent
+        through, so a still-running agent is hard-interrupted here. Skipped when the agent is
+        already interrupted (keeps a /stop, /new or shutdown reason) or the turn already
+        published its result (the finalizer cleared the flag; re-arming it would end a cached
+        agent's next turn at once). The short stretch between the finalizer and that publish is
+        not covered: every current canceller also evicts the cached agent, so a flag re-armed
+        there never reaches another turn."""
+        try:
+            return await self._run_agent_poll_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+        except asyncio.CancelledError:
+            from gateway.run import _INTERRUPT_REASON_STOP, request_hard_interrupt
+            agent = turn_ctx.agent_holder[0]
+            if (agent is not None and not worker.worker_done.is_set() and turn_ctx.result_holder[0] is None
+                    and not getattr(agent, "_interrupt_requested", False)):
+                with suppress(Exception):
+                    request_hard_interrupt(agent, _INTERRUPT_REASON_STOP)
+            raise
+
+    async def _run_agent_poll_turn_worker(
+        self, worker: GatewayRunner._RunAgentWorker, turn_ctx: TurnContext,
+        _interrupt_detected: asyncio.Event, interrupt_monitor: asyncio.Task,
+    ) -> Any:
         from gateway.run import _abandon_timed_out_gateway_turn
         agent_holder = turn_ctx.agent_holder
         _warning_fired = False

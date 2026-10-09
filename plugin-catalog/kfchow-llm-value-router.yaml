@@ -1,0 +1,36 @@
+# Community catalog entry — kfchow-llm-value-router
+#
+# Owner-submitted: the PR author (kfchow-ai) owns and maintains the repo below.
+# Exact-SHA pin (40-hex, resolves as a COMMIT on the repo). No self-updating code: the resolver fetches a public
+# data feed (kfchow.com value leaderboard), never the plugin's own files.
+name: kfchow-llm-value-router
+repo: https://github.com/kfchow-ai/kfchow-llm-value-router
+sha: "ad06c343459e4c0aa25e116d62e82d1ad8b99665"
+description: >-
+  Per-turn LLM routing: on each matching turn a TypeSafe Jev classifier call (api.typesafe.ai) receives turn-shape
+  features plus the first 1200 chars of the last user message (shadow mode included) and labels it free/paid;
+  high-confidence routine turns are downgraded to the provider's configured free rung, strategic mid-rung turns on
+  Nous are escalated to the configured premium rung after a 2-token billed credit probe (Nous only, fail-closed).
+  Fail-open, shadow-by-default, per-provider rungs from the user's lane2_config.json (leaderboard resolver script
+  optional). Probe model id is fixed in code (z-ai/glm-5.3-flash). Disclosure — once you list models in
+  ~/.hermes/jev/lane2_config.json, the first call of each matching turn sends message/tool counts and the first 1,200
+  characters of the last user message (send_excerpt, on by default) to TypeSafe Jev at api.typesafe.ai with your
+  JEVI_API_KEY, in shadow mode as well as live; in live mode Jev's answer switches the request (and every later call
+  of that turn, via an llm_execution wrapper) to the free, flash or premium model you configured on the same provider;
+  with escalation set up on Nous it sends a 2-token billed ping to the Nous inference API with NOUS_API_KEY at most
+  every 5 minutes; every turn appends a decision row (with that excerpt on routed turns) to
+  ~/.hermes/jev/lane2-live.jsonl, which is never rotated. Since v1.0.7 the ladder is source-agnostic: ANY default model on the configured provider moves both ways (free rung at conf >= 0.65, flash rung at 0.35-0.65, premium at conf >= 0.80); a source already on a free model is never rewritten, and a turn is never moved onto the model it is already on (zero credit probes on self-escalation). source_mode ('any' default | 'allowlist' for the v1.0.6 model-allowlist gate) narrows it.
+maintainer: KFChow
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+version: "1.0.7"
+platforms: [linux, macos]
+docs_url: https://github.com/kfchow-ai/kfchow-llm-value-router
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

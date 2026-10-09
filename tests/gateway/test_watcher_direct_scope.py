@@ -26,6 +26,7 @@ def _profile_watcher(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     research_home = get_profile_dir("research")
     research_home.mkdir(parents=True)
     (research_home / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -85,6 +86,7 @@ async def test_queued_watch_retries_initial_routing_load_outage_without_json_mir
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     (tmp_path / "config.yaml").write_text(
         "display:\n  background_process_notifications: all\n", encoding="utf-8",
     )

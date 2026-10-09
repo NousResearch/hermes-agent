@@ -18,6 +18,7 @@ def _runner(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     (tmp_path / "config.yaml").write_text(
         "display:\n  background_process_notifications: all\n", encoding="utf-8",
     )

@@ -53,6 +53,10 @@ def test_aborted_attempts_keep_their_skip_and_failure_verdicts(monkeypatch):
     assert _finish(monkeypatch, "aborted", "summary_auth_failure") == [("failed", "summary_auth_failure")]
 
 
+def test_benched_attempt_when_aborted_keeps_failed_other_class(monkeypatch):
+    assert _finish(monkeypatch, "aborted", "summary_model_benched") == [("failed", "other")]
+
+
 def test_committed_fallback_row_validates_against_the_package_schema(tmp_path):
     jsonschema = pytest.importorskip("jsonschema")
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")

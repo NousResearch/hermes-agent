@@ -443,7 +443,9 @@ class AIAgent(
             bool(getattr(load_result, "load_attempted", False)) and getattr(load_result, "context_length", None) is None
         )
 
-    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> Any:
+    def _ensure_lmstudio_runtime_loaded(
+        self, config_context_length: Optional[int] = None, *, previous_model: Optional[str] = None,
+    ) -> Any:
         """Preload LM Studio unless configured to rely on JIT loading."""
         if (self.provider or "").strip().lower() != "lmstudio":
             return None
@@ -451,11 +453,16 @@ class AIAgent(
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return None
         from hermes_cli.models_local import ensure_lmstudio_model_loaded
+        from hermes_cli.config import load_config
+
+        model_config = load_config().get("model")
+        unload_policy = model_config.get("lmstudio_unload_policy", "always") if isinstance(model_config, dict) else "always"
 
         if config_context_length is None:
             config_context_length = getattr(self, "_config_context_length", None)
         return ensure_lmstudio_model_loaded(
             self.model, self.base_url, getattr(self, "api_key", ""), config_context_length, return_load_result=True,
+            previous_model=previous_model, unload_policy=unload_policy,
         )
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")

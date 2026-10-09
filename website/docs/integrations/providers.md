@@ -966,6 +966,17 @@ hermes model
 
 Hermes preserves the context of an already-loaded LM Studio instance. For an unloaded model in the default explicit mode, Hermes omits `context_length` unless you configured one in Hermes, so LM Studio can apply its own model setting. Hermes then uses only the context length LM Studio reports after loading.
 
+When you switch models on the same endpoint, Hermes unloads only the exact instance it loaded for the current profile in this process. It preserves all other resident instances, including several copies of the previous model. Hermes does not resize resident instances. To keep the instance that Hermes loaded, set this option:
+
+```yaml
+model:
+  provider: lmstudio
+  default: publisher/model
+  lmstudio_unload_policy: "never"  # default: "always"
+```
+
+The setting also appears in Desktop Settings under Model. In `jit` mode Hermes does not load or unload instances, so this setting has no effect.
+
 To change context length in LM Studio:
 
 1. Click the gear icon next to the model picker

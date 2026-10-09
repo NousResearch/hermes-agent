@@ -60,5 +60,12 @@ Ruling: `gpt-6.1-sol` não será adicionado ao fallback estático sem reproduç�
 - Live registry proves `/plan` and `/blueprint` belong to core while skills remain available through `/skill plan` and `/skill blueprint`; intentional behavior.
 - Config deltas were validated in sandbox; the live gate rejected the exact mutations. Recorded as POLICY_LIMITED, no bypass.
 - Task 4: complete as evidence/candidate (0 code commits; live promotion pending policy gate).
+
+## Final review and architectural freeze
+
+- Round 0: NOT READY; 0 Critical, 6 Important, 2 Minor.
+- Final fix wave commit: `5298a9f2af`; fresh controller verification: 971 passed, 4 skipped; Ruff, compat pointers and diff-check green.
+- Scoped re-review: NOT READY. Four of six Important findings were resolved; complete compressor rollback and credential-revert persistence on legitimate `False` remain open. The credential log can consequently still report a success later rolled back.
+- After three correction rounds in the same transaction boundary, classify as POSSIBLE_ARCHITECTURAL_FAILURE. Freeze patching and promotion; next work must redesign prepare/commit ownership for compressor and credential-pool transitions before implementation.
 - Task 1 fix round 1: cinco achados resolvidos com TDD (8 RED → 8 GREEN); auto-revisão adicional provou/corrigiu que a conta B não herda baseline promovida da conta A. Verificação final: 601 passaram, 0 falharam, 4 skips Windows-only; Ruff/compat/diff-check verdes.
 - `GLOBAL_SUITE_BASELINE_RED`: suíte oficial completa em 970,2 s — 48.180 passaram, 239 falharam e 772 skips em 4.716 arquivos; 5 arquivos flaky passaram no retry. Falhas observadas são ambientais/baseline fora da Task 1.

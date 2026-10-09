@@ -80,6 +80,21 @@ override `session_path`, keep it distinct per profile, or the profiles share one
 WhatsApp login. Bridges started by an older Hermes report no session directory
 and are restarted once, as after a bridge update.
 
+### Bridge API authentication
+
+The bridge listens on loopback only, but loopback does not identify the caller:
+any process on the same machine could otherwise read every inbound message
+(`GET /messages`) or send as you (`POST /send`). Each session therefore has a
+secret, `platforms/whatsapp/session/.bridge-token` (owner-only, created by the
+gateway on first start), and the bridge requires it as a bearer token on every
+route. Before adopting a bridge that is already running, the gateway first sends
+a challenge to `GET /auth-proof` and adopts the listener only when it proves it
+holds the secret, so an impostor that bound the port first never learns the
+token and is simply replaced. Cron and `hermes send` deliveries read the same
+file; they never create it, and a session that has not yet been started by the
+gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
+`HERMES_WHATSAPP_BRIDGE_TOKEN` refuses to serve.
+
 ## Two Modes
 
 | Mode | How it works | Best for |

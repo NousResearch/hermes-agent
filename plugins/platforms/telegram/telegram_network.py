@@ -12,7 +12,7 @@ import socket
 import ssl
 import sys
 import time
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 import httpx
 
@@ -571,3 +571,40 @@ def bot_api_urls(extra: Optional[dict]) -> dict:
         return {}
     return {"base_url": norm(base_url, "/bot"),
             "base_file_url": norm((extra or {}).get("base_file_url") or base_url, "/file/bot")}
+
+
+def _iter_exception_graph(error: BaseException) -> Iterator[BaseException]:
+    """Yield ``error`` and every ``__cause__``/``__context__`` ancestor (DFS, cycle-safe) —
+    PTB wraps httpx errors, so classifiers must inspect the whole graph."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+    while stack:
+        cur = stack.pop()
+        ident = id(cur)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield cur
+        stack.extend(x for x in (getattr(cur, "__cause__", None), getattr(cur, "__context__", None)) if x is not None)
+
+
+async def _shutdown_abandoned_app(app) -> None:
+    """Release a half-built PTB app's httpx transports after an abandoned init: ``app.shutdown()``
+    no-ops when ``_initialized`` was never set, so the request transports are closed directly."""
+    if app is None:
+        return
+    try:
+        await app.shutdown()
+    except Exception:
+        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
+    bot = getattr(app, "bot", None)
+    for request in (getattr(bot, "_request", None) if bot is not None else None) or ():
+        shutdown = getattr(request, "shutdown", None)
+        if shutdown is None:
+            continue
+        try:
+            result = shutdown()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+        except Exception:
+            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)

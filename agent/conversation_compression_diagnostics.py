@@ -69,7 +69,7 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     if _ctx_comp is None:
         return
     _cls = getattr(_ctx_comp, "_last_attempt_failure_class", None)
-    if _cls not in ("auth", "network", "other"):
+    if _cls not in ("auth", "quota", "network", "other"):
         return
 
     _aux_provider = (getattr(_ctx_comp, "_last_aux_call_provider", "") or "").strip()
@@ -120,6 +120,8 @@ def _emit_compression_auth_hint(agent: Any) -> None:
                 "auth/permission error — check the credential and "
                 "auxiliary.compression in config.yaml"
             )
+    elif _cls == "quota":
+        _guidance = "billing/quota exhausted — check this provider's balance and usage limits"
     elif _cls == "network":
         _guidance = "network/connection error — this is usually transient"
     else:
@@ -131,6 +133,7 @@ def _emit_compression_auth_hint(agent: Any) -> None:
         else {
             "network": "⚠ Compression auxiliary endpoint could not be reached ",
             "auth": "⚠ Compression auxiliary endpoint rejected the request ",
+            "quota": "⚠ Compression auxiliary endpoint rejected the request ",
             "other": "⚠ Compression auxiliary endpoint returned an unusable response or request error ",
         }[_cls]
     )

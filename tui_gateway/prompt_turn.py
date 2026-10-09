@@ -686,6 +686,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _apply_pending_model_switch(sid, session)
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
+    if not st.one_turn_restore:
+        from tui_gateway.fallback_recovery import recover_pending_primary
+        recover_pending_primary(session["agent"])
     _sync_agent_fallback_with_config(sid, session)  # chain added after the chat opened reaches this turn
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     _adopt_out_of_band_turns(session)
@@ -1061,6 +1064,9 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
             _persist_live_session_system_prompt(session)
         except Exception:
             logger.debug("TUI one-turn model restore failed", exc_info=True)
+    # Persist provenance even after a request-time fallback or failed turn, while the
+    # owning profile is still bound. The runtime model remains an observation only.
+    _persist_live_session_runtime(session)
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:

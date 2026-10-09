@@ -1035,6 +1035,12 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
+    if (isinstance(resume_overrides, dict) and resume_overrides
+            and current.get("follow_profile_config") and not current.get("composer_override_profile")):
+        from tui_gateway.fallback_recovery import valid_recovery, recovery_matches_profile
+        state = valid_recovery((resume_overrides.get("model_override") or {}).get("_fallback_recovery"))
+        if not recovery_matches_profile(state, _config_model_target(), _load_cfg()):
+            resume_overrides = None  # profile edited after resume, before deferred construction
     if isinstance(resume_overrides, dict) and resume_overrides and _overrides_have_routable_provider(resume_overrides):
         kw.update(resume_overrides)
     else:
@@ -1670,8 +1676,16 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         str(composer_profile.get("model") or "").strip(),
         str(composer_profile.get("provider") or "").strip(),
     ) == _config_model_target()
-    if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
+    from tui_gateway.fallback_recovery import valid_recovery, recovery_matches_profile
+    recovery = valid_recovery(model_config.get("fallback_recovery"))
+    if room_plumbing:
         return {}
+    if _row_follows_profile(row) and not composer_profile_matches:
+        # Only temporary recovery of the CURRENT owning profile is reusable.
+        if composer_profile or not recovery_matches_profile(recovery, _config_model_target(), _load_cfg()):
+            return {}
+        return {"model_override": {**recovery["primary"], "_fallback_recovery": recovery},
+                "provider_override": recovery["primary"].get("provider")}
     overrides: dict = {}
     model = str(row.get("model") or model_config.get("model") or "").strip()
     # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
@@ -1681,25 +1695,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
-    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
-    if is_foreign_provider_endpoint(provider, base_url):
-        # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
-        base_url = api_mode = ""
-    # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
-    # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
-    if provider and not _is_routable_provider(provider):
-        healed = None
-        try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
-        except Exception:
-            logger.debug("custom provider identity recovery failed", exc_info=True)
-        if healed:
-            logger.info("healed stale session provider %r to %r", provider, healed)
-            provider = healed
-            base_url = ""  # the healed identity owns a registered endpoint; the snapshot URL must not override it
-        else:
-            provider = ""
+    from tui_gateway.fallback_recovery import sanitize_persisted_route
+    provider, base_url, api_mode = sanitize_persisted_route(model, provider, base_url, api_mode)
     if model:
         # Same dict-shaped override live /model switches use, so a DB-restored session keeps custom endpoint
         # metadata across resume and rebuilds (/new). Raw api_key is never persisted/restored.
@@ -1711,6 +1708,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["reasoning_config_override"] = reasoning_config
     if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
+    if recovery:
+        overrides["model_override"] = {**recovery["primary"], "_fallback_recovery": recovery}
+        overrides["provider_override"] = recovery["primary"].get("provider")
     return overrides
 
 
@@ -1742,6 +1742,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    from tui_gateway.fallback_recovery import recovery_state
+    if recovery := recovery_state(agent):
+        config["fallback_recovery"] = recovery
+    else:
+        config.pop("fallback_recovery", None)
     return config
 
 
@@ -2553,6 +2558,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
     matches) — recover the identity from the persisted base_url or the rebuild fails "No LLM provider
     configured". Persisted base_url/api_key/api_mode are honored only for the original runtime, never a fallback."""
+    # Capture before resolution: a failed provider has no runtime snapshot, and
+    # rereading config after the failure cannot recover its historical intent.
+    cfg_model = _load_cfg().get("model")
+    cfg_model = cfg_model if isinstance(cfg_model, dict) else {}
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
@@ -2575,6 +2584,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
+    primary_provider = requested_provider or cfg_model.get("provider")
+    primary_route = {"model": model, "provider": primary_provider, **overrides}
+    if not model_override and not provider_override and (not requested_provider or requested_provider == cfg_model.get("provider")):
+        primary_route.update({k: cfg_model.get(k) for k in ("base_url", "api_mode")})
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
     if resolution.used_fallback:
         if not resolution.selected_model:
@@ -2584,10 +2597,14 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         # requested_provider=None means resolve_runtime_provider read the persisted config provider;
         # ``model: <id>`` (string shorthand) names no provider.
-        cfg_model = _load_cfg().get("model")
-        primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
+        from tui_gateway.fallback_recovery import RETRY_SECONDS, route_fields
+        resolution.runtime["_fallback_recovery"] = {
+            "primary": route_fields(primary_route),
+            "fallback": route_fields({"model": resolution.selected_model, **resolution.runtime}),
+            "retry_at": time.time() + RETRY_SECONDS,
+        }
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
@@ -2675,8 +2692,21 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
+    from tui_gateway.fallback_recovery import build_override, profile_intent
+    intended_profile = profile_intent(cfg)
+    model_override, recovery = build_override(model_override)
+    # A recovery override is a coherent route pair; never keep the other route's provider.
+    if recovery:
+        provider_override = model_override.get("provider")
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    resolved_recovery = runtime.pop("_fallback_recovery", None)
+    if recovery:
+        # A fallback's own auth failure must not replace the ORIGINAL primary.
+        from tui_gateway.fallback_recovery import route_fields
+        recovery = {**recovery, "fallback": route_fields({"model": model, **runtime})}
+    else:
+        recovery = {**resolved_recovery, "profile_intent": intended_profile} if resolved_recovery else None
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2712,6 +2742,9 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    agent._tui_profile_intent = intended_profile
+    if recovery:
+        agent._tui_fallback_recovery = recovery
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice

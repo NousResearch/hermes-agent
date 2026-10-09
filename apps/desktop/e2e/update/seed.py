@@ -26,8 +26,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
-from tests.e2e.core.upgrade import _helpers as H  # noqa: E402
-from tests.e2e.core.upgrade import _install_helpers as I  # noqa: E402
+from tests.e2e.core.upgrade import _helpers as H
+from tests.e2e.core.upgrade import _install_helpers as I
 
 
 def _paths(root: Path) -> dict[str, Path]:

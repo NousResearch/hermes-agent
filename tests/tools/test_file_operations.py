@@ -757,14 +757,14 @@ class TestByteLayerBinaryDetection:
     def test_cjk_text_cut_mid_character_is_text(self, file_ops):
         # 999 ASCII bytes + a 3-byte CJK char cut after its first byte —
         # exactly what `head -c 1000` does to a CJK file.
-        sample = (b"a" * 999 + "中".encode("utf-8"))[:1000]
+        sample = (b"a" * 999 + "中".encode())[:1000]
         assert sample[-1:] != b"a"  # the cut really is mid-character
         assert file_ops._is_likely_binary_bytes(sample) is False
 
 
     def test_emoji_cut_at_boundary_is_text(self, file_ops):
         # 4-byte sequence cut after 2 bytes.
-        sample = (b"x" * 998 + "🎉".encode("utf-8"))[:1000]
+        sample = (b"x" * 998 + "🎉".encode())[:1000]
         assert file_ops._is_likely_binary_bytes(sample) is False
 
     def test_utf8_bom_is_text(self, file_ops):

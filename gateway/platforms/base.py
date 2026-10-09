@@ -1962,6 +1962,8 @@ class BasePlatformAdapter(ABC):
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
+    # Set by the runner when it wires the adapter; only those adapters write gateway_state.json.
+    _runtime_status_owned: bool = False
 
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -2211,11 +2213,8 @@ class BasePlatformAdapter(ABC):
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
         """Publish runtime status; log preparation failures without disrupting the adapter."""
         try:
-            from gateway.status import publish_runtime_status
-            # Multiplexed adapters share the status file; the runner stamps
-            # ``<profile>:<platform>``.
-            platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
-            publish_runtime_status(platform=platform_key, **kwargs)
+            from gateway.platforms.base_runtime_status import publish_adapter_runtime_status
+            publish_adapter_runtime_status(self, **kwargs)
         except Exception as exc:
             logged = _lazy_attr(self, "_status_write_logged", set)  # object.__new__ in tests
             first = (self.platform.value, context) not in logged

@@ -128,6 +128,7 @@ async def test_shared_listener_adapter_records_its_public_ingress_url(mux_home, 
     monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
     coder = _line_adapter("secret-coder", "coder")
     coder._runtime_status_platform_key = "coder:line"
+    coder._runtime_status_owned = True
     runner = _Runner({"coder": {Platform("line"): coder}})
     runner.adapters = {Platform.API_SERVER: type("L", (), {"_host": "0.0.0.0", "_port": 8642})()}
     await _publish_line(coder, runner)

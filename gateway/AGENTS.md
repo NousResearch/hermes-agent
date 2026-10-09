@@ -83,6 +83,10 @@ teardown (`taskkill /T /F` on venv-shim holders, #85265), which exists to let up
 replaced by #92091's `pause-for-update`. Do NOT "fix" gateway-dies-with-app by re-parenting the
 gateway under the backend, and do NOT "fix" update locks by widening the tree-kill. Gateways stamp
 `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can verify a fleet.
+Only adapters the runner wired (`_wire_adapter_handlers`) write that file: a throwaway adapter a
+sender connects for one message (the Matrix fallback and BlueBubbles senders, the Feishu/WeCom
+`standalone_sender_fn` used by out-of-process cron delivery) publishes no status
+(`platforms/base_runtime_status.py`).
 
 ## Profile scope (adapters, turns, and everything between turns)
 

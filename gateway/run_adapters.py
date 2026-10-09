@@ -1370,6 +1370,7 @@ class GatewayAdapterLifecycleMixin:
             adapter._busy_text_debounce_seconds, adapter._busy_text_hard_cap_seconds = timing
         adapter._human_delay_range_ms = (
             getattr(self, "_human_delay", None) if human_delay is _UNSET else human_delay)
+        adapter._runtime_status_owned = True  # only the runner's own adapters write gateway_state.json
 
     def _configure_profile_adapter(
         self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform

@@ -8,6 +8,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
@@ -264,8 +265,9 @@ def _normalized_home_for_compare(home: str) -> str:
     return os.path.normcase(str(_resolved_home(home)))
 
 
-def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
-    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``.
+def _pids_owned_by_hermes_home(pids: list[int], home: str | Iterable[str]) -> list[int]:
+    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``
+    (one home, or any of several — the update passes every home it owns).
 
     Dashboard argv is discovery-only: it is not an ownership proof because
     several Hermes installs and profiles can run the same command on one
@@ -273,11 +275,12 @@ def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
     as a match, so a stop request fails closed rather than taking down an
     unrelated backend.
     """
-    target = _normalized_home_for_compare(home)
+    homes = [home] if isinstance(home, (str, os.PathLike)) else list(home)
+    targets = {_normalized_home_for_compare(str(h)) for h in homes}
     return [
         pid for pid in pids
         if (pid_home := _hermes_home_for_pid(pid))
-        and _normalized_home_for_compare(pid_home) == target
+        and _normalized_home_for_compare(pid_home) in targets
     ]
 
 
@@ -589,7 +592,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
-    scope_home: str | None = None,
+    scope_home: str | Iterable[str] | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -666,6 +669,12 @@ def _kill_stale_dashboard_processes(
         for pid in pids:
             if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
+    spared: list[tuple[int, str]] = []
+    if restart_managed:
+        pids, spared = _spare_unrestartable_sibling_backends(pids, pid_service, pid_launchd, pid_home)
+        _report_spared_sibling_backends(spared)
+        if not pids:
+            return {**_empty_result(), "spared": [pid for pid, _home in spared]}
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -687,7 +696,47 @@ def _kill_stale_dashboard_processes(
         if any(p not in pid_launchd for p in killed):
             print("  Restart the dashboard when you're ready:\n    hermes dashboard --port <port>")
     return {"matched": list(pids), "killed": list(killed), "failed": list(failed),
-            "unrecovered": list(unrecovered)}
+            "unrecovered": list(unrecovered), "spared": [pid for pid, _home in spared]}
+
+
+def _spare_unrestartable_sibling_backends(
+    pids: list[int], pid_service: dict[int, str | None],
+    pid_launchd: dict[int, tuple[str, str, int | None]], pid_home: dict[int, str | None],
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Update path: split *pids* into ``(targets, spared)``; spared = ``(pid, home)``.
+
+    The update's scope covers every home it owns, but only a supervisor (systemd unit, launchd
+    job) can bring a sibling home's backend back: the argv respawn replays under the invoking
+    home and ``_filter_dashboard_respawn_candidates`` drops foreign-home argv (rule 2), so killing
+    a sibling profile's manual backend would leave it down with nothing reported. Such a backend
+    is left running and named instead; the survivor probe still sees it on pre-update code.
+    """
+    from hermes_constants import get_hermes_home
+
+    own_key = _normalized_home_for_compare(str(get_hermes_home()))
+    targets: list[int] = []
+    spared: list[tuple[int, str]] = []
+    for pid in pids:
+        if pid_service.get(pid) or pid in pid_launchd:
+            targets.append(pid)
+            continue
+        home = pid_home[pid] if pid in pid_home else _hermes_home_for_pid(pid)
+        if home and _normalized_home_for_compare(home) != own_key:
+            spared.append((pid, home))
+        else:
+            targets.append(pid)
+    return targets, spared
+
+
+def _report_spared_sibling_backends(spared: list[tuple[int, str]]) -> None:
+    if not spared:
+        return
+    print(f"\n⚠ Left {len(spared)} dashboard process(es) of another profile running on pre-update code"
+          " (no supervisor restarts them from this update):")
+    for pid, home in spared:
+        print(f"    PID {pid}  HERMES_HOME={home}")
+    print("  Restart each from its own profile when you're ready, e.g.:\n"
+          "    hermes -p <profile> dashboard --isolated --port <port>")
 
 
 def _restart_killed_backends(

@@ -85,6 +85,29 @@ class TestBrowserCleanup:
         assert browser_tool._recording_sessions == set()
         assert browser_tool._cleanup_done is True
 
+    def test_emergency_cleanup_stops_harness_daemons_without_active_sessions(self, monkeypatch):
+        """browser_exec records its harness daemon only in browser_use_cli's driven set, never in
+        _active_sessions; a process that only drove the harness must still stop it on exit, or the
+        daemon outlives the worker (and its systemd scope) indefinitely."""
+        from tools import browser_use_cli
+
+        browser_tool = self.browser_tool
+        browser_tool._cleanup_done = False
+        browser_tool._active_sessions.clear()
+        monkeypatch.setattr(browser_use_cli, "_driven_daemons", {"r7k2"})
+        monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+        calls = []
+        monkeypatch.setattr(
+            browser_use_cli, "_run_cli_killing_process_group",
+            lambda cmd, code, env, timeout: calls.append((cmd, env.get("BU_NAME"))),
+        )
+        monkeypatch.setattr(bt_lifecycle, "_reap_orphaned_browser_sessions", lambda: None)
+
+        bt_lifecycle._emergency_cleanup_all_sessions()
+
+        assert calls == [(["browser-harness", "--reload"], "r7k2")]
+        assert browser_use_cli._driven_daemons == set()
+
 
 class TestInactivityJanitorMultiplex:
     """#86402 / #100738: the process-global janitor thread has no profile scope."""

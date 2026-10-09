@@ -686,20 +686,17 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
 
 
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
-# * ``inline_shell_exec`` — ``agent.skill_preprocessing.preprocess_skill_content`` never expands
-#   `` !`cmd` `` in a skill whose hub lock entry is community trust (#63307), and the expansion is
-#   off by default for everything else, so on this install path the snippet stays inert text.
-# * ``sudo_usage`` / ``bind_all_interfaces`` in Markdown — setup docs (`sudo apt install`,
-#   `runserver 0.0.0.0:8000` in a Dockerfile CMD) are not executed by installing; running them goes
-#   through the terminal tool and its approval gate. Scripts keep the full severity.
-_COMMUNITY_INERT_IDS = frozenset({"inline_shell_exec"})
+# ``sudo_usage`` / ``bind_all_interfaces`` in Markdown — setup docs (`sudo apt install`,
+# `runserver 0.0.0.0:8000` in a Dockerfile CMD) are not executed by installing; running them goes
+# through the terminal tool and its approval gate. Scripts keep the full severity.
+# ``inline_shell_exec`` stays high: the runtime's community gate keys on the hub lock entry's own
+# directory, so a nested SKILL.md, an external_dirs view or an unreadable lock still expands it.
 _DOC_NOTE_IDS = frozenset({"sudo_usage", "bind_all_interfaces"})
 
 
 def _community_note(f: Finding) -> Finding:
     if f.severity in ("critical", "high") and (
-            f.pattern_id in _COMMUNITY_INERT_IDS
-            or (f.pattern_id in _DOC_NOTE_IDS and f.file.lower().endswith(".md"))):
+            f.pattern_id in _DOC_NOTE_IDS and f.file.lower().endswith(".md")):
         f.severity, f.description = "medium", f"{f.description} (not executed on install; informational)"
     return f
 

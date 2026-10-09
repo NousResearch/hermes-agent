@@ -258,12 +258,19 @@ phase_install() {
       const app = apps.objectAtIndex(i);
       if (app.executableURL && ObjC.unwrap(app.executableURL.path) === args[0]) {
         if (!app.terminate) throw new Error("normal Quit refused");
-        // A historical app (v2026.7.1) that the bootstrap launched moments ago
-        // was seen not to finish quitting within 30s while its backend was
-        // still starting. Allow longer, but the quit must stay the normal one.
+        // The bootstrap may leave the freshly installed app in its startup
+        // path, where macOS accepts terminate() but the app does not exit
+        // until its backend settles. Request normal termination first, then
+        // force only this exact executable so the next smoke phase cannot
+        // inherit a stale process.
         const deadline = Date.now() + 120000;
         while (!app.terminated && Date.now() < deadline) delay(0.2);
-        if (!app.terminated) throw new Error("installed app did not quit normally");
+        if (!app.terminated) {
+          if (!app.forceTerminate()) throw new Error("installed app could not be stopped after normal Quit");
+          const forceDeadline = Date.now() + 10000;
+          while (!app.terminated && Date.now() < forceDeadline) delay(0.2);
+          if (!app.terminated) throw new Error("installed app did not stop after normal Quit");
+        }
       }
     }
   }' "$installed_bin" || fail "installed app did not close normally; no smoke launch attempted"

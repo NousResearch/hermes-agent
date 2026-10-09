@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from hermes_cli import web_server
 import hermes_cli.web_routers.sessions as _rt_sessions
@@ -116,7 +117,12 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
     _FakeSessionDB.requested_fields = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
-    response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=2))
+    # token_principal=None is the desktop dashboard's own request shape (no
+    # Mini App token seam involved) -- _require_dashboard_admin treats it as
+    # the unrestricted operator, same as every other admin-gated handler test
+    # in tests/hermes_cli/test_web_server.py.
+    fake_request = SimpleNamespace(state=SimpleNamespace(token_principal=None))
+    response = asyncio.run(_rt_sessions.search_sessions(fake_request, q="20260603", limit=2))
 
     assert _FakeSessionDB.requested_fields is not None
     assert "context" not in _FakeSessionDB.requested_fields
@@ -167,8 +173,12 @@ def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
         lambda profile, *, read_only: _FakeSessionDB(read_only=read_only),
     )
 
+    # token_principal=None is the desktop dashboard's own request shape (no Mini App token seam
+    # involved) -- _require_dashboard_admin treats it as the unrestricted operator, same as every
+    # other admin-gated handler test in tests/hermes_cli/test_web_server.py.
+    fake_request = SimpleNamespace(state=SimpleNamespace(token_principal=None))
     response = asyncio.run(
-        _rt_sessions.search_sessions(q="20260603", limit=2, profile="worker")
+        _rt_sessions.search_sessions(fake_request, q="20260603", limit=2, profile="worker")
     )
 
     assert {
@@ -205,7 +215,8 @@ def test_desktop_session_search_attaches_profile_to_rich_results(monkeypatch):
         "_open_session_db_for_profile",
         lambda profile, *, read_only: _RichFakeSessionDB(read_only=read_only),
     )
-    response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=1, profile="personal"))
+    fake_request = SimpleNamespace(state=SimpleNamespace(token_principal=None))
+    response = asyncio.run(_rt_sessions.search_sessions(fake_request, q="20260603", limit=1, profile="personal"))
     assert response["results"][0]["profile"] == "personal"
     assert response["results"][0]["title"] == "Custom Title"
 
@@ -268,7 +279,8 @@ def test_deep_lineage_search_resolves_tip_from_matched_id(monkeypatch):
     SessionDB().close()
     monkeypatch.setattr("hermes_state.SessionDB", _DeepLineageSessionDB)
 
-    response = asyncio.run(_rt_sessions.search_sessions(q="content", limit=2))
+    fake_request = SimpleNamespace(state=SimpleNamespace(token_principal=None))
+    response = asyncio.run(_rt_sessions.search_sessions(fake_request, q="content", limit=2))
 
     [row] = response["results"]
     # The resume id MUST be the live tip — not a stale mid the bounded

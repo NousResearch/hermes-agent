@@ -1,6 +1,8 @@
 import asyncio
 import threading
 
+from fastapi import Request
+
 from hermes_cli.web_routers import status
 
 
@@ -21,6 +23,6 @@ def test_get_logs_yields_while_reading_and_filtering(tmp_path, monkeypatch):
 
     async def exercise():
         asyncio.get_running_loop().call_soon(loop_ran.set)
-        return await status.get_logs(file="agent", lines=100)
+        return await status.get_logs(Request(scope={"type": "http", "headers": []}), file="agent", lines=100)
 
     assert asyncio.run(exercise()) == {"file": "agent", "lines": ["fixture"]}

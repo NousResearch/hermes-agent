@@ -248,7 +248,8 @@ text, the focus topic or error messages.
   `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
   mean that state could not be read.
 - `attempt_id` names this attempt and `session_id` the session it started
-  in, even when the attempt then adopts a rotated child session. An attempt
+  in, even when the attempt then adopts a rotated child session or unwinds
+  after a newer attempt (a stall fallback) has begun. An attempt
   that stops before the compressor runs, or rolls its state back, logs
   `method: none` and no token counts, never an earlier attempt's numbers.
 - `method` says how the summary was produced: `llm_summary`,

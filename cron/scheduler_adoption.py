@@ -11,6 +11,7 @@ def adopt_with_retry(execution_id: str, deadline: float):
     Subsequent attempts need room for the ledger's five-second busy timeout. This bounds
     retry scheduling, not filesystem I/O or interpreter scheduling latency.
     """
+    # Resolve the ledger at call time, following cron's late-import convention.
     from cron.executions import adopt_claimed_execution
 
     while True:
@@ -20,8 +21,9 @@ def adopt_with_retry(execution_id: str, deadline: float):
             code = getattr(exc, "sqlite_errorcode", 0)
             if code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
-            # Do not start a fresh five-second lock wait at the very end of the parent's
-            # observation window. The original exception remains the startup diagnostic.
+            # executions._connect uses sqlite_util.open_db's 5000 ms busy timeout:
+            # reserve 5.0s for it plus 0.25s backoff before sleeping (5.25s total).
+            # The original exception remains the startup diagnostic.
             if deadline - time.monotonic() <= 5.25:
                 raise
             time.sleep(0.25)

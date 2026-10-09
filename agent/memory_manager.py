@@ -455,10 +455,9 @@ class MemoryManager:
             # Snapshot both gates at registration, never re-read them mid-conversation.
             memory = load_config().get("memory", {})
             spill_config = get_spill_config()
-            spill_config["enabled"] = (
-                spill_config["enabled"] and isinstance(memory, dict)
-                and memory.get("prefetch_spill_enabled", False) is True
-            )
+            if not (isinstance(memory, dict) and memory.get("prefetch_spill_enabled", False) is True):
+                # Off by default, but keep a ceiling so a runaway provider can't overflow the context.
+                spill_config["max_chars"] = max(spill_config["max_chars"] * 10, 100_000)
             self._external_prefetch_spill_config = spill_config
             self._has_external = True
 

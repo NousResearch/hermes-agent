@@ -189,7 +189,9 @@ identity should skip destructive mirroring when it is absent.
 ### Oversized prefetch results
 
 External `prefetch()` results are returned in full by default, preserving the
-provider's relevance-ranked recall. To opt into spilling oversized results for
+provider's relevance-ranked recall, up to a safety ceiling of 10×
+`hooks.output_spill.max_chars` (at least 100,000 characters) above which they
+still spill. Keep your own recall budget well under that. To opt into spilling oversized results for
 the active profile, set:
 
 ```yaml

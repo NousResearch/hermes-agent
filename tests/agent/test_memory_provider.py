@@ -225,7 +225,7 @@ class TestMemoryManager:
             "memory": memory,
             "hooks": {"output_spill": {} if hooks_enabled else {"enabled": False}},
         })
-        text = "start\n" + "ranked middle\n" * DEFAULT_MAX_CHARS + "end\n"
+        text = "start\n" + "ranked middle\n" * (DEFAULT_MAX_CHARS // 2) + "end\n"  # over max_chars, under the ceiling
         provider = FakeMemoryProvider("external")
         provider._prefetch_result = text
         mgr = MemoryManager()
@@ -254,6 +254,22 @@ class TestMemoryManager:
         })
         assert mgr.prefetch_all("recall again", session_id="memory") == text
         assert not (tmp_path / "hook_outputs" / "memory").exists()
+
+    def test_runaway_recall_still_spills_without_opt_in(self, tmp_path, monkeypatch):
+        """Opt-out keeps normal recall whole but still caps a runaway provider at the ceiling."""
+        from hermes_cli.config import atomic_config_write
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {"memory": {}})
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "x" * 100_001
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("recall", session_id="runaway")
+        assert len(result) < 100_000
+        (saved,) = (tmp_path / "hook_outputs" / "runaway").glob("*.txt")
+        assert saved.read_text(encoding="utf-8").rstrip("\n") == provider._prefetch_result
 
     def test_prefetch_spill_profile_snapshot_preserves_opt_in(self, tmp_path, monkeypatch):
         """A→B→A config reads are isolated; existing managers keep their registration policy."""

@@ -292,7 +292,10 @@ The inverse configuration advertises only `memory` and rejects `USER.md` writes.
 
 ### External recall size
 
-External memory providers return their full prefetched context by default.
+External memory providers return their full prefetched context by default,
+up to a safety ceiling of 10× `hooks.output_spill.max_chars` (at least 100,000
+characters); recall above that still spills so a runaway provider can't overflow
+the context window.
 `memory.prefetch_spill_enabled: true` opts the active profile into replacing
 oversized recall with a head/tail preview and a file path. This can reduce
 replayed context, but the relevance-ranked middle is no longer immediately

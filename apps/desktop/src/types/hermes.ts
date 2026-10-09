@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -181,6 +181,10 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -323,6 +327,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean
   is_password: boolean
   is_set: boolean
   key: string
@@ -330,6 +336,8 @@ export interface MessagingEnvVarInfo {
   redacted_value: null | string
   required: boolean
   url: null | string
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {
@@ -583,6 +591,12 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
+   *  never-closed run — its in-flight execution is held by a live process.
+   *  Unlike {@link is_active} (a 300s activity window) it stays true through a
+   *  long tool call and is false for a zombie whose process died (#88443).
+   *  Undefined against older backends and for non-cron rows. */
+  scheduler_owned?: boolean
   last_active: number
   message_count: number
   model: null | string
@@ -1029,6 +1043,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1086,6 +1101,10 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
@@ -1108,8 +1127,6 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
-  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
-  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1243,6 +1260,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1260,6 +1280,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1470,7 +1494,7 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  product-default | best-quality-resident | speed-gated-quality | fastest-resident |
    *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
@@ -1536,6 +1560,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {
@@ -1575,10 +1604,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */
@@ -1782,8 +1822,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1792,7 +1830,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

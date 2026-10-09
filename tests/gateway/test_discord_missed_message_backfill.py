@@ -48,8 +48,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import discord  # noqa: E402
-from plugins.platforms.discord.adapter import (  # noqa: E402
+import discord
+from plugins.platforms.discord.adapter import (
     DiscordAdapter,
     _apply_yaml_config,
 )

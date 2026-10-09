@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
@@ -32,7 +33,7 @@ _context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
 class ContextCompletionItem:
     """A single autocomplete result from a context reference provider."""
 
-    __slots__ = ("text", "display", "meta")
+    __slots__ = ("display", "meta", "text")
 
     def __init__(self, text: str, display: str = "", meta: str = "") -> None:
         self.text = text
@@ -90,7 +91,6 @@ _FILE_VALUE_PATTERN = re.compile(
 TRAILING_PUNCTUATION = ",.;!?"
 _OPENERS = {")": "(", "]": "[", "}": "{"}
 _NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
-_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",
@@ -525,7 +525,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     from hermes_constants import get_hermes_home
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
-    blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
+    blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
     if path in blocked_exact:
         raise ValueError("path is a sensitive credential file and cannot be attached")
     if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):

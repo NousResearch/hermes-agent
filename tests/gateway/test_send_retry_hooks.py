@@ -31,7 +31,7 @@ class _Adapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {}
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:

@@ -192,6 +192,34 @@ class TestFirecrawlClientConfig:
         assert captured["headers"] == {"Content-Type": "application/json"}
         assert "Authorization" not in captured["headers"]
 
+    def test_extract_through_keyless_client_forwards_server_timeout(self, monkeypatch):
+        """_scrape_one passes the SDK's ``timeout`` kwarg; the keyless client must accept and forward it."""
+        import asyncio
+
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok", "metadata": {"sourceURL": "https://example.com"}}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", firecrawl_provider._KeylessFirecrawlClient)
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+
+        entry = asyncio.run(firecrawl_provider._scrape_one("https://example.com", ["markdown"], None))
+
+        assert "error" not in entry or not entry["error"], entry
+        assert captured["json"]["timeout"] == 60_000
+
 
 class TestBackendSelection:
     """Test suite for _get_backend() backend selection logic.

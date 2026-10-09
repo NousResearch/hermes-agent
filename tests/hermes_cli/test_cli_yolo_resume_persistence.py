@@ -156,11 +156,6 @@ class TestToggleYoloPersists:
 
     def test_toggle_survives_missing_session_db(self):
         stand_in = SimpleNamespace(session_id=SESSION_ID, _session_db=None)
-        stand_in._persist_session_yolo = (
-            lambda key, enabled: HermesCLI._persist_session_yolo(
-                stand_in, key, enabled
-            )
-        )
         with patch("cli._cprint"):
             HermesCLI._toggle_yolo(stand_in)  # must not raise
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
@@ -175,11 +170,6 @@ class TestEndToEndPersistAndRestore:
 
         # Process 1: user toggles /yolo ON — persisted to the row.
         cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
-        cli_one._persist_session_yolo = (
-            lambda key, enabled: HermesCLI._persist_session_yolo(
-                cli_one, key, enabled
-            )
-        )
         with patch("cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
@@ -213,11 +203,6 @@ class TestEndToEndPersistAndRestore:
             model_config={"yolo_mode": True},
         )
         cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
-        cli_one._persist_session_yolo = (
-            lambda key, enabled: HermesCLI._persist_session_yolo(
-                cli_one, key, enabled
-            )
-        )
         approval_module.enable_session_yolo(SESSION_ID)
         with patch("cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)  # OFF

@@ -24,10 +24,10 @@ class FakeIdP:
         idp = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *a):  # noqa: A003
+            def log_message(self, *a):
                 return
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 parsed = urlparse(self.path)
                 if parsed.path != "/authorize":
                     self.send_response(404); self.end_headers(); return
@@ -40,7 +40,7 @@ class FakeIdP:
                 self.send_header("Location", f"{q['redirect_uri'][0]}?{urlencode({'code': code, 'state': state})}")
                 self.end_headers()
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 if urlparse(self.path).path != "/token":
                     self.send_response(404); self.end_headers(); return
                 body = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())

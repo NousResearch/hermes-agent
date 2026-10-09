@@ -172,7 +172,7 @@ def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypat
     monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "llamacpp",
                                    "base_url": ""}.get(k, ""))
-    out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
+    _out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
     assert err is None
     assert mime == "image/png", "managed server: webp must normalize to png"
 
@@ -180,6 +180,6 @@ def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypat
     monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "anthropic",
                                    "base_url": ""}.get(k, ""))
-    out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
+    _out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
     assert err is None
     assert mime == "image/webp"

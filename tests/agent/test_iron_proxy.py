@@ -257,7 +257,7 @@ def test_ca_key_created_with_0o600(hermes_home, monkeypatch):
     monkeypatch.setattr(ip.shutil, "which", lambda name: "/usr/bin/openssl" if name == "openssl" else None)
     monkeypatch.setattr(ip.subprocess, "run", fake_run)
 
-    ca_crt, ca_key = ip.ensure_ca_cert()
+    _ca_crt, ca_key = ip.ensure_ca_cert()
     assert ca_key.exists()
     mode = ca_key.stat().st_mode & 0o777
     assert mode == 0o600, f"CA key has perms {oct(mode)}, expected 0o600"

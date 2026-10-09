@@ -40,7 +40,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -137,7 +137,7 @@ class Footgun:
     # if the match is a REAL footgun (not a false positive). Use this when
     # the regex can't fully distinguish (e.g. open() where mode may contain
     # "b" for binary, or the line may have `encoding=` elsewhere).
-    post_filter: "callable | None" = None
+    post_filter: "Callable[..., Any] | None" = None
 
 
 FOOTGUNS: list[Footgun] = [

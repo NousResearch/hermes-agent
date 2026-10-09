@@ -107,10 +107,14 @@ export function signInTransition(prev: FreeTierSignInState, next: FreeTierSignIn
     return
   }
 
-  if (next.status === 'requested') {
+  // The offer reaches the step too: its Sign in goes straight to `setting_up`, never through
+  // `requested`. "Not now" closes the step without counting as a cancelled sign-in.
+  if (next.status === 'requested' || next.status === 'offer') {
     recordOnboarding('sign_in', 'reached')
   } else if (next.status === 'completed' || next.status === 'already_signed_in') {
     recordOnboarding('sign_in', 'completed')
+  } else if (next.status === 'closed' && prev.status === 'offer') {
+    closeOnboardingStep('sign_in')
   } else if (next.status === 'closed' && SIGN_IN_OPEN.has(prev.status)) {
     recordDislike('cancelled', 'free_tier_sign_in')
     closeOnboardingStep('sign_in')

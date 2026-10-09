@@ -200,6 +200,20 @@ def test_in_place_here_n_stores_the_kept_exchanges(session_db):
     assert _live(session_db.get_messages_as_conversation("sid")) == _live(next_turn)
 
 
+def test_rotated_here_n_publishes_the_kept_exchanges(session_db):
+    """Rotation publishes the child atomically and the gateway no longer rewrites it, so the handoff itself must
+    carry the kept tail: a head-only child loses the exchanges the user asked to keep on the next resume."""
+    history = _exchanges(10)
+    agent, loaded = _stored_agent(session_db, history)
+    agent.compression_in_place = False
+    result = _compress_here(agent, loaded, 2)
+    assert result.status == "compressed" and agent.session_id != "sid"
+
+    durable = session_db.get_messages_as_conversation(agent.session_id)
+    assert _live(durable) == _live(result.after_messages)
+    assert _live(durable[-4:]) == _live(history[-4:])
+
+
 def test_in_place_here_n_folds_the_seam_once(session_db):
     """A head ending on a user turn folds the tail's first message into it; the stored transcript carries the
     same fold, and the tail is not rejoined a second time."""

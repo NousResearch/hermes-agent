@@ -1,11 +1,12 @@
 name: android-emulator
 repo: https://github.com/PIR8-Software/hermes-android-emulator
-sha: 254b7239c75a40d31323bb41d94927d262c692c4
+sha: 3b5cb61e8bd6c4600f797a44c44234a6371bd59a
 description: "Control a headless Android emulator from Hermes — live sidebar, app management, GPS/battery/network simulation, and ADB tools. Emulator host is Linux. Disclosure — requires a pre-installed Android SDK under ~/Android/Sdk; runs adb, emulator, avdmanager and sdkmanager on the host, and the dashboard's Create AVD action downloads Android system images from Google via sdkmanager. emu_shell runs arbitrary commands inside the emulator; emu_install/emu_push copy host files into it."
 maintainer: PIR8-Software
 tier: community
 category: tools
-version: "1.1.0"
+version: "1.1.1"
+image: https://raw.githubusercontent.com/PIR8-Software/hermes-android-emulator/3b5cb61e8bd6c4600f797a44c44234a6371bd59a/docs/images/android-emulator-banner.png
 docs_url: https://github.com/PIR8-Software/hermes-android-emulator#readme
 platforms: [linux]
 capabilities:

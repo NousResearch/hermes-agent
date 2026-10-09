@@ -21,9 +21,9 @@ const strList = (v: unknown): null | string[] =>
  * (`tui_gateway/server_requests.py`). Each method opens its overlay card;
  * the card's answer path resolves the request through `serverRequestStore`.
  * Methods the terminal cannot answer (desktop GUI bridges: `preview.*`,
- * `window.read`, `tour`, `mcp.setup`, `terminal.read`, the vault card
- * prompts) return `false` so the channel answers `-32601` and the tool
- * fails fast instead of waiting out its deadline.
+ * `window.read`, `tour`, `mcp.setup`, `terminal.read`) return `false` so the
+ * channel answers `-32601` and the tool fails fast instead of waiting out its
+ * deadline.
  */
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
   const { ringPromptBell, setStatus } = ctx
@@ -76,7 +76,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
       case 'approval': {
         patchOverlayState({
           approval: {
-            // Only an explicit false (tirith warning) drops the permanent-allow option.
+            // Only an explicit false drops the permanent-allow option.
             allowPermanent: p.allow_permanent !== false,
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),
@@ -109,6 +109,23 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         open(request, t('session.status.unlockVault', str(p.display_name)))
 
         return true
+      case 'vault.save_login': {
+        const site = str(p.site) || str(p.origin)
+
+        patchOverlayState({ vaultSaveLogin: { origin: str(p.origin), requestId: request.id, site } })
+        open(request, t('session.status.saveLogin', site))
+
+        return true
+      }
+
+      case 'vault.code': {
+        const site = str(p.site)
+
+        patchOverlayState({ vaultCode: { hint: str(p.hint), requestId: request.id, site } })
+        open(request, t('session.status.verificationCode', site))
+
+        return true
+      }
 
       default:
         return false

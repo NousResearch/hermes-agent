@@ -15,3 +15,8 @@ FIRE_CLAIM_SKEW_SECONDS = 60
 # wall-clock cap, so healthy runs may legitimately exceed it and a TTL of exactly the timeout
 # would expire live claims.
 CLAIM_TTL_INACTIVITY_HEADROOM = 3
+
+
+def is_recurring(job: dict) -> bool:
+    """A cron/interval job (vs a one-shot); a null ``schedule`` counts as not recurring."""
+    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}

@@ -168,6 +168,22 @@ export function dismissTip(): void {
   $activeTip.set(null)
 }
 
+/** Retire tips without showing them (Skip on the first-run intro); Settings → Reset brings them back. */
+export function retireTips(ids: readonly string[]): void {
+  const retired = $retiredTips.get()
+  const fresh = ids.filter(id => !retired.includes(id))
+
+  if (fresh.length > 0) {
+    $retiredTips.set([...retired, ...fresh])
+  }
+
+  const activeId = $activeTip.get()?.tipId
+
+  if (activeId && ids.includes(activeId)) {
+    $activeTip.set(null)
+  }
+}
+
 /** Hard close (the ✕): retire the identified tip behind the bubble for good. */
 export function retireActiveTip(): void {
   const tipId = $activeTip.get()?.tipId

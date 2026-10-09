@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 _STDERR_TAIL_LINES = 12  # stderr tail on generic errors: legible, yet enough for a config/auth diagnostic
+_TIER_UNKNOWN = object()  # thread resumed: the tier it carries is not known
 
 # Hermes' tools.terminal.security_mode -> Codex permissions profile id.
 # Missing config -> workspace-write (Codex's own default).
@@ -225,10 +226,13 @@ class CodexAppServerSession:
         # A codex thread id persisted by an earlier process for this Hermes session: the first
         # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
         self._resume_thread_id = resume_thread_id
-        # ``thread/start.model`` / ``.modelProvider``: select a provider from codex's own
-        # ``[model_providers.<id>]`` table. Only the id travels; codex reads base_url/env_key itself.
+        # ``thread/start.model``: the Hermes-selected slug, for every provider. ``.modelProvider``: a named
+        # custom provider's id in codex's own ``[model_providers.<id>]`` table; only the id travels, codex
+        # reads base_url/env_key itself.
         self._model = (model or "").strip() or None
         self._model_provider = (model_provider or "").strip() or None
+        # The tier this thread last received on turn/start; None = codex's own default, never overridden.
+        self._service_tier_sent: Any = None
         # Hermes' composed system prompt (SOUL.md, memory, channel overrides). Sent ONCE per thread as
         # ``thread/start.developerInstructions``: codex keeps its own base instructions (tool guidance) and
         # inserts this as the first developer message of every model request. ``baseInstructions`` would
@@ -278,6 +282,9 @@ class CodexAppServerSession:
         if self._resume_thread_id:
             wanted, self._resume_thread_id = self._resume_thread_id, None  # one attempt per stored id
             thread_id = self._resume_thread(wanted, params)
+            # A resumed thread may carry a tier an earlier process selected (CLI ``/fast`` rebuilds the agent),
+            # so its first turn sends Hermes' tier even when that is a clearing null.
+            self._service_tier_sent = _TIER_UNKNOWN
             logger.info("codex app-server thread resumed: id=%s cwd=%s", thread_id[:8], self._cwd)
         else:
             if self._history_seed:
@@ -289,6 +296,7 @@ class CodexAppServerSession:
                 raise CodexAppServerError(
                     code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
                 )
+            self._service_tier_sent = None  # a new thread runs codex's own configured tier
             logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         self._thread_id = thread_id
         return thread_id
@@ -444,10 +452,16 @@ class CodexAppServerSession:
         return projection, aborted
 
     def run_turn(
-        self, user_input: Any, *, turn_timeout: float = 600.0,
+        self, user_input: Any, *, model: Optional[str] = None, reasoning_effort: Optional[str] = None,
+        service_tier: Optional[str] = None, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
+
+        model / reasoning_effort: sent on ``turn/start`` (codex applies them to this and later turns), so an
+        in-place ``/model`` or effort change reaches a thread that was started with other settings.
+        service_tier: sent only when it differs from what this thread last received, so codex's own configured
+        tier is left alone until Hermes selects one, and ``None`` after a selection clears it.
 
         post_tool_quiet_timeout: if codex emits a tool completion and then goes quiet for this many seconds
         without emitting another item or `turn/completed`, log a warning (once per tool result) and keep
@@ -463,12 +477,16 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 input_items, result.submitted_user_text = _build_turn_input(user_input)
-                ts = self._request_for(
-                    result, "turn/start",
-                    {"threadId": self._thread_id, "input": input_items},
-                    "turn/start",
-                )
+                params: dict[str, Any] = {"threadId": self._thread_id, "input": input_items}
+                if model:
+                    params["model"] = model
+                if reasoning_effort is not None:
+                    params["effort"] = reasoning_effort
+                if service_tier != self._service_tier_sent:
+                    params["serviceTier"] = service_tier
+                ts = self._request_for(result, "turn/start", params, "turn/start")
                 if ts is not None:
+                    self._service_tier_sent = service_tier
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
         self._interrupt_event.clear()
         return result

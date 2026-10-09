@@ -40,6 +40,26 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture
+def private_db_probe_cleanup(tmp_path):
+    """Release only this test's probe fds after its explicit SQLite-handle finalizers.
+
+    Production intentionally keeps these probes open: closing one while SQLite still
+    owns the inode cancels its POSIX locks. Opt-in tests must first register normal
+    runner/store cleanup and use only databases underneath their private tmp_path.
+    """
+    import hermes_state_dbfile as dbfile
+
+    with dbfile._HEADER_PROBE_LOCK:
+        existing = set(dbfile._HEADER_PROBE_FDS)
+    yield
+    with dbfile._HEADER_PROBE_LOCK:
+        for key in set(dbfile._HEADER_PROBE_FDS) - existing:
+            if Path(key).is_relative_to(tmp_path):
+                fd, _dev, _ino = dbfile._HEADER_PROBE_FDS.pop(key)
+                os.close(fd)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _bind_lark_sdk_globals_when_installed():
     """Bind the feishu adapter's lark SDK globals once per test session.

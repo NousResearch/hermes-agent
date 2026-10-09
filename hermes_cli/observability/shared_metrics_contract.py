@@ -493,6 +493,7 @@ UPDATE_STOP_CLASSES = frozenset({
     "channel_unresolved",     # the update channel could not be resolved
     "checkout_move_failed",   # git could not move the checkout (ff refused, reset or switch failed)
     "commit_point_refused",   # the commit point could not be armed durably; nothing moved
+    "config_unreadable",      # config.yaml could not be read or parsed, so the update channel is unknown
     "detached_head",          # a detached checkout stayed put, or its commits could not be backed up
     "disk_full",              # (see above)
     "download_failed",        # the ZIP fallback download failed
@@ -500,6 +501,7 @@ UPDATE_STOP_CLASSES = frozenset({
     "git_in_progress",        # a merge/rebase/cherry-pick/... was already in progress
     "git_index_locked",       # git refused: another git process's .git/index.lock exists
     "git_timeout",            # a network git call hit the updater's time limit
+    "gateway_pause_failed",   # Windows: the gateways could not be paused safely before the venv moves
     "head_moved",             # a ref moved during the update; HEAD is not the selected commit
     "local_changes_blocked",  # local changes git could not stash, or a dirty tree the ZIP will not overwrite
     "lock_held",              # (see above)

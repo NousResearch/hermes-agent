@@ -1774,6 +1774,25 @@ def _apply_pulled_update(
     _complete_source_update(completion_request)
 
 
+def _pause_gateways_for_update(opts):
+    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    try:
+        return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
+            no_gateway_restart=opts.no_gateway_restart)
+    except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
+        _record_stop("gateway_pause_failed")
+        raise
+
+
+def _update_run_channel(args) -> str:
+    """``_source_update_channel`` for this run, naming the exit when config.yaml decides nothing."""
+    try:
+        return _source_update_channel(args)
+    except (RuntimeError, ValueError) as exc:  # unreadable config.yaml / an invalid configured channel name
+        _record_stop("config_unreadable" if isinstance(exc, RuntimeError) else "channel_unresolved")
+        raise
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
     # Marks this frame as the CURRENT updater for
@@ -1816,9 +1835,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    # Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs.
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-        no_gateway_restart=opts.no_gateway_restart)
+    _windows_gateway_resume = _pause_gateways_for_update(opts)
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1840,7 +1857,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_ref = f"origin/{branch}"
     release_sha = None
     target_repository = None
-    selected_channel = _source_update_channel(args)
+    selected_channel = _update_run_channel(args)
     if not getattr(args, "branch", None):
         from hermes_cli.release_channels import retrying_reads
         from hermes_cli.source_releases import resolve_source_target

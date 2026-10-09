@@ -226,6 +226,79 @@ def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(r
     assert git("rev-parse", "HEAD") == old
 
 
+@pytest.mark.parametrize(("site", "raised", "expected"), [
+    ("channel", RuntimeError("Your settings file cannot be read"), "config_unreadable"),
+    ("channel", ValueError("Invalid channel name"), "channel_unresolved"),
+    ("pause", RuntimeError("Could not stop Windows gateway service x"), "gateway_pause_failed"),
+])
+def test_an_exception_before_the_apply_names_its_exit_through_the_command_boundary(
+        rows, monkeypatch, site, raised, expected):
+    """Invariant: an exception that leaves ``_cmd_update_impl`` before the apply mark is recorded by
+    the exit that raised it; the command boundary (main.cmd_update) never has to read its type name,
+    so it never collapses to ``exception``."""
+    from hermes_cli import main, update_cmd, update_lock, update_owning_install
+
+    def boom(*_a, **_k):
+        raise raised
+
+    class Free:
+        holder = None
+
+        def __init__(self, **_kw):
+            pass
+
+        def acquire(self):
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    monkeypatch.setattr(update_lock, "UpdateLock", Free)
+    monkeypatch.setattr(update_cmd, "git_operation_in_progress", lambda root: None)
+    monkeypatch.setattr(update_cmd._check, "clear_git_debris", lambda root: None)
+    monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: update_cmd._UpdateOptions(
+        pre_update_version=None, gw_input_fn=None, assume_yes=True, keep_stash=False,
+        switch_branch=False, discard_local_changes=False, no_gateway_restart=True))
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan",
+                        lambda args: update_receipt.begin_update_receipt())
+    monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", boom if site == "pause" else lambda: None)
+    monkeypatch.setattr(main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(main, "_desktop_dist_exists", lambda d: False)
+    monkeypatch.setattr(main, "_installed_desktop_apps", list)
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_source_completion_request", lambda *a: {"home": str(rows.home)})
+    monkeypatch.setattr(main, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(update_cmd, "_source_update_channel", boom if site == "channel" else lambda args: "main")
+    with pytest.raises(type(raised)):
+        main.cmd_update(SimpleNamespace(gateway=False, branch=None, channel=None))
+
+    (run,) = rows.runs()
+    assert (run["failure_class"], run["outcome"], run["apply_mode"]) == (expected, "failed", "unknown")
+    assert contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, run)
+
+
+def test_a_timed_out_target_read_skips_the_preflight_instead_of_failing_the_update(monkeypatch):
+    """Invariant: the startup-syntax preflight reads the target from git's object store; a read that
+    times out (a blobless install lazily fetches each blob) is an unread file, never an exception
+    that ends the update as ``subprocess_failed``. The post-move syntax check stays the backstop."""
+    import subprocess
+
+    from pathlib import Path
+
+    from hermes_cli import update_cmd_commit
+
+    def slow(git_cmd, args, **kwargs):
+        raise subprocess.TimeoutExpired([*git_cmd, *args], 120)
+
+    monkeypatch.setattr(update_cmd_commit, "run_git", slow)
+    assert update_cmd_commit.target_syntax_error(["git"], Path("."), "a" * 40, ["cli.py", "run_agent.py"]) is None
+
+
 @pytest.mark.parametrize("consent", ["on", "off"])
 def test_the_bare_bootstrap_interpreter_parks_and_the_next_start_applies_the_gate(rows, consent, monkeypatch):
     """Invariant: a run finalized by the ``-I -S`` bootstrap interpreter (dependency preparation

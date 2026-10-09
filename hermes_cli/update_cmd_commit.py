@@ -497,7 +497,12 @@ def read_target_files(git_cmd, root: Path, target_ref: str, relpaths) -> dict[st
     names = list(dict.fromkeys(relpaths))
     found: dict[str, bytes | None] = dict.fromkeys(names)
     request = "".join(f"{target_ref}:{rel}\n" for rel in names).encode("utf-8")
-    cp = run_git(git_cmd, ["cat-file", "--batch"], cwd=str(root), input=request, capture_output=True, timeout=120)
+    try:
+        cp = run_git(git_cmd, ["cat-file", "--batch"], cwd=str(root), input=request, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        # A blobless install (install.sh clones --filter=blob:none) lazily fetches each changed blob
+        # in its own round trip; on a slow link that outlasts the limit. Unread, like an absent file.
+        return found
     out, pos = (cp.stdout or b"") if cp.returncode == 0 else b"", 0
     for rel in names:
         end = out.find(b"\n", pos)

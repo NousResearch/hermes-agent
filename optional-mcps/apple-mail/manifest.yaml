@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.6`:
+# On macOS, `npx -y apple-mail-mcp@2.20.7`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.6 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.7 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -191,12 +191,25 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # Mail.app for a size at all (IMAP STATUS, or a cached/remembered size) — is
 # **not** addressed by 2.20.6 and remains open upstream (#270). No new
 # tools: still 52 tools, all 18 default_enabled entries resolve.
+#
+# 2.20.7 is re-pinned on the same footing — the fix @j5pu's own re-test of
+# 2.20.6 called for. The 3s probe cap stopped the SERVER from waiting past
+# 3s, but Mail.app handles Apple events one at a time and kept running the
+# abandoned count to completion regardless, so every later probe — including
+# on small mailboxes — queued behind it; @j5pu measured a stalled probe
+# blocking subsequent calls well past the cap. The scan now remembers, for
+# the life of the process, every mailbox whose probe has timed out and skips
+# the `count of messages` call for it entirely on every later unscoped
+# by-id lookup, so it can no longer re-trigger the same stall. A mailbox
+# that returns a real count (confirmed large, not stalled) is still probed
+# fresh next time. No new tools: still 52 tools, all 18 default_enabled
+# entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.6"
+    - "apple-mail-mcp@2.20.7"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

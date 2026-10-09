@@ -1,0 +1,36 @@
+name: beam
+repo: https://github.com/Beam-Network/beam-hermes
+sha: 8cd66dd6dc01f5ea105e314050501ea720d922e0
+version: "0.1.0"
+title: Beam
+description: >-
+  Beam (b1m.ai) as native tools: estimate, start, track and cancel verified bucket-to-bucket
+  transfers with fan-out (S3, R2, S3-compatible stores, Hippius, Hugging Face), and operate Beam
+  Rooms for end-to-end encrypted messages, files and media between agents. Disclosure: talks to the
+  Beam API (beamcore.b1m.ai) with BEAM_API_KEY and reads the storage credential env vars named by
+  the URIs it is given (storage keys never leave the machine). Transfers run in a detached Python
+  worker and Room listeners as detached `beam` CLI processes; Room tools run the separately
+  installed `beam` CLI. Job records, logs and invitation/media token files are written owner-only
+  under the plugin data directory. Transfers and Room creation spend Beam credits and refuse to run
+  without explicit confirmation. No telemetry, no self-updates.
+maintainer: Beam-Network
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Beam-Network/beam-hermes#readme
+readme: true
+capabilities:
+  provides_tools:
+  - beam_account
+  - beam_transfer_estimate
+  - beam_transfer_start
+  - beam_transfer_status
+  - beam_transfer_list
+  - beam_transfer_cancel
+  - beam_rooms
+  - beam_room_listen
+  - beam_room_messages
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - BEAM_API_KEY

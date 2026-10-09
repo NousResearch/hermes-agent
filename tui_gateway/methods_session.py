@@ -1255,36 +1255,6 @@ def _(rid, params: dict, session: dict, db) -> dict:
     return _ok(rid, result)
 
 
-@method("session.archive")
-def _(rid, params: dict) -> dict:
-    """Set/clear ``archived`` (out of the default list, messages kept — the Desktop PATCH parity flag)
-    on a session + lineage: LIVE runtime id first (unpersisted drafts via ``pending_archived``),
-    then a stored id/key in the profile db, like ``session.set_hidden``."""
-    archived = is_truthy_value(params.get("archived", True))
-    target = str(params.get("session_id") or params.get("session_key") or "")
-    if not target:
-        return _err(rid, 4006, "session_id required")
-    # Quiet live lookup, the set_hidden reasoning: a stored id that is not in memory is this method's
-    # expected second tier, not a rejection (session.list rows archive without a live runtime here).
-    session = _sessions.get(target)
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
-        if db is None:
-            return _db_unavailable_error(rid, code=5007)
-        try:
-            if session is not None:
-                key = session["session_key"]
-                if not db.set_session_archived(key, archived):
-                    session["pending_archived"] = archived  # no row yet: _ensure_session_db_row applies it
-            else:
-                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
-                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
-                    return _err(rid, 4001, "session not found")
-                db.set_session_archived(key, archived)
-            return _ok(rid, {"archived": archived, "session_key": key})
-        except Exception as e:
-            return _err(rid, 5007, str(e))
-
-
 @method("session.set_hidden")
 def _(rid, params: dict) -> dict:
     """Set/clear ``hidden`` (leaves the default list, stays resumable by its owner) on a session + lineage:
@@ -2357,6 +2327,8 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
+    from . import methods_session_archive
+    methods_session_archive.register(server)
     bind_module(globals(), server, skip=("_",))
     from . import methods_session_branch
     methods_session_branch.register(server)

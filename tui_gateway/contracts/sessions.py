@@ -344,6 +344,9 @@ class SessionArchiveParams(Params):
     session_id: str | None = None
     session_key: str | None = None
     archived: bool = True
+    # Opt-in for a multi-row compression-lineage cascade; without it the archive is
+    # refused with 4033 + the preview payload (#70185).
+    confirm_cascade: bool | None = None
     profile: str | None = None
 
 

@@ -1192,6 +1192,35 @@ async def test_run_agent_forwards_author_to_run_conversation_only_when_set(adapt
 
 
 @pytest.mark.asyncio
+async def test_patch_session_cascade_archive_requires_confirmation(adapter, session_db):
+    """One archive click flips the whole compression lineage (#70185): a multi-row cascade
+    is refused with 409 + the preview payload unless the caller passes confirm_cascade."""
+    import time as _time
+
+    base = _time.time() - 1000
+    session_db.create_session("cas-root", "api_server")
+    session_db.create_session("cas-tip", "api_server", parent_session_id="cas-root")
+    session_db._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ?, end_reason = 'compression' "
+        "WHERE id = 'cas-root'", (base, base + 10))
+    session_db._conn.commit()
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch("/api/sessions/cas-tip", json={"archived": True})
+        assert resp.status == 409, await resp.text()
+        err = (await resp.json())["error"]
+        assert err["code"] == "archive_cascade_requires_confirmation"
+        assert err["preview"]["cascade_count"] == 2
+        assert not session_db.get_session("cas-root")["archived"]  # refused: nothing flipped
+
+        resp = await cli.patch(
+            "/api/sessions/cas-tip", json={"archived": True, "confirm_cascade": True})
+        assert resp.status == 200, await resp.text()
+        assert session_db.get_session("cas-root")["archived"]
+
+
+@pytest.mark.asyncio
 async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
     """PATCH must accept the durable pin/archive flags and round-trip them.
 

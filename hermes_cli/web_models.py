@@ -268,6 +268,9 @@ class SessionImport(BaseModel):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    # Archive direction only: archiving flips the whole compression lineage (#70185), so a
+    # cascade (lineage > 1 row) is refused with 409 + the preview payload unless confirmed.
+    confirm_cascade: Optional[bool] = None
     hidden: Optional[bool] = None  # also used by cross-profile reconciliation
     pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
     # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.

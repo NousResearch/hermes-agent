@@ -914,6 +914,22 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         for flag, setter in _RENAME_FLAG_SETTERS:
             value = getattr(body, flag)
             if value is not None:
+                # Archive cascades through the whole compression lineage (#70185): surface the
+                # blast radius and demand an explicit confirm instead of hiding N rows silently.
+                if flag == "archived" and value:
+                    preview = db.preview_session_archive_lineage(sid, archived=True)
+                    if preview["cascade_count"] > 1 and not body.confirm_cascade:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "message": (
+                                    f"Archiving this session also archives its compression "
+                                    f"lineage ({preview['cascade_count']} sessions). "
+                                    f"Pass confirm_cascade=true to proceed."
+                                ),
+                                **preview,
+                            },
+                        )
                 setter(db, sid, value)
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""

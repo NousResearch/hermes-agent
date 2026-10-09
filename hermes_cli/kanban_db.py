@@ -4291,9 +4291,9 @@ def read_worker_log(
 
 # --- Assignee enumeration (known profiles + per-profile board stats) ---
 
-def list_profiles_on_disk() -> list[str]:
-    """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths
-    directly to avoid importing ``hermes_cli.profiles`` at startup."""
+def list_profiles_on_disk(*, require_complete: bool = False) -> list[str]:
+    """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths directly (not via
+    ``hermes_cli.profiles``). ``require_complete`` raises OSError instead of returning a partial list."""
     try:
         from hermes_constants import get_default_hermes_root
         default_root = get_default_hermes_root()
@@ -4301,14 +4301,13 @@ def list_profiles_on_disk() -> list[str]:
     except Exception:
         return []
 
-    names: set[str] = set()
-    if default_root.exists():
-        names.add("default")
+    names: set[str] = {"default"} if default_root.exists() else set()
     if profiles_dir.is_dir():
         try:
             names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())
         except OSError:
-            pass
+            if require_complete:
+                raise
     return sorted(names)
 
 

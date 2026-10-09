@@ -52,6 +52,10 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    for name in ("peer", "qa"):
+        profile = home / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

@@ -263,9 +263,12 @@ def test_kitty_animation_capability_matrix(monkeypatch):
     monkeypatch.setenv("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")
     assert render.supports_kitty_animation() is True
 
+    # ... but herdr hosting in a graphics-less terminal (e.g. VTE) shows nothing
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR")
+    assert render.supports_kitty_animation() is False
+
     # bare Ghostty: graphics yes, animation frames no (ignored -> frozen base frame)
     monkeypatch.delenv("TERM_PROGRAM", raising=False)
-    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR", raising=False)
     monkeypatch.setenv("TERM", "xterm-ghostty")
     assert render.supports_kitty_animation() is False
 
@@ -274,6 +277,23 @@ def test_kitty_animation_capability_matrix(monkeypatch):
 
     monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
     assert render.supports_kitty_animation() is False
+
+
+def test_detect_herdr_tracks_the_host_terminal(monkeypatch):
+    monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+    monkeypatch.delenv("WEZTERM_PANE", raising=False)
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "herdr")
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    # herdr over a graphics terminal: full kitty stream (APC + Unicode placeholders)
+    monkeypatch.setenv("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")
+    assert render.detect_terminal_graphics() == "kitty"
+
+    # herdr over a graphics-less host (VTE): fall back to half-blocks like any
+    # unrecognized terminal, never emit graphics that cannot display
+    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR")
+    assert render.detect_terminal_graphics() == "unicode"
 
 
 def test_resolve_kitty_animation_override(monkeypatch):

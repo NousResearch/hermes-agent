@@ -43,6 +43,11 @@ def detect_terminal_graphics() -> str:
     # half-blocks; users who enabled them can pin display.pet.render_mode.
     if term_program == "vscode":
         return "unicode"
+    # herdr panes parse a full kitty stream (APC graphics + Unicode placeholders) with
+    # their own graphics implementation — but only show it when the terminal hosting the
+    # herdr window can (herdr inherits its graphics env, GHOSTTY_RESOURCES_DIR etc.).
+    if term_program == "herdr":
+        return "kitty" if (os.environ.get("GHOSTTY_RESOURCES_DIR") or os.environ.get("KITTY_WINDOW_ID")) else "unicode"
     if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term or "ghostty" in term or term_program == "ghostty" or _is_wezterm():
         return "kitty"  # WezTerm speaks kitty and iterm; kitty has richer placement
     if term_program == "iterm.app" or os.environ.get("ITERM_SESSION_ID"):
@@ -70,9 +75,10 @@ def supports_kitty_animation() -> bool:
     if term_program == "vscode" or _is_wezterm():
         return False
     # herdr before the Ghostty check: its panes inherit GHOSTTY_RESOURCES_DIR but parse
-    # the kitty stream with their own (animation-capable) graphics implementation.
+    # the kitty stream with their own (animation-capable) graphics implementation. Like
+    # detection, only when the hosting terminal can show graphics at all.
     if term_program == "herdr":
-        return True
+        return bool(os.environ.get("GHOSTTY_RESOURCES_DIR") or os.environ.get("KITTY_WINDOW_ID"))
     if term_program == "ghostty" or "ghostty" in term or os.environ.get("GHOSTTY_RESOURCES_DIR"):
         return False
     return bool(os.environ.get("KITTY_WINDOW_ID") or "kitty" in term)

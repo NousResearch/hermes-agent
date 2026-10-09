@@ -99,6 +99,19 @@ class TestClassification:
                 f"Core tool '{core_name}' must NEVER be deferrable"
             )
 
+    def test_eager_toolset_stays_in_the_model_facing_array(self, monkeypatch):
+        """An operator can keep one MCP server eager while the rest defer."""
+        from tools import tool_search
+
+        monkeypatch.setattr(
+            tool_search, "_registry_toolset",
+            lambda name: "mcp-team" if name == "team_list" else "mcp-parcel")
+        assert tool_search.is_deferrable_tool_name(
+            "team_list", eager_toolsets=frozenset({"mcp-team"})) is False
+        assert tool_search.is_deferrable_tool_name("team_list") is True
+        assert tool_search.is_deferrable_tool_name(
+            "lookup", eager_toolsets=frozenset({"mcp-team"})) is True
+
     def test_bridge_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
         for name in BRIDGE_TOOL_NAMES:

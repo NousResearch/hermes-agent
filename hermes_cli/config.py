@@ -3854,7 +3854,7 @@ _USAGE_GET = ("Usage: hermes config get <key> [--json] [--raw]", [
 _USAGE_SET = ("Usage: hermes config set [--force] <key> <value>", [
     "hermes config set model anthropic/claude-sonnet-4", "hermes config set terminal.backend docker",
     "hermes config set OPENROUTER_API_KEY sk-or-..."], [
-    "", "  --force: skip the unknown-key notice for unrecognized keys,",
+    "", "  --force: allow known keys under a wrong prefix and skip unknown-key notices,",
     "           and allow a scalar to replace a whole mapping section"])
 _USAGE_UNSET = ("Usage: hermes config unset <key>", [
     "hermes config unset model", "hermes config unset terminal.backend",

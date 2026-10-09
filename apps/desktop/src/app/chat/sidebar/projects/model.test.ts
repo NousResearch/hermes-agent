@@ -4,6 +4,7 @@ import {
   nestProjectsByParent,
   orderProjectsByIds,
   projectBackTarget,
+  projectDepths,
   projectDescendantIds,
   projectSubtreeSessionIds,
   sortProjectsForOverview,
@@ -32,6 +33,31 @@ const home = (): SidebarProjectTree => ({
 })
 
 const ids = (projects: SidebarProjectTree[]) => projects.map(project => project.id)
+
+describe('projectDepths', () => {
+  const nested = (id: string, parentId?: null | string) => ({ ...makeProject(id, 0), parentId })
+
+  it('counts the parent chain: top level 0, child 1, grandchild 2', () => {
+    const depths = projectDepths([nested('top'), nested('mid', 'top'), nested('leaf', 'mid')])
+
+    expect(depths.get('top')).toBe(0)
+    expect(depths.get('mid')).toBe(1)
+    expect(depths.get('leaf')).toBe(2)
+  })
+
+  it('treats a parent that is not in the list as top level, like the rest of the model', () => {
+    expect(projectDepths([nested('orphan', 'p_gone')]).get('orphan')).toBe(0)
+    // An explicit top level ('') is not a parent either.
+    expect(projectDepths([nested('explicit', '')]).get('explicit')).toBe(0)
+  })
+
+  it('terminates on a parent cycle instead of hanging', () => {
+    const depths = projectDepths([nested('a', 'b'), nested('b', 'a')])
+
+    expect(depths.get('a')).toBe(1)
+    expect(depths.get('b')).toBe(1)
+  })
+})
 
 describe('orderProjectsByIds', () => {
   it('leaves the deterministic sort alone when nothing has been dragged', () => {

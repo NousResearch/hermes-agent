@@ -8,15 +8,18 @@ import { EnteredProjectContent } from './entered-content'
 import { NestedProjectRows } from './nested-project-rows'
 import type { SidebarProjectTree } from './workspace-groups'
 
-// The entered project's level: the way back out, the projects nested directly
-// under this one (each a row that drills a level further down), then the
-// project's own sessions — or the caller's empty state, so the pane is never a
-// bare spinner or blank while lanes hydrate.
+// The entered project's level: the way back out, the project's own sessions —
+// or the caller's empty state, so the pane is never a bare spinner or blank
+// while lanes hydrate — and then the projects nested under this one, each a row
+// that shows what it holds and can be drilled a level further down. The nested
+// rows come last so they sit under the sessions of the project they belong to.
 export function EnteredProjectView({
   backRow,
   emptyState,
   hasContent,
   liveSessions,
+  nestedHidden,
+  nestedPreviews,
   nestedProjects,
   onEnterProject,
   onNewSession,
@@ -32,7 +35,11 @@ export function EnteredProjectView({
   /** Whether the project has sessions or declared repos of its own to show. */
   hasContent: boolean
   liveSessions?: SessionInfo[]
-  /** The overview tree this project came from, for the rows nested directly under it. */
+  /** Exclusions a nested row's "Show all" must share with the previews. */
+  nestedHidden?: { counts: Record<string, number>; isHidden: (session: SessionInfo) => boolean }
+  /** Preview rows per project id, so a nested row expands to what it holds. */
+  nestedPreviews?: Record<string, SessionInfo[]>
+  /** The overview tree this project came from, for the rows nested under it. */
   nestedProjects?: SidebarProjectTree[]
   onEnterProject?: (id: string) => void
   onNewSession?: (path: null | string) => void
@@ -45,12 +52,6 @@ export function EnteredProjectView({
   return (
     <>
       {backRow}
-      <NestedProjectRows
-        onEnter={onEnterProject}
-        onNewSession={onNewSession}
-        onNewSessionSplit={onNewSessionSplit}
-        projects={nestedProjects}
-      />
       {hasContent ? (
         <EnteredProjectContent
           liveSessions={liveSessions}
@@ -64,6 +65,15 @@ export function EnteredProjectView({
       ) : (
         emptyState
       )}
+      <NestedProjectRows
+        hidden={nestedHidden}
+        onEnter={onEnterProject}
+        onNewSession={onNewSession}
+        onNewSessionSplit={onNewSessionSplit}
+        previews={nestedPreviews}
+        projects={nestedProjects}
+        renderRows={renderRows}
+      />
     </>
   )
 }

@@ -9,7 +9,7 @@ import { $sessionDotStateById, rollupDotState } from '@/store/session-dot-state'
 
 import { ReorderableList, useSortableBindings } from '../reorderable-list'
 
-import { projectSubtreeSessionIds, visibleProjectRows } from './model'
+import { projectDepths, projectSubtreeSessionIds, visibleProjectRows } from './model'
 import { ProjectOverviewRow } from './overview-row'
 import type { ProjectNestPolicy } from './project-drag'
 import type { SidebarProjectTree } from './workspace-groups'
@@ -75,6 +75,9 @@ export function ProjectOverviewList({
   // A parent that folds its subprojects away cannot lose the control that opens it again, so this
   // reads the WHOLE list: `visibleProjects` no longer holds the rows a closed parent hides.
   const nestedParentIds = new Set(sortableProjects.map(project => project.parentId).filter(Boolean))
+  // Each row's nesting depth, so a subproject of a subproject is drawn one step further in than the
+  // subproject itself instead of beside it.
+  const depths = projectDepths(projects)
   const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
   const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
@@ -84,6 +87,7 @@ export function ProjectOverviewList({
       // The loudest status anywhere under this project, folded up from its own sessions and every
       // nested project's — a collapsed row still reports work waiting inside it.
       attentionState={rollupDotState(dotStates, projectSubtreeSessionIds(projects, project.id))}
+      depth={depths.get(project.id) ?? 0}
       hasNestedProjects={nestedParentIds.has(project.id)}
       hiddenSessionCount={hidden?.counts[project.id]}
       isSessionHidden={hidden?.isHidden}

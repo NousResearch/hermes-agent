@@ -259,6 +259,41 @@ export function projectBackTarget(
 }
 
 /**
+ * Every project's nesting depth along its `parentId` chain — 0 for a top-level row, 1 for its child,
+ * 2 for its grandchild. The overview indents a row by this, so a subproject of a subproject is drawn
+ * one step further in than the subproject itself rather than beside it. Cycle-safe, and a `parentId`
+ * naming an absent project counts as top level — the same tolerance `visibleProjectRows` and
+ * `projectBackTarget` have.
+ */
+export function projectDepths(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[]): Map<string, number> {
+  const byId = new Map(projects.map(project => [project.id, project]))
+  const depths = new Map<string, number>()
+
+  for (const project of projects) {
+    const seen = new Set<string>([project.id])
+    let depth = 0
+    let parentId = project.parentId
+
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId)
+
+      const parent = byId.get(parentId)
+
+      if (!parent) {
+        break
+      }
+
+      depth += 1
+      parentId = parent.parentId
+    }
+
+    depths.set(project.id, depth)
+  }
+
+  return depths
+}
+
+/**
  * Every session a project stands for: its own rows plus the rows of every project nested under it,
  * transitively. This is what a collapsed row folds its status up from — ownership is deepest-wins, so
  * a subproject's sessions belong to the subproject and are absent from its ancestors' `sessionIds`.

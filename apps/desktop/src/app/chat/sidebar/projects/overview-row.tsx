@@ -117,6 +117,10 @@ interface ProjectOverviewRowProps {
   /** Whether any project nests under this one. A subproject-only parent has no preview rows to fold,
    *  but it still has children — which is exactly what the fold is for. */
   hasNestedProjects?: boolean
+  /** How many levels in this row sits (0 = top level). The overview passes the project's real depth,
+   *  so a subproject of a subproject is indented under it rather than beside it; the entered view
+   *  passes 1, because the rows it draws are all one level inside the project you are in. */
+  depth?: number
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -256,6 +260,7 @@ export function ProjectOverviewRow({
   hiddenSessionCount = 0,
   attentionState,
   hasNestedProjects = false,
+  depth,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -265,6 +270,11 @@ export function ProjectOverviewRow({
   const { t } = useI18n()
   const s = t.sidebar
   const isActive = project.id === activeProjectId
+  // One step (0.5rem) further in per nesting level — grouping only, the sessions stay the child's own.
+  // The overview passes the row's real depth so a subproject of a subproject is indented under it; a
+  // row rendered without one (a lone preview, a test) still indents for its `parentId`, so the indent
+  // cannot silently disappear.
+  const nestDepth = depth ?? (project.parentId ? 1 : 0)
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The subtree's loudest status, shown whether the row is open or closed: a session that wants an
   // answer inside a subproject must be visible without folding anything open.
@@ -384,10 +394,6 @@ export function ProjectOverviewRow({
     <div
       className={cn(
         dragging && 'relative z-10',
-        // A folder-nested project sits one indent under its parent (the same
-        // `pl-2` a project's own nested rows use) — grouping only, its sessions
-        // stay its own.
-        project.parentId && 'pl-2',
         // Painted imperatively by session-drag.ts while a dragged session
         // hovers this row — a live "drop here to move" cue, not React state
         // (it must not repaint the sidebar on every pixel of pointer travel).
@@ -395,7 +401,9 @@ export function ProjectOverviewRow({
       )}
       data-sessions-project={project.id}
       ref={ref}
-      style={style}
+      // The nesting indent (see `nestDepth`); the virtualizer's own positional styles win where they
+      // overlap, so this only ever adds the left padding.
+      style={nestDepth ? { ...style, paddingLeft: `${nestDepth * 0.5}rem` } : style}
     >
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (

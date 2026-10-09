@@ -164,19 +164,17 @@ import {
   nestProjectsByParent,
   orderProjectsByIds,
   overlayLiveLanes,
-  overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
   reconcileEnteredProjectSessions,
-  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useProjectRowData,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
@@ -1114,47 +1112,12 @@ export function ChatSidebar({
   // The project overview (drill-in list) vs. the entered project's content.
   const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
 
-  // Preview rows come from the backend tree (each project carries its
-  // most-recent sessions), overlaid with live $sessions so a just-created
-  // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project id for the rows.
-  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () =>
-      overlayLivePreviews(
-        projectOverview ?? [],
-        agentSessions,
-        projects,
-        showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
-        {
-          removed: removedSessionIds,
-          // Rank before the trim, so "3 priciest in this project" isn't "3 most
-          // recent, priciest first".
-          rankIds: sortOrderIds
-        }
-      ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
-  )
-
-  // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —
-  // must go through the same exclusion as the previews above (pins, filter
-  // misses, optimistic removals), or a pinned chat renders twice and a
-  // just-deleted one comes back. The per-project count of loaded sessions
-  // that exclusion hides also corrects the backend's `sessionCount` in the
-  // "Show all N" label (a pin is always loaded — it renders in Pinned).
-  const overviewHidden = useMemo(() => {
-    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || removedSessionIds.has(session.id)
-    const counts: Record<string, number> = {}
-
-    for (const session of sessions) {
-      const projectId = isHidden(session) ? sessionBucketId(session, projects, projectOwners) : null
-
-      if (projectId) {
-        counts[projectId] = (counts[projectId] ?? 0) + 1
-      }
-    }
-
-    return { isHidden, counts }
-  }, [sessions, projects, projectOwners, isHiddenFromProjects, removedSessionIds])
+  // The rows' preview sessions and the exclusion they share (see projects/row-data.ts).
+  const { hidden: overviewHidden, previews: overviewPreviews } = useProjectRowData({
+    isHiddenFromProjects,
+    liveSessions: agentSessions,
+    tree: agentProjectTree
+  })
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1669,6 +1632,7 @@ export function ChatSidebar({
                 open
                 pinned={false}
                 preserveOrder
+                projectTree={undefined}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 showProfileTags={showAllProfiles}
@@ -1696,6 +1660,7 @@ export function ChatSidebar({
                 onToggleUnread={toggleUnread}
                 open={pinsOpen}
                 pinned
+                projectTree={undefined}
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
@@ -1891,6 +1856,7 @@ export function ChatSidebar({
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
+                projectTree={agentProjectTree}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
                 rootClassName={cn(
                   'min-h-32 flex-1 overflow-hidden p-0',
@@ -1952,6 +1918,7 @@ export function ChatSidebar({
                     onToggleUnread={toggleUnread}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}
+                    projectTree={undefined}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
                     showProfileTags={showAllProfiles && !ownerGrouped}

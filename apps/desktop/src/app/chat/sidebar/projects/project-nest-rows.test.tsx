@@ -109,6 +109,7 @@ const renderOverview = (overview: SidebarProjectTree[], previews: Record<string,
       pinned={false}
       projectOverview={overview}
       projectOverviewPreviews={previews}
+      projectTree={overview}
       sessions={[]}
     />
   )
@@ -162,6 +163,19 @@ describe('project nest rows', () => {
     expect(
       [...container.querySelectorAll<HTMLElement>('[data-sessions-project]')].map(el => el.dataset.sessionsProject)
     ).toEqual(['p_parent', 'p_child', 'p_other'])
+  })
+
+  it('indents a subproject of a subproject one step further in than its parent', () => {
+    const grandchild = node('p_grand', { label: 'Grandchild', parentId: 'p_child' })
+    const { container } = renderOverview([parent, child, grandchild, other], {})
+
+    const indent = (id: string) =>
+      container.querySelector<HTMLElement>(`[data-sessions-project="${id}"]`)?.style.paddingLeft
+
+    // Top level, one level in, two levels in: the grandchild is drawn UNDER its parent, not beside it.
+    expect(indent('p_parent')).toBe('')
+    expect(indent('p_child')).toBe('0.5rem')
+    expect(indent('p_grand')).toBe('1rem')
   })
 
   it('targets the row under the pointer, with the dragged row out of the geometry', () => {
@@ -221,7 +235,20 @@ describe('project nest rows', () => {
 })
 
 describe('entered project: the projects nested inside it', () => {
-  const parent = node('p_parent', { label: 'Parent' })
+  const parent = node('p_parent', {
+    label: 'Parent',
+    // A lane of its own, so the content the nested rows must sit BELOW is on screen.
+    repos: [
+      {
+        groups: [{ id: 'lane', isMain: true, label: 'main', path: '/p_parent', sessions: [session('s_parent')] }],
+        id: 'p_parent-repo',
+        label: 'parent',
+        path: '/p_parent',
+        sessionCount: 1
+      }
+    ]
+  })
+
   const child = node('p_child', { label: 'Child', parentId: 'p_parent' })
   const grandchild = node('p_grand', { label: 'Grandchild', parentId: 'p_child' })
   const sibling = node('p_sibling', { label: 'Sibling', parentId: '' })
@@ -229,7 +256,13 @@ describe('entered project: the projects nested inside it', () => {
 
   // The entered project IS the sidebar's scope — that is what the nested rows read to know which
   // level they are drawing.
-  const renderEntered = (entered: string, onEnterProject: (id: string) => void = vi.fn()) => {
+  const renderEntered = (
+    entered: string,
+    {
+      onEnterProject = vi.fn(),
+      previews = {}
+    }: { onEnterProject?: (id: string) => void; previews?: Record<string, SessionInfo[]> } = {}
+  ) => {
     $projectScope.set(entered)
 
     return render(
@@ -250,18 +283,37 @@ describe('entered project: the projects nested inside it', () => {
         projectBackRow={<div data-project-back="" />}
         projectContent={projects.find(project => project.id === entered)}
         projectOverview={projects}
+        projectOverviewPreviews={previews}
+        projectTree={projects}
         sessions={[]}
       />
     )
   }
 
-  it('shows the projects one level down, and enters the one clicked', () => {
-    const onEnterProject = vi.fn()
-    const { container } = renderEntered('p_parent', onEnterProject)
+  it('draws the whole subtree under it, below the project\'s own sessions', () => {
+    const { container } = renderEntered('p_parent')
 
-    // Only its own children — the grandchild belongs to the level below, and `p_sibling` is not
-    // inside this project at all.
-    expect(projectRowIds(container)).toEqual(['p_child'])
+    // Both levels, parent-first: a project nested under another is drawn under it, not one drill-in away.
+    expect(projectRowIds(container)).toEqual(['p_child', 'p_grand'])
+
+    const order = [...container.querySelectorAll<HTMLElement>('[data-session-row], [data-sessions-project]')].map(
+      el => el.dataset.sessionRow ?? el.dataset.sessionsProject
+    )
+
+    // The entered project's own chats come first: the projects nested inside it sit under them.
+    expect(order[0]).toBe('s_parent')
+    expect(order.indexOf('s_parent')).toBeLessThan(order.indexOf('p_child'))
+  })
+
+  it('opens a nested project on its own sessions, without entering it', () => {
+    const { container } = renderEntered('p_parent', { previews: { p_child: [session('s_child')] } })
+
+    expect(container.querySelector('[data-sessions-project="p_child"] [data-session-row="s_child"]')).not.toBeNull()
+  })
+
+  it('enters the project clicked', () => {
+    const onEnterProject = vi.fn()
+    renderEntered('p_parent', { onEnterProject })
 
     fireEvent.click(screen.getByLabelText('Enter Child'))
 

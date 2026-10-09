@@ -12,6 +12,7 @@ export {
 } from './model'
 export { ProjectBackRow, ProjectOverviewRow } from './overview-row'
 export { ProjectMenu } from './project-menu'
+export { useProjectRowData } from './row-data'
 export { SidebarWorkspaceGroup } from './workspace-group'
 export {
   excludeProjectSessions,

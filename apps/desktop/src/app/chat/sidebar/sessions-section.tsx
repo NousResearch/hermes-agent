@@ -48,6 +48,7 @@ import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
+import { useSessionRowRenderers } from './session-row-renderers'
 import { VirtualSessionList } from './virtual-session-list'
 
 export const VIRTUALIZE_THRESHOLD = 25
@@ -152,6 +153,10 @@ interface SidebarSessionsSectionProps {
   // Live git lanes (`git worktree list`) for repos in the entered project —
   // a VISUAL enhancer only (empty lanes), never session membership.
   projectRepoWorktrees?: Record<string, HermesGitWorktree[]>
+  // The WHOLE project tree — while entered, the view draws the projects nested under the one you are
+  // inside from it. Required on purpose: `projectOverview` is empty inside a project, so a caller that
+  // forgets this one silently loses every nested row (no type error, no failing test, no rows).
+  projectTree: SidebarProjectTree[] | undefined
   // Live session cache used for optimistic placement inside entered-project lanes.
   liveSessions?: SessionInfo[]
   // Client-side optimistic eviction layer (deleted/archived ids).
@@ -222,6 +227,7 @@ export function SidebarSessionsSection({
   embeddedGroups = false,
   projectOverview,
   projectOverviewPreviews,
+  projectTree,
   projectOverviewHidden,
   projectsLoading = false,
   onEnterProject,
@@ -400,44 +406,14 @@ export function SidebarSessionsSection({
     [dividerLabels, dividerToggle, renderRow]
   )
 
-  // Sessions inside repos/worktrees are date-ordered and static.
-  const renderRows = useCallback(
-    (items: SessionInfo[]) =>
-      flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
-    [renderRow]
-  )
-
-  // Limit complete groups, not sessions, so a burst and its branches stay
-  // together. Compute boundaries from the whole pool, just like Updated.
-  const renderPreviewRows = useCallback(
-    (items: SessionInfo[], projectId: string) => {
-      const rows = groupEntriesByRecency(
-        flattenSessionsWithBranches(items),
-        undefined,
-        undefined,
-        showAllSessions ? Infinity : 2
-      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
-
-      const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
-
-      return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
-    },
-    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
-  )
-
-  // Same as `renderRows`, but with date dividers folded in — used for
-  // entered-project lanes so a lane spanning multiple days reads
-  // chronologically, matching the flat recents list.
-  const renderRowsDated = useCallback(
-    (items: SessionInfo[]) => {
-      const entries = flattenSessionsWithBranches(items)
-
-      const rows = grouping === 'date' ? groupEntriesByRecency(entries) : toSessionRows(entries)
-
-      return hideCollapsedGroupRows(rows, isListGroupOpen).map(row => renderListRow(row, false))
-    },
-    [grouping, isListGroupOpen, renderListRow]
-  )
+  const { renderPreviewRows, renderRows, renderRowsDated } = useSessionRowRenderers({
+    grouping,
+    isListGroupOpen,
+    manualOrderIds,
+    renderListRow,
+    renderRow,
+    showAllSessions
+  })
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
   // The hand-picked order is then applied INSIDE each date group, so dragging a
@@ -516,7 +492,9 @@ export function SidebarSessionsSection({
         emptyState={emptyState}
         hasContent={hasProjectContent}
         liveSessions={liveSessions}
-        nestedProjects={projectOverview}
+        nestedHidden={projectOverviewHidden}
+        nestedPreviews={projectOverviewPreviews}
+        nestedProjects={projectTree}
         onEnterProject={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
         onNewSessionSplit={onNewSessionSplit}

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import CompressionCheckpointUnavailable, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 from hermes_cli.observability import shared_metrics_events
 from hermes_cli.observability.shared_metrics_fields import compression_fields
@@ -156,6 +156,8 @@ class _CodexSession:
         self.result = result
 
     def compact_thread(self):
+        if isinstance(self.result, BaseException):
+            raise self.result
         return self.result
 
     def close(self):
@@ -196,6 +198,40 @@ def test_codex_route_logs_exactly_one_record_per_exit(caplog, shared_metric_rows
     assert record["route"] == "codex_app_server"
     assert record["trigger_source"] == ("manual" if force else "auto")
     assert SECRET not in json.dumps(record) and "boom" not in json.dumps(record)
+    assert shared_metric_rows == []
+
+
+def test_codex_compact_that_raises_logs_one_record_and_reraises_the_same_error(caplog, shared_metric_rows):
+    error = RuntimeError(f"boom {SECRET}")
+    agent = _codex_agent(error, "hermes")
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with pytest.raises(RuntimeError) as excinfo:
+            compress_context(agent, [{"role": "user", "content": SECRET}], "system", approx_tokens=90_000, force=True)
+
+    assert excinfo.value is error
+    [record] = _attempt_records(caplog)
+    assert (record["commit_status"], record["failure_class"], record["method"]) == (
+        "aborted", "exception:RuntimeError", "none"
+    )
+    assert (record["route"], record["attempt_id"]) == ("codex_app_server", agent._compression_attempt_id)
+    assert SECRET not in json.dumps(record) and "boom" not in json.dumps(record)
+    assert shared_metric_rows == []
+
+
+def test_codex_route_refused_for_a_required_checkpoint_logs_one_record_and_raises(caplog, shared_metric_rows):
+    agent = _codex_agent(TurnResult(thread_id="t1"), "hermes")
+    agent.compression_checkpoint_required = True
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        with pytest.raises(CompressionCheckpointUnavailable, match="codex_app_server"):
+            compress_context(agent, [{"role": "user", "content": SECRET}], "system", approx_tokens=90_000, force=True)
+
+    [record] = _attempt_records(caplog)
+    assert (record["commit_status"], record["failure_class"], record["route"]) == (
+        "aborted", "exception:CompressionCheckpointUnavailable", "codex_app_server"
+    )
+    assert record["attempt_id"] == agent._compression_attempt_id
     assert shared_metric_rows == []
 
 

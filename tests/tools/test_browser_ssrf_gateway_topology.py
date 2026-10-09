@@ -44,3 +44,12 @@ def test_guard_active_on_sekreto_lane(monkeypatch):
     monkeypatch.setenv("SEKRETO_API_KEY", "s" * 8)
     assert bt_cloud._is_local_backend() is False
     assert bt_eval_policy._eval_ssrf_guard_active("test") is True
+
+def test_guard_active_on_generic_mcp_lane(monkeypatch):
+    """browser.mcp_url (any MCP browser server) = remote = guard ON — vendor-agnostic."""
+    monkeypatch.setattr(bt_cloud._origin(), "_is_camofox_mode", lambda: True)
+    import tools.browser_mcp_transport as mt
+    monkeypatch.setattr(mt, "_backend_url", lambda: "https://mcp.my-browser.example")
+    monkeypatch.setenv("BROWSER_MCP_API_KEY", "g" * 8)
+    assert bt_cloud._is_local_backend() is False
+    assert bt_eval_policy._eval_ssrf_guard_active("test") is True

@@ -42,6 +42,15 @@ _REF_RE = re.compile(r"\[([a-zA-Z0-9_]+)\]")
 
 
 def _backend_url() -> str:
+    # Generic MCP-browser backend first (any MCP server that speaks the browser-tool surface),
+    # then the tenant-key gateway lanes. `browser.mcp_url` config beats env names.
+    try:
+        from tools.tool_backend_helpers import browser_mcp_backend_url
+        url = browser_mcp_backend_url()
+        if url:
+            return url.rstrip("/")
+    except Exception:
+        pass
     url = (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
     if not url:
         url = (get_secret("SEKRETO_URL", "") or "").rstrip("/")
@@ -49,13 +58,20 @@ def _backend_url() -> str:
 
 
 def _is_gateway_backend() -> bool:
-    """True when the browser backend is the SaaS gateway (tenant-key MCP-only)."""
+    """True when the browser backend is a remote MCP gateway (MCP-only, topologically remote).
+
+    Covers the tenant-key SaaS lanes (credential env names below) AND the generic
+    ``browser.mcp_url`` lane (any MCP browser server configured by URL+key). A non-loopback
+    URL with an auth key = remote = MCP-only + SSRF-guard-active.
+    """
     url = _backend_url()
     if not url:
         return False
     host = url.split("//", 1)[-1].split("/", 1)[0]
     loopback = host.split(":")[0] in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
-    # Gateway + user-supplied key = tenant mode (REST denied server-side).
+    if (get_secret("BROWSER_MCP_API_KEY", "") or "").strip():
+        # Generic browser-MCP lane (browser.mcp_url / BROWSER_MCP_URL): URL+key = remote lane.
+        return not loopback
     # Credential names in priority order: CAMOFOX_API_KEY (fleet browser lane)
     # then SEKRETO_API_KEY (SaaS lane — kinyras-style profiles carry only this).
     key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
@@ -97,9 +113,9 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
             "arguments": arguments,
         },
     }
-    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
-        get_secret("SEKRETO_API_KEY", "") or ""
-    ).strip()
+    key = (get_secret("BROWSER_MCP_API_KEY", "") or "").strip() or (
+        get_secret("CAMOFOX_API_KEY", "") or ""
+    ).strip() or (get_secret("SEKRETO_API_KEY", "") or "").strip()
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",

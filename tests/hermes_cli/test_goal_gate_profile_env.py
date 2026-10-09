@@ -52,3 +52,45 @@ def test_goal_gate_child_env_tracks_routed_profile_a_b_a(tmp_path, monkeypatch):
     assert last["GOAL_GATE_LAUNCH_ONLY"] == "launch"
     assert "GOAL_GATE_SERVED_ONLY" not in first
     assert "GOAL_GATE_SERVED_ONLY" not in last
+
+
+def test_goal_gate_real_shell_child_receives_only_served_profile_env(tmp_path, monkeypatch):
+    """Exercise the real shell boundary, not only subprocess.run's mocked kwargs."""
+    import json
+    import os
+    import shlex
+    import sys
+
+    launch_home = tmp_path / "launch"
+    served_home = tmp_path / "served"
+    launch_home.mkdir()
+    served_home.mkdir()
+    (launch_home / ".env").write_text("GOAL_GATE_LAUNCH_ONLY=launch\n", encoding="utf-8")
+    (served_home / ".env").write_text("GOAL_GATE_SERVED_ONLY=served\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("GOAL_GATE_LAUNCH_ONLY", "launch")
+
+    probe = tmp_path / "probe_gate_env.py"
+    probe.write_text(
+        "import json, os\n"
+        "print(json.dumps({key: os.environ.get(key) for key in "
+        "('HERMES_HOME', 'GOAL_GATE_LAUNCH_ONLY', 'GOAL_GATE_SERVED_ONLY')}))\n",
+        encoding="utf-8",
+    )
+    argv = [sys.executable, str(probe)]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+    token = set_hermes_home_override(served_home)
+    try:
+        passed, exit_code, output = run_gate(GoalGate(command=command))
+    finally:
+        reset_hermes_home_override(token)
+
+    assert (passed, exit_code) == (True, 0), output
+    child = json.loads(output)
+    assert child == {
+        "HERMES_HOME": str(served_home),
+        "GOAL_GATE_LAUNCH_ONLY": None,
+        "GOAL_GATE_SERVED_ONLY": "served",
+    }
+    assert os.environ["GOAL_GATE_LAUNCH_ONLY"] == "launch"

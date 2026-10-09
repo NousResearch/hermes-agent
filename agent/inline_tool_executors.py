@@ -210,7 +210,8 @@ def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
         return
     connected = [str(t.get("name")) for t in targets if isinstance(t, dict)
                  and t.get("kind") == "mcp" and t.get("state") == "connected" and t.get("tools")]
-    added = [name for name in connected if name not in enabled]
+    from hermes_cli.tools_config import mcp_server_toolset_key
+    added = [key for key in map(mcp_server_toolset_key, connected) if key not in enabled]
     if added:
         agent.enabled_toolsets = [*enabled, *added]
 

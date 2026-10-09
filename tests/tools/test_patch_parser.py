@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -1023,6 +1025,94 @@ class TestSafeCursorHunkSelection:
         assert result.success is False
         assert fo.files["providers.py"] == original
         assert "hunk 2" in (result.error or "").lower()
+
+
+class _DiskFileOps:
+    """file_ops over real files; ``on_read(path, n)`` runs before the n-th read of ``path``."""
+
+    def __init__(self, root, on_read=None):
+        self.root, self.on_read, self.reads, self.writes = root, on_read, {}, []
+
+    def read_file_raw(self, path):
+        self.reads[path] = self.reads.get(path, 0) + 1
+        if self.on_read:
+            self.on_read(self.root / path, self.reads[path])
+        target = self.root / path
+        if not target.exists():
+            return SimpleNamespace(content=None, error="file not found", not_found=True)
+        return SimpleNamespace(content=target.read_bytes().decode(), error=None)
+
+    def write_file(self, path, content, pre_content=None):
+        self.writes.append(path)
+        (self.root / path).write_bytes(content.encode())
+        return SimpleNamespace(error=None)
+
+
+def _v4a_update(path, *hunks):
+    body = "".join(f"@@\n{h}" for h in hunks)
+    ops, err = parse_v4a_patch(f"*** Begin Patch\n*** Update File: {path}\n{body}*** End Patch")
+    assert err is None
+    return ops
+
+
+class TestHunkSelectionAmbiguity:
+    """A hunk edits a site only when it is the one candidate under the matching that selects it,
+    in validation and again on the source the apply phase actually reads."""
+
+    @pytest.mark.parametrize("source, hunks", [
+        # one hunk; the 8-space search line matches the 2- and 4-space lines only after strip()
+        ("def first():\n  return False\ndef second():\n    return False\n",
+         ["-        return False\n+        return True\n"]),
+        ("def first():\n\treturn False\ndef second():\n    return False\n",
+         ["-        return False\n+        return True\n"]),
+        # trailing whitespace: two rstrip()-equal lines, no raw occurrence of the search text
+        ("a = 1\nb = 2\na = 1 \n", ["-a = 1   \n+a = 9\n"]),
+        # the same ambiguity in a later, unhinted hunk after a valid first edit
+        ("head = 0\ndef first():\n  return False\ndef second():\n    return False\n",
+         ["-head = 0\n+head = 1\n", "-        return False\n+        return True\n"]),
+        ("head = 0\ndef first():\n\treturn False\ndef second():\n    return False\n",
+         ["-head = 0\n+head = 1\n", "-        return False\n+        return True\n"]),
+    ], ids=["lone-indent", "lone-tab", "lone-trailing-ws", "later-indent", "later-tab"])
+    def test_normalized_duplicates_refuse_without_writing(self, tmp_path, source, hunks):
+        (tmp_path / "f.py").write_bytes(source.encode())
+        fo = _DiskFileOps(tmp_path)
+
+        result = apply_v4a_operations(_v4a_update("f.py", *hunks), fo)
+
+        assert result.success is False
+        assert "ambiguous" in (result.error or "").lower()
+        assert fo.writes == []
+        assert (tmp_path / "f.py").read_bytes() == source.encode()
+
+    @pytest.mark.parametrize("intervening", [
+        "owner = B\nvalue = old\nowner = A\nvalue = old\n",  # duplicate before the validated site
+        "owner = A\nvalue = old\nowner = B\nvalue = old\n",  # duplicate after it
+    ], ids=["duplicate-before", "duplicate-after"])
+    def test_apply_refuses_a_source_that_became_ambiguous_after_validation(self, tmp_path, intervening):
+        (tmp_path / "f.py").write_bytes(b"owner = A\nvalue = old\n")
+
+        def concurrent_edit(target, n):
+            if n == 2:  # the apply phase's read; validation's was n == 1
+                target.write_bytes(intervening.encode())
+
+        fo = _DiskFileOps(tmp_path, on_read=concurrent_edit)
+        result = apply_v4a_operations(_v4a_update("f.py", "-value = old\n+value = changed\n"), fo)
+
+        assert fo.reads["f.py"] == 2
+        assert result.success is False
+        assert fo.writes == []
+        assert (tmp_path / "f.py").read_bytes() == intervening.encode()
+
+    def test_unique_whitespace_equivalent_match_still_applies(self, tmp_path):
+        (tmp_path / "f.py").write_bytes(b"def first():\n  return False\ndef second():\n    return 1\n")
+        fo = _DiskFileOps(tmp_path)
+
+        result = apply_v4a_operations(
+            _v4a_update("f.py", "-        return False\n+        return True\n"), fo)
+
+        assert result.success is True, result.error
+        text = (tmp_path / "f.py").read_text()
+        assert "return True" in text and "return False" not in text and "return 1" in text
 
 
 class TestMoveThenUpdateSameFile:

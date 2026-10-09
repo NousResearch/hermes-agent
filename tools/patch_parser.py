@@ -6,8 +6,10 @@
 import contextlib
 import difflib
 import inspect
+import itertools
 import ntpath
 import posixpath
+
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -185,93 +187,150 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
         re.match(r"^[A-Za-z]:[\\/]", cwd))
 
 
-def _seek_hunk(content: str, search_lines: list[str], cursor: int) -> Optional[tuple[int, int]]:
-    """Find a hunk from ``cursor`` using codex-style exact/rstrip/strip line matching.
-
-    A whole-file pass remains the fallback: V4A hunks are not guaranteed to be
-    emitted in source order, but anchors still disambiguate the common forward
-    case without globally fuzzy-matching boilerplate.
-    """
-    if not search_lines:
-        return None
-    content_lines = content.split('\n')
-    offsets: list[int] = []
-    offset = 0
-    for line in content_lines:
-        offsets.append(offset)
-        offset += len(line) + 1
-
-    transforms = (lambda line: line, str.rstrip, str.strip)
-    starts = (cursor, 0) if cursor else (0,)
-    for start_at in starts:
-        for transform in transforms:
-            wanted = [transform(line) for line in search_lines]
-            for index in range(len(content_lines) - len(wanted) + 1):
-                if offsets[index] < start_at:
-                    continue
-                if [transform(line) for line in content_lines[index:index + len(wanted)]] == wanted:
-                    end_index = index + len(wanted) - 1
-                    return offsets[index], offsets[end_index] + len(content_lines[end_index])
-    return None
+# codex seek_sequence tiers: a hunk's lines match exactly, then ignoring trailing whitespace,
+# then ignoring all surrounding whitespace.
+_LINE_TIERS: tuple[Callable[[str], str], ...] = (lambda line: line, str.rstrip, str.strip)
+_HINT_WINDOW_BEFORE, _HINT_WINDOW_AFTER = 500, 2000  # chars around an @@ hint @@ it narrows to
 
 
-def _v4a_match_error(error: Optional[str], *, hint_window_ambiguous: bool = False) -> Optional[str]:
-    """V4A cannot set ``replace_all``; keep ambiguity recovery actionable."""
-    if error is None:
-        return None
-    advice = ("Include unique context lines in this hunk's search text."
-              if hint_window_ambiguous else
-              "Add a unique @@ hint @@ to this hunk or include unique context lines in its search text.")
-    return error.replace(
-        "Provide more context to make it unique, or use replace_all=True.",
-        advice,
-    )
+def _line_spans(content: str, search_lines: list[str]) -> list[tuple[int, int]]:
+    """Every ``(start, end)`` char span whose lines equal ``search_lines`` under the first tier
+    that matches anywhere in ``content``. All candidates come back so the caller decides
+    ambiguity before narrowing: a first-match seek turns two normalized matches into one."""
+    lines = content.split('\n')
+    starts = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
+    n = len(search_lines)
+    for tier in _LINE_TIERS:
+        wanted = [tier(line) for line in search_lines]
+        spans = [(starts[i], starts[i + n - 1] + len(lines[i + n - 1]))
+                 for i in range(len(lines) - n + 1)
+                 if [tier(line) for line in lines[i:i + n]] == wanted]
+        if spans:
+            return spans
+    return []
 
 
-def _replace_hunk(content: str, hunk: Hunk, search_pattern: str, replacement: str,
-                  cursor: int) -> tuple[str, int, Optional[str], int]:
-    """Replace one hunk using cursor seeking, then the existing safe fallbacks."""
-    from tools.fuzzy_match import fuzzy_find_and_replace
+def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int,
+                 *, ordered: bool) -> tuple[Optional[tuple[int, int]], int]:
+    """``(span, candidates)``: the one span this hunk may edit, else ``(None, candidates)``.
 
-    location = _seek_hunk(content, search_pattern.split('\n'), cursor)
-    if location is not None:
-        start, end = location
-        window_new, count, _strategy, error = fuzzy_find_and_replace(
-            content[start:end], search_pattern, replacement, replace_all=False)
-        if count:
-            return content[:start] + window_new + content[end:], count, None, start + len(window_new)
+    Candidates count line matches under the winning tier AND raw substring hits, so neither
+    whitespace normalization nor whole-line matching hides a competing site. Competing sites
+    are resolved only by order the patch states: an ``ordered`` hunk (the first of several, or
+    one of a run of identical hunks) takes the first candidate at or after ``cursor``; any
+    other hunk needs exactly one candidate after the previous hunk, or exactly one inside the
+    window around its @@ hint @@."""
+    spans = _line_spans(content, pattern.split('\n'))
+    if not spans:
+        return None, 0
 
-    new_content, count, _strategy, error = fuzzy_find_and_replace(
-        content, search_pattern, replacement, replace_all=False)
-    if count:
-        # Prefer the cursor seek's end when it located the same source region;
-        # otherwise retain a monotonic cursor based on the replacement's first hit.
-        if location is not None:
-            start, end = location
-            return new_content, count, None, start + len(replacement)
-        replacement_at = new_content.find(replacement)
-        return new_content, count, None, max(cursor, replacement_at + len(replacement))
+    def count(lo: int, hi: int) -> int:
+        return max(sum(lo <= s and e <= hi for s, e in spans),
+                   _count_occurrences(content[lo:hi], pattern))
 
-    # Keep validation and apply parity: both retry ambiguous global matches near
-    # an explicit hunk hint before reporting failure.
+    total = count(0, len(content))
+    if total == 1:
+        return spans[0], 1
+    after = [s for s in spans if s[0] >= cursor]
+    if after and (ordered or (cursor and count(cursor, len(content)) == 1)):
+        return after[0], total
     hint_pos = content.find(hunk.context_hint) if hunk.context_hint else -1
-    hint_window_ambiguous = False
+    if hint_pos != -1:
+        lo = max(0, hint_pos - _HINT_WINDOW_BEFORE)
+        hi = min(len(content), hint_pos + _HINT_WINDOW_AFTER)
+        in_window = [s for s in spans if lo <= s[0] and s[1] <= hi]
+        if len(in_window) == 1 and count(lo, hi) == 1:
+            return in_window[0], total
+    return None, total
+
+
+def _v4a_advice(hunk: Hunk) -> str:
+    """V4A cannot set ``replace_all``; ambiguity recovery must name what the model can change."""
+    return ("include unique context lines in its search text" if hunk.context_hint else
+            "add a unique @@ hint @@ to this hunk or include unique context lines in its search text")
+
+
+def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str,
+                        cursor: int) -> tuple[str, int, Optional[str]]:
+    """No line match: the fuzzy strategy chain over the whole file (it refuses its own
+    ambiguity), then once more inside the @@ hint @@ window. -> (content, cursor, error)."""
+    from tools.fuzzy_match import fuzzy_find_and_replace
+    new, count, _strategy, error = fuzzy_find_and_replace(content, pattern, replacement)
+    if count:
+        return new, max(cursor, new.find(replacement) + len(replacement)), None
+    hint_pos = content.find(hunk.context_hint) if hunk.context_hint else -1
     if error and hint_pos != -1:
-        window_start = max(0, hint_pos - 500)
-        window_end = min(len(content), hint_pos + 2000)
-        window_new, count, _strategy, error = fuzzy_find_and_replace(
-            content[window_start:window_end], search_pattern, replacement, replace_all=False)
+        lo = max(0, hint_pos - _HINT_WINDOW_BEFORE)
+        hi = min(len(content), hint_pos + _HINT_WINDOW_AFTER)
+        window, count, _strategy, error = fuzzy_find_and_replace(content[lo:hi], pattern, replacement)
         if count:
-            return (content[:window_start] + window_new + content[window_end:], count, None,
-                    window_start + len(window_new))
-        hint_window_ambiguous = error is not None
-    return content, 0, _v4a_match_error(error, hint_window_ambiguous=hint_window_ambiguous), cursor
+            return content[:lo] + window + content[hi:], lo + len(window), None
+    replace_all_advice = "Provide more context to make it unique, or use replace_all=True."
+    return content, cursor, error and error.replace(replace_all_advice, _v4a_advice(hunk).capitalize() + ".")
+
+
+def _plan_hunks(content: str, hunks: list[Hunk]) -> tuple[str, list[str], int]:
+    """Apply an Update's ``hunks`` in order to ``content`` -> ``(new_content, errors, changes)``.
+
+    The ONE selection policy for an Update: validation runs it on the source it read and the
+    apply phase runs it again on the bytes it actually reads, so a source that changed between
+    the two phases is decided again (a site that became ambiguous refuses) instead of apply
+    taking a first match that validation never admitted."""
+    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
+    errors: list[str] = []
+    changes = cursor = 0
+    changed_patterns = ['\n'.join(s) for s, r in map(_split_hunk, hunks) if s and s != r]
+    for index, hunk in enumerate(hunks, start=1):
+        search_lines, replace_lines = _split_hunk(hunk)
+        label = f"hunk {index} " + (f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)")
+        if search_lines == replace_lines:
+            # Context-only anchor hunks (models emit these between changes) are inert; identical
+            # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
+            changes += any(line.prefix in '-+' for line in hunk.lines)
+            if search_lines:
+                span, _ = _select_span(content, '\n'.join(search_lines), hunk, cursor, ordered=False)
+                cursor = span[1] if span else cursor
+            continue
+        changes += 1
+        replacement = '\n'.join(replace_lines)
+        if not search_lines:  # addition-only: placed after a unique context hint, else at EOF
+            if hunk.context_hint and not _count_occurrences(content, hunk.context_hint):
+                errors.append(f"addition-only hunk context hint '{hunk.context_hint}' not found")
+                continue
+            new_content, error = _insert_addition_only(content, hunk, replacement)
+            if error:
+                errors.append(error)
+            else:
+                content = new_content
+            continue
+        pattern = '\n'.join(search_lines)
+        # Order the patch itself states: the first hunk of several starts at the top of the file,
+        # and a run of identical hunks edits successive sites.
+        ordered = (index == 1 and len(hunks) > 1) or changed_patterns.count(pattern) > 1
+        span, candidates = _select_span(content, pattern, hunk, cursor, ordered=ordered)
+        if span is not None:
+            start, end = span
+            window, count, _strategy, error = fuzzy_find_and_replace(
+                content[start:end], pattern, replacement)
+            if count:
+                content, cursor = content[:start] + window + content[end:], start + len(window)
+            else:
+                errors.append(f"{label} not found" + (f" — {error}" if error else ""))
+            continue
+        if candidates > 1:
+            errors.append(f"{label} is ambiguous ({candidates} matches"
+                          + (" after the previous hunk" if cursor else "") + f") — {_v4a_advice(hunk)}")
+            continue
+        content, cursor, error = _fuzzy_replace_hunk(content, hunk, pattern, replacement, cursor)
+        # Already-applied hunks are a no-op; only reached when no site of the search text remains.
+        if error and not is_already_applied(content, pattern, replacement):
+            errors.append(f"{label} not found — {error}" + _no_match_hint(error, pattern, content))
+    return content, errors, changes
 
 
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
-    from tools.fuzzy_match import is_already_applied
     errors: list[str] = []
     real_change_count = 0
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
@@ -316,73 +375,9 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
         if read_err:
             errors.append(f"{op.file_path}: {read_err}")
             return
-        cursor = 0
-        changed_hunk_patterns = [
-            "\n".join(search_lines)
-            for candidate in op.hunks
-            for search_lines, replace_lines in [_split_hunk(candidate)]
-            if search_lines and search_lines != replace_lines
-        ]
-        repeated_changed_hunk_patterns = {
-            pattern for pattern in changed_hunk_patterns
-            if changed_hunk_patterns.count(pattern) > 1
-        }
-        for hunk_index, hunk in enumerate(op.hunks, start=1):
-            search_lines, replace_lines = _split_hunk(hunk)
-            location = _seek_hunk(simulated, search_lines, cursor)
-            if search_lines == replace_lines:
-                # Context-only anchor hunks (models emit these between changes) are inert; identical
-                # -/+ lines are skipped by apply as a no-op — neither may fail validation.
-                real_change_count += any(l.prefix in '-+' for l in hunk.lines)
-                if location is not None:
-                    cursor = location[1]
-                continue
-            real_change_count += 1
-            if not search_lines:  # addition-only: the context hint must be unique
-                if hunk.context_hint:
-                    occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
-                    if occurrences == 0:
-                        errors.append(f"{op.file_path}: addition-only hunk context hint "
-                                      f"'{hunk.context_hint}' not found")
-                    elif ambiguous:
-                        errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
-                continue
-            search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
-            # A lone first hunk with repeated source text has no ordering signal;
-            # preserve the historical fail-closed behavior.  A multi-hunk patch
-            # establishes file order, so its first hunk may safely seek from zero.
-            if (hunk_index == 1 and len(op.hunks) == 1
-                    and _count_occurrences(simulated, search_pattern) > 1):
-                errors.append(
-                    f"{op.file_path}: hunk 1 (no later ordering anchor) is ambiguous — "
-                    "include unique context lines in its search text")
-                continue
-            # A later unanchored hunk cannot safely skip one of several identical
-            # source blocks. An explicit run of identical changed hunks encodes a
-            # cursor-ordered sequence, so it applies successively; a lone broad
-            # hunk rejects atomically instead of silently editing the next block.
-            # A first hunk deliberately starts at offset zero.
-            if (cursor and not hunk.context_hint
-                    and search_pattern not in repeated_changed_hunk_patterns
-                    and _count_occurrences(simulated[cursor:], search_pattern) > 1):
-                errors.append(
-                    f"{op.file_path}: hunk {hunk_index} (no hint) is ambiguous after the "
-                    "previous hunk — include unique context lines in its search text")
-                continue
-            new_simulated, count, match_error, cursor_after = _replace_hunk(
-                simulated, hunk, search_pattern, replacement, cursor)
-            if count:
-                simulated, cursor = new_simulated, cursor_after
-            # "Already applied" is safe only after the source pattern is gone at
-            # the next searchable site.  Otherwise a replacement at one location
-            # can hide an intended edit at another location.
-            elif (not is_already_applied(simulated or "", search_pattern, replacement)
-                  or _seek_hunk(simulated, search_lines, cursor) is not None):
-                label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
-                errors.append(
-                    f"{op.file_path}: hunk {hunk_index} {label} not found"
-                    + (f" — {match_error}" if match_error else "")
-                    + _no_match_hint(match_error, search_pattern, simulated))
+        simulated, hunk_errors, changes = _plan_hunks(simulated, op.hunks)
+        real_change_count += changes
+        errors.extend(f"{op.file_path}: {error}" for error in hunk_errors)
         pending_content[_overlay_key(op.file_path, file_ops)] = simulated
 
     def _remove(path: str) -> None:
@@ -592,38 +587,19 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tup
 
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
-    """Apply each hunk via the same cursor-aware path used by validation."""
-    from tools.fuzzy_match import boundary_note, is_already_applied
+    """Re-run validation's hunk selection on the bytes read now, then write once. A source that
+    changed since validation is decided again; a hunk that no longer selects one site fails
+    the operation before anything is written."""
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
-    current_content = new_content = read_result.content
-    notes: list[str] = []  # escape-drift corrections, appended by fuzzy_find_and_replace
-    strategies: list[str] = []  # the fuzzy strategies that located the hunks
-    cursor = 0
-    for hunk in op.hunks:
-        search_lines, replace_lines = _split_hunk(hunk)
-        location = _seek_hunk(new_content, search_lines, cursor)
-        if search_lines and search_lines == replace_lines:
-            if location is not None:
-                cursor = location[1]
-            continue
-        search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
-        if not search_lines:
-            new_content, err = _insert_addition_only(new_content, hunk, replacement)
-            if err:
-                return _fail(err)
-            continue
-        new_content, count, error, cursor_after = _replace_hunk(
-            new_content, hunk, search_pattern, replacement, cursor)
-        if count:
-            cursor = cursor_after
-            continue
-        # Mirror validation's already-applied skip, else the two phases disagree and fail here.
-        if is_already_applied(new_content, search_pattern, replacement):
-            continue
-        hint = _no_match_hint(error, search_pattern, new_content)
-        return _fail(f"Could not apply hunk: {error}" + hint)
+    from tools.fuzzy_match import boundary_note
+    current_content = read_result.content
+    notes: list[str] = []
+    strategies: list[str] = []
+    new_content, hunk_errors, _changes = _plan_hunks(current_content, op.hunks)
+    if hunk_errors:
+        return _fail("Could not apply hunk (file not written): " + "; ".join(hunk_errors))
     # Pass pre_content to skip a redundant re-read inside write_file when supported.
     extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
     write_result = file_ops.write_file(op.file_path, new_content, **extra)

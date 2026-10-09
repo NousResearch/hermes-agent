@@ -19,6 +19,8 @@ def _make_adapter(**extra_env):
     adapter._guest_only_chats = set()
     adapter._guest_reply_buffer = {}
     adapter._guest_inline_message_ids = {}
+    adapter._guest_turn_media = {}
+    adapter._guest_file_id_cache = {}
     adapter._seen_guest_update_ids = set()
     adapter._last_guest_update_id = 0
     adapter.config = PlatformConfig(enabled=True, token="fake-token")

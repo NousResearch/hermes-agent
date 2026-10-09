@@ -36,8 +36,15 @@ def _parse_wake_gate(script_output: str) -> bool:
 
 
 def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> str:
-    """Prefix ``prompt`` with a fenced ``## heading`` data block."""
-    return f"## {heading}\n{intro}\n\n```\n{body}\n```\n\n{prompt}"
+    """Prefix ``prompt`` with a fenced ``## heading`` data block.
+
+    The fence is a backtick run longer than any run inside ``body`` (CommonMark
+    closes a fence only at one at least as long), so injected output that itself
+    carries a fenced code block cannot end the data block early. See #135721.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"## {heading}\n{intro}\n\n{fence}\n{body}\n{fence}\n\n{prompt}"
 
 
 def _job_skill_names(job: dict) -> list[str]:

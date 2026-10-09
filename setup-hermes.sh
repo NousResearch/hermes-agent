@@ -33,6 +33,36 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Anchor a relative HERMES_RUNTIME_DIR at the invocation cwd (the ps1 twin's
+# rule): the script cds into the checkout below, and a native Windows child
+# cannot resolve an msys POSIX path — bind one absolute native path once.
+if [ -n "${HERMES_RUNTIME_DIR-}" ]; then
+    if command -v cygpath >/dev/null 2>&1; then
+        # A drive-relative override ('C:rel') is not resolvable here: cygpath
+        # absorbs the colon into the name ('<cwd>/Crel') and bash has no
+        # per-drive cwd for pm's Path.resolve() to agree with. Refuse instead
+        # of silently staging the store into a directory pm never reads.
+        case "$HERMES_RUNTIME_DIR" in
+            [A-Za-z]:|[A-Za-z]:[!\\/]*)
+                # printf %b colors the prefix only and %s keeps the input
+                # literal: echo -e would turn a rejected 'C:foo\bar' into a
+                # backspace. The bare 'C:' branch too — cygpath -am 'C:'
+                # yields '<cwd>/C', the same swallowed-colon shape.
+                printf '%b%s%b\n' "$RED" "✗ drive-relative HERMES_RUNTIME_DIR '$HERMES_RUNTIME_DIR' is ambiguous under msys bash - use 'C:/rel', '/c/rel', or an absolute path" "$NC" >&2
+                exit 1 ;;
+        esac
+        # -am: relative anchors at the cwd, msys absolute translates to the
+        # Windows form, already-native stays (idempotent).
+        HERMES_RUNTIME_DIR="$(cygpath -am "$HERMES_RUNTIME_DIR")"
+    else
+        case "$HERMES_RUNTIME_DIR" in
+            /*) ;;
+            *) HERMES_RUNTIME_DIR="$PWD/$HERMES_RUNTIME_DIR" ;;
+        esac
+    fi
+    export HERMES_RUNTIME_DIR
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -126,11 +156,29 @@ _hermes_user_home() {
     [ -n "$_home" ] || return 1
     printf '%s' "$_home"
 }
+_hermes_env_ci() {
+    # ntpath reads os.environ case-insensitively ('%localappdata%' finds
+    # LOCALAPPDATA); printenv cannot fold case, so scan the exported names.
+    # An empty value still counts as set (ntpath maps it to '').
+    # Exact hit first: printenv is one fork and emits multi-line values
+    # verbatim; `env` line-delimits them, so the awk fallback below can only
+    # see the first line. awk stays a single child — a read loop that forks
+    # per entry rides msys process-substitution edge cases for no benefit.
+    local _name="$1" _v
+    if _v="$(printenv "$_name")"; then
+        printf '%s' "$_v"
+        return 0
+    fi
+    env | awk -F= -v w="$_name" '
+        tolower($1) == tolower(w) { sub(/^[^=]*=/, ""); printf "%s", $0; found=1; exit }
+        END { exit !found }
+    '
+}
 _hermes_expand() {
     # os.path.expandvars+expanduser without eval: an UNSET name keeps its source
     # text (braces included), anything else malformed stays literal, and printenv
     # reads the exported table (unlike ${!name}).
-    local _s="$1" _out="" _name _v
+    local _s="$1" _out="" _name _v _rest
     while [ -n "$_s" ]; do
         case "$_s" in
             '$'*)
@@ -169,9 +217,38 @@ _hermes_expand() {
                         ;;
                 esac
                 ;;
+            '%'*)
+                # ntpath reads '%VAR%' case-insensitively, keeps an unknown or
+                # unclosed form as source text, and folds '%%' to one '%'.
+                if [ "${os:-}" != win32 ]; then
+                    _out="$_out%"      # posixpath.expandvars has no '%' syntax
+                    _s="${_s#%}"
+                else
+                    _rest="${_s#%}"
+                    case "$_rest" in
+                        '%'*)
+                            _out="$_out%"
+                            _s="${_rest#%}"
+                            ;;
+                        *'%'*)
+                            _name="${_rest%%\%*}"
+                            _s="${_rest#"$_name%"}"
+                            if _v="$(_hermes_env_ci "$_name")"; then
+                                _out="$_out$_v"
+                            else
+                                _out="$_out%$_name%"
+                            fi
+                            ;;
+                        *)
+                            _out="$_out%"
+                            _s="$_rest"
+                            ;;
+                    esac
+                fi
+                ;;
             *)
-                _out="$_out${_s%%\$*}"
-                _s="${_s#"${_s%%\$*}"}"
+                _out="$_out${_s%%[$%]*}"
+                _s="${_s#"${_s%%[$%]*}"}"
                 ;;
         esac
     done
@@ -209,6 +286,11 @@ _hermes_norm() {
     # Lexical normalization like Path: collapse repeated separators and drop
     # "."; ".." stays VERBATIM (the fold runs on the RESOLVED path).
     local _rest="$1" _out="" _comp
+    if [ "${os:-}" = win32 ]; then
+        # Path treats "\" as a separator on Windows only; on POSIX it is a
+        # legal filename character and must stay untouched.
+        _rest="${_rest//\\//}"
+    fi
     case "$_rest" in
         "//"[!/]*) _out="//" ;;
         /*)        _out="/" ;;
@@ -284,13 +366,27 @@ _hermes_resolve() {
     printf '/%s' "$_res"
 }
 hermes_default_home() {
-    # The home used when HERMES_HOME is unset: the platform account home with
-    # the data-dir suffix appended LITERALLY (_get_platform_default_hermes_home).
-    # HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
+    # The home used when HERMES_HOME is unset (_get_platform_default_hermes_home):
+    # on win32 %LOCALAPPDATA%\hermes<suffix> first, else Path.home()/"AppData"/
+    # "Local"/hermes<suffix>; on POSIX the platform account home with the suffix
+    # appended LITERALLY. HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
     # posixpath.expanduser("~") answer "/", so the default is "/.hermes<suffix>";
     # an unset HOME resolves through the account database; a missing account
     # keeps the tilde the way expanduser does.
-    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home _lad
+    if [ "${os:-}" = win32 ]; then
+        _lad="${LOCALAPPDATA-}"
+        _lad="${_lad#"${_lad%%[![:space:]]*}"}"
+        _lad="${_lad%"${_lad##*[![:space:]]}"}"
+        if [ -n "$_lad" ]; then
+            printf '%s' "$_lad/hermes$_suffix"
+        elif [ -n "${HOME:-}" ]; then
+            printf '%s' "$HOME/AppData/Local/hermes$_suffix"
+        else
+            printf '%s' "~/AppData/Local/hermes$_suffix"
+        fi
+        return
+    fi
     if [ "${HOME+x}" = x ]; then
         if [ -n "$HOME" ]; then
             printf '%s' "$HOME/.hermes$_suffix"
@@ -308,7 +404,7 @@ hermes_default_home() {
 hermes_root_of() {
     # Containment is decided on RESOLVED paths but the lexical form is returned,
     # mirroring get_default_hermes_root() (its non-fold answer keeps "..").
-    local _default_lex _default_res _lex _res _raw
+    local _default_lex _default_res _lex _res _raw _cmp_res _cmp_def
     # The default is the platform account home + LITERAL suffix; never run it
     # through _hermes_expand (a $ in the suffix would expand; pm keeps it raw).
     _default_lex="$(_hermes_norm "$(hermes_default_home)")"
@@ -323,8 +419,18 @@ hermes_root_of() {
         _lex="$_default_lex"
     fi
     _res="$(_hermes_resolve "$_lex")"
-    case "$_res/" in
-        "$_default_res"/*) _lex="$_default_lex" ;;
+    # Containment compares like pathlib: WindowsPath.relative_to normcases (the
+    # PowerShell twin folds with OrdinalIgnoreCase); POSIX compares keep case.
+    # tr folds ASCII only — a non-ASCII case-varying path could slip this fold
+    # where normcase would not; known fidelity limit, not equivalence.
+    _cmp_res="$_res"
+    _cmp_def="$_default_res"
+    if [ "${os:-}" = win32 ]; then
+        _cmp_res="$(printf '%s' "$_res" | tr '[:upper:]' '[:lower:]')"
+        _cmp_def="$(printf '%s' "$_default_res" | tr '[:upper:]' '[:lower:]')"
+    fi
+    case "$_cmp_res/" in
+        "$_cmp_def"/*) _lex="$_default_lex" ;;
         *)
             local _parent="${_lex%/*}"
             if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
@@ -342,6 +448,35 @@ hermes_root_of() {
 
 
 hermes_root="$(hermes_root_of)"
+# Trim like the resolver and Python's str.strip(): outer whitespace is not part
+# of the home, and a whitespace-only value is "unset". Without this, bin_dir and
+# HERMES_SKILLS_DIR keep the raw whitespace while the resolver and child use the
+# trimmed default (bin_dir would publish launchers into a "   /bin" junk dir).
+_hermes_home_trimmed="${HERMES_HOME-}"
+_hermes_home_trimmed="${_hermes_home_trimmed#"${_hermes_home_trimmed%%[![:space:]]*}"}"
+_hermes_home_trimmed="${_hermes_home_trimmed%"${_hermes_home_trimmed##*[![:space:]]}"}"
+if [ -z "$_hermes_home_trimmed" ]; then
+    # Shell-LOCAL, deliberately NOT exported: exporting would hand child Python
+    # a literal-suffix path it runs expandvars over, while its own default appends
+    # the suffix verbatim — the two homes would disagree. Python derives the same
+    # default itself.
+    # unset FIRST: an inherited `export HERMES_HOME=` keeps the export attribute
+    # through a plain assignment, which would leak that literal-suffix default.
+    unset HERMES_HOME
+    HERMES_HOME="$(hermes_default_home)"
+    _hermes_home_shell="$HERMES_HOME"
+else
+    # Trim only: keep the value's lexical form (relative stays relative, drive
+    # paths stay drive paths). setup does not chdir after this point, so the
+    # resolver, the shell consumers below, and every child re-resolve from one
+    # cwd; a $PWD anchor would spell a POSIX path Windows children cannot read.
+    HERMES_HOME="$_hermes_home_trimmed"
+    export HERMES_HOME
+    # The exported lexical form is for children (they expanduser/expandvars it);
+    # THIS script's string consumers (cygpath, mkdir, cp) never expand ``~``/``$``,
+    # so they read this expanded copy instead of building a literal-``~/`` junk dir.
+    _hermes_home_shell="$(_hermes_expand "$HERMES_HOME")"
+fi
 store="${HERMES_RUNTIME_DIR:-$hermes_root/tools}"
 entry="$store/uv-$uv_version-$target"
 uv="$entry/uv"; [ "$os" = win32 ] && uv="$entry/uv.exe"
@@ -458,7 +593,7 @@ echo -e "${CYAN}→${NC} Setting up hermes command..."
 # Reuse the bootstrap interpreter only to run the shared launcher writer.
 bin_dir="$HOME/.local/bin"
 if [ "$os" = win32 ]; then
-    bin_dir="$(cygpath -am "${HERMES_HOME:-${LOCALAPPDATA:-$HOME/AppData/Local}/hermes}/bin")"
+    bin_dir="$(cygpath -am "$_hermes_home_shell/bin")"
 fi
 if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
     echo -e "${RED}✗${NC} launcher publication failed" >&2
@@ -508,7 +643,7 @@ fi
 # Seed bundled skills into ~/.hermes/skills/
 # ============================================================================
 
-HERMES_SKILLS_DIR="${HERMES_HOME:-$HOME/.hermes}/skills"
+HERMES_SKILLS_DIR="$_hermes_home_shell/skills"
 mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""

@@ -27,9 +27,24 @@ pytestmark = [
 def test_setup_hermes_script_is_valid_shell():
     # as_posix: on Windows the argument reaches bash through its own command
     # line, where backslashes are escape characters — Git Bash wants forward
-    # slashes.
-    result = subprocess.run(["bash", "-n", SETUP_SCRIPT.as_posix()], capture_output=True, text=True)
+    # slashes. _BASH, not a bare "bash": CreateProcess finds System32\bash.exe
+    # (WSL) first, which cannot open D:/... and exits 127.
+    result = subprocess.run([_BASH, "-n", SETUP_SCRIPT.as_posix()], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def _win32_path(value: str) -> str:
+    """Translate cygwin's POSIX spelling back to Windows; other forms pass through.
+
+    cygwin rewrites inherited path-like env (HOME) to POSIX spellings on process
+    start, so a ${HOME}-derived store records as /c/... while pm answers C:\\...;
+    already-Windows spellings need no conversion.
+    """
+    if not value.startswith("/"):
+        return value
+    out = subprocess.run(["cygpath", "-w", value], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
 
 
 def _fixture_custom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -67,9 +82,15 @@ def _fixture_profiles_ancestor_profile(tmp_path: Path, monkeypatch: pytest.Monke
 def _fixture_nested_under_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Under the native home but not a named profile: pm folds anything under
     # the default home, so a rule that only looks for a ``profiles`` parent
-    # stages uv somewhere pm never looks.
-    hermes_home = tmp_path / "native-home" / ".hermes" / "foo" / "bar"
-    return str(hermes_home), tmp_path / "native-home" / ".hermes", None
+    # stages uv somewhere pm never looks. The default home is the platform's
+    # own shape (``hermes`` leaf on win32, ``.hermes`` on POSIX) — the test
+    # body pins LOCALAPPDATA on win32 so both sides compute it hermetically.
+    if sys.platform == "win32":
+        default = tmp_path / "native-home" / "hermes"
+    else:
+        default = tmp_path / "native-home" / ".hermes"
+    hermes_home = default / "foo" / "bar"
+    return str(hermes_home), default, None
 
 
 def _fixture_raw_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -169,6 +190,13 @@ def test_setup_stages_uv_into_pms_store_root(tmp_path, monkeypatch, home_kind):
     assert bash, "setup-hermes.sh is a bash script"
 
     monkeypatch.setenv("HOME", str(tmp_path / "native-home"))
+    if sys.platform == "win32":
+        # pm's win32 default home is LOCALAPPDATA-based; pin it so the native
+        # default (and nested_under_default's fold) is hermetic instead of the
+        # host's real %LOCALAPPDATA%.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "native-home"))
+    else:
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
     hermes_home_env, expected_root, runtime_store = _SETUP_FIXTURES[home_kind](tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", hermes_home_env)
     if runtime_store is not None:
@@ -245,7 +273,32 @@ def test_setup_stages_uv_into_pms_store_root(tmp_path, monkeypatch, home_kind):
     assert "pinned uv found" in output, output
     assert record.is_file(), "setup-hermes.sh never executed the pinned store uv"
     for line in record.read_text(encoding="utf-8").splitlines():
-        invoked_uv, cache_dir, python_dir = line.split("|")
+        fields = line.split("|")
+        if sys.platform == "win32":
+            fields = [_win32_path(f) for f in fields]
+        invoked_uv, cache_dir, python_dir = fields
         assert Path(invoked_uv) == uv, line
-        assert cache_dir == str(expected_root / "cache" / "uv-bootstrap"), line
-        assert python_dir == str(expected_root / "cache" / "uv-python"), line
+        # Path identity, not separator spelling: the shell's POSIX-style
+        # ``/cache/uv-bootstrap`` and Windows' ``\cache\uv-bootstrap`` denote the
+        # same directory, and str() equality would fail only on the Windows lane.
+        assert Path(cache_dir) == expected_root / "cache" / "uv-bootstrap", line
+        assert Path(python_dir) == expected_root / "cache" / "uv-python", line
+
+
+@pytest.mark.skipif(
+    shutil.which("cygpath") is None,
+    reason="the drive-relative refuse is gated on cygpath (msys/cygwin)",
+)
+@pytest.mark.parametrize("bad", ["C:rel-store", "C:"])
+def test_setup_hermes_refuses_drive_relative_runtime_dir(tmp_path: Path, bad: str) -> None:
+    """setup-hermes.sh binds a native store path: cygpath would swallow the
+    colon of a drive-relative override into '<cwd>/C...' and bash has no
+    per-drive cwd for pm's resolve() to agree with, so refuse up front."""
+    assert _BASH, "running setup-hermes.sh needs bash"
+    env = {**os.environ, "HERMES_RUNTIME_DIR": bad}
+    result = subprocess.run(
+        [_BASH, SETUP_SCRIPT.as_posix()], env=env, cwd=tmp_path,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "drive-relative HERMES_RUNTIME_DIR" in result.stderr, result.stderr

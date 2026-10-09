@@ -86,6 +86,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# The mirrored resolver block below compares ${os:-} against win32; derive it
+# from uname BEFORE the block runs — the same case setup-hermes.sh carries
+# outside its twin block (the block body is byte-identical and cannot do it).
+# A non-matching uname stays POSIX (the block's ${os:-} default); platform
+# acceptance itself remains check_platform's call under main.
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  MINGW*|MSYS*|CYGWIN*) os=win32 ;;
+  *) os="" ;;
+esac
+
 # HERMES_HOME/INSTALL_DIR defaults are finalized AFTER the resolver block below
 # (it needs the raw home and defines hermes_default_home).
 
@@ -114,11 +126,29 @@ _hermes_user_home() {
     [ -n "$_home" ] || return 1
     printf '%s' "$_home"
 }
+_hermes_env_ci() {
+    # ntpath reads os.environ case-insensitively ('%localappdata%' finds
+    # LOCALAPPDATA); printenv cannot fold case, so scan the exported names.
+    # An empty value still counts as set (ntpath maps it to '').
+    # Exact hit first: printenv is one fork and emits multi-line values
+    # verbatim; `env` line-delimits them, so the awk fallback below can only
+    # see the first line. awk stays a single child — a read loop that forks
+    # per entry rides msys process-substitution edge cases for no benefit.
+    local _name="$1" _v
+    if _v="$(printenv "$_name")"; then
+        printf '%s' "$_v"
+        return 0
+    fi
+    env | awk -F= -v w="$_name" '
+        tolower($1) == tolower(w) { sub(/^[^=]*=/, ""); printf "%s", $0; found=1; exit }
+        END { exit !found }
+    '
+}
 _hermes_expand() {
     # os.path.expandvars+expanduser without eval: an UNSET name keeps its source
     # text (braces included), anything else malformed stays literal, and printenv
     # reads the exported table (unlike ${!name}).
-    local _s="$1" _out="" _name _v
+    local _s="$1" _out="" _name _v _rest
     while [ -n "$_s" ]; do
         case "$_s" in
             '$'*)
@@ -157,9 +187,38 @@ _hermes_expand() {
                         ;;
                 esac
                 ;;
+            '%'*)
+                # ntpath reads '%VAR%' case-insensitively, keeps an unknown or
+                # unclosed form as source text, and folds '%%' to one '%'.
+                if [ "${os:-}" != win32 ]; then
+                    _out="$_out%"      # posixpath.expandvars has no '%' syntax
+                    _s="${_s#%}"
+                else
+                    _rest="${_s#%}"
+                    case "$_rest" in
+                        '%'*)
+                            _out="$_out%"
+                            _s="${_rest#%}"
+                            ;;
+                        *'%'*)
+                            _name="${_rest%%\%*}"
+                            _s="${_rest#"$_name%"}"
+                            if _v="$(_hermes_env_ci "$_name")"; then
+                                _out="$_out$_v"
+                            else
+                                _out="$_out%$_name%"
+                            fi
+                            ;;
+                        *)
+                            _out="$_out%"
+                            _s="$_rest"
+                            ;;
+                    esac
+                fi
+                ;;
             *)
-                _out="$_out${_s%%\$*}"
-                _s="${_s#"${_s%%\$*}"}"
+                _out="$_out${_s%%[$%]*}"
+                _s="${_s#"${_s%%[$%]*}"}"
                 ;;
         esac
     done
@@ -197,6 +256,11 @@ _hermes_norm() {
     # Lexical normalization like Path: collapse repeated separators and drop
     # "."; ".." stays VERBATIM (the fold runs on the RESOLVED path).
     local _rest="$1" _out="" _comp
+    if [ "${os:-}" = win32 ]; then
+        # Path treats "\" as a separator on Windows only; on POSIX it is a
+        # legal filename character and must stay untouched.
+        _rest="${_rest//\\//}"
+    fi
     case "$_rest" in
         "//"[!/]*) _out="//" ;;
         /*)        _out="/" ;;
@@ -272,13 +336,27 @@ _hermes_resolve() {
     printf '/%s' "$_res"
 }
 hermes_default_home() {
-    # The home used when HERMES_HOME is unset: the platform account home with
-    # the data-dir suffix appended LITERALLY (_get_platform_default_hermes_home).
-    # HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
+    # The home used when HERMES_HOME is unset (_get_platform_default_hermes_home):
+    # on win32 %LOCALAPPDATA%\hermes<suffix> first, else Path.home()/"AppData"/
+    # "Local"/hermes<suffix>; on POSIX the platform account home with the suffix
+    # appended LITERALLY. HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
     # posixpath.expanduser("~") answer "/", so the default is "/.hermes<suffix>";
     # an unset HOME resolves through the account database; a missing account
     # keeps the tilde the way expanduser does.
-    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home _lad
+    if [ "${os:-}" = win32 ]; then
+        _lad="${LOCALAPPDATA-}"
+        _lad="${_lad#"${_lad%%[![:space:]]*}"}"
+        _lad="${_lad%"${_lad##*[![:space:]]}"}"
+        if [ -n "$_lad" ]; then
+            printf '%s' "$_lad/hermes$_suffix"
+        elif [ -n "${HOME:-}" ]; then
+            printf '%s' "$HOME/AppData/Local/hermes$_suffix"
+        else
+            printf '%s' "~/AppData/Local/hermes$_suffix"
+        fi
+        return
+    fi
     if [ "${HOME+x}" = x ]; then
         if [ -n "$HOME" ]; then
             printf '%s' "$HOME/.hermes$_suffix"
@@ -296,7 +374,7 @@ hermes_default_home() {
 hermes_root_of() {
     # Containment is decided on RESOLVED paths but the lexical form is returned,
     # mirroring get_default_hermes_root() (its non-fold answer keeps "..").
-    local _default_lex _default_res _lex _res _raw
+    local _default_lex _default_res _lex _res _raw _cmp_res _cmp_def
     # The default is the platform account home + LITERAL suffix; never run it
     # through _hermes_expand (a $ in the suffix would expand; pm keeps it raw).
     _default_lex="$(_hermes_norm "$(hermes_default_home)")"
@@ -311,8 +389,18 @@ hermes_root_of() {
         _lex="$_default_lex"
     fi
     _res="$(_hermes_resolve "$_lex")"
-    case "$_res/" in
-        "$_default_res"/*) _lex="$_default_lex" ;;
+    # Containment compares like pathlib: WindowsPath.relative_to normcases (the
+    # PowerShell twin folds with OrdinalIgnoreCase); POSIX compares keep case.
+    # tr folds ASCII only — a non-ASCII case-varying path could slip this fold
+    # where normcase would not; known fidelity limit, not equivalence.
+    _cmp_res="$_res"
+    _cmp_def="$_default_res"
+    if [ "${os:-}" = win32 ]; then
+        _cmp_res="$(printf '%s' "$_res" | tr '[:upper:]' '[:lower:]')"
+        _cmp_def="$(printf '%s' "$_default_res" | tr '[:upper:]' '[:lower:]')"
+    fi
+    case "$_cmp_res/" in
+        "$_cmp_def"/*) _lex="$_default_lex" ;;
         *)
             local _parent="${_lex%/*}"
             if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
@@ -327,6 +415,17 @@ hermes_root_of() {
     printf '%s' "$_lex"
 }
 # --- END store-root resolver ---
+
+# Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
+# transcripts and the Hermes-Setup driver read plain text. Defined before the
+# runtime-store refusal below, which is the first error this script can emit.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
+    C_CYAN=$'\033[0;36m' C_MAGENTA=$'\033[0;35m' C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m' C_NC=$'\033[0m'
+else
+    C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA="" C_BOLD="" C_DIM="" C_NC=""
+fi
 
 
 # Machine root first, from the RAW env: this is the slot a child Python sees
@@ -366,6 +465,18 @@ fi
 # (ensure_uv reads it here, PM's child resolves it from INSTALL_DIR). Anchor it
 # once and export the absolute value so both sides bind one store.
 if [ -n "${HERMES_RUNTIME_DIR-}" ]; then
+    # Under msys a drive-relative value splits the two sides: the shell
+    # escapes the colon into a U+F03A directory name while native resolve()
+    # strips it — each binds a different directory. Refuse before anchoring
+    # (the anchored form no longer matches); on hosts without cygpath ':' is
+    # an ordinary file-name character with no split to refuse.
+    if command -v cygpath >/dev/null 2>&1; then
+        case "$HERMES_RUNTIME_DIR" in
+            [A-Za-z]:|[A-Za-z]:[!\\/]*)
+                printf "%s✗%s drive-relative HERMES_RUNTIME_DIR '%s' is ambiguous under msys bash - use 'C:/rel', '/c/rel', or an absolute path\n" "$C_RED" "$C_NC" "$HERMES_RUNTIME_DIR" >&2
+                exit 1 ;;
+        esac
+    fi
     case "$HERMES_RUNTIME_DIR" in
         /*) ;;
         *) HERMES_RUNTIME_DIR="$PWD/$HERMES_RUNTIME_DIR" ;;
@@ -376,16 +487,7 @@ fi
 
 INSTALL_LOG="$HERMES_HOME/logs/install.log"
 
-# Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
-# transcripts and the Hermes-Setup driver read plain text.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
-    C_CYAN=$'\033[0;36m' C_MAGENTA=$'\033[0;35m' C_BOLD=$'\033[1m'
-    C_DIM=$'\033[2m' C_NC=$'\033[0m'
-else
-    C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA="" C_BOLD="" C_DIM="" C_NC=""
-fi
-
+# Interactive runs collapse
 log() { printf '%s→%s %s\n' "$C_CYAN" "$C_NC" "$1"; }
 log_success() { printf '%s✓%s %s\n' "$C_GREEN" "$C_NC" "$1"; }
 log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }

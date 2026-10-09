@@ -68,6 +68,14 @@ async def _persist_model_switch_to_config(result, config_path) -> None:
     await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
+# Locale keys for the deliberate-switch announce (``_announce_switch``). The kind is a fixed enum, not
+# free text, so the catalog lookup can never be driven by caller-supplied strings.
+_SWITCH_ANNOUNCE_KEYS: dict = {
+    "model": "gateway.switch_announce.model",
+    "reasoning": "gateway.switch_announce.reasoning",
+}
+
+
 @dataclasses.dataclass
 class _ModelSwitchContext:
     """Everything a /model switch needs beyond the target: current route + persistence policy."""
@@ -416,6 +424,17 @@ class GatewayModelCommandsMixin:
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
+        # Announce the deliberate switch to the conversation: the command's confirmation reaches only
+        # the invoker (ephemeral on native Discord slash), so the rest of the channel would see the
+        # model change with no explanation. Typed and picker paths both commit here. Compares the full
+        # provider/model route, so a same-slug switch across providers still announces. One-turn
+        # switches are NOT announced: the override reverts after a single turn, so an "A -> B" line
+        # would leave the room believing B is still active with no second line to correct it.
+        if not one_turn:
+            await self._announce_switch(
+                source, "model", f"{ctx.current_provider}/{ctx.current_model}",
+                f"{result.target_provider}/{result.new_model}",
+            )
         self._record_switch_metrics(result, ctx, source)
         global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
@@ -681,6 +700,87 @@ class GatewayModelCommandsMixin:
         self._set_session_reasoning_override(session_key, value)
         self._evict_cached_agent(session_key)
 
+    def _resolved_effort_label(self, *, session_key: Optional[str] = None, model: str = "") -> str:
+        """Effective reasoning effort INCLUDING the config fallback: the announce baseline.
+
+        A session with no override sitting at the config default ``xhigh`` yields ``"xhigh"``, not
+        ``""``, so ``/reasoning xhigh`` there compares equal and stays silent. When NOTHING is
+        configured the provider's own default is unknowable from here, and guessing a constant is
+        wrong in both directions (phantom ``medium -> high`` / a silent real switch), so an explicit
+        unknown sentinel is returned and the caller suppresses the announce.
+        """
+        cfg = self._resolve_session_reasoning_config(session_key=session_key, model=model)
+        if cfg is None:
+            from hermes_constants import REASONING_BASELINE_UNKNOWN
+
+            return REASONING_BASELINE_UNKNOWN
+        if not cfg.get("enabled", True):
+            return "none"
+        return str(cfg.get("effort", "medium") or "medium").strip()
+
+    @staticmethod
+    def _switch_announce_enabled(user_config: Optional[dict]) -> bool:
+        """Read ``model.announce_switch`` (default True). Fails OPEN: silence is the failure mode
+        this feature exists to remove."""
+        try:
+            gate = ((user_config or {}).get("model") or {}).get("announce_switch", True)
+        except Exception:
+            return True
+        return str(gate).strip().lower() not in {"false", "0", "no", "off"}
+
+    async def _announce_switch(self, source, kind: str, old: str, new: str) -> None:
+        """Post one channel-visible line for a deliberate ``/model`` or ``/reasoning`` switch.
+
+        Silent on a genuine no-op (``old == new``); gated by ``model.announce_switch``. Best-effort:
+        never raises, so a failed send can't stop the handler returning its confirmation. Uses the
+        out-of-band ``adapter.send`` rail because slash handlers run without a live ``AIAgent``.
+        """
+        try:
+            if not old or not new or old == new:
+                return
+            if kind not in _SWITCH_ANNOUNCE_KEYS:
+                logger.debug("switch announce: unknown kind %r", kind)
+                return
+            from gateway.run import _load_gateway_config
+            try:
+                cfg = _load_gateway_config()
+            except Exception:
+                cfg = None
+            if not self._switch_announce_enabled(cfg):
+                return
+            adapter = self._delivery_adapter_for(source)
+            chat_id = getattr(source, "chat_id", None)
+            if not (adapter and chat_id):
+                return
+            try:
+                meta = self._thread_metadata_for_source(source, None)
+            except Exception:
+                meta = None
+            await adapter.send(chat_id, t(_SWITCH_ANNOUNCE_KEYS[kind], old=old, new=new), metadata=meta)
+        except Exception:
+            logger.debug("switch announce skipped (non-fatal)", exc_info=True)
+
+    async def _apply_reasoning_selection_announced(
+        self, session_key: str, platform_key: str, value: str, persist_global: bool = False, source=None,
+    ) -> str:
+        """``_apply_reasoning_selection`` plus the channel announce (typed and picker surfaces).
+
+        Snapshots the session's *effective* effort before and after (a session /model override wins
+        over the config default, so per-model ``agent.reasoning_overrides`` resolve against what the
+        session runs). Display toggles, unknown args and re-selecting the current level leave the
+        effort unchanged and announce nothing; either side unresolvable suppresses it.
+        """
+        model = str(((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or "")
+        old_effort = self._resolved_effort_label(session_key=session_key, model=model)
+        reply = self._apply_reasoning_selection(session_key, platform_key, value, persist_global=persist_global)
+        if source is not None:
+            from hermes_constants import REASONING_BASELINE_UNKNOWN
+
+            new_effort = self._resolved_effort_label(session_key=session_key, model=model)
+            if REASONING_BASELINE_UNKNOWN not in (old_effort, new_effort):
+                await self._announce_switch(source, "reasoning", old_effort, new_effort)
+        return reply
+
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
     ) -> str:
@@ -754,7 +854,8 @@ class GatewayModelCommandsMixin:
         )
         platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return await self._apply_reasoning_selection_announced(
+                session_key, platform_key, args, persist_global=persist_global, source=_reasoning_source)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
@@ -782,7 +883,8 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            return await self._apply_reasoning_selection_announced(
+                session_key, platform_key, value, source=_reasoning_source)
 
         picker_sent = await self._try_send_choice_picker(
             event,

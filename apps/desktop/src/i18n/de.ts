@@ -21,6 +21,7 @@ import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
+import { deRepoScanDescriptions, deRepoScanLabels } from './de_repo_scan'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
@@ -1156,12 +1157,7 @@ export const deOverrides = {
         personality: 'Persönlichkeit',
         showReasoning: 'Denkblöcke'
       },
-      desktop: {
-        repoScanEnabled: 'Automatische Repository-Erkennung',
-        repoScanNested: 'Verschachtelte Repositories mitentdecken',
-        repoScanRoots: 'Repository-Erkennungs-Wurzeln',
-        repoScanExcludePaths: 'Ausgeschlossene Repository-Pfade'
-      },
+      ...deRepoScanLabels,
       agent: {
         maxTurns: 'Maximale Agent-Schritte',
         imageInputMode: 'Bildanhänge',
@@ -1331,12 +1327,7 @@ export const deOverrides = {
         personality: 'Standard-Assistentenstil für neue Sessions.',
         showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.'
       },
-      desktop: {
-        repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',
-        repoScanNested: 'Repositories innerhalb eines bereits vorhandenen als Unterprojekte anzeigen.',
-        repoScanRoots: 'Zusätzliche zu durchsuchende Ordner. Leer durchsucht Ihr Arbeitsverzeichnis.',
-        repoScanExcludePaths: 'Ordner und deren Unterordner, die bei der Repository-Erkennung übersprungen werden.'
-      },
+      ...deRepoScanDescriptions,
       timezone: 'IANA-Zeitzonenkennung. Leer verwendet die Systemzeitzone.',
       browser: {
         useRealProfile:

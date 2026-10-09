@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.7`:
+# On macOS, `npx -y apple-mail-mcp@2.20.9`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.7 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.9 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -204,12 +204,25 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # that returns a real count (confirmed large, not stalled) is still probed
 # fresh next time. No new tools: still 52 tools, all 18 default_enabled
 # entries resolve.
+#
+# 2.20.9 (via 2.20.8) is re-pinned on the same footing — both fix
+# @j5pu's re-test of 2.20.7, all on the default_enabled get-message /
+# get-thread by-id path. 2.20.8: a timed-out size probe now stops the scan
+# at once and is recorded before the 15 s by-id kill can lose it; the
+# learned list persists across restarts (7-day TTL); a scan that runs out
+# of budget names the mailboxes it never reached instead of reporting a
+# silently partial "not found"; and with Mail.app not running, by-id reads
+# say so (without launching it) instead of "not found". 2.20.9: on macOS
+# 27.2 that not-running check itself failed to compile (-2741) when Mail
+# was quit, so the plain "not found" still leaked; -2741 is now classified
+# as not-running too. No new tools: still 52 tools, all 18 default_enabled
+# entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.7"
+    - "apple-mail-mcp@2.20.9"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

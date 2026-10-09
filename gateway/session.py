@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, cast
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
@@ -726,6 +726,33 @@ def build_session_key(
     return ":".join(str(part) for part in parts)
 
 
+def is_internal_subagent_row(row: Optional[Dict[str, Any]]) -> bool:
+    """True when a sessions row is a delegate/subagent execution transcript.
+
+    Subagent sessions are internal execution records, never conversations a
+    human can address: ``delegate_tool`` creates them with
+    ``platform="subagent"`` and stamps the durable
+    ``model_config._delegate_from`` marker (#92859). Either signal alone is
+    enough — the marker survives a later ``record_gateway_session_peer``
+    overwriting ``source`` with the platform name, which is exactly what a
+    hijacked child row looks like after the fact.
+    """
+    if not row:
+        return False
+    if str(row.get("source") or "") == "subagent":
+        return True
+    raw = row.get("model_config")
+    if not raw:
+        return False
+    try:
+        cfg = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    return bool(str(cfg.get("_delegate_from") or "").strip())
+
+
 class _SessionFlight:
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -1255,7 +1282,40 @@ class SessionStore(
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
         starts a different conversation on the same routing key.
+
+        Refuses outright when ``target_session_id`` is a delegate/subagent execution transcript
+        (#92859). Those rows are internal — a human cannot address one — so binding a platform
+        routing key to one both hijacks the chat (the user's next message lands in a leaf
+        subagent with no conversation context) and ends the real conversation at the
+        un-resurrectable ``session_switch`` boundary, which then makes the delegation's own
+        completion undeliverable. This is the sink for every caller (async-completion pinning,
+        /resume, CLI handoff, Telegram topic rebinding), so no future call site can reintroduce
+        the hijack.
         """
+        if target_session_id:
+            try:
+                db = cast(Any, self._db)
+                target_row = db.get_session(target_session_id) if db is not None else None
+            except Exception:
+                # Fail OPEN: a SQLite hiccup must not break /resume or CLI handoff for every
+                # user. But this is precisely the shape that silently reintroduces #92859 — the
+                # lookup fails, the row reads as non-subagent, and the bind proceeds — so it is
+                # logged at warning, not debug, to leave a trace when a hijack slips through.
+                logger.warning(
+                    "switch_session subagent pre-check failed for %s; allowing the bind "
+                    "(fail-open). A delegate row could be bound to routing key %s if this "
+                    "recurs (#92859).",
+                    target_session_id, session_key, exc_info=True,
+                )
+                target_row = None
+            if is_internal_subagent_row(target_row):
+                logger.warning(
+                    "Refusing to bind gateway routing key %s to delegate subagent session %s: "
+                    "subagent transcripts are internal and are never route owners (#92859).",
+                    session_key, target_session_id,
+                )
+                return None
+
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:

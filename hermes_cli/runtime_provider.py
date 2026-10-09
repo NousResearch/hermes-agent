@@ -7,6 +7,7 @@ OpenRouter/bare-custom, Bedrock and external-process builders in
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass
@@ -336,16 +337,60 @@ def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> s
     return cfg_url
 
 
+# Sibling variants of one vendor (region or auth-routing splits) share a family head; a
+# ``model.base_url`` moving between them (minimax → minimax-cn, opencode-zen → opencode-go) is a
+# deliberate region/auth choice (#6039), never provider-switch residue, so they never count as
+# foreign endpoints for each other. Unlisted ids are their own family.
+_PROVIDER_FAMILY_HEADS: dict[str, str] = {
+    "minimax": "minimax", "minimax-cn": "minimax", "minimax-oauth": "minimax",
+    "kimi-coding": "kimi", "kimi-coding-cn": "kimi",
+    "alibaba": "alibaba", "alibaba-coding-plan": "alibaba",
+    "openai-api": "openai", "openai-codex": "openai",
+    "xai": "xai", "xai-oauth": "xai",
+    "opencode-zen": "opencode", "opencode-go": "opencode",
+    "copilot": "copilot", "copilot-acp": "copilot",
+    "tencent-tokenhub": "tencent", "tencent-tokenplan": "tencent",
+}
+
+
+def _provider_family_head(provider_id: str) -> str:
+    pid = str(provider_id or "").strip().lower()
+    return _PROVIDER_FAMILY_HEADS.get(pid, pid)
+
+
+def _vendor_domain_host(host: str) -> str:
+    """*host* when it is a DNS domain — IP literals and localhost are local addresses (lmstudio's
+    ``127.0.0.1:1234``), never a registered vendor's own domain, so they never brand an override
+    URL as foreign."""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h or _loopback_hostname(h):
+        return ""
+    try:
+        ipaddress.ip_address(h)
+    except ValueError:
+        return h
+    return ""
+
+
 def _stale_cross_provider_config_base_url(provider: str, cfg_url: str) -> bool:
-    """Whether a persisted ``model.base_url`` under *provider* is another provider's canonical
-    endpoint — judged only for subscription-routed (OAuth) providers, whose endpoint the provider
-    itself fixes: openai-codex requests on ``https://api.anthropic.com`` all 404 behind an
-    outage-looking retry message (#135676). Key-based providers keep every override — region
-    endpoints (minimax → minimax-cn) and proxies are deliberate user choices (#6039)."""
+    """Whether a persisted ``model.base_url`` under *provider* sits on another vendor's own
+    endpoint domain — residue of a provider switch that kept the old URL (openai-codex requests
+    on ``https://api.anthropic.com`` all 404 behind an outage-looking retry message, #135676).
+
+    Judged for every registered provider by hostname: a deliberate override — a sibling region
+    endpoint (minimax → minimax-cn), a same-family routing variant, a local loopback proxy, or a
+    third-party relay — never lands on another registered vendor's canonical domain or a
+    subdomain of it, so only a hostname match with a different-family vendor's domain counts
+    (#6039 keeps the rest)."""
     pconfig = PROVIDER_REGISTRY.get(str(provider or "").strip().lower())
-    if pconfig is None or "oauth" not in str(getattr(pconfig, "auth_type", "") or ""):
+    if pconfig is None:
         return False
-    return is_foreign_provider_endpoint(provider, cfg_url)
+    family = _provider_family_head(pconfig.id)
+    return any(
+        _provider_family_head(other.id) != family
+        and base_url_host_matches(cfg_url, _vendor_domain_host(base_url_hostname(other.inference_base_url or "")))
+        for other in PROVIDER_REGISTRY.values()
+    )
 
 
 def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:

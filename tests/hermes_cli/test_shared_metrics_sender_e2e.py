@@ -28,7 +28,7 @@ class Ingest(BaseHTTPRequestHandler):
     received: list = []
     script: list = []
 
-    def do_POST(self):  # noqa: N802 - stdlib naming
+    def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         if self.headers.get("Content-Encoding") == "gzip":
@@ -58,7 +58,7 @@ class Ingest(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+    def log_message(self, format, *args):
         pass
 
 

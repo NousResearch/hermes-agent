@@ -32,14 +32,14 @@ class CompressRequest:
 @dataclass
 class CompressResult:
     status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do"
-    before_messages: List[Dict[str, Any]]
-    after_messages: List[Dict[str, Any]]
+    before_messages: list[dict[str, Any]]
+    after_messages: list[dict[str, Any]]
     before_tokens: int
     after_tokens: int
     request: CompressRequest
-    lines: List[str] = field(default_factory=list)  # preview report lines (status == "preview")
+    lines: list[str] = field(default_factory=list)  # preview report lines (status == "preview")
     lock_holder: Any = None
-    summary: Optional[Dict[str, Any]] = None  # ``summarize_manual_compression`` payload when compressed
+    summary: Optional[dict[str, Any]] = None  # ``summarize_manual_compression`` payload when compressed
 
     @property
     def removed(self) -> int:
@@ -55,7 +55,7 @@ def parse_compress_args(raw_args: str) -> CompressRequest:
                            focus_topic=focus_topic or None)
 
 
-def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> int:
+def estimate_request_tokens(agent: Any, messages: Sequence[dict[str, Any]]) -> int:
     """Transcript + system prompt + tool schemas: a transcript-only figure understates real request pressure
     and can even appear to grow after a dense handoff summary replaces many short turns (#6217)."""
     from agent.model_metadata import estimate_request_tokens_rough
@@ -67,7 +67,7 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
 
 
 def compress_now(
-    agent: Any, history: Sequence[Dict[str, Any]], request: CompressRequest, *,
+    agent: Any, history: Sequence[dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
     snapshot_is_current: Optional[Callable[[], bool]] = None,
 ) -> CompressResult:
@@ -150,7 +150,7 @@ def compress_now(
     return CompressResult("compressed", before, list(compressed), before_tokens, after_tokens, request, summary=summary)
 
 
-def render_compress_result(result: CompressResult, *, prefix: str = "") -> List[str]:
+def render_compress_result(result: CompressResult, *, prefix: str = "") -> list[str]:
     """Surface-neutral text lines for a result (each surface may add its own icon/prefix)."""
     if result.status == "preview":
         return [f"{prefix}{line}" for line in result.lines]

@@ -200,7 +200,7 @@ class TestLoadMCPConfig:
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
 
         first = SimpleNamespace(session=object(), _registered_tool_names=[])
         second = SimpleNamespace(session=object(), _registered_tool_names=[])
@@ -234,7 +234,7 @@ class TestMCPParallelSafetyProvenance:
                 mcp_tool._parallel_safe_servers.update(saved_parallel)
 
     def test_tool_provenance_keeps_exact_raw_server_names(self):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_registration as _mcp_registration
 
         first_tool = "mcp__foo_bar__first"
@@ -267,7 +267,7 @@ class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch
     ):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_config as _mcp_config
         from tools import mcp_tool_discovery as _mcp_discovery
 
@@ -314,7 +314,7 @@ class TestMCPStatus:
         assert statuses["disabled"]["disabled"] is True
 
     def test_status_ignores_a_runtime_owned_by_another_profile(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_config as _mcp_config
         from tools import mcp_tool_discovery as _mcp_discovery
 
@@ -352,7 +352,7 @@ class TestMCPStatus:
 
 
     def test_scoped_shutdown_clears_only_its_connection_status(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_lifecycle, mcp_tool_loop
 
         monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
@@ -2631,7 +2631,6 @@ class TestDiscoveryConnectConcurrency:
 
         def fake_run_on_mcp_loop(factory, timeout=None):
             captured["timeout"] = timeout
-            return None
 
         # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
         # and outlive the waiter budget by 26+ minutes.
@@ -3030,7 +3029,7 @@ class TestMCPDiscoveryCrossProcessLock:
     @pytest.fixture(autouse=True)
     def _fast_retries(self):
         """Override retry constants so tests are fast."""
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         orig_max = mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES
         orig_delay = mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S
         mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES = 3

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_child  # noqa: F401
+from tests.tools._child_env_fixtures import child_env, observe_child
 from tools.environments.local import build_subprocess_env
 
 

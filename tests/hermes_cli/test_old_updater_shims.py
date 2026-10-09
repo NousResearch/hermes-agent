@@ -177,7 +177,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
     fresh_child.returncode = status
     with fresh_child.exits():
         if unpack:
-            uv, fresh_bootstrap = ensure_uv()
+            uv, _fresh_bootstrap = ensure_uv()
         else:
             uv = ensure_uv()
         # A falsy result is NOT inert: old callers install through pip instead.
@@ -264,7 +264,7 @@ def test_live_windows_scan_does_not_use_the_retired_main_alias(monkeypatch, no_e
 
     # Routing, not OS emulation: lifecycle fallback accepts rows on any host.
     monkeypatch.setattr(main, "_detect_venv_python_processes", no_external_work)
-    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    monkeypatch.setattr(process_identity, "ledger_entries", list)
     monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: None)
     monkeypatch.setattr(
         update_cmd_windows, "_detect_venv_python_processes",

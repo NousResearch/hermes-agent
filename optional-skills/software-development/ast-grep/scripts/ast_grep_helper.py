@@ -751,7 +751,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(bad)}")
     if extras:
         if hasattr(args, "paths"):
-            args.paths = list(getattr(args, "paths") or []) + extras
+            args.paths = list(args.paths or []) + extras
         else:
             parser.error(f"unrecognized arguments: {' '.join(extras)}")
     _QUIET = bool(getattr(args, "quiet", False))

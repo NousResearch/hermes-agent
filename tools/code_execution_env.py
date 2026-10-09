@@ -61,9 +61,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
-        is_env_passthrough = lambda _: False  # noqa: E731
-        resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
-        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
+        is_env_passthrough = lambda _: False
+        resolve_passthrough_value = lambda _name, _fallback: None
+        scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -114,7 +114,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
 
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
-                     child_python: str) -> Dict[str, str]:
+                     child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
     from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
     child_env = _scrub_child_env(os.environ)

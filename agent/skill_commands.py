@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 # scanned once and memoized; reload_skills() clears every slot. Guards
 # publication and the freshness lookup so a reader always sees a consistent
 # (key, map) pair. Scanning stays outside the lock (#14536, #74574).
-_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
 # Keep the last map callers could actually see, even when plugin lifecycle
 # invalidation drops the projection cache before /reload-skills can diff it.
-_last_interactive_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
+_last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -441,7 +441,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
@@ -478,7 +478,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
 
 
-def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
+def scan_skill_commands() -> dict[str, dict[str, Any]]:
     """Scan skill dirs and return {"/skill-name": {name, description, skill_md_path, skill_dir}}.
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
@@ -489,7 +489,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
     # one bogus "already claimed" warning per skill — each naming the same skill as its own incumbent
     # (#74574).
-    commands: Dict[str, Dict[str, Any]] = {}
+    commands: dict[str, dict[str, Any]] = {}
     try:
         from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
         disabled = _get_disabled_skill_names()
@@ -516,7 +516,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
+def get_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
     when the platform scope (one gateway serving Telegram and Discord) or the
     active profile's home (Desktop profile switch) or the session's project root (two sessions in two
@@ -539,7 +539,7 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 # while its tag holds: the resolved Hermes home (plugin managers are home-keyed, so profiles never
 # share a registry) plus the registered qualified names (a plugin enable/disable/install changes
 # them). ``reload_skills()`` drops it explicitly to pick up edited SKILL.md files.
-_plugin_skill_commands: Dict[str, Dict[str, Any]] = {}
+_plugin_skill_commands: dict[str, dict[str, Any]] = {}
 _plugin_skill_commands_tag: Optional[tuple] = None
 
 
@@ -551,7 +551,7 @@ def invalidate_plugin_skill_commands() -> None:
         _plugin_skill_commands_tag = None
 
 
-def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
+def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     """Project enabled plugin skills into the interactive-only slash namespace (``/plugin:skill``).
 
     Config disable lists (``skills.disabled``, ``plugins.disabled``) are applied on EVERY call, so a
@@ -581,7 +581,7 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> Dict[str, Dict[str, Any]]:
+def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str, dict[str, Any]]:
     """Build the plugin skill projection and publish it with its tag atomically."""
     global _plugin_skill_commands, _plugin_skill_commands_tag
     from tools.skills_tool import (
@@ -589,7 +589,7 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> Dict[str
         skill_matches_platform,
     )
 
-    commands: Dict[str, Dict[str, Any]] = {}
+    commands: dict[str, dict[str, Any]] = {}
     for entry in metadata:
         qualified = str(entry.get("name") or "").strip()
         if ":" not in qualified:
@@ -620,8 +620,8 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> Dict[str
 
 
 def _merge_interactive_skill_commands(
-    filesystem_commands: Dict[str, Dict[str, Any]], plugin_commands: Dict[str, Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
+    filesystem_commands: dict[str, dict[str, Any]], plugin_commands: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     """Merge interactive sources with filesystem commands winning collisions."""
     commands = dict(filesystem_commands)
     for command, info in plugin_commands.items():
@@ -632,7 +632,7 @@ def _merge_interactive_skill_commands(
     return commands
 
 
-def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
+def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
@@ -642,7 +642,7 @@ def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
     return commands
 
 
-def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
+def diff_command_snapshots(before: dict[str, str], after: dict[str, str]) -> dict[str, Any]:
     """Diff two {name: description} snapshots into added/removed/unchanged/total.
     Removed entries carry the pre-rescan description (the file may be gone)."""
     return {
@@ -653,12 +653,12 @@ def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dic
     }
 
 
-def command_snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+def command_snapshot(cmds: dict[str, dict[str, Any]]) -> dict[str, str]:
     """``{"/slug": info}`` -> ``{"slug": description}`` for diff_command_snapshots."""
     return {key.lstrip("/"): (info or {}).get("description") or "" for key, info in cmds.items()}
 
 
-def reload_skills() -> Dict[str, Any]:
+def reload_skills() -> dict[str, Any]:
     """Re-scan skill dirs and return a diff of the slash-command map (``added``
     / ``removed`` / ``unchanged`` / ``total`` / ``commands``; descriptions are the
     full frontmatter field). Does NOT invalidate the skills system-prompt cache:

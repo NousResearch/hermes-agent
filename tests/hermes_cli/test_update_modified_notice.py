@@ -14,7 +14,7 @@ def test_kept_skill_edits_have_an_actionable_update_report(tmp_path, monkeypatch
     monkeypatch.setattr(skills_sync, "MANIFEST_FILE", installed / ".manifest.json")
     monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: bundled)
     monkeypatch.setattr(skills_sync, "_get_optional_dir", lambda: tmp_path / "optional")
-    monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", list)
 
     _print_bundled_skills_sync_report()
     user_skill = installed / "example/SKILL.md"

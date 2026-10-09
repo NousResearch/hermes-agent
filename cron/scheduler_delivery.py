@@ -1352,61 +1352,7 @@ def _warn_live_lane_failure(job: dict, msg: str, is_relay: bool) -> None:
         logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
 
 
-def _resolve_target_transport(
-    job: dict, platform, platform_name: str, target: dict, adapters, config):
-    """Resolve ``(transport, pconfig, runtime_adapter, target_adapters)`` for one target, or
-    ``(None, error)`` when it cannot be served (relay-fronted with no live transport, or not
-    configured/enabled)."""
-    from gateway.delivery import DeliveryTransport, resolve_delivery_transport
-    target_adapters = adapters
-    transport = None
-    if isinstance(adapters, _preflight.SharedRouteAdapters):
-        # Credentialless satellite: the primary adapter serves THIS target only when an exact
-        # primary route maps it to this profile; a miss fails closed below.
-        # See #101113.
-        shared = adapters.get(platform, target)
-        target_adapters = {platform: shared} if shared is not None else {}
-        if shared is not None:
-            # The PRIMARY's route authorized this exact native adapter. The satellite's own
-            # ``platforms.<p>`` block describes a connector it never runs (no credential), so
-            # neither its absence nor ``enabled: false`` may veto the shared transport; only its
-            # non-credential settings (continuable surface, reply mode) are kept (#89302, #103701).
-            from dataclasses import replace
-            from gateway.config import PlatformConfig
-            own = config.platforms.get(platform)
-            transport = DeliveryTransport(
-                shared, replace(own, enabled=True) if own is not None else PlatformConfig(enabled=True),
-                platform)
-    if transport is None:
-        transport = resolve_delivery_transport(platform, config, target_adapters)
-    if transport is not None:
-        pconfig = transport.config
-        runtime_adapter = transport.adapter
-    else:
-        # Relay-fronted platforms have NO standalone fallback (the connector owns the credential),
-        # so surface that instead of the native configured/enabled gate, which misdiagnoses them.
-        from gateway.relay import relay_fronted_platforms
-        if platform_name in relay_fronted_platforms():
-            return None, (
-                f"platform '{platform_name}' is relay-fronted and has no "
-                "live gateway transport; start the gateway (its ticker "
-                "owns relay-fronted delivery and will fire the job on "
-                "schedule)"
-            )
-        pconfig = config.platforms.get(platform)
-        runtime_adapter = None
-
-    if transport is not None and (transport.is_relay or pconfig is None):
-        # Relay transport carries the RELAY adapter's config (enablement already checked): the
-        # logical platform is deliberately NOT natively enabled. A live NATIVE adapter with no
-        # ``platforms.<p>`` block is the same shape — the owning process already authorized the
-        # adapter; "no config" is not "disabled" (#89302).
-        if pconfig is None:
-            from gateway.config import PlatformConfig
-            pconfig = PlatformConfig(enabled=True)
-    elif not pconfig or not pconfig.enabled:
-        return None, f"platform '{platform_name}' not configured/enabled"
-    return (transport, pconfig, runtime_adapter, target_adapters), None
+from cron.scheduler_transport import resolve_target_transport as _resolve_target_transport
 
 
 def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
@@ -1723,7 +1669,7 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files, force_standalone=not t.pconfig.enabled), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

@@ -386,7 +386,7 @@ async def auth_callback(
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
 _PW_RATE_MAX_BUCKETS = 4096
-_pw_attempts: "OrderedDict[str, Deque[float]]" = OrderedDict()
+_pw_attempts: "OrderedDict[str, deque[float]]" = OrderedDict()
 _pw_attempts_lock = threading.Lock()
 
 
@@ -500,7 +500,7 @@ async def auth_logout(request: Request):
     for provider in list_providers() if rt else ():
         try:
             provider.revoke_session(refresh_token=rt)
-        except Exception as e:  # noqa: BLE001 — best-effort
+        except Exception as e:
             _log.warning("dashboard-auth: revoke on %r failed: %s", provider.name, e)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),

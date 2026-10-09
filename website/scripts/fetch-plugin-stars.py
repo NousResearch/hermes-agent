@@ -35,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Run as `python website/scripts/fetch-plugin-stars.py`, so sys.path[0] is this directory and the
 # repo-root `hermes_yaml` shim is not importable without this (broke every scheduled probe).
 sys.path.insert(0, str(REPO_ROOT))
-import hermes_yaml as yaml  # noqa: E402
+import hermes_yaml as yaml
 
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"

@@ -310,6 +310,6 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
                 model_id=section, window=parser.getint(section, "ctx-size", fallback=0),
                 spilled=recorded.get(section, {}).get("spilled", parser.has_option(section, "override-tensor")),
                 keys=dict(parser[section]))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("preset read-back failed: %s", exc)
     return out

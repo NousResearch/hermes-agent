@@ -113,7 +113,7 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
     return f"[{safe_strftime(dt, '%a %Y-%m-%d %H:%M:%S %Z')}]"
 
 
-def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Optional[float]]:
+def strip_leading_message_timestamps(content: str, tz=None) -> tuple[str, Optional[float]]:
     """Strip leading gateway timestamp prefixes → ``(clean_content, embedded_epoch)``.
     With several prefixes the one closest to the text wins, preserving the platform-send
     time of legacy rows like ``[processing time] [platform time] [sender] message``."""

@@ -31,10 +31,10 @@ class EnvVarReveal(EnvVarDelete):
     pass
 
 class MemoryProviderConfigUpdate(BaseModel):
-    values: Dict[str, Any] = {}
+    values: dict[str, Any] = {}
 
 class MemoryProviderSetupRequest(BaseModel):
-    values: Dict[str, Any] = {}
+    values: dict[str, Any] = {}
 
 class CustomEndpointModelDetail(BaseModel):
     """One ``/v1/models`` row with the routing metadata a gateway may advertise on a
@@ -55,13 +55,13 @@ class CustomEndpointUpdate(BaseModel):
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
-    models: Optional[List[str]] = None
-    model_details: Optional[List[CustomEndpointModelDetail]] = None
+    models: Optional[list[str]] = None
+    model_details: Optional[list[CustomEndpointModelDetail]] = None
 
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
-    env: Dict[str, str] = {}
-    clear_env: List[str] = []
+    env: dict[str, str] = {}
+    clear_env: list[str] = []
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 
@@ -69,7 +69,7 @@ class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 
 class TelegramOnboardingApply(BaseModel):
-    allowed_user_ids: List[str]
+    allowed_user_ids: list[str]
     profile: Optional[str] = None
 
 class WhatsAppOnboardingStart(BaseModel):
@@ -186,12 +186,12 @@ class GitFileBody(BaseModel):
 
 class GitPrListBody(BaseModel):
     path: str
-    branches: List[str] = []
+    branches: list[str] = []
     # PRs a session recovered from its transcript — known by number, not branch.
-    numbers: List[int] = []
+    numbers: list[int] = []
 
 class SessionPrScanBody(BaseModel):
-    ids: List[str] = []
+    ids: list[str] = []
 
 class GitCommitBody(BaseModel):
     path: str
@@ -238,7 +238,7 @@ class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
     text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
     sdp: str
-    history: Optional[List[Dict[str, Any]]] = None
+    history: Optional[list[dict[str, Any]]] = None
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease
@@ -258,11 +258,11 @@ class OAuthSubmitBody(BaseModel):
     code: str
 
 class BulkDeleteSessions(BaseModel):
-    ids: List[str]
+    ids: list[str]
     profile: Optional[str] = None
 
 class SessionImport(BaseModel):
-    sessions: List[Dict[str, Any]]
+    sessions: list[dict[str, Any]]
     profile: Optional[str] = None
 
 class SessionRename(BaseModel):
@@ -319,13 +319,13 @@ class CronJobCreate(BaseModel):
     # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
     # chokepoint with the CLI and update paths — so an unparseable value 400s there.
     repeat: Optional[Union[int, str]] = None
-    skills: Optional[List[str]] = None
+    skills: Optional[list[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     base_url: Optional[str] = None
     script: Optional[str] = None
     context_from: Optional[Any] = None
-    enabled_toolsets: Optional[List[str]] = None
+    enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
 
@@ -334,14 +334,14 @@ class CronJobUpdate(BaseModel):
 
 class AutomationBlueprintInstantiate(BaseModel):
     blueprint: str  # blueprint key, e.g. "morning-brief"
-    values: Dict[str, Any] = {}  # filled slot values from the form
+    values: dict[str, Any] = {}  # filled slot values from the form
 
 class MCPServerCreate(BaseModel):
     name: str
     url: Optional[str] = None
     command: Optional[str] = None
-    args: List[str] = []
-    env: Dict[str, str] = {}  # KEY=VALUE for stdio servers (API keys, etc.)
+    args: list[str] = []
+    env: dict[str, str] = {}  # KEY=VALUE for stdio servers (API keys, etc.)
     auth: Optional[str] = None  # "none" | "oauth" | "header" | None
     # One-time provisioning input; persisted only to the profile's .env.
     bearer_token: Optional[SecretStr] = None
@@ -349,7 +349,7 @@ class MCPServerCreate(BaseModel):
 
 class MCPServersReplace(BaseModel):
     # Whole-map replace (name → raw config) for the GUI mcp.json editor.
-    servers: Dict[str, Dict[str, Any]] = {}
+    servers: dict[str, dict[str, Any]] = {}
     profile: Optional[str] = None
 
 class MCPEnabledToggle(BaseModel):
@@ -358,7 +358,7 @@ class MCPEnabledToggle(BaseModel):
 
 class MCPCatalogInstall(BaseModel):
     name: str
-    env: Dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
+    env: dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
     enable: bool = True
     profile: Optional[str] = None
 
@@ -376,10 +376,10 @@ class PairingRevoke(BaseModel):
 class WebhookCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    events: List[str] = []
+    events: list[str] = []
     prompt: Optional[str] = None
     script: Optional[str] = None
-    skills: List[str] = []
+    skills: list[str] = []
     deliver: str = "log"
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
@@ -444,17 +444,17 @@ class ProfileCreate(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
-    mcp_servers: List["MCPServerCreate"] = []
-    keep_skills: List[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
+    mcp_servers: list["MCPServerCreate"] = []
+    keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.
-    hub_skills: List[str] = []
+    hub_skills: list[str] = []
 
 class ProfileRename(BaseModel):
     new_name: str
 
 class ProfileExport(BaseModel):
-    extra_files: Dict[str, str] = {}  # extra root-level files, filename → text
+    extra_files: dict[str, str] = {}  # extra root-level files, filename → text
     output: str = ""  # archive path; empty → a staging path under HERMES_HOME
 
 class ProfileImport(BaseModel):
@@ -509,7 +509,7 @@ class ToolsetModelSelect(BaseModel):
     profile: Optional[str] = None
 
 class ToolsetEnvUpdate(BaseModel):
-    env: Dict[str, str]
+    env: dict[str, str]
     profile: Optional[str] = None
 
 class ToolsetPostSetup(BaseModel):

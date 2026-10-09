@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 def _other_process(home: Path, stmt: str) -> None:
     env = {**os.environ, "HERMES_HOME": str(home)}
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(REPO)!r}); "
          f"from tools.bot_desktop import lease; {stmt}"],
         cwd=str(REPO), env=env, check=True, timeout=60, stdin=subprocess.DEVNULL)
@@ -47,7 +47,7 @@ def _lease_events(events, **want):
 
 
 def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
-    import tui_gateway.server as server
+    from tui_gateway import server
     from hermes_constants import hermes_home_key
     home = tmp_path / "home"
     home.mkdir()
@@ -61,7 +61,7 @@ def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
 
 
 def test_release_in_another_process_is_broadcast_and_local_transition_not_duplicated(tmp_path, monkeypatch):
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import lease
     home = tmp_path / "home"
     home.mkdir()
@@ -83,7 +83,7 @@ def test_release_in_another_process_is_broadcast_and_local_transition_not_duplic
 def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp_path, monkeypatch):
     """A start/stop made by the CLI or gateway process must reach an open Desktop: the portal's
     status was otherwise one-shot (fetched once, then only lease events)."""
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
@@ -108,11 +108,11 @@ def test_launcher_dying_without_touching_its_files_is_broadcast_as_stopped(tmp_p
     """Xvnc/the launcher crashing leaves env and launcher.pid exactly as they were, so a watcher keyed
     on mtimes alone never told the Desktop the screen was gone. The mark must include liveness."""
     import psutil
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
-    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)  # noqa: S603
+    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)
     try:
         born = psutil.Process(launcher.pid).create_time()
         (home / "bot-desktop" / "launcher.pid").write_text(f"{launcher.pid} {born!r}", encoding="utf-8")
@@ -140,7 +140,7 @@ def test_screen_start_and_stop_reach_the_models_turn_notes(tmp_path, monkeypatch
     live session of THAT profile. The staged note is consumed on the next turn
     (``agent/turn_context.py``), so only its presence here is asserted."""
     import psutil
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
@@ -155,7 +155,7 @@ def test_screen_start_and_stop_reach_the_models_turn_notes(tmp_path, monkeypatch
     other_home.mkdir()
     server._sessions["ws-b"] = {"agent": other, "profile_home": str(other_home), "transport": server._detached_ws_transport}
     # the stub "launcher": a real live process with matching create_time, like runtime.start() records
-    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)  # noqa: S603
+    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)
     try:
         server._poll_runtime_files()  # seed: stopped
         assert not getattr(agent, "_gateway_turn_context_notes", "")

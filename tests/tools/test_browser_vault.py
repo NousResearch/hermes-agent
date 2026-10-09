@@ -18,6 +18,7 @@ import re
 import os
 import stat
 import sys
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -722,6 +723,165 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
     assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
+
+
+@pytest.fixture
+def checkout_page(store, monkeypatch):
+    from tools import browser_vault_tool
+    from tools.registry import registry
+    from agent.vault_backends.local import LocalLoginBackend
+    from agent import redact
+
+    page = {"origin": "https://second.test", "approvals": [], "scripts": [],
+            "controls": [{"autocomplete": "cc-number", "index": 0, "type": "text"}]}
+    monkeypatch.setattr("agent.vault_store.get_vault_store", lambda: store)
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [LocalLoginBackend()])
+    monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *_: None)
+    monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda *_: page["origin"])
+    monkeypatch.setattr(browser_vault_tool, "_eval_js", lambda *_: {
+        "success": True, "result": json.dumps(page["controls"])})
+
+    def consent(action, *_args, **_kwargs):
+        page["approvals"].append(action)
+        return page.get("consent", "accept")
+
+    def secret_eval(task_id, expression):
+        page["scripts"].append(expression)
+        return {"success": True, "result": json.dumps({"filled": 1})}
+
+    monkeypatch.setattr("tools.approval_prompt.request_elicitation_consent", consent)
+    monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", secret_eval)
+    page["fill"] = lambda handle: registry.get_entry("browser_vault_fill").handler({"handle": handle}, task_id="origins-test")
+    page["list"] = lambda: registry.get_entry("browser_vault_list").handler({})
+    yield page
+    redact.clear_vault_redaction_values()
+
+
+@pytest.mark.parametrize("kind,secret,token", [
+    ("payment", _CARD, "cc-number"), ("address", _ADDRESS, "address-line1")])
+def test_local_secondary_origin_fill_and_listing_are_secret_blind(store, checkout_page, kind, secret, token):
+    from agent.redact import redact_sensitive_text
+
+    meta = store.add_item(kind, "Checkout", secret, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+    checkout_page["controls"] = [{"autocomplete": token, "index": 0, "type": "text"}]
+    listed = checkout_page["list"]()
+    assert json.loads(listed)["items"][0]["allowed_origins"] == ["https://primary.test", "https://second.test"]
+    raw = checkout_page["fill"](meta.id)
+    out = json.loads(raw)
+    assert out["success"] is True and out["origin"] == "https://second.test"
+    assert out["fields"] == [token]
+    expected = ["Fill payment card 'Checkout' on https://second.test"] if kind == "payment" else []
+    assert checkout_page["approvals"] == expected
+    private_value = secret["card_number" if kind == "payment" else "address_line1"]
+    assert private_value not in raw + listed
+    if kind == "payment":
+        assert private_value not in redact_sensitive_text(f"DOM read: {private_value}")
+
+
+@pytest.mark.parametrize("origin", [
+    "https://evil.test", "https://second.test.evil.test", "https://child.second.test",
+    "http://second.test", "https://second.test:8443", None])
+def test_payment_origin_mismatch_precedes_confirmation_and_secret_resolution(store, checkout_page, monkeypatch, origin):
+    meta = store.add_item("payment", "Card", _CARD, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+    checkout_page["origin"] = origin
+    monkeypatch.setattr(store, "resolve_secret", lambda *_: pytest.fail("mismatch must not resolve secrets"))
+    out = json.loads(checkout_page["fill"](meta.id))
+    assert out["success"] is False
+    if origin is not None:
+        assert out["error_type"] == "origin_mismatch"
+    assert checkout_page["approvals"] == [] and checkout_page["scripts"] == []
+
+
+def test_revoked_origin_is_refused_on_the_next_fill(store, checkout_page, monkeypatch):
+    meta = store.add_item("payment", "Card", _CARD, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+    store.revoke_origin(meta.id, "https://second.test")
+    monkeypatch.setattr(store, "resolve_secret", lambda *_: pytest.fail("revoked origin must not resolve secrets"))
+    out = json.loads(checkout_page["fill"](meta.id))
+    assert out["error_type"] == "origin_mismatch"
+    assert checkout_page["approvals"] == [] and checkout_page["scripts"] == []
+
+
+def test_declining_secondary_origin_payment_never_resolves_or_writes(store, checkout_page, monkeypatch):
+    meta = store.add_item("payment", "Card", _CARD, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+    checkout_page["consent"] = "decline"
+    monkeypatch.setattr(store, "resolve_secret", lambda *_: pytest.fail("decline must not resolve secrets"))
+    out = json.loads(checkout_page["fill"](meta.id))
+    assert out["error_type"] == "payment_declined" and checkout_page["scripts"] == []
+    assert checkout_page["approvals"] == ["Fill payment card 'Card' on https://second.test"]
+
+
+def _execute_checkout_script(expression, actual_origin):
+    from hermes_platform.resolver import locate_command
+
+    node = locate_command("node").command
+    if not node:
+        pytest.skip("Node is required to execute the in-page origin assertion")
+    script = """
+let writes = 0;
+global.window = {location: {origin: __ORIGIN__}};
+global.HTMLInputElement = class {
+  constructor() { this.tagName = 'INPUT'; this.type = 'text'; this._value = ''; }
+  set value(value) { writes++; this._value = value; }
+  get value() { return this._value; }
+  focus() {}
+  dispatchEvent() {}
+};
+global.InputEvent = class {};
+global.Event = class {};
+const input = new HTMLInputElement();
+global.document = {querySelector: () => input, querySelectorAll: () => []};
+const result = JSON.parse(__EXPRESSION__);
+console.log(JSON.stringify({result, writes}));
+""".replace("__ORIGIN__", json.dumps(actual_origin)).replace("__EXPRESSION__", expression)
+    completed = subprocess.run(node, input=script, text=True, capture_output=True, timeout=10, check=True)
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("actual_origin", ["https://second.test", "https://evil.test"])
+def test_secondary_origin_is_pinned_in_the_synchronous_script(store, checkout_page, monkeypatch, actual_origin):
+    from tools import browser_vault_tool
+
+    meta = store.add_item("payment", "Card", _CARD, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+    executions = []
+
+    def evaluate(task_id, expression):
+        executed = _execute_checkout_script(expression, actual_origin)
+        executions.append(executed)
+        return {"success": True, "result": json.dumps(executed["result"])}
+
+    monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", evaluate)
+    raw = checkout_page["fill"](meta.id)
+    out = json.loads(raw)
+    assert _CARD["card_number"] not in raw
+    if actual_origin == "https://second.test":
+        assert out["success"] is True and executions == [{"result": {"filled": 1}, "writes": 1}]
+    else:
+        assert out["error_type"] == "origin_changed"
+        assert executions == [{"result": {"refused": "origin_changed", "found": actual_origin}, "writes": 0}]
+
+
+@pytest.mark.parametrize("failure", ["exception", "error"])
+def test_secondary_payment_secret_is_scrubbed_from_fill_failures(store, checkout_page, monkeypatch, failure):
+    from tools import browser_vault_tool
+
+    meta = store.add_item("payment", "Card", _CARD, origin="https://primary.test")
+    store.authorize_origin(meta.id, "https://second.test")
+
+    def evaluate(*_):
+        message = f"failure {_CARD['card_number']} {_CARD['cvc']}"
+        if failure == "exception":
+            raise RuntimeError(message)
+        return {"success": False, "error": message}
+
+    monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", evaluate)
+    raw = checkout_page["fill"](meta.id)
+    assert json.loads(raw)["success"] is False
+    assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
 
 
 class TestTwoFactor:

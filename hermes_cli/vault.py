@@ -7,6 +7,7 @@ Subcommands:
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
+- ``hermes vault origins`` list or change exact authorized checkout origins.
 
 The vault backs the password-blind browser autofill tools
 (``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
@@ -128,10 +129,11 @@ def _cmd_list(args) -> None:
         from rich.table import Table
 
         table = Table(title=f"Vault items ({len(rows)})")
-        for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
+        for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Authorized origins"):
             table.add_column(col, style="bold" if col == "Handle" else None)
         for source, meta in rows:
-            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+            origins = meta.allowed_origins or ((meta.origin,) if meta.origin else ())
+            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", ", ".join(origins) or "-")
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
     for name in locked:
@@ -182,6 +184,29 @@ def _cmd_rm(args) -> None:
         c.print(f"[red]No vault item with handle {args.handle!r}[/]")
 
 
+def _cmd_origins(args) -> None:
+    """Manage exact checkout origins through the local, human-operated CLI."""
+    from agent.vault_store import VaultError, get_vault_store
+
+    store = get_vault_store()
+    if args.add is not None:
+        meta = store.authorize_origin(args.handle, args.add)
+    elif args.remove is not None:
+        meta = store.revoke_origin(args.handle, args.remove)
+    else:
+        meta = store.get_meta(args.handle)
+    events = store.origin_events(args.handle)
+    if meta is None:
+        raise VaultError("no local vault item with that handle")
+    c = _console()
+    c.print(f"handle={meta.id} kind={meta.kind}", markup=False, highlight=False)
+    for origin in meta.allowed_origins:
+        c.print(f"origin={origin}", markup=False, highlight=False)
+    for event in events:
+        c.print(f"timestamp={event['timestamp']} action={event['action']} origin={event['origin']}",
+                markup=False, highlight=False)
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -202,6 +227,13 @@ def register_cli(subparser) -> None:
     p_rm = subs.add_parser("rm", help="Remove a vault item by handle")
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
+
+    p_origins = subs.add_parser("origins", help="List, authorize or revoke exact origins for a local card/address")
+    p_origins.add_argument("handle", help="Local payment/address handle (see `hermes vault list`)")
+    origins_group = p_origins.add_mutually_exclusive_group()
+    origins_group.add_argument("--add", metavar="ORIGIN", help="Authorize an exact HTTP(S) origin, with no path/query/fragment/userinfo")
+    origins_group.add_argument("--remove", metavar="ORIGIN", help="Revoke a secondary exact origin; the primary cannot be removed")
+    p_origins.set_defaults(_vault_handler=_cmd_origins)
 
     p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()

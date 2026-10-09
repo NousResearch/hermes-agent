@@ -17,6 +17,7 @@ def test_goal_gate_child_env_tracks_routed_profile_a_b_a(tmp_path, monkeypatch):
     # This marker models launch-profile .env residue. A routed child must lose it,
     # while returning to the launch profile must restore the launch environment.
     (launch_home / ".env").write_text("GOAL_GATE_LAUNCH_ONLY=launch\n", encoding="utf-8")
+    (served_home / ".env").write_text("GOAL_GATE_SERVED_ONLY=served\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     monkeypatch.setenv("GOAL_GATE_LAUNCH_ONLY", "launch")
 
@@ -46,5 +47,8 @@ def test_goal_gate_child_env_tracks_routed_profile_a_b_a(tmp_path, monkeypatch):
     assert first["GOAL_GATE_LAUNCH_ONLY"] == "launch"
     assert served["HERMES_HOME"] == str(served_home)
     assert "GOAL_GATE_LAUNCH_ONLY" not in served
+    assert served["GOAL_GATE_SERVED_ONLY"] == "served"
     assert last["HERMES_HOME"] == str(launch_home)
     assert last["GOAL_GATE_LAUNCH_ONLY"] == "launch"
+    assert "GOAL_GATE_SERVED_ONLY" not in first
+    assert "GOAL_GATE_SERVED_ONLY" not in last

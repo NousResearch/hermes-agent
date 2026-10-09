@@ -199,3 +199,28 @@ def test_allocator_only_trim_does_not_suppress_a_forced_collection(monkeypatch):
     assert mem_trim.trim_memory(reason="housekeeping", collect=False) is True
     assert mem_trim.trim_memory(force=True, reason="agent_cache_pressure") is True
     assert calls == ["gc"]
+
+
+def test_periodic_trims_log_at_debug_with_an_hourly_info_line(monkeypatch, tmp_path, caplog):
+    import logging
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(mem_trim, "_malloc_trim", Mock(return_value=1))
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
+    clock = iter(range(1000, 1000 + 61 * 120, 120))
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: float(next(clock)))
+    token = set_hermes_home_override(hermes_home)
+    try:
+        with caplog.at_level(logging.DEBUG, logger=mem_trim.__name__):
+            for _ in range(60):
+                assert mem_trim.trim_memory(reason="housekeeping") is True
+            assert mem_trim.trim_memory(force=True, reason="agent close") is True
+    finally:
+        reset_hermes_home_override(token)
+
+    levels = [r.levelno for r in caplog.records if r.getMessage().startswith("memory trim:")]
+    assert levels == [logging.DEBUG] * 59 + [logging.INFO, logging.INFO]

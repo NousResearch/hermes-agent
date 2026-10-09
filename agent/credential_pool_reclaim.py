@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from pathlib import Path
@@ -308,55 +308,12 @@ class CredentialPoolReclaimMixin:
         ticket: CredentialReclaimTicket,
         entry: Any,
     ):
-        """Hold pool -> active auth -> credential source for a borrowed refresh.
-
-        Codex/xAI provider state can fall back from a named profile to the
-        global root, so their canonical transaction discovers and locks the
-        source in active-then-source order.  Anthropic pool rows use the exact
-        owner auth store plus their source-specific singleton lock.  The pool
-        lock stays outermost so normal ``_persist()`` cannot invert this path.
-        """
-        import hermes_cli.auth as auth_mod
-        from agent.credential_pool import _singleton_target_for_entry
-
-        timeout = self._single_use_refresh_lock_timeout()
-        with self._lock:
-            if self.provider in ("openai-codex", "xai-oauth"):
-                with auth_mod._provider_state_transaction(
-                    self.provider, timeout,
-                ):
-                    # A manual/root pool row can be authoritative even when no
-                    # singleton provider block exists.  Keep its exact store in
-                    # the same active -> source transaction.
-                    with auth_mod._auth_store_lock(
-                        timeout_seconds=timeout,
-                        target_path=ticket._store_path,
-                    ):
-                        yield
-                return
-
-            with auth_mod._auth_store_lock(timeout_seconds=timeout):
-                with ExitStack() as stack:
-                    if self.provider == "anthropic":
-                        if entry.source == "claude_code":
-                            stack.enter_context(self._claude_code_credentials_lock())
-                        elif entry.source == "hermes_pkce":
-                            singleton_path = _singleton_target_for_entry(self, entry)
-                            if singleton_path is None:
-                                from agent.anthropic_credentials import _get_hermes_oauth_file
-
-                                singleton_path = _get_hermes_oauth_file()
-                            stack.enter_context(auth_mod._auth_store_lock(
-                                timeout_seconds=timeout,
-                                target_path=singleton_path,
-                            ))
-                    active_path = auth_mod._auth_file_path()
-                    if not auth_mod._same_path(active_path, ticket._store_path):
-                        stack.enter_context(auth_mod._auth_store_lock(
-                            timeout_seconds=timeout,
-                            target_path=ticket._store_path,
-                        ))
-                    yield
+        """Use the same pool -> active -> owner -> source path as normal refresh."""
+        with self._single_use_refresh_transaction(
+            entry,
+            owner_path=ticket._store_path,
+        ):
+            yield
 
     def _adopt_peer_reclaim_winner(
         self,
@@ -365,6 +322,7 @@ class CredentialPoolReclaimMixin:
         durable: Optional[dict[str, Any]],
     ) -> Optional[Any]:
         """Adopt a healthy newer root-row winner without claiming its write."""
+        from agent.credential_persistence import fingerprint_secret_value
         from agent.credential_pool import PooledCredential, STATUS_OK
 
         if not self._is_borrowed_single_use_reclaim(ticket) or not isinstance(durable, dict):
@@ -374,10 +332,34 @@ class CredentialPoolReclaimMixin:
             peer.id != ticket._credential_id
             or peer.last_status != STATUS_OK
             or _revision(peer) <= ticket._prepared_revision
-            or not (peer.access_token or "").strip()
-            or not (peer.refresh_token or "").strip()
         ):
             return None
+        if not (peer.access_token or "").strip() or not (peer.refresh_token or "").strip():
+            if (
+                self.provider != "anthropic"
+                or current.source != "claude_code"
+                or peer.source != "claude_code"
+            ):
+                return None
+            from agent.anthropic_credentials import read_claude_code_credentials
+
+            source = read_claude_code_credentials() or {}
+            access_token = str(source.get("accessToken") or "").strip()
+            refresh_token = str(source.get("refreshToken") or "").strip()
+            if not access_token or not refresh_token:
+                return None
+            durable_fingerprint = str(durable.get("secret_fingerprint") or "").strip()
+            if (
+                durable_fingerprint
+                and fingerprint_secret_value(access_token) != durable_fingerprint
+            ):
+                return None
+            peer = replace(
+                peer,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at_ms=source.get("expiresAt") or peer.expires_at_ms,
+            )
         self._replace_entry(current, peer)
         ticket.candidate = peer
         ticket.state = CredentialReclaimTicketState.COMMITTED

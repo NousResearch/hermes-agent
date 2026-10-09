@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 import re
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1001,10 +1002,8 @@ class CredentialPool(
         # providers only); set by load_pool(), consumed by add_entry().
         self._borrowed_root_ids: Set[str] = set()
         self._strategy = get_pool_strategy(provider)
-        # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
-        # single-use-token refresh path (network I/O outside the lock by
-        # design) still serializes its pool mutations; in-lock callers
-        # re-acquire reentrantly.
+        # RLock: every single-use refresh transaction holds it before auth,
+        # owner-store and source locks; mutation helpers re-acquire it safely.
         self._lock = threading.RLock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
@@ -1499,6 +1498,66 @@ class CredentialPool(
 
     # ---- refresh -----------------------------------------------------------
 
+    def _single_use_refresh_owner_path(self, entry: PooledCredential) -> Path:
+        """Exact pool-row owner participating in a single-use refresh."""
+        if (
+            self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+            and entry.id in getattr(self, "_borrowed_root_ids", ())
+        ):
+            root = _borrowed_single_use_pool_root()
+            if root is not None:
+                return root
+        return auth_mod._auth_file_path()
+
+    @contextmanager
+    def _single_use_refresh_transaction(
+        self,
+        entry: PooledCredential,
+        *,
+        owner_path: Optional[Path] = None,
+    ):
+        """Serialize one grant as pool -> active -> owner -> source.
+
+        Normal refresh and staged reclaim must use the same hierarchy.  In
+        particular, no path may hold an auth/source lock and later wait for
+        this live pool, and Anthropic must lock the root metadata row before
+        the external Claude/Hermes singleton.
+        """
+        timeout = self._single_use_refresh_lock_timeout()
+        with self._lock:
+            exact_owner = owner_path or self._single_use_refresh_owner_path(entry)
+            if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+                with auth_mod._provider_state_transaction(self.provider, timeout):
+                    with auth_mod._auth_store_lock(
+                        timeout_seconds=timeout,
+                        target_path=exact_owner,
+                    ):
+                        yield
+                return
+
+            with auth_mod._auth_store_lock(timeout_seconds=timeout):
+                with ExitStack() as stack:
+                    active_path = auth_mod._auth_file_path()
+                    if not auth_mod._same_path(active_path, exact_owner):
+                        stack.enter_context(auth_mod._auth_store_lock(
+                            timeout_seconds=timeout,
+                            target_path=exact_owner,
+                        ))
+                    if self.provider == "anthropic":
+                        if entry.source == "claude_code":
+                            stack.enter_context(self._claude_code_credentials_lock())
+                        elif entry.source == "hermes_pkce":
+                            singleton_path = _singleton_target_for_entry(self, entry)
+                            if singleton_path is None:
+                                from agent.anthropic_credentials import _get_hermes_oauth_file
+
+                                singleton_path = _get_hermes_oauth_file()
+                            stack.enter_context(auth_mod._auth_store_lock(
+                                timeout_seconds=timeout,
+                                target_path=singleton_path,
+                            ))
+                    yield
+
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
@@ -1511,13 +1570,12 @@ class CredentialPool(
             return self._refresh_entry_impl(entry, force=force)
 
         # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused`` /
-        # ``invalid_grant`` (for Anthropic sources other than claude_code
-        # there was no recovery path at all). Serialize through the shared
-        # cross-process auth-store flock; a waiter's in-lock re-sync picks up
-        # the winner's rotated token and skips the POST.
-        with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+        # across Hermes processes.  The component transaction also keeps the
+        # live pool outermost, so publication never upgrades auth -> pool.
+        with self._single_use_refresh_transaction(entry):
+            live = next((item for item in self._entries if item.id == entry.id), None)
+            if live is not None:
+                entry = live
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
@@ -1987,11 +2045,11 @@ class CredentialPool(
             return self._select_unlocked(model=model, preferred_id=preferred_id)
 
     def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
-        """Refresh deferred single-use-token entries OUTSIDE the pool lock.
+        """Refresh deferred entries through the canonical pool-first boundary.
 
-        Each refresh takes the cross-process ``_auth_store_lock`` (20+ s
-        possible) and merges into the pool through the self-locking mutation
-        primitives; failures are silently skipped.
+        Selection releases its traversal lock first; ``_refresh_entry`` then
+        reacquires the pool as the outermost transaction boundary before any
+        cross-process auth/source lock.  Failures are silently skipped.
         """
         for entry in pending:
             self._refresh_entry(entry, force=False)
@@ -2037,9 +2095,9 @@ class CredentialPool(
         *clear_expired* resets elapsed cooldowns to STATUS_OK and persists.
         *refresh* refreshes entries needing a token refresh (skipped on
         failure) — except single-use-token providers (openai-codex,
-        xai-oauth), which are returned as *pending_refresh* so the caller
-        refreshes them outside the lock instead of stalling every pool
-        consumer during cross-process flock acquisition + OAuth network I/O.
+        xai-oauth), which are returned as *pending_refresh* so the selection
+        traversal can finish before the caller starts their explicit
+        pool-first cross-process refresh transaction.
         """
         now = time.time()
         cleared_any = False

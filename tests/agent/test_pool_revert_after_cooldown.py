@@ -919,10 +919,10 @@ def test_reclaim_and_normal_persist_share_pool_then_auth_lock_order(tmp_path, mo
     assert durable["last_error_reason"] == "normal_persist_winner"
 
 
-def test_borrowed_anthropic_reclaim_locks_source_before_owner_store(
+def test_borrowed_anthropic_reclaim_locks_owner_store_before_source(
     tmp_path, monkeypatch,
 ):
-    """Anthropic keeps the source singleton ahead of its root pool row."""
+    """Every Anthropic path uses pool -> active -> owner -> source."""
     import hermes_cli.auth as auth_mod
 
     pool = _expired_reclaim_pool(tmp_path, monkeypatch)
@@ -972,9 +972,429 @@ def test_borrowed_anthropic_reclaim_locks_source_before_owner_store(
         events.append("body")
 
     assert events == [
-        "pool+", "active+", "source+", "owner+", "body",
-        "owner-", "source-", "active-", "pool-",
+        "pool+", "active+", "owner+", "source+", "body",
+        "source-", "owner-", "active-", "pool-",
     ]
+
+
+def test_borrowed_reclaim_and_deferred_refresh_have_one_pool_first_winner(
+    tmp_path, monkeypatch,
+):
+    """A normal deferred refresh cannot hold auth while reclaim holds the pool."""
+    import hermes_cli.auth as auth_mod
+
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    current = next(entry for entry in pool._entries if entry.id == "pref0000")
+    expired = replace(
+        current,
+        source="device_code",
+        access_token="deferred-access-0",
+        refresh_token="deferred-refresh-0",
+        expires_at_ms=1,
+    )
+    pool._replace_entry(current, expired)
+    pool._borrowed_root_ids = {expired.id}
+    pool._persist()
+    ticket = pool.prepare_reclaim(expired.id, model="gpt-5.4")
+    assert ticket is not None
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
+
+    boundary = threading.Event()
+    normal_has_auth = threading.Event()
+    base_pool_lock = pool._lock
+    reclaim_pool_attempts = 0
+
+    class _BoundedObservedRLock:
+        def acquire(self, *_args, **_kwargs):
+            nonlocal reclaim_pool_attempts
+            name = threading.current_thread().name
+            if name == "borrowed-reclaim":
+                if base_pool_lock.acquire(blocking=False):
+                    reclaim_pool_attempts += 1
+                    if reclaim_pool_attempts >= 2:
+                        boundary.set()
+                    return True
+                boundary.set()
+                if not base_pool_lock.acquire(timeout=1):
+                    raise TimeoutError("reclaim waited for the live pool")
+                reclaim_pool_attempts += 1
+                return True
+            if name == "deferred-refresh":
+                if not base_pool_lock.acquire(timeout=0.2):
+                    raise TimeoutError("deferred refresh waited for the live pool")
+                return True
+            return base_pool_lock.acquire()
+
+        def release(self):
+            return base_pool_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc):
+            self.release()
+
+    pool._lock = _BoundedObservedRLock()
+    auth_lock = threading.RLock()
+    auth_depth = threading.local()
+
+    @contextmanager
+    def _bounded_auth_lock(*_args, **_kwargs):
+        if not auth_lock.acquire(timeout=1):
+            raise TimeoutError("auth lock inversion")
+        depth = getattr(auth_depth, "value", 0)
+        auth_depth.value = depth + 1
+        try:
+            if threading.current_thread().name == "deferred-refresh" and depth == 0:
+                normal_has_auth.set()
+                assert boundary.wait(2), "reclaim never reached the competing pool boundary"
+            yield
+        finally:
+            auth_depth.value -= 1
+            auth_lock.release()
+
+    monkeypatch.setattr(cp, "_auth_store_lock", _bounded_auth_lock)
+    monkeypatch.setattr(auth_mod, "_auth_store_lock", _bounded_auth_lock)
+    posts = []
+
+    def _rotate(_access_token, refresh_token):
+        posts.append(refresh_token)
+        return {
+            "access_token": "deferred-access-1",
+            "refresh_token": "deferred-refresh-1",
+            "last_refresh": "2099-01-01T00:00:01Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _rotate)
+    results = {"refresh": None, "reclaim": None}
+    errors = {"refresh": None, "reclaim": None}
+
+    def _normal_refresh():
+        try:
+            results["refresh"] = pool._refresh_entry(expired, force=False)
+        except Exception as exc:
+            errors["refresh"] = exc
+
+    def _reclaim():
+        try:
+            results["reclaim"] = ticket.commit()
+        except Exception as exc:
+            errors["reclaim"] = exc
+
+    normal = threading.Thread(target=_normal_refresh, name="deferred-refresh")
+    reclaim = threading.Thread(target=_reclaim, name="borrowed-reclaim")
+    normal.start()
+    assert normal_has_auth.wait(2), "normal refresh never acquired auth"
+    reclaim.start()
+    normal.join(5)
+    reclaim.join(5)
+
+    assert not normal.is_alive() and not reclaim.is_alive()
+    assert errors["refresh"] is None
+    assert results["refresh"] is not None
+    assert results["refresh"].access_token == "deferred-access-1"
+    assert isinstance(errors["reclaim"], RuntimeError)
+    assert "stale credential reclaim ticket" in str(errors["reclaim"])
+    assert posts == ["deferred-refresh-0"]
+    winner = next(entry for entry in pool.entries() if entry.id == expired.id)
+    assert (winner.access_token, winner.refresh_token) == (
+        "deferred-access-1", "deferred-refresh-1",
+    )
+
+
+def _shared_claude_code_reclaim_fleet(tmp_path, monkeypatch, *, profile_names):
+    import hermes_constants
+    import hermes_cli.auth as auth_mod
+    from agent import anthropic_credentials as anthropic_mod
+    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    claude_dir = fake_home / "claude"
+    claude_dir.mkdir()
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    for name in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        auth_mod, "is_provider_explicitly_configured", lambda provider: provider == "anthropic",
+    )
+    monkeypatch.setattr(
+        anthropic_mod, "_read_claude_code_credentials_from_keychain", lambda: None,
+    )
+    monkeypatch.setattr(
+        anthropic_mod, "_mirror_claude_code_credentials_to_keychain", lambda *_a, **_k: None,
+    )
+
+    access_token = "claude-access-0"
+    refresh_token = "claude-refresh-0"
+    expired_ms = int((time.time() - 3600) * 1000)
+    source_path = claude_dir / ".credentials.json"
+    source_path.write_text(json.dumps({
+        "claudeAiOauth": {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expired_ms,
+            "scopes": ["user:inference"],
+        },
+    }), encoding="utf-8")
+    exhausted_at = time.time() - EXHAUSTED_TTL_429_SECONDS - 120
+    (root / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "anthropic": [{
+                "id": "shared-claude",
+                "label": "shared Claude Code grant",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "claude_code",
+                "expires_at_ms": expired_ms,
+                "secret_fingerprint": fingerprint_secret_value(access_token),
+                "last_status": cp.STATUS_EXHAUSTED,
+                "last_status_at": exhausted_at,
+                "last_error_code": 429,
+                "last_error_reason": "rate_limit",
+                "last_error_reset_at": exhausted_at + 30,
+            }],
+        },
+    }), encoding="utf-8")
+    profiles = [root / "profiles" / name for name in profile_names]
+    for profile in profiles:
+        profile.mkdir(parents=True)
+        (profile / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}}), encoding="utf-8",
+        )
+
+    def under(home, callback):
+        token = set_hermes_home_override(home)
+        try:
+            auth_mod._global_auth_store_cache = None
+            return callback()
+        finally:
+            reset_hermes_home_override(token)
+
+    return {
+        "root": root,
+        "profiles": profiles,
+        "source_path": source_path,
+        "under": under,
+    }
+
+
+def test_root_anthropic_refresh_and_borrowed_reclaim_do_not_cycle(
+    tmp_path, monkeypatch,
+):
+    """Root refresh and profile reclaim agree on owner-before-source ordering."""
+    import hermes_cli.auth as auth_mod
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    fleet = _shared_claude_code_reclaim_fleet(
+        tmp_path, monkeypatch, profile_names=("borrower",),
+    )
+    root_pool = fleet["under"](fleet["root"], lambda: cp.load_pool("anthropic"))
+    profile = fleet["profiles"][0]
+    borrowed_pool = fleet["under"](profile, lambda: cp.load_pool("anthropic"))
+    assert borrowed_pool._borrowed_root_ids == {"shared-claude"}
+    ticket = fleet["under"](
+        profile,
+        lambda: borrowed_pool.prepare_reclaim("shared-claude", model="claude-opus-5"),
+    )
+    assert ticket is not None
+    root_entry = next(entry for entry in root_pool.entries() if entry.id == "shared-claude")
+
+    root_path = (fleet["root"] / "auth.json").resolve()
+    source_path = fleet["source_path"].resolve()
+    locks = {root_path: threading.RLock(), source_path: threading.RLock()}
+    locks_guard = threading.Lock()
+    depths = threading.local()
+    root_has_owner = threading.Event()
+    competing_boundary = threading.Event()
+
+    @contextmanager
+    def _bounded_path_lock(*_args, target_path=None, **_kwargs):
+        path = (target_path or auth_mod._auth_file_path()).resolve()
+        with locks_guard:
+            lock = locks.setdefault(path, threading.RLock())
+        local_depths = getattr(depths, "values", {})
+        depth = local_depths.get(path, 0)
+        name = threading.current_thread().name
+        if name == "profile-reclaim" and depth == 0 and path == root_path:
+            competing_boundary.set()
+        if not lock.acquire(timeout=0.75):
+            raise TimeoutError(f"lock cycle at {path.name}")
+        local_depths[path] = depth + 1
+        depths.values = local_depths
+        try:
+            if name == "profile-reclaim" and depth == 0 and path == source_path:
+                competing_boundary.set()
+            if name == "root-refresh" and depth == 0 and path == root_path:
+                root_has_owner.set()
+                assert competing_boundary.wait(2), "profile reclaim never reached root/source"
+            yield
+        finally:
+            local_depths[path] -= 1
+            lock.release()
+
+    monkeypatch.setattr(cp, "_auth_store_lock", _bounded_path_lock)
+    monkeypatch.setattr(auth_mod, "_auth_store_lock", _bounded_path_lock)
+    posts = []
+
+    def _rotate(_refresh_token, *, use_json=False):
+        posts.append((_refresh_token, use_json))
+        return {
+            "access_token": "claude-access-1",
+            "refresh_token": "claude-refresh-1",
+            "expires_at_ms": int((time.time() + 3600) * 1000),
+        }
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure", _rotate,
+    )
+    results = {"refresh": None, "reclaim": None}
+    errors = {"refresh": None, "reclaim": None}
+
+    def _root_refresh():
+        token = set_hermes_home_override(fleet["root"])
+        try:
+            results["refresh"] = root_pool._refresh_entry(root_entry, force=False)
+        except Exception as exc:
+            errors["refresh"] = exc
+        finally:
+            reset_hermes_home_override(token)
+
+    def _profile_reclaim():
+        token = set_hermes_home_override(profile)
+        try:
+            results["reclaim"] = ticket.commit()
+        except Exception as exc:
+            errors["reclaim"] = exc
+        finally:
+            reset_hermes_home_override(token)
+
+    root_thread = threading.Thread(target=_root_refresh, name="root-refresh")
+    reclaim_thread = threading.Thread(target=_profile_reclaim, name="profile-reclaim")
+    root_thread.start()
+    assert root_has_owner.wait(2), "root refresh never acquired the owner store"
+    reclaim_thread.start()
+    root_thread.join(5)
+    reclaim_thread.join(5)
+
+    assert not root_thread.is_alive() and not reclaim_thread.is_alive()
+    assert errors["refresh"] is None
+    assert results["refresh"] is not None
+    assert results["refresh"].access_token == "claude-access-1"
+    assert isinstance(errors["reclaim"], RuntimeError)
+    assert "stale credential reclaim ticket" in str(errors["reclaim"])
+    assert posts == [("claude-refresh-0", False)]
+    source = json.loads(fleet["source_path"].read_text(encoding="utf-8"))["claudeAiOauth"]
+    assert (source["accessToken"], source["refreshToken"]) == (
+        "claude-access-1", "claude-refresh-1",
+    )
+
+
+def test_two_profile_claude_code_reclaim_posts_once_and_both_adopt(
+    tmp_path, monkeypatch,
+):
+    """A tokenless metadata-row loser hydrates from the rotated Claude source."""
+    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    fleet = _shared_claude_code_reclaim_fleet(
+        tmp_path, monkeypatch, profile_names=("alpha", "beta"),
+    )
+    pools = [
+        fleet["under"](profile, lambda: cp.load_pool("anthropic"))
+        for profile in fleet["profiles"]
+    ]
+    assert all(pool._borrowed_root_ids == {"shared-claude"} for pool in pools)
+    tickets = [
+        fleet["under"](
+            profile,
+            lambda pool=pool: pool.prepare_reclaim(
+                "shared-claude", model="claude-opus-5",
+            ),
+        )
+        for profile, pool in zip(fleet["profiles"], pools)
+    ]
+    assert all(ticket is not None for ticket in tickets)
+
+    posts = []
+    post_guard = threading.Lock()
+    second_post = threading.Event()
+
+    def _single_use_refresh(refresh_token, *, use_json=False):
+        with post_guard:
+            sequence = len(posts) + 1
+            posts.append((refresh_token, use_json))
+        if sequence == 1:
+            second_post.wait(0.5)
+        else:
+            second_post.set()
+        return {
+            "access_token": f"claude-access-{sequence}",
+            "refresh_token": f"claude-refresh-{sequence}",
+            "expires_at_ms": int((time.time() + 3600) * 1000),
+        }
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        _single_use_refresh,
+    )
+    start = threading.Barrier(3)
+    results = [None, None]
+    errors = [None, None]
+
+    def _commit(index):
+        token = set_hermes_home_override(fleet["profiles"][index])
+        try:
+            start.wait()
+            results[index] = tickets[index].commit()
+        except Exception as exc:
+            errors[index] = exc
+        finally:
+            reset_hermes_home_override(token)
+
+    threads = [
+        threading.Thread(target=_commit, args=(index,), name=f"claude-borrower-{index}")
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == [None, None]
+    assert posts == [("claude-refresh-0", False)]
+    assert {
+        (result.access_token, result.refresh_token) for result in results
+    } == {("claude-access-1", "claude-refresh-1")}
+    root_store = json.loads((fleet["root"] / "auth.json").read_text(encoding="utf-8"))
+    row = root_store["credential_pool"]["anthropic"][0]
+    assert "access_token" not in row and "refresh_token" not in row
+    assert row["secret_fingerprint"] == fingerprint_secret_value("claude-access-1")
+    assert row["_credential_reclaim_revision"] == 1
+    assert row["last_status"] == cp.STATUS_OK
+    source = json.loads(fleet["source_path"].read_text(encoding="utf-8"))["claudeAiOauth"]
+    assert (source["accessToken"], source["refreshToken"]) == (
+        "claude-access-1", "claude-refresh-1",
+    )
+    assert all(
+        "anthropic" not in json.loads(
+            (profile / "auth.json").read_text(encoding="utf-8"),
+        ).get("credential_pool", {})
+        for profile in fleet["profiles"]
+    )
 
 
 def test_borrowed_root_single_use_reclaim_refreshes_once_and_loser_adopts(

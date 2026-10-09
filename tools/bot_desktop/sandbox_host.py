@@ -19,6 +19,7 @@ import json
 import logging
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -91,7 +92,9 @@ def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
         return cached[1]
     try:
         proc = subprocess.run([marker.get("docker") or "docker", "inspect", "-f", "{{.State.Running}}", container],
-                              capture_output=True, text=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+                              capture_output=True, text=True,
+                              encoding="utf-8" if sys.platform == "win32" else None, errors="replace",
+                              timeout=15, check=False, stdin=subprocess.DEVNULL)
         alive = proc.returncode == 0 and proc.stdout.strip() == "true"
     except (OSError, subprocess.TimeoutExpired):
         alive = False

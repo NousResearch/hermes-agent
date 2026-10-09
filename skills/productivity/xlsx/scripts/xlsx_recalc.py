@@ -81,7 +81,7 @@ def main(argv=None):
         proc = subprocess.run(
             [soffice, "--headless", "--calc", "--convert-to", "xlsx:Calc "
              "MS Excel 2007 XML", "--outdir", tmp, str(src)],
-            capture_output=True, text=True, encoding="utf-8",
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=args.timeout,
             env={"HOME": tmp, "PATH": Path(soffice).parent.as_posix()
                  + ":/usr/bin:/bin"})

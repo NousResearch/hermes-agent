@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -51,7 +52,9 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 
     try:
         completed = subprocess.run(
-            command, stdin=subprocess.DEVNULL, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
+            command, stdin=subprocess.DEVNULL, shell=True, capture_output=True, text=True,
+            encoding="utf-8" if sys.platform == "win32" else None, errors="replace",
+            timeout=_MINT_TIMEOUT_SECONDS,
             env=served_profile_child_env(inherit_credentials=True),
         )
     except subprocess.TimeoutExpired as exc:

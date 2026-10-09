@@ -201,6 +201,12 @@ class PtySession:
             self.active_session_cleanup = None
 
 
+async def _close_superseded_session(session: PtySession) -> None:
+    # An explicit takeover retires the prior viewer before joining its process.
+    await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
+    await session.close()
+
+
 class RegistryFull(Exception):
     """Every keep-alive slot holds a PTY that some tab is still attached to."""
 
@@ -270,7 +276,7 @@ class PtySessionRegistry:
         """Close sessions belonging to the same logical client except ``keep_key``.
 
         Dashboard profile changes keep the browser's attach token but change the
-        canonical session key. The previous profile's detached PTY must not
+        canonical session key. The previous profile's PTY must not
         remain alive long enough to hold the TUI session lease and reject a
         later return to that chat.
         """
@@ -279,14 +285,11 @@ class PtySessionRegistry:
                 key for key in self._sessions
                 if key != keep_key and (key == prefix or key.startswith(prefix + "\0"))
             ]
-            for key in keys:
-                session = self._sessions.pop(key, None)
-                if session is not None:
-                    # A sibling tab sharing the attach token may still be viewing this
-                    # PTY: supersede it explicitly (4409) instead of leaving it silent
-                    # until its next keystroke fails with 1013.
-                    await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
-                    await session.close()
+            sessions = [self._sessions.pop(key) for key in keys]
+        # Wait for the old leases before the caller spawns, without holding the global lock.
+        # A cancelled takeover still owns these closes through shutdown.
+        tasks = [self._close_in_background(session, superseded=True) for session in sessions]
+        await asyncio.shield(asyncio.gather(*tasks))
 
     async def close_orphaned_sessions(
         self, resume: Optional[str], *, keep_key: str, holder_pid: Optional[int] = None,
@@ -352,10 +355,12 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: "PtySession") -> None:
-        task = asyncio.create_task(session.close())
+    def _close_in_background(self, session: "PtySession", *, superseded: bool = False) -> asyncio.Task:
+        close = _close_superseded_session(session) if superseded else session.close()
+        task = asyncio.create_task(close)
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)
+        return task
 
     async def close_all(self) -> None:
         # Close concurrently: each close() may wait out its helpers' SIGHUP grace, and shutdown runs

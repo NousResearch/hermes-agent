@@ -1430,6 +1430,21 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         skills_by_category.setdefault(category, []).append((entry["load_name"], desc))
 
 
+def _external_skills_search_guidance(available_tools: set[str] | None) -> str:
+    """Name the existing ``hermes skills search`` command when this session can run it.
+
+    Local-only and missing-terminal sessions get an empty string. This does not
+    register a tool, name a skill, or approve an install.
+    """
+    if not available_tools or "terminal" not in available_tools:
+        return ""
+    return (
+        "If none of the skills listed below carries the domain knowledge this task needs, "
+        "you may run the terminal command `hermes skills search` using your own task words. "
+        "Inspect a result before any install. Installation still uses the existing security scan and approval.\n"
+    )
+
+
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
@@ -1466,9 +1481,11 @@ def _render_skills_index(
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    search_guidance = _external_skills_search_guidance(available_tools)
     if is_single_query_session():
         return (
             ONESHOT_SKILLS_LOAD_GUIDANCE
+            + search_guidance
             + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
             + hidden_note
         )
@@ -1486,7 +1503,8 @@ def _render_skills_index(
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
-        "\n"
+        + search_guidance
+        + "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"

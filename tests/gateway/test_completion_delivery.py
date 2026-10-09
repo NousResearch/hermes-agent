@@ -953,11 +953,15 @@ def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_reg
     runner = _runner(primary)
     runner._profile_adapters = {"research": {Platform.TELEGRAM: secondary}} if available else {}
     evt = dict(_completion_event(started_at=1), session_key="agent:research:telegram:dm:12345")
+    runner._watcher_message_route_owned = AsyncMock(return_value=True)
     result = asyncio.run(runner._inject_watch_notification("private result", evt))
     assert result is available
-    asyncio.run(runner._send_watcher_message("telegram", "12345", None, "raw result", evt))
+    asyncio.run(runner._send_watcher_message(
+        "telegram", "12345", None, "raw result", evt, SimpleNamespace(session_key=evt["session_key"]),
+    ))
     primary.send.assert_not_awaited()
     assert secondary.send.await_count == int(available)
+    assert runner._watcher_message_route_owned.await_count == int(available)
     primary.handle_message.assert_not_awaited()
     assert secondary.handle_message.await_count == int(available)
     if available:

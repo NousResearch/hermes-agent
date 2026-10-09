@@ -51,6 +51,7 @@ class _FakeRegistry:
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     """Create a GatewayRunner with a fake config for the given mode."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         f"display:\n  background_process_notifications: {mode}\n",
         encoding="utf-8",
@@ -60,7 +61,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
@@ -76,6 +77,16 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     if thread_id:
         d["thread_id"] = thread_id
     return d
+
+
+def _bound_watcher(runner, session_id="proc_test"):
+    from gateway.session import SessionSource
+
+    entry = runner.session_store.get_or_create_session(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="person")
+    )
+    return {**_watcher_dict(session_id), "session_key": entry.session_key,
+            "parent_session_id": entry.session_id}
 
 
 def _watch_event(session_id="proc_watch", thread_id="42"):
@@ -178,7 +189,7 @@ async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
     adapter = runner.adapters[Platform.TELEGRAM]
-    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    watcher = {**_bound_watcher(runner), "notify_on_complete": True}
     adapter._active_sessions = {watcher["session_key"]: asyncio.Event()} if launching_turn_busy else {}
 
     await runner._run_process_watcher(watcher)
@@ -235,7 +246,7 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
 
-    await runner._run_process_watcher(_watcher_dict())
+    await runner._run_process_watcher(_bound_watcher(runner))
 
     adapter.send.assert_not_awaited()
 
@@ -519,7 +530,7 @@ async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     adapter = runner.adapters[Platform.TELEGRAM]
 
-    await runner._run_process_watcher(_watcher_dict())
+    await runner._run_process_watcher(_bound_watcher(runner))
 
     # Exactly one send: the final concise message; no interim updates.
     adapter.send.assert_awaited_once()
@@ -622,7 +633,7 @@ async def test_live_watcher_rechecks_owner_after_child_handoff(monkeypatch, tmp_
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([child, handed_off]))
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
-    await runner._run_process_watcher({**_watcher_dict(), "owner_task_id": "sa-child"})
+    await runner._run_process_watcher({**_bound_watcher(runner), "owner_task_id": "sa-child"})
 
     adapter = runner.adapters[Platform.TELEGRAM]
     adapter.send.assert_awaited_once()
@@ -928,7 +939,7 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
-    await runner._run_process_watcher(_watcher_dict(session_id="proc_deadbeef"))
+    await runner._run_process_watcher(_bound_watcher(runner, session_id="proc_deadbeef"))
 
     sent = [call.args[1] for call in adapter.send.await_args_list]
     assert len(sent) == 2

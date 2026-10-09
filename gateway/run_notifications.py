@@ -1815,11 +1815,13 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         adapter = self._resolve_injection_adapter(platform_name, source)
         return session_key in (getattr(adapter, "_active_sessions", None) or {})
 
-    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
+    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict, session) -> None:
         from gateway.run import _non_conversational_metadata
         source = await asyncio.to_thread(self._build_process_event_source, watcher)
         adapter = self._resolve_injection_adapter(platform_name, source)
         if adapter and chat_id:
+            if not await self._watcher_message_route_owned(watcher, session):
+                return
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
                 await adapter.send(
@@ -1954,22 +1956,18 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
-                    # Capture busy state before injection installs its own guard.
                     turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:
                         # The process remains terminal; retry after failed adapter injection instead
                         # of suppressing the result.
                         continue
-                    # The agent normally reports the result itself, so the chat gets no separate receipt.
-                    # While the launching turn is still running the injection only queues a follow-up, and
-                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
-                    # receipt now.
+                    # A busy launching turn gets a receipt while injection queues a follow-up.
                     if turn_busy and (notify_mode in {"concise", "all", "result"} or (
                         notify_mode == "error" and session.exit_code not in {0, None}
                     )):
                         message_text = self._format_process_final_message(session_id, session, "concise")
-                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
+                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher, session)
                     break
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).
@@ -1987,13 +1985,13 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                     async with self._completion_event_scope(watcher):
                         # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
                         await present_notification(
-                            lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),
+                            lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher, session),
                             platform=platform_name, diagnostic=session.exit_code not in {0, None})
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers
                 # only care about completion).
                 await self._send_watcher_message(
-                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
+                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher, session,
                 )
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

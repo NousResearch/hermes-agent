@@ -75,6 +75,46 @@ def _pin_route_rejection(pinned_row: Dict[str, Any], session_entry: SessionEntry
 class GatewayNotificationRouteGuardMixin:
     """Route ownership for pinned async-delegation completions."""
 
+    async def _watcher_message_route_owned(self, watcher: dict, process: Any) -> bool:
+        """Prove a direct process status still addresses its spawning conversation."""
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from tools.process_registry_notifications import should_surface_notification
+
+        if process is None:
+            return False
+        key = str(watcher.get("session_key") or "").strip()
+        pin = str(watcher.get("parent_session_id") or getattr(process, "parent_session_id", "") or "").strip()
+        if not key or not pin:
+            return False
+        async with self._completion_event_scope(watcher):
+            generation = self._current_session_run_generation(key)
+            entry = await self.async_session_store.lookup_by_session_key(key)
+            session_db = self._session_db
+            if entry is None or session_db is None:
+                return False
+            try:
+                row = await session_db.get_session(pin)
+            except Exception:
+                logger.debug("Process watcher parent lookup failed for %s", pin, exc_info=True)
+                return False
+            if row is None:
+                return False
+            reason = str(row.get("end_reason") or "") if row.get("ended_at") else ""
+            if reason in _USER_BOUNDARY_END_REASONS:
+                return False
+            if is_internal_subagent_row(row):
+                owns = await self._delegate_pin_belongs_to_route(session_db, row, entry)
+            elif reason == "compression":
+                owns = await self._resolve_compression_lineage_target(session_db, entry, pin) == entry.session_id
+            else:
+                owns = pin == entry.session_id and row.get("session_key") == key
+            if not owns or not await self._unchanged_completion_route(entry, generation):
+                return False
+            owner = {"owner_task_id": getattr(process, "owner_task_id", ""),
+                     "task_id": getattr(process, "task_id", "")}
+            return (str(getattr(process, "session_key", "") or "").strip() in {"", key, entry.session_id}
+                    and should_surface_notification(owner))
+
     async def _delegate_pin_belongs_to_route(
         self, session_db: Any, pinned_row: Dict[str, Any], entry: SessionEntry,
     ) -> bool:

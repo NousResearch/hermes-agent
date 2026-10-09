@@ -16,6 +16,7 @@ import {
 
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
+import { NousModelPrice } from '@/components/nous-model-price'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -41,6 +42,7 @@ import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
@@ -271,7 +273,11 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId }),
+  })
+
+  useNousPricingRefresh({
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -801,6 +807,9 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
+                  {group.provider.slug === 'nous' && !group.provider.free_tier_row && (
+                    <span className="ml-auto shrink-0 normal-case font-normal tracking-normal">{copy.priceUnit}</span>
+                  )}
                   <ProviderStatusChip className="ml-auto mr-0.5" provider={group.provider} />
                 </DropdownMenuItem>
                 {!collapsed &&
@@ -1154,7 +1163,11 @@ function ModelFamilyRow({
             <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">{loadProgress.percent}%</span>
           </span>
         ) : null}
-        {showPricing && pricing ? <ModelPrice pricing={pricing} /> : null}
+        {provider.slug === 'nous' && !provider.free_tier_row
+          ? pricing && <NousModelPrice price={pricing} />
+          : showPricing && pricing
+            ? <ModelPrice pricing={pricing} />
+            : null}
         {settings.map(setting => (
           <ModelChip key={setting} setting>
             {setting}

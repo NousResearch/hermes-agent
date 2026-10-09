@@ -144,7 +144,8 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
+        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier,
+                       cached_only=pricing_cache_only, refresh_nous=refresh)
     # Both metadata decorators consult ``model_overrides``.  Snapshot the
     # read-only config once for this payload rather than letting each model
     # lookup reopen config.yaml through models_dev._cfg_get().
@@ -859,7 +860,8 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cached_only: bool = False) -> None:
+def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False,
+                   cached_only: bool = False, refresh_nous: bool = False) -> None:
     """Set ``row["pricing"] = {model_id: {input, output, cache | None, free}}``; for Nous also
     ``free_tier`` (account is free-tier) and ``unavailable_models`` (paid models a free user can't pick).
     ``cached_only`` never hits the network: unknown Nous entitlement fails closed (``free_tier_pending``,
@@ -890,6 +892,8 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             pricing_kwargs = {"cached_only": True} if cached_only else {}
             if slug.startswith("custom:"):
                 pricing_kwargs["base_url"] = str(row.get("api_url") or "")
+            if slug == "nous" and refresh_nous and not cached_only:
+                pricing_kwargs["force_refresh"] = True
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}

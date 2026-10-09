@@ -33,15 +33,15 @@ class RequestMiddlewareResult:
     payload: Any
     original_payload: Any
     changed: bool = False
-    trace: List[Dict[str, Any]] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
 
 
-def observer_payload(**kwargs: Any) -> Dict[str, Any]:
+def observer_payload(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     return kwargs
 
 
-def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
+def middleware_payload(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     kwargs.setdefault("middleware_schema_version", MIDDLEWARE_SCHEMA_VERSION)
     return kwargs
@@ -61,13 +61,13 @@ def _safe_copy(payload: Any) -> Any:
 
 
 def _apply_request_chain(
-    kind: str, payload_key: str, trace: List[Dict[str, Any]], original: Any, **kwargs: Any
+    kind: str, payload_key: str, trace: list[dict[str, Any]], original: Any, **kwargs: Any
 ) -> RequestMiddlewareResult:
     """Feed ``kwargs[payload_key]`` through every ``kind`` middleware; each may return ``{payload_key: {...}}``."""
     from hermes_cli.plugins import invoke_middleware
 
     current = kwargs[payload_key]
-    for result in invoke_middleware(kind, **middleware_payload(**kwargs)):
+    for result in invoke_middleware(kind, _payload_key=payload_key, **middleware_payload(**kwargs)):
         if not isinstance(result, dict):
             continue
         next_payload = result.get(payload_key)
@@ -85,7 +85,7 @@ def _apply_request_chain(
     )
 
 
-def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> RequestMiddlewareResult:
+def apply_llm_request_middleware(request: dict[str, Any], **context: Any) -> RequestMiddlewareResult:
     """Apply registered LLM request middleware; ``{"request": {...}}`` replaces the provider kwargs."""
     from hermes_cli.plugins import has_middleware
 
@@ -100,13 +100,13 @@ def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> Req
 
 
 def apply_tool_request_middleware(
-    tool_name: str, args: Dict[str, Any], **context: Any
+    tool_name: str, args: dict[str, Any], **context: Any
 ) -> RequestMiddlewareResult:
     """Apply registered tool request middleware; ``{"args": {...}}`` replaces the effective tool
     arguments before hooks, guardrails, approvals, and execution see them."""
     original_args = _safe_copy(args)
     current_args = _safe_copy(original_args)
-    trace: List[Dict[str, Any]] = []
+    trace: list[dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")
     skip_relay = bool(context.pop("skip_relay", False))
@@ -133,7 +133,7 @@ def apply_tool_request_middleware(
 
 
 def run_llm_execution_middleware(
-    request: Dict[str, Any], next_call: Callable[[Dict[str, Any]], Any], **context: Any) -> Any:
+    request: dict[str, Any], next_call: Callable[[dict[str, Any]], Any], **context: Any) -> Any:
     """Run provider execution through registered LLM execution middleware."""
     return _run_execution_chain(
         LLM_EXECUTION_MIDDLEWARE, next_call,
@@ -141,7 +141,7 @@ def run_llm_execution_middleware(
 
 
 def run_tool_execution_middleware(
-    tool_name: str, args: Dict[str, Any], next_call: Callable[[Dict[str, Any]], Any], **context: Any,
+    tool_name: str, args: dict[str, Any], next_call: Callable[[dict[str, Any]], Any], **context: Any,
 ) -> Any:
     """Run tool execution through registered tool execution middleware."""
     return _run_execution_chain(

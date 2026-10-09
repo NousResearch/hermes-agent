@@ -305,7 +305,7 @@ def run_oneshot(
                 reasoning=reasoning,
                 ledger=bool(usage_file),
             )
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
             # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
@@ -460,6 +460,11 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     session_meta = session_db.get_session(resolved)
     if not session_meta:
         raise RuntimeError(f"session not found: {resume}")
+    # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779): a
+    # quiet one-shot resume would be a write-capable process the board cannot observe.
+    from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+    if (kanban_refusal := kanban_resume_refusal(session_db, resolved)) is not None:
+        raise RuntimeError(f"cannot resume session {resume}: {kanban_refusal}")
     session_db.assert_resume_safe(resolved, tip_only=True)
     restored, _display = session_db.get_resume_conversations(resolved)
     history = [m for m in restored if m.get("role") != "session_meta"]
@@ -567,7 +572,7 @@ def _run_agent(
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
-    agent = None
+    agent = relay_session_id = None
     try:
         agent = AIAgent(
             api_key=runtime.get("api_key"),
@@ -598,13 +603,16 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
+        # Relay keys the root conversation to the id at turn entry; compression may rotate
+        # agent.session_id mid-turn without opening a second root, so keep the entry id.
+        relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)
     finally:
-        _close_agent(agent, session_db)
+        _close_agent(agent, session_db, relay_session_id)
 
 
 def _quietly(what: str, fn) -> None:
@@ -625,7 +633,7 @@ def _linger_for_background_completions() -> None:
     process_registry.wait_for_pending_completions(None)
 
 
-def _close_agent(agent, session_db) -> None:
+def _close_agent(agent, session_db, relay_session_id=None) -> None:
     """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
     oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
     if agent is not None:
@@ -633,6 +641,14 @@ def _close_agent(agent, session_db) -> None:
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
         _quietly("background completion wait", _linger_for_background_completions)
+        if relay_session_id:
+            # run_conversation ends the turn but keeps the Relay root resumable; one-shot has no
+            # next turn and os._exit skips atexit, so close the root (and fire on_session_finalize).
+            from hermes_cli.lifecycle import finalize_session
+
+            _quietly("session finalize", lambda: finalize_session(
+                session_id=relay_session_id, platform=getattr(agent, "platform", None) or "cli",
+                reason="shutdown"))
         session_messages = getattr(agent, "_session_messages", None)
         memory_args = (session_messages,) if isinstance(session_messages, list) else ()
         _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))

@@ -29,7 +29,7 @@ _EXTRACT_TIMEOUT_SECS = 60.0
 _CACHE_VERSION = 1
 
 
-def load_hosted_profiles(plugin_dir: Path, module_name: str) -> List[Any]:
+def load_hosted_profiles(plugin_dir: Path, module_name: str) -> list[Any]:
     """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host."""
     from providers.base import ProviderProfile
     payload = _cached_extraction(Path(plugin_dir), module_name)
@@ -54,7 +54,7 @@ def _fingerprint(plugin_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def _cached_extraction(plugin_dir: Path, module_name: str) -> Dict[str, Any]:
+def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     from hermes_constants import get_hermes_home
     # Keyed by the full path too: a user and a project plugin may share a directory name.
     path_key = hashlib.sha256(str(plugin_dir.resolve()).encode("utf-8")).hexdigest()[:12]
@@ -76,7 +76,7 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> Dict[str, Any]:
     return payload
 
 
-def _extract(plugin_dir: Path, module_name: str) -> Dict[str, Any]:
+def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
     from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
     from hermes_constants import get_hermes_home
@@ -110,9 +110,9 @@ def _host_call(plugin_dir: str, module_name: str, profile: str, attr: str) -> Ca
     return call
 
 
-def _profile_proxy(base: type, plugin_dir: str, module_name: str, entry: Dict[str, Any]) -> Any:
+def _profile_proxy(base: type, plugin_dir: str, module_name: str, entry: dict[str, Any]) -> Any:
     name = str(entry["name"])
-    namespace: Dict[str, Any] = {"__module__": __name__,
+    namespace: dict[str, Any] = {"__module__": __name__,
                                  "__repr__": lambda self_: f"<plugin-host profile {name!r}>"}
     fields = {key: decode(value) for key, value in (entry.get("fields") or {}).items()}
     for attr, meta in (entry.get("calls") or {}).items():

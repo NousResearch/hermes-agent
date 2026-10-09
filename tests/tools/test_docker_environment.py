@@ -183,7 +183,7 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
     try:
@@ -203,7 +203,7 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({})
     try:
@@ -223,7 +223,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
 
     env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
     calls = []
     monkeypatch.setattr(
         docker_env,
@@ -273,7 +273,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         encoding="utf-8",
     )
     monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     def _run_fake_docker_exec(cmd, stdin_data=None, **kwargs):
         """Execute the generated docker exec command in a real local bash."""
@@ -383,7 +383,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
 
@@ -2127,11 +2127,11 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        list,
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        list,
     )
 
     with caplog.at_level(logging.WARNING):
@@ -2161,11 +2161,11 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        list,
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        list,
     )
 
     with caplog.at_level(logging.WARNING):
@@ -2366,7 +2366,7 @@ def test_forwarded_secret_values_never_in_argv(monkeypatch):
     secret = "s3cr3t-gitlab-token-value"
     env = _make_execute_only_env(["GITLAB_TOKEN"])
     monkeypatch.setenv("GITLAB_TOKEN", secret)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     # init path
     init_args = env._build_init_env_args()

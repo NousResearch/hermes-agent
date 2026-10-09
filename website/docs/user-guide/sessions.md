@@ -94,7 +94,7 @@ Each session is tagged with its source platform:
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
 | `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
-| `homeassistant` | Home Assistant conversation |
+| `homeassistant` | Home Assistant events (plugin) |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |
 | `acp` | ACP editor integration |

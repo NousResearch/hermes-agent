@@ -39,8 +39,8 @@ from pathlib import Path
 # re-typed regex (hermes_cli/__init__.py is import-light).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli import update_channel  # noqa: E402
-from hermes_cli.steward import UPDATE_MECHANISMS  # noqa: E402
+from hermes_cli import update_channel
+from hermes_cli.steward import UPDATE_MECHANISMS
 
 STAMP_SCHEMA_VERSION = 2
 _REPO_ROOT = Path(__file__).parent.parent.resolve()

@@ -580,6 +580,25 @@ def test_anthropic_stream_accumulator_merges_plain_provider_object():
     assert response.usage.input_tokens == 10
 
 
+def test_anthropic_stream_accumulator_null_delta_usage_keeps_message_start_counts():
+    """The SDK's ``MessageDeltaUsage`` serializes the fields message_delta omits as null; they
+    must not erase the input / cache counts message_start reported (span token counts went null)."""
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({"type": "message_start", "message": {
+        "id": "message-1", "type": "message", "role": "assistant", "model": "claude-test",
+        "usage": {"input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200,
+                  "output_tokens": 1},
+    }})
+    accumulator.observe({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {
+        "output_tokens": 42, "input_tokens": None, "cache_read_input_tokens": None,
+        "cache_creation_input_tokens": None,
+    }})
+
+    assert accumulator.finalize()["usage"] == {
+        "input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200, "output_tokens": 42,
+    }
+
+
 def test_jsonable_does_not_probe_dynamic_attributes():
     class DynamicProviderObject:
         def __getattr__(self, name):
@@ -808,7 +827,7 @@ def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
 
     # Scope views are context-local: the turn's scopes live in the session context, so the
     # overlap and every stack assertion must be observed through that same context.
-    observe_top = lambda: lease.host.run_in_session(  # noqa: E731
+    observe_top = lambda: lease.host.run_in_session(
         lease.session, relay_runtime._current_top, relay
     )
     top_before_sibling = observe_top()
@@ -1039,7 +1058,7 @@ def test_stream_refuses_replay_after_transformed_relay_output(
 ):
     """A transformed delivered chunk consumes an unknown provider source; replaying the
     pending raw list would emit that source a second time after its transformed form."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def transform_then_fail(
@@ -1092,7 +1111,7 @@ def test_stream_does_not_replay_chunks_relay_passed_over(
 ):
     """A match at index > 0 means Relay saw and skipped the earlier chunks — they were
     suppressed, not merely pending, and the fallback must not resurrect them."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def reorder_then_fail(
@@ -1616,7 +1635,7 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         session_id="session-1",
         name="test-provider",
         model_name="test-model",
-        finalizer=lambda: {},
+        finalizer=dict,
         completed_response_predicate=_choices_predicate,
     )
     stream._prime_completed_response()
@@ -1641,7 +1660,7 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
             lambda inner_request: _completed_response(),
             name="moa-aggregator",
             model_name="test-model",
-            finalizer=lambda: {},
+            finalizer=dict,
             completed_response_predicate=_choices_predicate,
         )
 
@@ -1651,7 +1670,7 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
         session_id="session-1",
         name="moa",
         model_name="test-model",
-        finalizer=lambda: {},
+        finalizer=dict,
         completed_response_predicate=_choices_predicate,
     )
     assert list(stream) == []

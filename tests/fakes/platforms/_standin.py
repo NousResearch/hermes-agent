@@ -27,7 +27,7 @@ class Call:
     """One request the stand-in served."""
 
     method: str
-    params: Dict[str, Any]
+    params: dict[str, Any]
     at: float
     response: Any = None
     faulted: bool = False
@@ -41,7 +41,7 @@ class Fault:
     body: Any
     status: int = 200
     times: int = 1
-    match: Optional[Callable[[Dict[str, Any]], bool]] = None
+    match: Optional[Callable[[dict[str, Any]], bool]] = None
     fired: int = 0
 
 
@@ -53,7 +53,7 @@ class Visible:
     text: str
     edits: int = 0
     deleted: bool = False
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def wait_until(pred: Callable[[], Any], what: str, timeout: float = 60.0, interval: float = 0.05,
@@ -85,8 +85,8 @@ class StandinServer:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self.calls: List[Call] = []
-        self._faults: List[Fault] = []
+        self.calls: list[Call] = []
+        self._faults: list[Fault] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._runner: Optional[web.AppRunner] = None
@@ -154,18 +154,18 @@ class StandinServer:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
     # recording + faults ------------------------------------------------------------------------
-    def record(self, method: str, params: Dict[str, Any], response: Any, faulted: bool = False) -> Call:
+    def record(self, method: str, params: dict[str, Any], response: Any, faulted: bool = False) -> Call:
         call = Call(method=method, params=params, at=time.monotonic(), response=response, faulted=faulted)
         with self._lock:
             self.calls.append(call)
         return call
 
-    def calls_of(self, *methods: str) -> List[Call]:
+    def calls_of(self, *methods: str) -> list[Call]:
         with self._lock:
             return [c for c in self.calls if c.method in methods]
 
     def fail(self, method: str, body: Any, *, status: int = 200, times: int = 1,
-             match: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Fault:
+             match: Optional[Callable[[dict[str, Any]], bool]] = None) -> Fault:
         fault = Fault(method=method, body=body, status=status, times=times, match=match)
         with self._lock:
             self._faults.append(fault)
@@ -175,7 +175,7 @@ class StandinServer:
         with self._lock:
             self._faults.clear()
 
-    def take_fault(self, method: str, params: Dict[str, Any]) -> Optional[Fault]:
+    def take_fault(self, method: str, params: dict[str, Any]) -> Optional[Fault]:
         with self._lock:
             for fault in self._faults:
                 if fault.method != method or fault.fired >= fault.times:

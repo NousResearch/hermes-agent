@@ -398,7 +398,7 @@ def _handler_for(server: AnthropicMessagesServer) -> type[BaseHTTPRequestHandler
             self.end_headers()
             self.wfile.write(data)
 
-        def do_GET(self) -> None:  # noqa: N802 - model discovery (/v1/models)
+        def do_GET(self) -> None:
             with server._lock:
                 server.gets.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}})
             if self.path.split("?", 1)[0].rstrip("/").endswith("/v1/models"):
@@ -410,7 +410,7 @@ def _handler_for(server: AnthropicMessagesServer) -> type[BaseHTTPRequestHandler
                 return
             self._json(404, error_envelope(ApiError(404, "not_found_error", f"no route {self.path}")))
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             if not self.path.split("?", 1)[0].endswith("/v1/messages"):
                 self._json(404, error_envelope(ApiError(404, "not_found_error", f"no route {self.path}")))
@@ -438,7 +438,7 @@ def _handler_for(server: AnthropicMessagesServer) -> type[BaseHTTPRequestHandler
             req = urllib.request.Request(str(server.record_upstream).rstrip("/") + "/v1/messages", data=raw,
                                          headers=fwd, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=300) as up:  # noqa: S310 - opt-in record mode
+                with urllib.request.urlopen(req, timeout=300) as up:
                     status, data, ctype = up.status, up.read(), up.headers.get("Content-Type", "")
             except urllib.error.HTTPError as exc:
                 status, data, ctype = exc.code, exc.read(), exc.headers.get("Content-Type", "")

@@ -4,6 +4,8 @@ These are behavior contracts, not snapshots — they assert WHERE trust comes
 from and that explicit per-provider settings still beat it.
 """
 
+from pathlib import Path
+
 import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
@@ -28,13 +30,26 @@ def test_missing_explicit_bundle_falls_back_to_the_platform_store(tmp_path, capl
 def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_path, monkeypatch):
     """With SSL_CERT_FILE exported the platform store is handed over as one
     shared context (httpx would otherwise read the env var itself); a missing
-    bundle must land on that same object, not a second pool."""
+    bundle must land on that same object, not a second pool. The long-lived
+    clients' platform_ssl_context() honours the bundle ON TOP of the platform
+    store (as httpx verify=True did), cached once."""
+    import ssl
+
     import certifi
 
+    from agent import ssl_verify
+
+    monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
     monkeypatch.setenv("SSL_CERT_FILE", certifi.where())
     platform = resolve_httpx_verify()
     assert platform is not True
     assert resolve_httpx_verify(ca_bundle=str(tmp_path / "nope.pem")) is platform
+
+    bundle_ctx = ssl_verify.platform_ssl_context()
+    assert bundle_ctx is ssl_verify.platform_ssl_context()
+    assert bundle_ctx is not platform
+    assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
+    assert bundle_ctx is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", "FALSE"])

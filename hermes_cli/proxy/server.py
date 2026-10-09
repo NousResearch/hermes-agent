@@ -300,4 +300,4 @@ async def run_server(
         await runner.cleanup()
 
 
-__all__ = ["create_app", "run_server", "DEFAULT_HOST", "DEFAULT_PORT", "AIOHTTP_AVAILABLE"]
+__all__ = ["AIOHTTP_AVAILABLE", "DEFAULT_HOST", "DEFAULT_PORT", "create_app", "run_server"]

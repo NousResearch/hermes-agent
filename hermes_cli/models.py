@@ -280,6 +280,33 @@ def union_with_portal_paid_recommendations(
         force_refresh=force_refresh, synthesize_free_pricing=False)
 
 
+def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, dict[str, Any]]) -> list[str]:
+    """Curated list plus every paid Nous model the gateway is discounting right now, deepest
+    discount first. A sale lives only in ``/v1/models`` ``pricing.original``, so without this the
+    picker badges discounts on curated rows but never shows a discounted model the curated list and
+    Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
+    marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first, and
+    image/video generation rows are skipped because they are not chat models."""
+    from math import isfinite
+
+    from hermes_cli.models_pricing import _price_float, compute_sale_discount
+
+    seen = set(curated_ids)
+    on_sale: list[tuple[int, str]] = []
+    for mid, entry in (pricing or {}).items():
+        if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False or entry.get("generation"):
+            continue
+        sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
+        # Badge percentages are rounded: a nearly-free paid row can display 100% off.
+        paid = any(
+            (rate := _price_float(entry.get(key), positive=True)) is not None and isfinite(rate)
+            for key in ("prompt", "completion")
+        )
+        if sale is not None and isinstance(entry.get("original"), dict) and paid:
+            on_sale.append((-sale[0], mid))
+    return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
+
+
 # Free-tier detection cache, per profile — short so an account upgrade shows within minutes.
 _FREE_TIER_CACHE_TTL: int = 180  # seconds
 _free_tier_cache: dict[str, tuple[bool, float]] = {}  # profile key -> (result, timestamp)
@@ -454,11 +481,63 @@ def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
     return PREFERRED_SILENT_DEFAULT_MODEL
 
 
+def _is_anthropic_frontier_tier(model_id: Optional[str]) -> bool:
+    """Return True for Anthropic frontier-tier models (Opus + Fable).
+
+    Both tiers are the priciest Anthropic offerings and are unsafe defaults
+    for a freshly-authenticated provider picker or any other silent fallback:
+    paid users landing on a frontier tier have no opportunity to opt out
+    before the choice pins their main model and inherits into every cron job
+    that doesn't override ``model.provider``.
+
+    Anchored on the ``claude-`` family prefix, then the ``opus-`` / ``fable-``
+    tier token (after vendor-strip and lowercase normalization), so the
+    predicate survives future Anthropic releases (``claude-opus-5-0``,
+    ``claude-fable-6``, etc.) and rejects community / distill models whose
+    slug merely *contains* the substring ``opus`` (e.g. ``qwopus3.6-27b-coder``).
+    Sonnet and Haiku are deliberately NOT classified as frontier here — they
+    remain reasonable auto-default candidates.
+    """
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0].lower()
+    if not base.startswith("claude-"):
+        return False
+    return ("opus-" in base) or ("fable-" in base)
+
+
 def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
-    """Catalog-labeled default when ``model_ids`` carries it, else the first entry, else "". Used by
-    every surface that must choose a model without an interactive picker."""
+    """Pick a cost-safe silent default from an available-models list.
+
+    Shared policy for every surface that must choose a model on the user's
+    behalf without an interactive confirmation (GUI onboarding
+    recommended-default, empty-model runtime fallback, provider-set-but-
+    model-missing resolution):
+
+    1. If the catalog-labeled preferred default (see
+       :func:`get_preferred_silent_default_model`) is present in
+       ``model_ids``, return it.
+    2. Else, return the first entry that is NOT an Anthropic frontier tier
+       (Opus / Fable — see :func:`_is_anthropic_frontier_tier`). Catalog
+       ordering is preserved, so a freshly-released cheaper model still
+       wins over a leftover Sonnet.
+    3. Else (every entry is a frontier tier), return ``model_ids[0]`` so the
+       picker is never empty — defensive last resort only.
+    4. Else (empty list), return ``\"\"``.
+
+    This hardened fallback closes the hole where a Portal-augmented list
+    that didn't carry the catalog label fell through to ``model_ids[0]``
+    (currently ``anthropic/claude-fable-5``) and billed the most expensive
+    Anthropic flagship for traffic the user never opted into.
+    """
+    if not model_ids:
+        return ""
     preferred = get_preferred_silent_default_model(provider)
-    return preferred if preferred in model_ids else (model_ids[0] if model_ids else "")
+    if preferred in model_ids:
+        return preferred
+    non_frontier = [mid for mid in model_ids if not _is_anthropic_frontier_tier(mid)]
+    if non_frontier:
+        return non_frontier[0]
+    return model_ids[0]
 
 
 def recommended_nous_default_model() -> dict[str, Any]:
@@ -753,8 +832,8 @@ def _provider_has_credentials(pid: str) -> bool:
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
-    derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -764,7 +843,7 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
 
 
 def parse_model_input(
@@ -1674,19 +1753,19 @@ def _configured_relay_base_url(provider: str) -> str:
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return ""
-    # A base_url equal to the provider's own endpoint is not a relay (setup persists canonical
-    # URLs too): keep native discovery, which OAuth providers such as Codex need because the
-    # generic relay probe only speaks api_key. Profiles cover providers PROVIDER_REGISTRY lacks
-    # (OpenRouter).
+    # A base_url equal to the provider's own endpoint (the profile's or the registry row's: TokenHub's
+    # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
+    # canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile
 
-        canonical = getattr(get_provider_profile(normalized), "base_url", "") or ""
+        profile_url = getattr(get_provider_profile(normalized), "base_url", "")
+        registry_url = getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")
+        canonical = {normalize_route_base_url(u) for u in (profile_url, registry_url) if u}
     except Exception:
         return base_url  # lookup failed: stay a relay, never widening where credentials go
-    if canonical and normalize_route_base_url(base_url) == normalize_route_base_url(canonical):
-        return ""
-    return base_url
+    return "" if normalize_route_base_url(base_url) in canonical else base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:

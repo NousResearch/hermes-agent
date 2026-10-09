@@ -22,11 +22,11 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import (  # noqa: E402
+from hermes_cli.update_channel import (
     _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
     is_canary_tag,
 )
-from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.authors import resolve_author
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -658,6 +658,12 @@ def main():
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,
                              help="Leave the commit list out of the draft body")
     release_cmd.add_argument("--remote", type=str)
+    changelog_cmd = subcommands.add_parser(
+        "changelog", help="Print the changelog the next stable release draft would carry")
+    changelog_cmd.add_argument("--commit", required=True, metavar="SHA",
+                               help="Commit the release would be cut at")
+    changelog_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
+    changelog_cmd.add_argument("--remote", type=str)
     publish_cmd = subcommands.add_parser(
         "publish", help="Publish a green stable release through the ordered sequencer")
     publish_cmd.add_argument("--version", required=True)
@@ -671,9 +677,10 @@ def main():
     add_arguments(parser)
     args = parser.parse_args()
 
-    from scripts.releases.entrypoint import cmd_abandon, cmd_publish, cmd_release
+    from scripts.releases.entrypoint import cmd_abandon, cmd_changelog, cmd_publish, cmd_release
 
-    stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon}
+    stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon,
+                       "changelog": cmd_changelog}
     if args.command:
         stable_commands[args.command](args)
         return
@@ -700,7 +707,7 @@ def main():
         if selected:
             handler(args)
             return
-    parser.error("select release, publish, abandon, --canary, --build-commit, or a channel operation")
+    parser.error("select release, publish, abandon, changelog, --canary, --build-commit, or a channel operation")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,10 @@
+
+import auth.providers.codex_http as _auth_auth_providers_codex_http
+import auth.providers.codex_quota as _auth_auth_providers_codex_quota
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.codex as _auth_auth_providers_codex
 """A Codex credential is only ever sent to the host it belongs to (#121486).
 
 Adversarial regressions for the catalog picker, the context probe, the auxiliary Codex client and
@@ -139,9 +146,9 @@ def test_setup_flow_status_carries_the_pool_entry_route(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _write_pool(home, OPAQUE)
-    from hermes_cli.auth import get_codex_auth_status
+    from hermes_cli.auth import get_auth_status
 
-    status = get_codex_auth_status()
+    status = get_auth_status("openai-codex")
 
     assert status["api_key"] == OPAQUE
     assert status["base_url"] == GW
@@ -151,9 +158,9 @@ def test_setup_flow_status_carries_a_pool_row_own_gateway_url(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home)
     _write_pool(home, OPAQUE, row_base=OTHER_GW)
-    from hermes_cli.auth import get_codex_auth_status
+    from hermes_cli.auth import get_auth_status
 
-    assert get_codex_auth_status()["base_url"] == OTHER_GW
+    assert get_auth_status("openai-codex")["base_url"] == OTHER_GW
 
 
 def test_model_setup_flow_catalog_goes_to_the_pool_entry_gateway(monkeypatch, picker_http):
@@ -164,7 +171,7 @@ def test_model_setup_flow_catalog_goes_to_the_pool_entry_gateway(monkeypatch, pi
     _write_pool(home, OPAQUE)
     monkeypatch.setattr("builtins.input", lambda prompt="": "1")  # reuse existing credentials
     confirm = {}
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: confirm.update(kw))
+    monkeypatch.setattr("hermes_cli.auth_model_picker._prompt_model_selection", lambda *a, **kw: confirm.update(kw))
     from hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     _model_flow_openai_codex({}, current_model="gpt-5.5")
@@ -390,31 +397,32 @@ def usage_probe_http(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import auth_codex
     seen = []
-    auth_mod._codex_quota_probe_cache.clear()
-    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _UsageRecorder(seen))
+    _auth_auth_providers_codex_quota._codex_quota_probe_cache.clear()
+    monkeypatch.setattr(_auth_auth_providers_codex_http, "_codex_http_client", lambda **kw: _UsageRecorder(seen))
     yield seen
-    auth_mod._codex_quota_probe_cache.clear()
+    _auth_auth_providers_codex_quota._codex_quota_probe_cache.clear()
 
 
 def test_quota_restored_probe_of_a_persisted_entry_asks_the_gateway(monkeypatch, usage_probe_http):
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _exhausted_jwt_pool(home)
-    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+    from auth.providers.codex_quota import _probe_codex_pool_entry_quota_restored
 
     entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
-    assert _probe_codex_pool_entry_quota_restored(entry) is True
+    assert _probe_codex_pool_entry_quota_restored(entry, environment=_phase6_auth_environment()) is True
 
     assert _authorized_hosts(usage_probe_http) == {"codex-gw.example"}
 
 
 def test_pool_selection_quota_probe_asks_the_gateway(monkeypatch, usage_probe_http):
+    from hermes_cli.config_credentials import credential_pool_environment
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _exhausted_jwt_pool(home)
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     (entry,) = pool.entries()
     assert pool._codex_quota_restored_upstream(entry) is True
 
@@ -425,10 +433,10 @@ def test_quota_restored_probe_direct_chatgpt_positive_control(monkeypatch, usage
     home = _home(monkeypatch)
     _write_config(home)
     _exhausted_jwt_pool(home)
-    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+    from auth.providers.codex_quota import _probe_codex_pool_entry_quota_restored
 
     entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
-    _probe_codex_pool_entry_quota_restored(entry)
+    _probe_codex_pool_entry_quota_restored(entry, environment=_phase6_auth_environment())
 
     assert _authorized_hosts(usage_probe_http) == {"chatgpt.com"}
 
@@ -467,7 +475,7 @@ def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkey
         def try_refresh_matching(self, api_key_hint=None, credential_id=None):
             return SimpleNamespace(runtime_api_key="fresh-gw-key", runtime_base_url=CHATGPT)
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: Pool())
 
     token, base_url, _acct = account_usage._resolve_codex_usage_credentials(
         GW, "stale-gw-key", force_refresh=True)

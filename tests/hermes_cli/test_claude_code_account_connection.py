@@ -1,4 +1,7 @@
+
+import auth.providers.anthropic as _auth_auth_providers_anthropic
 """Accounts Connected must follow Claude Code token validity, not token presence."""
+import auth.provider_state as auth_provider_state
 
 from hermes_cli.web_server import _SESSION_TOKEN, app
 from fastapi.testclient import TestClient
@@ -9,12 +12,11 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 
 def test_expired_claude_code_token_is_not_connected(monkeypatch):
     """A present but expired access token must not mark the account Connected."""
-    from agent import anthropic_credentials
-
+    import auth.providers.anthropic as anthropic_credentials
     monkeypatch.setattr(
-        anthropic_credentials,
+        _auth_auth_providers_anthropic,
         "read_claude_code_credentials",
-        lambda: {"accessToken": "stale-token", "expiresAt": 1},
+        lambda**_auth_settings: {"accessToken": "stale-token", "expiresAt": 1},
     )
 
     resp = client.get("/api/providers/oauth", headers=HEADERS)
@@ -44,7 +46,7 @@ def test_disconnect_is_not_success_when_nothing_was_cleared(monkeypatch):
     """A no-op clear must not be a 200 the client can toast as removed."""
     from hermes_cli import auth as auth_mod
 
-    monkeypatch.setattr(auth_mod, "clear_provider_auth", lambda _provider: False)
+    monkeypatch.setattr(auth_provider_state, "clear_provider_auth", lambda _provider: False)
 
     resp = client.delete("/api/providers/oauth/nous", headers=HEADERS)
 
@@ -60,7 +62,7 @@ def test_disconnect_failure_does_not_echo_the_store_error(monkeypatch):
     def fail_clear(_provider):
         raise OSError(secret)
 
-    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear)
+    monkeypatch.setattr(auth_provider_state, "clear_provider_auth", fail_clear)
 
     resp = client.delete("/api/providers/oauth/nous", headers=HEADERS)
 

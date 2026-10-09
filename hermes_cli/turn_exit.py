@@ -48,7 +48,8 @@ def credential_failure_flags(exc) -> dict:
     Same predicates as the one-shot CLI's ``_ensure_runtime_credentials``: a quota/rate-limit
     ``AuthError`` is transient, only an explicit re-authentication requirement is terminal. The
     cause chain is walked because agent construction wraps the resolver's error."""
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError
+    from auth.failure_policy import is_rate_limited_auth_error
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))

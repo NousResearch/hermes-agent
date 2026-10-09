@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Tests for Codex auth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
 import json
@@ -6,14 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.auth import (
-    AuthError,
-    DEFAULT_CODEX_BASE_URL,
-    _read_codex_tokens,
-    _save_codex_tokens,
-    refresh_codex_oauth_pure,
-    resolve_codex_runtime_credentials,
-)
+from auth.errors import AuthError
+from auth.constants import DEFAULT_CODEX_BASE_URL
+from auth.providers.codex import _read_codex_tokens, _save_codex_tokens, refresh_codex_oauth_pure, resolve_codex_runtime_credentials
 
 
 def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
@@ -45,7 +42,7 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
 
     with pytest.raises(AuthError) as exc:
-        resolve_codex_runtime_credentials()
+        resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
     assert exc.value.code == "codex_auth_missing_access_token"
     assert exc.value.relogin_required is True
 
@@ -82,7 +79,7 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    resolved = resolve_codex_runtime_credentials()
+    resolved = resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
     assert resolved["api_key"] == "pool-fallback-token"
     assert resolved["source"] == "credential_pool"
     assert resolved["base_url"]  # default codex backend URL
@@ -351,7 +348,7 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     _setup_hermes_auth(hermes_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    creds = resolve_codex_runtime_credentials()
+    creds = resolve_codex_runtime_credentials(environment=_phase6_auth_environment())
     assert creds["source"] == "hermes-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
@@ -388,7 +385,7 @@ def _patch_httpx(monkeypatch, response):
     def _factory(*args, **kwargs):
         return _StubHTTPClient(response)
 
-    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+    monkeypatch.setattr('auth.constants.httpx.Client', _factory)
 
 
 def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
@@ -398,11 +395,9 @@ def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
     dedicated rate-limit code so callers surface a "retry later" notice rather
     than a misleading "run hermes auth".
     """
-    from hermes_cli.auth import (
-        CODEX_RATE_LIMITED_CODE,
-        format_auth_error,
-        is_rate_limited_auth_error,
-    )
+    from auth.constants import CODEX_RATE_LIMITED_CODE
+    from hermes_cli.auth_error_copy import format_auth_error
+    from auth.failure_policy import is_rate_limited_auth_error
 
     response = _StubHTTPResponse(
         429,
@@ -412,7 +407,7 @@ def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
     _patch_httpx(monkeypatch, response)
 
     with pytest.raises(AuthError) as exc_info:
-        refresh_codex_oauth_pure("a-tok", "r-tok")
+        refresh_codex_oauth_pure("a-tok", "r-tok", environment=_phase6_auth_environment())
 
     err = exc_info.value
     assert err.code == CODEX_RATE_LIMITED_CODE
@@ -426,13 +421,13 @@ def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
 
 def test_refresh_429_without_retry_after_header(monkeypatch):
     """429 without a Retry-After header still classifies as quota, no relogin."""
-    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+    from auth.constants import CODEX_RATE_LIMITED_CODE
 
     response = _StubHTTPResponse(429, {"error": "rate_limited"})
     _patch_httpx(monkeypatch, response)
 
     with pytest.raises(AuthError) as exc_info:
-        refresh_codex_oauth_pure("a-tok", "r-tok")
+        refresh_codex_oauth_pure("a-tok", "r-tok", environment=_phase6_auth_environment())
 
     err = exc_info.value
     assert err.code == CODEX_RATE_LIMITED_CODE
@@ -458,9 +453,9 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
             hints.append(api_key_hint)
             return SimpleNamespace(runtime_api_key="pool-fresh")
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("auth.credential_pool.load_pool", lambda provider, environment=None: Pool())
 
-    resolved = resolve_codex_runtime_credentials(force_refresh=True)
+    resolved = resolve_codex_runtime_credentials(force_refresh=True, environment=_phase6_auth_environment())
     assert resolved["api_key"] == "pool-fresh"
     assert resolved["source"] == "credential_pool"
     assert hints == ["pool-revoked"]

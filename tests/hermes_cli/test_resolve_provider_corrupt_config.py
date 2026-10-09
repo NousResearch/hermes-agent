@@ -90,7 +90,8 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from auth.errors import AuthError
+        from hermes_cli.auth import resolve_provider
 
         with pytest.raises(AuthError) as excinfo:
             resolve_provider("auto")
@@ -99,17 +100,18 @@ class TestResolveProviderCorruptConfig:
 
     def test_corrupt_config_blocks_pool_probe_adoption(self, tmp_path, monkeypatch):
         """Corrupt config + pool-only credential must NOT resolve to openrouter."""
+        from hermes_cli.config_credentials import credential_pool_environment
         _setup_home(tmp_path, monkeypatch, CORRUPT_YAML)
         _load_config_fresh()
 
-        from agent.credential_pool import (
+        from auth.credential_pool import (
             AUTH_TYPE_API_KEY,
             SOURCE_MANUAL,
             PooledCredential,
             load_pool,
         )
 
-        pool = load_pool("openrouter")
+        pool = load_pool("openrouter", environment=credential_pool_environment())
         pool.add_entry(
             PooledCredential(
                 provider="openrouter",
@@ -123,7 +125,8 @@ class TestResolveProviderCorruptConfig:
             )
         )
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from auth.errors import AuthError
+        from hermes_cli.auth import resolve_provider
 
         with pytest.raises(AuthError) as excinfo:
             resolve_provider("auto")
@@ -145,7 +148,8 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from auth.errors import AuthError
+        from hermes_cli.auth import resolve_provider
 
         with pytest.raises(AuthError):
             resolve_provider("auto")

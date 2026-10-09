@@ -65,14 +65,14 @@ class TestResetDelayOneTable:
         """The pooled-credential cooldown and the UI's error context read the same table, so the
         long-form "hours/minutes" grammar (which the pool used to miss) resolves at both sites."""
         import time
-        from agent.credential_pool import _normalize_error_context
+        from auth.credential_pool import _normalize_error_context
 
         assert reset_delay_from_message(message) == pytest.approx(seconds)
         normalized = _normalize_error_context({"message": message})
         assert normalized["reset_at"] - time.time() == pytest.approx(seconds, abs=2)
 
     def test_no_grammar_means_no_reset(self):
-        from agent.credential_pool import _normalize_error_context
+        from auth.credential_pool import _normalize_error_context
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})

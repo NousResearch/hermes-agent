@@ -22,7 +22,7 @@ async def test_drain_active_agents_waits_for_in_flight_cron_jobs():
     observed = asyncio.Event()
     released = asyncio.Event()
 
-    def _cron_in_flight():
+    def _cron_in_flight(**_auth_settings):
         observed.set()
         return frozenset() if released.is_set() else frozenset({"job-1"})
 

@@ -13,7 +13,7 @@ lock. These tests pin the two invariants that make that safe:
 
 from dataclasses import replace
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
@@ -33,7 +33,8 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     )
 
 def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
-    pool = CredentialPool("openai-codex", [_codex_entry()])
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = CredentialPool("openai-codex", [_codex_entry()], environment=credential_pool_environment())
     lock_free_during_refresh = {}
 
     def _fake_refresh(entry, *, force):

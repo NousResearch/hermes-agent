@@ -10,7 +10,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
     def test_auth_error_tries_fallback(self, tmp_path, monkeypatch):
         """When primary provider raises AuthError, fallback is attempted."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         # Create a config with fallback
         config_path = tmp_path / "config.yaml"

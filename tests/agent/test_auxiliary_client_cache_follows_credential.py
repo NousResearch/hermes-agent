@@ -1,3 +1,5 @@
+
+import auth.providers.anthropic as _auth_auth_providers_anthropic
 """Regression coverage: the auxiliary client cache key follows the pooled credential (#113022).
 
 Points 1/2/5 of the issue: a token rotated or refreshed by another process must yield a new
@@ -9,9 +11,9 @@ import time
 
 import pytest
 
-import agent.anthropic_credentials as anth_cred
+import auth.providers.anthropic as anth_cred
 import agent.auxiliary_client as aux
-from hermes_cli.auth import write_credential_pool
+from auth.pool_persistence import write_credential_pool
 
 MODEL = "claude-sonnet-4-5"
 
@@ -34,7 +36,7 @@ def isolated_home(tmp_path, monkeypatch):
     # reader still consults ~/.claude/.credentials.json and the macOS Keychain,
     # so an ambient login on the host would seed a second un-cooled-down pool
     # entry and break the cooldown assertions below (#114424).
-    monkeypatch.setattr(anth_cred, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "read_claude_code_credentials", lambda**_auth_settings: None)
     return tmp_path / "hermes"
 
 

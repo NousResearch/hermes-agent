@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 """Tests for banner toolset name normalization and skin color usage."""
 
 from unittest.mock import patch

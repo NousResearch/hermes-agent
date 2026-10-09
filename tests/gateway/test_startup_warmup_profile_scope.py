@@ -37,7 +37,7 @@ def multiplex_home(tmp_path, monkeypatch):
 
 def _probe(seen: dict):
     def probe() -> int:
-        from hermes_cli.auth_nous import _nous_portal_env_override
+        from auth.providers.nous import _nous_portal_env_override
         seen["scope_installed"] = secret_scope._SECRET_SCOPE.get() is not None
         seen["portal_override"] = _nous_portal_env_override()
         return 1

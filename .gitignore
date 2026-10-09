@@ -234,6 +234,14 @@ docs/superpowers/*
 /auth.json
 /auth.lock
 /auth/
+# Phase 6 source package: track only Python source here; generated auth state
+# (including token JSON and other non-source files) stays ignored.
+!/auth/
+/auth/**
+!/auth/*.py
+!/auth/providers/
+/auth/providers/**
+!/auth/providers/*.py
 /.anthropic_oauth.json
 /google_token.json
 /google_oauth_pending.json

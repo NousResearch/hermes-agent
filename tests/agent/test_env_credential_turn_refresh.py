@@ -45,11 +45,12 @@ def _make_agent(*, provider="openai-api", base_url=DEFAULT_BASE, api_key="sk-old
 @pytest.fixture
 def env(monkeypatch):
     """Dict-driven stand-in for the .env/os.environ resolution chain."""
+    from auth import pool_sources as credential_pool_sources
     values = {}
-    import agent.credential_pool as cp
+    import auth.credential_pool as cp
 
     monkeypatch.setattr(
-        cp, "get_env_prefer_dotenv", lambda key: values.get(key, "")
+        credential_pool_sources, "get_env_prefer_dotenv", lambda key, environment=None: values.get(key, "")
     )
     return values
 

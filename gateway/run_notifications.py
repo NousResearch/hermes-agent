@@ -6,6 +6,8 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import asyncio
 import contextlib

@@ -76,7 +76,7 @@ def _identity_id_for(provider: str, entry: Any) -> str:
     if not token:
         return f"entry:{getattr(entry, 'id', '')}"
     if provider == "openai-codex":
-        from agent.credential_pool import _codex_principal_identity
+        from auth.credential_pool import _codex_principal_identity
 
         principal = _codex_principal_identity(token)
         if principal:

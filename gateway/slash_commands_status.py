@@ -2,6 +2,8 @@
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 import asyncio

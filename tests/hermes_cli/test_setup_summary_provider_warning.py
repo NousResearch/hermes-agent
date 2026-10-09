@@ -8,7 +8,7 @@ working model configured (consumer-onboarding audit finding #7, Aug 2026).
 
 from unittest.mock import patch
 
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 from hermes_cli import nous_subscription
 
 

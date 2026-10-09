@@ -5,17 +5,11 @@ import os
 
 import pytest
 
-from hermes_cli.auth import (
-    PROVIDER_REGISTRY,
-    resolve_provider,
-    get_api_key_provider_status,
-    resolve_api_key_provider_credentials,
-    AuthError,
-    KIMI_CODE_BASE_URL,
-    STEPFUN_STEP_PLAN_INTL_BASE_URL,
-    _resolve_kimi_base_url,
-)
-from hermes_cli.copilot_auth import _try_gh_cli_token
+from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, get_api_key_provider_status, KIMI_CODE_BASE_URL, _resolve_kimi_base_url
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
+from auth.constants import STEPFUN_STEP_PLAN_INTL_BASE_URL
+from auth.errors import AuthError
+from auth.providers.copilot import _try_gh_cli_token
 
 
 # =============================================================================
@@ -55,7 +49,7 @@ PROVIDER_ENV_VARS = tuple(
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", dict)
+    monkeypatch.setattr('auth.store._load_auth_store', lambda: {})
 
 
 class TestResolveProvider:
@@ -191,7 +185,7 @@ class TestResolveApiKeyProviderCredentials:
 
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch, tmp_path):
-        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        from auth.providers.copilot import _invalidate_gh_cli_token_cache
         from hermes_platform.resolver import known_dirs
 
         _invalidate_gh_cli_token_cache()
@@ -214,7 +208,7 @@ class TestResolveApiKeyProviderCredentials:
             calls.append(cmd)
             return _Result()
 
-        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
+        monkeypatch.setattr("auth.providers.copilot.subprocess.run", _fake_run)
 
         assert _try_gh_cli_token() == "gh-cli-secret"
         assert calls == [[str(gh), "auth", "token"]]
@@ -260,7 +254,7 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "auto-kimi-key"
 
     def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr('auth.providers.copilot._try_gh_cli_token', lambda: "gho_cli_secret")
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="copilot")
         assert result["provider"] == "copilot"
@@ -269,7 +263,7 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "https://api.githubcopilot.com"
 
     def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr('auth.providers.copilot._try_gh_cli_token', lambda: "gho_cli_secret")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",
             lambda: {"provider": "copilot", "default": "gpt-5.4"},
@@ -324,7 +318,7 @@ class TestHasAnyProviderConfigured:
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
+        monkeypatch.setattr('auth.providers.copilot.resolve_copilot_token', lambda: ("", ""))
         # Clear all provider env vars so earlier checks don't short-circuit
         _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                       "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
@@ -337,11 +331,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
-            lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
+            'auth.providers.anthropic.read_claude_code_credentials',
+            lambda**_auth_settings: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
         )
         monkeypatch.setattr(
-            "agent.anthropic_credentials.is_claude_code_token_valid",
+            'auth.providers.anthropic.is_claude_code_token_valid',
             lambda creds: True,
         )
         from hermes_cli.main import _has_any_provider_configured
@@ -529,6 +523,7 @@ class TestZaiEndpointAutoDetect:
         def _never_called(*a, **kw):
             nonlocal probe_called
             probe_called = True
+            return None
 
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
         creds = resolve_api_key_provider_credentials("zai")
@@ -584,7 +579,7 @@ class TestZaiParallelProbe:
         last_model = coding_global[2][-1]
         # Only the LAST candidate model of coding-global succeeds.
         monkeypatch.setattr(
-            "hermes_cli.auth.httpx.post",
+            'auth.constants.httpx.post',
             self._mock_post({(base, last_model): True}),
         )
         result = detect_zai_endpoint("test-key", timeout=1.0)
@@ -612,7 +607,7 @@ class TestZaiParallelProbe:
                 _time.sleep(0.15)  # first-priority endpoint finishes LAST
             return inner(url, headers=headers, json=json, timeout=timeout)
 
-        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_first)
+        monkeypatch.setattr('auth.constants.httpx.post', _slow_first)
         result = detect_zai_endpoint("test-key", timeout=1.0)
         assert result is not None
         assert result["id"] == first[0]
@@ -620,7 +615,7 @@ class TestZaiParallelProbe:
     def test_all_fail_returns_none(self, monkeypatch):
         from hermes_cli.auth import detect_zai_endpoint
 
-        monkeypatch.setattr("hermes_cli.auth.httpx.post", self._mock_post({}))
+        monkeypatch.setattr('auth.constants.httpx.post', self._mock_post({}))
         assert detect_zai_endpoint("bad-key", timeout=1.0) is None
 
     def test_early_exit_does_not_wait_for_slow_losers(self, monkeypatch):
@@ -638,7 +633,7 @@ class TestZaiParallelProbe:
                 _time.sleep(2.0)  # slow lower-priority endpoints
             return inner(url, headers=headers, json=json, timeout=timeout)
 
-        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_losers)
+        monkeypatch.setattr('auth.constants.httpx.post', _slow_losers)
         t0 = _time.perf_counter()
         result = detect_zai_endpoint("test-key", timeout=5.0)
         elapsed = _time.perf_counter() - t0
@@ -757,7 +752,7 @@ class TestMinimaxOAuthProvider:
         # agent/auxiliary_client.py. The profile layer is the source
         # of truth; _get_aux_model_for_provider() reads from it first
         # and only falls back to the dict when no profile is registered.
-        import model_tools
+        import model_tools  # noqa: F401  -- triggers plugin discovery
         import providers
 
         profile = providers.get_provider_profile("minimax-oauth")
@@ -814,7 +809,7 @@ class TestFetchDeepInfraModels:
                     {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
                 ]}).encode()
 
-        from hermes_cli import models
+        import hermes_cli.models as models
         monkeypatch.setattr(
             models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
         )
@@ -830,7 +825,7 @@ class TestFetchDeepInfraModels:
 
 
     def test_catalog_uses_credential_safe_opener(self, monkeypatch):
-        from hermes_cli import models
+        import hermes_cli.models as models
 
         seen = {}
 
@@ -952,7 +947,7 @@ class TestDeepInfraPricingFetcher:
             # non-chat — must not appear
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
-        from hermes_cli import models
+        import hermes_cli.models as models
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
@@ -1013,7 +1008,7 @@ class TestKilocodePricingFetcher:
             {"id": ""},
             "not-a-dict",
         ]}
-        from hermes_cli import models
+        import hermes_cli.models as models
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
@@ -1036,7 +1031,7 @@ class TestKilocodePricingFetcher:
         """Default endpoint is the kilocode provider profile's base_url + /models
         (no second hardcode); KILOCODE_BASE_URL overrides it; the catalog is
         fetched without a key; a failing endpoint yields {} without raising."""
-        from hermes_cli import models
+        import hermes_cli.models as models
         from hermes_cli.models_pricing import get_pricing_for_provider
 
         seen = []

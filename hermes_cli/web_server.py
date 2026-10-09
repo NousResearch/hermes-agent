@@ -1476,9 +1476,11 @@ def start_server(
     import uvicorn
 
     try:
-        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+        from auth.keepalive import start_nous_auth_keepalive
+        from hermes_cli.config_credentials import credential_pool_environment
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
-        start_nous_auth_keepalive()
+        start_nous_auth_keepalive(environment_factory=credential_pool_environment, scope_context=launch_profile_scope_if_multiplexed)
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 

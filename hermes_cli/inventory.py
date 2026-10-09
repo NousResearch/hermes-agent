@@ -261,8 +261,8 @@ def _apply_limits(rows: list[dict]) -> None:
     import logging
     from datetime import datetime, timezone
 
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool
+    from auth.credential_pool import load_pool
+    from auth.pool_persistence import read_credential_pool
 
     def iso(epoch: float) -> str:
         return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
@@ -300,7 +300,7 @@ def _apply_usage(rows: list[dict]) -> None:
         cached_account_usage, has_account_usage, refresh_account_usage_async,
         refresh_account_usage_entries_async, snapshot_is_stale,
     )
-    from hermes_cli.auth import read_credential_pool
+    from auth.pool_persistence import read_credential_pool
 
     def _wire_windows(snapshot) -> list[dict]:
         return [
@@ -379,7 +379,7 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
     import time
 
     from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
-    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+    from auth.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
 
     try:
         pool = load_pool(slug)
@@ -446,7 +446,7 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
 
 def _pool_entry_host(slug: str, entry) -> str:
     """Normalized route host of one entry, for account dedupe scoping. Never serialized."""
-    from agent.credential_pool import _norm_url
+    from auth.credential_pool import _norm_url
 
     if slug == "openai-codex":
         from hermes_cli.auth_codex import _codex_pool_route_base_url
@@ -741,7 +741,7 @@ def _anthropic_oauth_credentials_present() -> bool:
     """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
     login) — those leave no trace in active_provider / model.provider / API-key env vars."""
     try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+        from auth.providers.anthropic import read_claude_code_credentials, read_hermes_oauth_credentials
 
         readers = (read_hermes_oauth_credentials, read_claude_code_credentials)
         if any((read() or {}).get("accessToken") for read in readers):
@@ -752,8 +752,8 @@ def _anthropic_oauth_credentials_present() -> bool:
     # accepts them via pool.has_credentials(), so the filter must too or those rows are built then
     # silently dropped. Read-only (no load_pool) so a picker open never mutates auth.json.
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH
-        from hermes_cli.auth import read_credential_pool
+        from auth.credential_pool import AUTH_TYPE_OAUTH
+        from auth.pool_persistence import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
             if (isinstance(entry, dict) and entry.get("auth_type") == AUTH_TYPE_OAUTH

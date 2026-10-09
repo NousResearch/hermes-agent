@@ -7,6 +7,9 @@ exercised through Hermes' real client code, never mocked away. Scenarios flip it
 """
 
 from __future__ import annotations
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import base64
 import json
@@ -131,7 +134,7 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
     monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-    anon_auth.reset_mint_memo_for_tests()
+    _auth_auth_providers_nous_guest.reset_mint_memo_for_tests()
     free_tier_bootstrap.reset_for_tests()
     from hermes_cli import anon_challenge
     anon_challenge.reset_for_tests()
@@ -139,5 +142,5 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted
     # by an earlier test must not be served to this one.
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
+    monkeypatch.setattr(_auth_auth_providers_nous, "_RESOLVE_TOKEN_CACHE", {})
     return fake

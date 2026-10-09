@@ -107,7 +107,7 @@ fallback_providers:
     def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None,
                                       target_model=None):
         if requested in {None, "", "openai-codex"}:
-            from hermes_cli.auth import AuthError
+            from auth.errors import AuthError
             raise AuthError("No Codex credentials stored. Run `hermes auth` to authenticate.")
         assert requested == "openrouter"
         # The fallback rung is resolved against the model it will send, not the primary default.

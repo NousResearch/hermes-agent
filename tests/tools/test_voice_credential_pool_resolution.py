@@ -65,13 +65,14 @@ class TestPoolFallback:
     def test_pool_entry_resolves_when_env_empty(self, env_var, provider_id):
         pool_key_seen = []
 
-        def fake_load_pool(pid):
+        def fake_load_pool(pid, *, environment):
+            environment.require_current_scope()
             pool_key_seen.append(pid)
             if pid == provider_id:
                 return _fake_pool(f"pool-key-{provider_id}")
             return _fake_pool("")
 
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
+        with patch("auth.credential_pool.load_pool", side_effect=fake_load_pool):
             assert resolve_provider_secret(env_var, provider_id) == (
                 f"pool-key-{provider_id}"
             )
@@ -80,7 +81,7 @@ class TestPoolFallback:
 
     def test_pool_read_failure_never_raises(self):
         with patch(
-            "agent.credential_pool.load_pool", side_effect=Exception("disk error")
+            "auth.credential_pool.load_pool", side_effect=Exception("disk error")
         ):
             assert resolve_provider_secret("MISTRAL_API_KEY", "mistral") == ""
 
@@ -91,7 +92,7 @@ class TestEnvPrecedence:
     def test_env_wins_over_pool(self, monkeypatch):
         monkeypatch.setenv("ELEVENLABS_API_KEY", "env-key")
         with patch(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             return_value=_fake_pool("pool-key"),
         ) as lp:
             assert (
@@ -103,7 +104,7 @@ class TestEnvPrecedence:
     def test_env_getter_is_consulted(self):
         """Callers can pass their module-level get_env_value wrapper."""
         with patch(
-            "agent.credential_pool.load_pool", return_value=_fake_pool("")
+            "auth.credential_pool.load_pool", return_value=_fake_pool("")
         ):
             assert (
                 resolve_provider_secret(
@@ -119,7 +120,7 @@ class TestConfigPrecedence:
     def test_config_value_wins_over_env_and_pool(self, monkeypatch):
         monkeypatch.setenv("MISTRAL_API_KEY", "env-key")
         with patch(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             return_value=_fake_pool("pool-key"),
         ):
             assert (
@@ -162,7 +163,7 @@ class TestMultiplexScope:
         token = ss.set_secret_scope({"UNRELATED": "x"})
         try:
             with patch(
-                "agent.credential_pool.load_pool",
+                "auth.credential_pool.load_pool",
                 return_value=_fake_pool("pool-key"),
             ) as lp:
                 assert resolve_provider_secret("MISTRAL_API_KEY", "mistral") == ""
@@ -177,18 +178,20 @@ class TestToolWiring:
     def test_transcription_tools_delegates(self):
         from tools import transcription_tools as tt
 
-        def fake_load_pool(pid):
+        def fake_load_pool(pid, *, environment):
+            environment.require_current_scope()
             return _fake_pool("stt-pool-key" if pid == "groq" else "")
 
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
+        with patch("auth.credential_pool.load_pool", side_effect=fake_load_pool):
             assert tt._resolve_provider_key("GROQ_API_KEY", "groq") == "stt-pool-key"
 
 
     def test_openai_audio_key_falls_back_to_pool(self):
         from tools.tool_backend_helpers import resolve_openai_audio_api_key
 
-        def fake_load_pool(pid):
+        def fake_load_pool(pid, *, environment):
+            environment.require_current_scope()
             return _fake_pool("oai-pool-key" if pid == "openai-api" else "")
 
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
+        with patch("auth.credential_pool.load_pool", side_effect=fake_load_pool):
             assert resolve_openai_audio_api_key() == "oai-pool-key"

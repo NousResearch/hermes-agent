@@ -6,7 +6,7 @@ A quota-exhausted / expired primary raises ``AuthError`` from ``resolve_runtime_
 
 import pytest
 
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 from hermes_cli.runtime_provider import resolve_runtime_with_fallback
 
 _CFG = {"fallback_providers": [

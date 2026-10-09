@@ -124,3 +124,33 @@ async def should_clear_context_pin_async(*args: Any) -> bool:
     cold-start disk I/O."""
     import asyncio
     return await asyncio.to_thread(should_clear_context_pin, *args)
+
+
+from urllib.parse import urlparse
+from auth.constants import DEFAULT_ACTUAL_BASE_URL
+
+
+def is_actual_local_base_url(base_url: str) -> bool:
+    """Return True for Actual's loopback local API endpoint."""
+    try:
+        host = (urlparse(base_url or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def normalize_actual_base_url(base_url: str) -> str:
+    """Return Actual's OpenAI-compatible base URL (hosted api.actual.inc or the loopback local server;
+    both expose a /v1 surface for the selected OpenAI-compatible transport)."""
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return DEFAULT_ACTUAL_BASE_URL
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path = parsed.path.rstrip("/")
+    except Exception:
+        return url
+    if path in {"", "/"} and (host == "api.actual.inc" or is_actual_local_base_url(url)):
+        return url + "/v1"
+    return url

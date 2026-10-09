@@ -27,6 +27,8 @@ reading an actually persisted, actually sanitized row.
 """
 
 from __future__ import annotations
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
 
 import json
 import time
@@ -34,9 +36,9 @@ from dataclasses import replace as dc_replace
 
 import pytest
 
-from agent import anthropic_credentials as AA
-from agent.credential_persistence import sanitize_borrowed_credential_payload
-from agent.credential_pool import (
+import auth.providers.anthropic as AA
+from auth.persistence import sanitize_borrowed_credential_payload
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,
@@ -86,8 +88,8 @@ def claude_credentials(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(AA, "claude_code_credentials_path", lambda: cred_path)
-    monkeypatch.setattr(AA, "_read_claude_code_credentials_from_keychain", lambda: None)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "claude_code_credentials_path", lambda: cred_path)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "_read_claude_code_credentials_from_keychain", lambda: None)
     return cred_path
 
 
@@ -117,7 +119,8 @@ def test_persisted_claude_code_row_carries_no_token_material(
     Every other test in this file only means something if the disk row is
     token-less, so assert the boundary rather than assuming it.
     """
-    pool = load_pool("anthropic")
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = load_pool("anthropic", environment=credential_pool_environment())
 
     live = [e for e in pool._entries if e.source == "claude_code"]
     assert len(live) == 1
@@ -135,7 +138,8 @@ def test_persisted_claude_code_row_carries_no_token_material(
 
 def test_pool_store_sync_never_adopts_a_borrowed_row(hermes_home, claude_credentials):
     """The sanitized row must not be mistaken for a rotation by another process."""
-    pool = load_pool("anthropic")
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     entry = next(e for e in pool._entries if e.source == "claude_code")
 
     synced = pool._sync_anthropic_entry_from_pool_store(entry)
@@ -154,6 +158,7 @@ def test_refresh_from_persisted_sanitized_row_keeps_the_full_pair(
     the complete rotated pair, and the shared credentials file is the copy that
     was updated.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     posts = []
     writes = []
 
@@ -161,16 +166,16 @@ def test_refresh_from_persisted_sanitized_row_keeps_the_full_pair(
         posts.append(refresh_token)
         return _rotating_refresh(refresh_token, **kwargs)
 
-    real_write = AA._write_claude_code_credentials
+    real_write = _auth_auth_providers_anthropic._write_claude_code_credentials
 
     def _counting_write(access_token, refresh_token, expires_at_ms, **kwargs):
         writes.append(refresh_token)
         return real_write(access_token, refresh_token, expires_at_ms, **kwargs)
 
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _counting_refresh)
-    monkeypatch.setattr(AA, "_write_claude_code_credentials", _counting_write)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _counting_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "_write_claude_code_credentials", _counting_write)
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     entry = next(e for e in pool._entries if e.source == "claude_code")
 
     refreshed = pool._refresh_entry(entry, force=True)
@@ -192,6 +197,7 @@ def test_refresh_reaches_the_shared_credentials_lock(
     ``~/.claude/.credentials.json``; an adopt-and-return shortcut firing first
     would leave the cross-profile race exactly where it was.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     taken = []
     real_lock = CredentialPool._claude_code_credentials_lock
 
@@ -200,9 +206,9 @@ def test_refresh_reaches_the_shared_credentials_lock(
         return real_lock(self)
 
     monkeypatch.setattr(CredentialPool, "_claude_code_credentials_lock", _tracking_lock)
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     entry = next(e for e in pool._entries if e.source == "claude_code")
     pool._refresh_entry(entry, force=True)
 
@@ -215,7 +221,8 @@ def test_empty_oauth_entry_is_never_leased(hermes_home, claude_credentials):
     The pre-existing guard covered ``AUTH_TYPE_API_KEY`` only, so an OAuth row
     that failed to hydrate went straight into the available list.
     """
-    pool = load_pool("anthropic")
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     entry = next(e for e in pool._entries if e.source == "claude_code")
     blanked = dc_replace(entry, access_token="", refresh_token="")
     pool._replace_entry(entry, blanked)
@@ -232,9 +239,10 @@ def test_selection_after_refresh_leases_only_hydrated_entries(
     hermes_home, claude_credentials, monkeypatch
 ):
     """End-to-end: refresh through selection leaves a usable, non-empty lease."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    from hermes_cli.config_credentials import credential_pool_environment
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     available, _pending = pool._available_entries(clear_expired=True, refresh=True)
 
     assert available, "the credential must survive the refresh, not be dropped"
@@ -248,6 +256,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
     ``hermes_pkce`` *is* pool-owned, so its persisted row keeps its tokens and
     stays a legitimate rotation witness for another pool instance.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     rotated = {
         "id": "anthropic-pkce",
         "label": "anthropic oauth",
@@ -259,7 +268,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
         "expires_at_ms": int(time.time() * 1000) + 3_600_000,
     }
     monkeypatch.setattr(
-        "agent.credential_pool.read_credential_pool", lambda provider=None: [rotated]
+        "auth.credential_pool.read_credential_pool", lambda provider=None: [rotated]
     )
 
     entry = PooledCredential(
@@ -273,7 +282,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
         refresh_token=_STALE_REFRESH,
         expires_at_ms=_EXPIRED_MS,
     )
-    pool = CredentialPool("anthropic", [entry])
+    pool = CredentialPool("anthropic", [entry], environment=credential_pool_environment())
 
     synced = pool._sync_anthropic_entry_from_pool_store(entry)
 

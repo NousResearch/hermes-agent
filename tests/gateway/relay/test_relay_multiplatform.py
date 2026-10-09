@@ -67,7 +67,7 @@ def test_bot_ids_malformed_json_degrades_to_empty(monkeypatch):
 
 def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token"):
     monkeypatch.setattr(relay, "relay_url", lambda: url)
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
+    monkeypatch.setattr('auth.providers.nous.resolve_nous_access_token', lambda: token)
 
 
 def test_self_provision_loops_per_platform(monkeypatch):

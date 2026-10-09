@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from agent.account_usage import build_nous_credits_snapshot
-from hermes_cli.nous_account import (
-    NousPaidServiceAccessInfo,
-    NousPortalAccountInfo,
-    NousPortalSubscriptionInfo,
-)
+from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo, NousPortalSubscriptionInfo
 
 
 def _account(**kwargs) -> NousPortalAccountInfo:

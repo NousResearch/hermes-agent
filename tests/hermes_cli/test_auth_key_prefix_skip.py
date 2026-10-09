@@ -1,7 +1,7 @@
 """Regression tests for #93593: a malformed provider key in .env must not
 silently shadow a valid credential-pool key.
 
-Before the fix, ``_resolve_api_key_provider_secret`` returned the FIRST env
+Before the fix, ``resolve_api_key_provider_secret`` returned the FIRST env
 value that passed ``has_usable_secret`` (length + placeholder check only), so
 an obviously malformed OPENROUTER_API_KEY (e.g. a truncated paste or another
 provider's key) in ~/.hermes/.env won over a valid pool entry and produced
@@ -16,6 +16,8 @@ The fix:
 - providers WITHOUT a declared prefix are fail-open (unchanged behavior);
 - a VALID env key still wins over the pool (precedence unchanged).
 """
+
+from hermes_cli.config_credentials import credential_pool_environment
 
 import logging
 from pathlib import Path
@@ -74,13 +76,13 @@ class TestMalformedEnvKeySkipped:
         _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="not-a-real-openrouter-key")
         pool = _mock_pool(_entry("sk-or-v1-valid-pool-key-abc123"))
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=pool):
+        from auth.api_keys import resolve_api_key_provider_secret
+        with patch("auth.credential_pool.load_pool", return_value=pool):
             with caplog.at_level(logging.WARNING):
-                key, source = _resolve_api_key_provider_secret(
+                key, source = resolve_api_key_provider_secret(
                     provider_id="openrouter",
                     pconfig=_make_pconfig("openrouter"),
-                )
+                 environment=credential_pool_environment())
         assert key == "sk-or-v1-valid-pool-key-abc123"
         assert source == "credential_pool:openrouter"
         warnings = [r for r in caplog.records if "OPENROUTER_API_KEY" in r.getMessage()]
@@ -93,13 +95,13 @@ class TestMalformedEnvKeySkipped:
         _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="sk-proj-wrong-provider-key")
         pool = _mock_pool()
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=pool):
+        from auth.api_keys import resolve_api_key_provider_secret
+        with patch("auth.credential_pool.load_pool", return_value=pool):
             with caplog.at_level(logging.WARNING):
-                key, source = _resolve_api_key_provider_secret(
+                key, source = resolve_api_key_provider_secret(
                     provider_id="openrouter",
                     pconfig=_make_pconfig("openrouter"),
-                )
+                 environment=credential_pool_environment())
         assert key == ""
         assert source == ""
 
@@ -110,12 +112,12 @@ class TestMalformedEnvKeySkipped:
             _entry("sk-or-v1-second-entry-good"),
         )
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=pool):
-            key, source = _resolve_api_key_provider_secret(
+        from auth.api_keys import resolve_api_key_provider_secret
+        with patch("auth.credential_pool.load_pool", return_value=pool):
+            key, source = resolve_api_key_provider_secret(
                 provider_id="openrouter",
                 pconfig=_make_pconfig("openrouter"),
-            )
+             environment=credential_pool_environment())
         assert key == "sk-or-v1-second-entry-good"
         assert source == "credential_pool:openrouter"
 
@@ -126,13 +128,13 @@ class TestNoDeclaredPrefixUnaffected:
     def test_undeclared_provider_env_key_returned_verbatim(self, isolated_hermes_home):
         _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="totally-unknown-format-key")
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from auth.api_keys import resolve_api_key_provider_secret
         pool = _mock_pool(_entry("pool-key-should-not-win"))
-        with patch("agent.credential_pool.load_pool", return_value=pool) as mp:
-            key, source = _resolve_api_key_provider_secret(
+        with patch("auth.credential_pool.load_pool", return_value=pool) as mp:
+            key, source = resolve_api_key_provider_secret(
                 provider_id="deepseek",
                 pconfig=_make_pconfig("deepseek"),
-            )
+             environment=credential_pool_environment())
         assert key == "totally-unknown-format-key"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
@@ -145,12 +147,12 @@ class TestValidEnvKeyStillWins:
         _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="sk-or-v1-env-key-wins")
         pool = _mock_pool(_entry("sk-or-v1-pool-key-loses"))
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        with patch("agent.credential_pool.load_pool", return_value=pool) as mp:
-            key, source = _resolve_api_key_provider_secret(
+        from auth.api_keys import resolve_api_key_provider_secret
+        with patch("auth.credential_pool.load_pool", return_value=pool) as mp:
+            key, source = resolve_api_key_provider_secret(
                 provider_id="openrouter",
                 pconfig=_make_pconfig("openrouter"),
-            )
+             environment=credential_pool_environment())
         assert key == "sk-or-v1-env-key-wins"
         assert source == "OPENROUTER_API_KEY"
         mp.assert_not_called()
@@ -163,12 +165,12 @@ class TestValidEnvKeyStillWins:
             OPENROUTER_KEY="sk-or-v1-second-var-good",
         )
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
-        key, source = _resolve_api_key_provider_secret(
+        from auth.api_keys import resolve_api_key_provider_secret
+        key, source = resolve_api_key_provider_secret(
             provider_id="openrouter",
             pconfig=_make_pconfig(
                 "openrouter", env_vars=["OPENROUTER_API_KEY", "OPENROUTER_KEY"]
             ),
-        )
+         environment=credential_pool_environment())
         assert key == "sk-or-v1-second-var-good"
         assert source == "OPENROUTER_KEY"

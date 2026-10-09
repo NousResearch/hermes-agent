@@ -153,7 +153,7 @@ import requests, json
 `run_job()` 将用户配置的备用 provider 和凭证池传入 `AIAgent` 实例：
 
 - **备用 provider** — 从 `config.yaml` 读取 `fallback_providers`（列表）或 `fallback_model`（旧版字典），与 gateway 的 `_load_fallback_model()` 模式一致。以 `fallback_model=` 形式传入 `AIAgent.__init__`，后者将两种格式规范化为备用链。
-- **凭证池** — 通过 `agent.credential_pool` 中的 `load_pool(provider)` 使用解析后的运行时 provider 名称加载。仅在池中有凭证时传入（`pool.has_credentials()`）。在遭遇 429/限速错误时启用同 provider 的密钥轮换。
+- **凭证池** — 通过 `auth.credential_pool` 中的 `load_pool(provider)` 使用解析后的运行时 provider 名称加载。仅在池中有凭证时传入（`pool.has_credentials()`）。在遭遇 429/限速错误时启用同 provider 的密钥轮换。
 
 这与 gateway 的行为保持一致——否则 cron agent 在遭遇限速时将直接失败而不尝试恢复。
 

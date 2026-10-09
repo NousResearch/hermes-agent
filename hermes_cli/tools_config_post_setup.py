@@ -1,6 +1,7 @@
 """Post-setup install hooks and installed-state predicates for `hermes tools` provider rows."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _credential_environment
 
 import os
 import shlex
@@ -158,6 +159,30 @@ def _post_setup_python(spec: dict) -> None:
     _info_lines(*spec["on_install"], *spec["always"])
 
 
+def _post_setup_spotify() -> None:
+    # Full `hermes auth spotify` flow: no client_id yet → interactive wizard (persists to ~/.hermes/.env)
+    # then PKCE; existing app → OAuth only.
+    from types import SimpleNamespace
+    try:
+        from hermes_cli.auth_spotify import login_spotify_command
+    except Exception as exc:
+        _print_warning(f"    Could not load Spotify auth: {exc}")
+        _info_lines("Run manually: hermes auth spotify")
+        return
+    _print_info("    Starting Spotify login...")
+    try:
+        login_spotify_command(SimpleNamespace(
+            client_id=None, redirect_uri=None, scope=None, no_browser=False, timeout=None))
+        _print_success("    Spotify authenticated")
+    except SystemExit as exc:
+        # User aborted the wizard or OAuth failed — don't fail the toolset enable.
+        _print_warning(f"    Spotify login did not complete: {exc}")
+        _info_lines("Run later: hermes auth spotify")
+    except Exception as exc:
+        _print_warning(f"    Spotify login failed: {exc}")
+        _info_lines("Run manually: hermes auth spotify")
+
+
 def _post_setup_langfuse() -> None:
     import pm
 
@@ -184,8 +209,8 @@ def _post_setup_xai_grok() -> None:
     …). Accepts a SuperGrok-tier OAuth token (preferred — billed to the existing subscription) or a raw
     XAI_API_KEY; the rows declare empty env_vars so the auth UX lives here."""
     try:
-        from hermes_cli.auth import get_xai_oauth_auth_status
-        oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
+        from auth.provider_status import get_xai_oauth_auth_status
+        oauth_logged_in = bool(get_xai_oauth_auth_status(environment=_credential_environment()).get("logged_in"))
     except Exception:
         oauth_logged_in = False
     if oauth_logged_in:
@@ -229,8 +254,8 @@ def _post_setup_xai_grok() -> None:
 def _codex_credentials_present() -> bool:
     """Cheap offline check for Codex/ChatGPT OAuth credentials (auth store + pool only)."""
     try:
-        from hermes_cli.auth import get_codex_auth_status
-        return bool(get_codex_auth_status().get("logged_in"))
+        from auth.provider_status import get_codex_auth_status
+        return bool(get_codex_auth_status(environment=_credential_environment()).get("logged_in"))
     except Exception:
         return False
 
@@ -246,7 +271,8 @@ def _post_setup_openai_codex() -> None:
     relogin = "hermes auth add openai-codex"
     _print_info("    OpenAI (Codex auth) needs credentials.")
     try:
-        from hermes_cli.auth import _codex_device_code_login, _save_codex_tokens
+        from hermes_cli.auth_codex import _codex_device_code_login
+        from auth.providers.codex import _save_codex_tokens
         from hermes_cli.setup import is_noninteractive, prompt_choice
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")
@@ -295,6 +321,7 @@ _POST_SETUP_HOOKS: dict = {
     "browser_use_cli": lambda: _ensure_browser_use_cli(verbose_hints=True),
     "camofox": _post_setup_camofox,
     "cua_driver": lambda: install_cua_driver(upgrade=False),
+    "spotify": _post_setup_spotify,
     "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
     "openai_codex": _post_setup_openai_codex,
@@ -307,7 +334,7 @@ def _run_post_setup(post_setup_key: str):
     _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
 
 
-def valid_post_setup_keys() -> set[str]:
+def valid_post_setup_keys() -> Set[str]:
     """Return the set of post-setup keys declared by any visible provider (``TOOL_CATEGORIES`` plus
     plugin-registered providers). This is the allowlist ``post-setup`` and the dashboard endpoint
     validate against, so a caller cannot drive ``_run_post_setup`` with an arbitrary key."""
@@ -315,7 +342,7 @@ def valid_post_setup_keys() -> set[str]:
         TOOL_CATEGORIES, _plugin_browser_providers, _plugin_image_gen_providers,
         _plugin_video_gen_providers, _plugin_web_search_providers)
 
-    keys: set[str] = set()
+    keys: Set[str] = set()
     for cat in TOOL_CATEGORIES.values():
         keys.update(ps for prov in cat.get("providers", []) if (ps := prov.get("post_setup")))
     for builder in (_plugin_web_search_providers, _plugin_image_gen_providers,

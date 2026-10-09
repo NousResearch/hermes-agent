@@ -2628,7 +2628,7 @@ def _env_write_lock(env_path: Path):
     On a filesystem without flock the helper degrades to a depth-only guard
     (same behavior as auth's locks), never to a crash.
     """
-    from hermes_cli.auth import _file_lock
+    from auth.store import _file_lock
 
     with _file_lock(
         env_path.with_name(env_path.name + ".lock"),
@@ -2874,12 +2874,13 @@ def save_anthropic_api_key(value: str, save_fn=None):
 def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
     """Save via the unified credential lifecycle (also refreshes any config.yaml mirror of the old
     value and lifts a prior env-source suppression)."""
-    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from auth.sources import save_provider_env_credential
+    from hermes_cli.config_credentials import credential_environment
 
     # Route through the unified credential lifecycle so a rotation via the secret-capture path also
     # refreshes any config.yaml mirror of the old value and lifts a prior env-source suppression (#62269 fix
     # family).
-    save_provider_env_credential(key, value)
+    save_provider_env_credential(key, value, environment=credential_environment())
     return {"success": True, "stored_as": key, "validated": False}
 
 
@@ -3427,7 +3428,8 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        from auth.sources import save_provider_env_credential
+        from hermes_cli.config_credentials import credential_environment
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
@@ -3609,7 +3611,8 @@ def unset_config_value(key: str):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
         # the provider is fully removed instead of left resurrectable.
         # See #51071.
-        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+        from auth.sources import remove_provider_env_credential
+        from hermes_cli.config_credentials import credential_environment
 
         try:
             found = remove_provider_env_credential(key.upper()).get("found")

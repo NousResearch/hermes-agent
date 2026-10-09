@@ -60,7 +60,7 @@ class _AuthErrorFactory:
     """Raise a real AuthError from hermes_cli.auth."""
 
     def __call__(self, **kwargs):
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         raise AuthError("No API key configured for provider 'openrouter'")
 
@@ -173,7 +173,7 @@ class TestMissingProviderKeyBlocks:
         def resolve(**kwargs):
             calls.append(kwargs.get("requested"))
             if kwargs.get("requested") in (None, ""):
-                from hermes_cli.auth import AuthError
+                from auth.errors import AuthError
 
                 raise AuthError("no key")
             return {**_RUNTIME, "provider": "openrouter"}
@@ -203,7 +203,7 @@ class TestMissingProviderKeyBlocks:
         def resolve(**kwargs):
             calls.append(kwargs.get("requested"))
             if kwargs.get("requested") == "anthropic":
-                from hermes_cli.auth import AuthError
+                from auth.errors import AuthError
 
                 raise AuthError("no key")
             return {**_RUNTIME, "provider": kwargs.get("requested")}

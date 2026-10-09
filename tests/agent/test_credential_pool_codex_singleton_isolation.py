@@ -6,6 +6,8 @@ silently turned two logins into one (both then hit the same usage limit; salvage
 #106788, cluster #92198 / #95297, issue #106705).
 """
 from __future__ import annotations
+import auth.providers.codex as _auth_auth_providers_codex
+
 
 import base64
 import json
@@ -14,7 +16,7 @@ import time
 import pytest
 
 import hermes_cli.auth as auth_mod
-from agent.credential_pool import load_pool
+from auth.credential_pool import load_pool
 
 
 def _jwt(account: str, sub: str, exp: float) -> str:
@@ -53,16 +55,17 @@ def home(tmp_path, monkeypatch):
 
 
 def _stub_refresh(monkeypatch, minted: str, minted_rt: str, posted: list) -> None:
-    def fake(access_token, refresh_token):
+    def fake(access_token, refresh_token, **_auth_settings):
         posted.append(refresh_token)
         return {"access_token": minted, "refresh_token": minted_rt, "last_refresh": _iso(time.time())}
 
-    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", fake)
+    monkeypatch.setattr(_auth_auth_providers_codex, "refresh_codex_oauth_pure", fake)
 
 
 def test_independent_manual_account_refreshes_with_its_own_pair(home, monkeypatch):
     """An independent second account never adopts the singleton: its refresh POSTs its OWN refresh
     token, and the persisted row still identifies the second principal afterwards."""
+    from hermes_cli.config_credentials import credential_pool_environment
     now = time.time()
     a_at = _jwt("acct-A", "user-A", now + 8 * 3600)
     b_at = _jwt("acct-B", "user-B", now + 60)  # expiring → the pool defers it to _refresh_entry()
@@ -72,7 +75,7 @@ def test_independent_manual_account_refreshes_with_its_own_pair(home, monkeypatc
     b_new = _jwt("acct-B", "user-B", now + 8 * 3600)
     _stub_refresh(monkeypatch, b_new, "rt-B2", posted)
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     refreshed = pool._refresh_entry(next(e for e in pool.entries() if e.id == "manual"), force=False)
 
     assert posted == ["rt-B"]
@@ -87,12 +90,13 @@ def test_independent_manual_account_refreshes_with_its_own_pair(home, monkeypatc
 def test_same_account_alias_adopts_only_a_newer_singleton(home, monkeypatch):
     """A legacy alias (same principal) must follow a singleton that was re-authed AFTER it, but must
     not fall back onto a singleton older than its own rotation — that replays a consumed token."""
+    from hermes_cli.config_credentials import credential_pool_environment
     now = time.time()
     alias_at = _jwt("acct-A", "user-A", now + 8 * 3600)
     stale_singleton_at = _jwt("acct-A", "user-A", now + 3600)
     _write_store(home, {"access_token": stale_singleton_at, "refresh_token": "rt-consumed"}, _iso(now - 7200),
                  {"access_token": alias_at, "refresh_token": "rt-alias", "last_refresh": _iso(now - 60)})
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     alias = next(e for e in pool.entries() if e.id == "manual")
 
     synced = pool._sync_entry_from_auth_store(alias)
@@ -102,5 +106,5 @@ def test_same_account_alias_adopts_only_a_newer_singleton(home, monkeypatch):
     fresh_at = _jwt("acct-A", "user-A", now + 9 * 3600)
     _write_store(home, {"access_token": fresh_at, "refresh_token": "rt-fresh"}, _iso(now + 5),
                  {"access_token": alias_at, "refresh_token": "rt-alias", "last_refresh": _iso(now - 60)})
-    synced = load_pool("openai-codex")._sync_entry_from_auth_store(alias)
+    synced = load_pool("openai-codex", environment=credential_pool_environment())._sync_entry_from_auth_store(alias)
     assert (synced.access_token, synced.refresh_token) == (fresh_at, "rt-fresh")

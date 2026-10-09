@@ -7,6 +7,10 @@ FastAPI routes against a fake account service (the same fake ``hermes auth upgra
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import time
 
@@ -14,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli import anon_auth
-from hermes_cli.auth import _load_auth_store
+from auth.store import _load_auth_store
 from hermes_cli.web_server import _SESSION_TOKEN, app
 from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, INFERENCE, PORTAL, WELCOME, _model_config, _write_model_config, free_account, portal)
@@ -36,8 +40,8 @@ def _wait_for_terminal(session_id: str, timeout: float = 10.0) -> dict:
 
 
 def test_start_registers_the_transfer_and_completion_settles_the_account(portal, free_account):
-    anon_auth.ensure_portal_identity(explicit=True)
-    _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+    _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
+    _write_model_config({"provider": "nous", "default": _auth_auth_providers_nous_guest.GUEST_MODEL, "base_url": WELCOME})
 
     resp = client.post("/api/providers/oauth/nous/start", headers=HEADERS)
     assert resp.status_code == 200, resp.text
@@ -53,15 +57,15 @@ def test_start_registers_the_transfer_and_completion_settles_the_account(portal,
     assert body["account_email"] == EMAIL
     assert body["model"] == FREE_PICK
     state = _load_auth_store()["providers"]["nous"]
-    assert "anon_token" not in state and not anon_auth.is_guest_state(state)
+    assert "anon_token" not in state and not _auth_auth_providers_nous_guest.is_guest_state(state)
     model_cfg = _model_config()
     assert model_cfg["default"] == FREE_PICK
     assert model_cfg["base_url"] == INFERENCE.rstrip("/")
-    assert not anon_auth.route_is_welcome_host(model_cfg["base_url"])
+    assert not _auth_auth_providers_nous_guest.route_is_welcome_host(model_cfg["base_url"])
 
 
 def test_a_transfer_the_user_declined_is_reported_with_its_reason_and_keeps_the_free_tier(portal, free_account):
-    guest = anon_auth.ensure_portal_identity(explicit=True)
+    guest = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
     portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
 
     start = client.post("/api/providers/oauth/nous/start", headers=HEADERS).json()
@@ -74,7 +78,7 @@ def test_a_transfer_the_user_declined_is_reported_with_its_reason_and_keeps_the_
 
 
 def test_status_routes_report_the_free_tier(portal):
-    anon_auth.ensure_portal_identity(explicit=True)
+    _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
     portal_status = client.get("/api/portal", headers=HEADERS).json()
     assert portal_status["free_tier"] is True
     assert portal_status["account_tier"] == "anonymous"
@@ -88,7 +92,7 @@ def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, fr
     nothing may reach the auth store."""
     import threading
     from hermes_cli import web_server_oauth
-    guest = anon_auth.ensure_portal_identity(explicit=True)
+    guest = _auth_auth_providers_nous_guest.ensure_portal_identity(explicit=True, environment=_phase6_auth_environment())
     release = threading.Event()
 
     def _wait_until_released(client, portal_base_url, claim_code, *, expires_in, interval, cancelled=None):
@@ -105,5 +109,5 @@ def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, fr
         t.join(timeout=5)
     assert portal.token_grants == 0
     state = _load_auth_store()["providers"]["nous"]
-    assert state["anon_token"] == guest["anon_token"] and anon_auth.is_guest_state(state)
+    assert state["anon_token"] == guest["anon_token"] and _auth_auth_providers_nous_guest.is_guest_state(state)
     assert web_server_oauth._oauth_sessions.get(start["session_id"]) is None

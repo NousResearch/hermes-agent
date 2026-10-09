@@ -27,13 +27,13 @@ response), never a value the operator explicitly configured.
 """
 
 from __future__ import annotations
+import auth.providers.nous as _auth_auth_providers_nous
+
 
 import json
 import logging
 
-from hermes_cli.auth import (
-    DEFAULT_NOUS_PORTAL_URL,
-)
+from auth.store_migrations import DEFAULT_NOUS_PORTAL_URL
 
 
 class TestResolveAccessTokenEnvOverrideWins:
@@ -69,7 +69,7 @@ class TestResolveAccessTokenEnvOverrideWins:
         # The resolve memo is module-level state; clear it so each test's
         # resolution actually exercises the refresh path instead of serving
         # a token cached by a previous test.
-        monkeypatch.setattr(auth, "_RESOLVE_TOKEN_CACHE", {})
+        monkeypatch.setattr(_auth_auth_providers_nous, "_RESOLVE_TOKEN_CACHE", {})
 
         def _fake_refresh(*, client, portal_base_url, client_id, refresh_token):
             seen_portal_urls.append(portal_base_url)
@@ -79,8 +79,8 @@ class TestResolveAccessTokenEnvOverrideWins:
                 "expires_in": 3600,
             }
 
-        monkeypatch.setattr(auth, "_refresh_access_token", _fake_refresh)
-        monkeypatch.setattr(auth_nous, "_refresh_access_token", _fake_refresh)
+        monkeypatch.setattr(_auth_auth_providers_nous, "_refresh_access_token", _fake_refresh)
+        monkeypatch.setattr(_auth_auth_providers_nous, "_refresh_access_token", _fake_refresh)
 
         caplog_records = []
         logger = logging.getLogger("hermes_cli.auth")
@@ -88,7 +88,7 @@ class TestResolveAccessTokenEnvOverrideWins:
         handler.emit = lambda record: caplog_records.append(record.getMessage())
         logger.addHandler(handler)
         try:
-            auth.resolve_nous_access_token()
+            _auth_auth_providers_nous.resolve_nous_access_token()
         finally:
             logger.removeHandler(handler)
         return seen_portal_urls, caplog_records

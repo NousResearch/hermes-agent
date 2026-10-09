@@ -1,3 +1,5 @@
+
+
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server
@@ -1858,6 +1860,7 @@ def _(rid, params: dict) -> dict:
     """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
     round-trip that could only fail."""
+    from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
     try:
         from agent.billing_view import BillingState, build_billing_state
         from hermes_cli.anon_auth import has_free_tier_account
@@ -1948,7 +1951,7 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id") or ""
 
     def call():
-        from hermes_cli.auth import step_up_nous_billing_scope
+        from hermes_cli.auth_nous import step_up_nous_billing_scope
         granted = step_up_nous_billing_scope(
             open_browser=False,
             on_verification=lambda url, code: _emit(

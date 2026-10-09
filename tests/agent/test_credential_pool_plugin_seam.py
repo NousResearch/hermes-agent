@@ -11,7 +11,7 @@ import pytest
 import providers
 from providers.base import ProviderProfile
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_DEAD,
     STATUS_EXHAUSTED,
@@ -19,8 +19,8 @@ from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
 )
-from hermes_cli.auth import read_credential_pool
-from hermes_cli.auth_constants import AuthError
+from auth.pool_persistence import read_credential_pool
+from auth.errors import AuthError
 from hermes_cli.auth_plugin_providers import is_refreshable_oauth_provider
 
 
@@ -64,12 +64,13 @@ def plugin_profiles():
 
 
 def test_pool_refresh_dispatches_to_profile_hook(plugin_profiles, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     assert is_refreshable_oauth_provider("example-oauth") is True
     assert is_refreshable_oauth_provider("example-oauth-nohook") is False
     assert is_refreshable_oauth_provider("anthropic") is True  # built-ins unchanged
 
     entry = _entry()
-    pool = CredentialPool("example-oauth", [entry])
+    pool = CredentialPool("example-oauth", [entry], environment=credential_pool_environment())
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
     refreshed = pool._refresh_entry_impl(entry, force=True)
     assert plugin_profiles == ["rt-1"]
@@ -77,7 +78,7 @@ def test_pool_refresh_dispatches_to_profile_hook(plugin_profiles, monkeypatch):
 
     # Without the hook the pool must not pretend it refreshed anything.
     nohook = replace(entry, provider="example-oauth-nohook")
-    assert CredentialPool("example-oauth-nohook", [nohook])._refresh_entry_impl(nohook, force=True) is nohook
+    assert CredentialPool("example-oauth-nohook", [nohook], environment=credential_pool_environment())._refresh_entry_impl(nohook, force=True) is nohook
 
 
 def _register_hook(hook):
@@ -107,11 +108,12 @@ def _raise_terminal(entry):
     (_raise_terminal, STATUS_DEAD, ("tok-1", "rt-1"), None),
 ], ids=["token-endpoint-shape-rotates", "transient-error-benches", "relogin-required-is-terminal"])
 def test_plugin_refresh_outcome(plugin_profiles, caplog, hook, status, tokens, extra_key):
+    from hermes_cli.config_credentials import credential_pool_environment
     _register_hook(hook)
     entry = _entry(expires_at_ms=1)
-    pool = CredentialPool("example-oauth", [entry])
+    pool = CredentialPool("example-oauth", [entry], environment=credential_pool_environment())
     pool._persist()
-    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+    with caplog.at_level(logging.WARNING, logger="auth.credential_pool"):
         pool._refresh_entry(entry, force=True)
     row = PooledCredential.from_dict("example-oauth", read_credential_pool("example-oauth")[0])
     assert (row.last_status, row.access_token, row.refresh_token) == (status, *tokens)
@@ -126,6 +128,7 @@ def test_plugin_refresh_outcome(plugin_profiles, caplog, hook, status, tokens, e
 def test_plugin_refresh_adopts_peer_rotation_without_spending_token(plugin_profiles):
     """Two Hermes processes share one auth.json: the second refresh adopts the first's rotated pair
     instead of POSTing the same single-use refresh token again."""
+    from hermes_cli.config_credentials import credential_pool_environment
     calls = []
 
     def hook(entry):
@@ -133,9 +136,9 @@ def test_plugin_refresh_adopts_peer_rotation_without_spending_token(plugin_profi
         return {"access_token": f"tok-{len(calls) + 1}", "refresh_token": f"rt-{len(calls) + 1}"}
 
     _register_hook(hook)
-    first = CredentialPool("example-oauth", [_entry(expires_at_ms=1)])
+    first = CredentialPool("example-oauth", [_entry(expires_at_ms=1)], environment=credential_pool_environment())
     first._persist()
-    second = CredentialPool("example-oauth", [_entry(expires_at_ms=1)])  # stale copy, same on-disk row
+    second = CredentialPool("example-oauth", [_entry(expires_at_ms=1)], environment=credential_pool_environment())  # stale copy, same on-disk row
 
     assert first._refresh_entry(first.entries()[0], force=True).access_token == "tok-2"
     adopted = second._refresh_entry(second.entries()[0], force=True)

@@ -18,7 +18,8 @@ from cron import quota_hold as qh
 from cron.jobs import (
     _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
 )
-from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+from auth.constants import CODEX_RATE_LIMITED_CODE
+from auth.errors import AuthError
 
 QUOTA_MSG = "Codex provider quota exhausted (429); retry after 123518s. Credentials are still valid."
 

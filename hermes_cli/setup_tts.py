@@ -1,6 +1,7 @@
 """Text-to-speech provider setup (provider picker, API-key prompts, local engine installs, xAI OAuth).
 setup.py names are resolved through the module object so test patches on ``hermes_cli.setup.<name>``
 take effect; setup.py re-exports the public entry points."""
+from hermes_cli.config_credentials import credential_pool_environment as _credential_environment
 
 import logging
 import shutil
@@ -73,8 +74,8 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
     try:
-        from hermes_cli.auth import get_xai_oauth_auth_status
-        return bool(get_xai_oauth_auth_status().get("logged_in"))
+        from auth.provider_status import get_xai_oauth_auth_status
+        return bool(get_xai_oauth_auth_status(environment=_credential_environment()).get("logged_in"))
     except Exception:
         return False
 
@@ -84,9 +85,10 @@ def _run_xai_oauth_login_from_setup() -> bool:
     only — does **not** switch the active provider or rewrite ``model.provider`` (callers only need
     credentials for side tools). False on any failure (caller falls back)."""
     try:
-        from hermes_cli.auth import (
-            _is_remote_session, _save_xai_oauth_tokens, _xai_oauth_device_code_login,
-            unsuppress_credential_source)
+        from hermes_cli.auth_device_flow import _is_remote_session
+        from hermes_cli.auth_xai import _xai_oauth_device_code_login
+        from auth.providers.xai import _save_xai_oauth_tokens
+        from auth.sources import unsuppress_credential_source
     except Exception as exc:
         _setup.print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
         return False

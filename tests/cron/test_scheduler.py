@@ -1137,7 +1137,7 @@ class TestRunJobConfigEnvVarExpansion:
     def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
         """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT (unpinned job:
         a pinned one does not walk the global chain, #100437)."""
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
 
         (tmp_path / "config.yaml").write_text(
             "model:\n"

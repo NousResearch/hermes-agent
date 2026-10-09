@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session import Platform, SessionSource
 from gateway.turn_context import TurnContext
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 class _RecordingAgent:

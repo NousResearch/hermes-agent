@@ -16,7 +16,10 @@ defensive mismatch guard in ``recover_with_credential_pool`` intact while
 making it impossible for a legitimate same-call switch to trip the guard.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+
+from auth.context import CredentialScope
+from hermes_constants import get_hermes_home
 
 import pytest
 
@@ -88,7 +91,7 @@ class TestSwitchModelReloadsCredentialPool:
         agent = _make_agent("opencode-go", "qwen-coder", old_pool)
 
         with patch(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             return_value=new_pool,
         ) as load_pool_mock:
             switch_model(
@@ -108,7 +111,8 @@ class TestSwitchModelReloadsCredentialPool:
         assert agent._credential_pool.provider == "groq"
         assert agent._credential_pool is not old_pool
         # load_pool MUST have been called with the new provider.
-        load_pool_mock.assert_called_once_with("groq")
+        load_pool_mock.assert_called_once_with("groq", environment=ANY)
+        assert load_pool_mock.call_args.kwargs["environment"].scope == CredentialScope(get_hermes_home())
 
     def test_switch_to_same_provider_does_not_reload_pool(self):
         """Re-selecting the current provider must NOT churn the pool reference."""
@@ -117,7 +121,7 @@ class TestSwitchModelReloadsCredentialPool:
 
         load_pool_mock = MagicMock(name="load_pool")
 
-        with patch("agent.credential_pool.load_pool", load_pool_mock):
+        with patch("auth.credential_pool.load_pool", load_pool_mock):
             switch_model(
                 agent,
                 new_model="qwen-coder",
@@ -136,7 +140,7 @@ class TestSwitchModelReloadsCredentialPool:
         new_pool = _make_pool("groq")
         agent = _make_agent("opencode-go", "qwen-coder", None)
 
-        with patch("agent.credential_pool.load_pool", return_value=new_pool):
+        with patch("auth.credential_pool.load_pool", return_value=new_pool):
             switch_model(
                 agent,
                 new_model="llama-3.3-70b",
@@ -166,7 +170,7 @@ class TestSwitchModelReloadsCredentialPool:
         new_pool.mark_exhausted_and_rotate.return_value = None
         agent = _make_agent("opencode-go", "qwen-coder", old_pool)
 
-        with patch("agent.credential_pool.load_pool", return_value=new_pool):
+        with patch("auth.credential_pool.load_pool", return_value=new_pool):
             switch_model(
                 agent,
                 new_model="llama-3.3-70b",
@@ -199,7 +203,7 @@ class TestSwitchModelReloadsCredentialPool:
         agent = _make_agent("opencode-go", "qwen-coder", _make_pool("opencode-go"))
 
         with patch(
-            "agent.credential_pool.load_pool",
+            "auth.credential_pool.load_pool",
             side_effect=RuntimeError("simulated corrupt auth.json"),
         ):
             # Should NOT raise — pool reload failure is logged+swallowed.

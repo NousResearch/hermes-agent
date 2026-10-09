@@ -1,3 +1,9 @@
+
+import auth.constants as _auth_auth_constants
+import auth.oauth as _auth_auth_oauth
+import auth.providers.codex as _auth_auth_providers_codex
+import auth.providers.nous as _auth_auth_providers_nous
+import auth.providers.xai as _auth_auth_providers_xai
 """Regression tests for the OAuth dispatcher in hermes_cli.web_server.
 
 Bug history (2026-05-09): the `_OAUTH_PROVIDER_CATALOG` had two entries
@@ -83,10 +89,10 @@ def test_minimax_login_does_not_launch_anthropic_flow():
         "state": "stub-state",
     }
     with patch(
-        "hermes_cli.auth._minimax_request_user_code",
+        'auth.providers.minimax._minimax_request_user_code',
         return_value=fake_user_code_resp,
     ), patch(
-        "hermes_cli.auth._minimax_pkce_pair",
+        'auth.providers.minimax._minimax_pkce_pair',
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
     ), patch(
         "hermes_cli.web_server_oauth._minimax_poller",
@@ -145,13 +151,13 @@ def test_minimax_start_route_honors_poller_mock_on_owning_module(tmp_path, monke
         raise AssertionError("real _minimax_poller body must not run under the mock")
 
     with patch(
-        "hermes_cli.auth._minimax_request_user_code",
+        'auth.providers.minimax._minimax_request_user_code',
         return_value=fake_user_code_resp,
     ), patch(
-        "hermes_cli.auth._minimax_pkce_pair",
+        'auth.providers.minimax._minimax_pkce_pair',
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
     ), patch(
-        "hermes_cli.auth._minimax_poll_token",
+        'auth.providers.minimax._minimax_poll_token',
         fail_poll_token,
     ), patch(
         "hermes_cli.web_server_oauth._minimax_poller",
@@ -201,10 +207,10 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
         "state": "stub-state",
     }
     with patch(
-        "hermes_cli.auth._minimax_request_user_code",
+        'auth.providers.minimax._minimax_request_user_code',
         return_value=fake_user_code_resp,
     ), patch(
-        "hermes_cli.auth._minimax_pkce_pair",
+        'auth.providers.minimax._minimax_pkce_pair',
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
     ), patch(
         "hermes_cli.web_server_oauth._minimax_poller",
@@ -319,7 +325,7 @@ def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch
     saved = []
     _make_profile_home(tmp_path, monkeypatch, profile="coder")
     monkeypatch.setattr(httpx, "Client", _Client)
-    monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
+    monkeypatch.setattr(_auth_auth_providers_codex, "_save_codex_tokens", lambda tokens: saved.append(tokens))
 
     sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
@@ -424,7 +430,7 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
         )
         delete_finished.set()
 
-    monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
+    monkeypatch.setattr(_auth_auth_providers_codex, "_save_codex_tokens", fake_save)
     monkeypatch.setattr(ws.time, "sleep", lambda *_a, **_k: None)
 
     # Lock order: every saver enters the profile scope (_SKILLS_PROFILE_LOCK) before
@@ -480,7 +486,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         "device_code": "device-code",
         "interval": 5,
         "expires_at": time.time() + 600,
-        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+        "scope": _auth_auth_constants.DEFAULT_NOUS_SCOPE,
     }
     captured_state = {}
 
@@ -489,7 +495,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         return {**state, "agent_key": "jwt-agent-key"}
 
     monkeypatch.setattr(
-        auth_mod,
+        _auth_auth_oauth,
         "_poll_for_token",
         lambda **kwargs: {
             "access_token": "access-token",
@@ -499,15 +505,15 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         },
     )
     monkeypatch.setattr(
-        auth_mod,
+        _auth_auth_providers_nous,
         "refresh_nous_oauth_from_state",
         fake_refresh_nous_oauth_from_state,
     )
-    monkeypatch.setattr(auth_mod, "persist_nous_credentials", lambda state: None)
+    monkeypatch.setattr(_auth_auth_providers_nous, "persist_nous_credentials", lambda state, **_auth_settings: None)
 
     try:
         _web_server_oauth._nous_plain_poller(session_id)
-        assert captured_state["scope"] == auth_mod.DEFAULT_NOUS_SCOPE
+        assert captured_state["scope"] == _auth_auth_constants.DEFAULT_NOUS_SCOPE
         assert _web_server_oauth._oauth_sessions[session_id]["status"] == "approved"
     finally:
         _web_server_oauth._oauth_sessions.pop(session_id, None)
@@ -567,12 +573,12 @@ def test_accounts_offers_every_oauth_provider_from_catalog():
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
     """DELETE must not pretend to remove credentials owned by another CLI."""
-    from hermes_cli import auth as auth_mod
+    import auth.provider_state as auth_provider_state
 
     def fail_clear_provider_auth(provider_id=None):
         raise AssertionError("external providers must not reach clear_provider_auth")
 
-    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+    monkeypatch.setattr(auth_provider_state, "clear_provider_auth", fail_clear_provider_auth)
 
     resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
     assert resp.status_code == 400, resp.text
@@ -608,8 +614,9 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     ``device_code`` suppression left by a prior ``hermes auth remove
     xai-oauth``.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     from hermes_cli import auth as auth_mod
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
@@ -629,16 +636,17 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     )
 
     # Prior `hermes auth remove xai-oauth` left the source suppressed.
-    auth_mod.suppress_credential_source("xai-oauth", "device_code")
-    assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is True
+    import auth.sources as auth_sources
+    auth_sources.suppress_credential_source("xai-oauth", "device_code")
+    assert auth_sources.is_source_suppressed("xai-oauth", "device_code") is True
 
     monkeypatch.setattr(
-        auth_mod,
+        _auth_auth_providers_xai,
         "_xai_oauth_discovery",
         lambda *a, **k: {"token_endpoint": "https://auth.x.ai/token"},
     )
     monkeypatch.setattr(
-        auth_mod,
+        _auth_auth_providers_xai,
         "_xai_oauth_poll_device_token",
         lambda client, **kwargs: {
             "access_token": "xai-dashboard-access",
@@ -668,7 +676,7 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
         _web_server_oauth._oauth_sessions.pop(session_id, None)
 
     # The interactive dashboard login cleared the suppression marker.
-    assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is False
+    assert auth_sources.is_source_suppressed("xai-oauth", "device_code") is False
 
     after = json.loads(auth_path.read_text(encoding="utf-8"))
     assert after["active_provider"] == "openrouter"
@@ -677,7 +685,7 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     # The credential pool has exactly one entry, seeded from the
     # singleton as ``device_code`` — no parallel ``manual:dashboard_*``
     # duplicate sharing the single-use refresh token.
-    entries = load_pool("xai-oauth").entries()
+    entries = load_pool("xai-oauth", environment=credential_pool_environment()).entries()
     assert len(entries) == 1
     assert entries[0].source == "device_code"
     assert entries[0].refresh_token == "rt-dashboard"
@@ -729,7 +737,7 @@ def test_qwen_status_card_carries_the_getter_expiry_token_and_auth_file():
         "logged_in": True, "auth_file": "/home/u/.qwen/oauth_creds.json", "source": "qwen-cli",
         "api_key": "qwen-access-token-secret-xyz", "expires_at_ms": expires_at_ms,
     }
-    with patch("hermes_cli.auth.get_qwen_auth_status", return_value=qwen_status):
+    with patch("auth.providers.qwen.get_qwen_auth_status", return_value=qwen_status):
         out = _rt_oauth._resolve_provider_status("qwen-oauth", None)
 
     assert out["logged_in"] is True
@@ -772,17 +780,17 @@ def test_dashboard_poller_saves_only_into_the_profile_the_login_started_in(tmp_p
     record = lambda *_a, **_k: saved_into.append(str(get_hermes_home()))
     if provider == "xai-oauth":
         sess.update(device_code="dc", expires_at=time.time() + 600, interval=1)
-        monkeypatch.setattr(auth_mod, "_xai_oauth_discovery", lambda *a, **k: {"token_endpoint": "https://x.test/t"})
-        monkeypatch.setattr(auth_mod, "_xai_oauth_poll_device_token", provider_answers)
-        monkeypatch.setattr(auth_mod, "_save_xai_oauth_tokens", record)
-        monkeypatch.setattr(auth_mod, "mark_provider_active_if_unset", lambda *a, **k: None)
-        monkeypatch.setattr(auth_mod, "unsuppress_credential_source", lambda *a, **k: None)
+        monkeypatch.setattr("auth.providers.xai._xai_oauth_discovery", lambda *a, **k: {"token_endpoint": "https://x.test/t"})
+        monkeypatch.setattr("auth.providers.xai._xai_oauth_poll_device_token", provider_answers)
+        monkeypatch.setattr("auth.providers.xai._save_xai_oauth_tokens", record)
+        monkeypatch.setattr("auth.provider_state.mark_provider_active_if_unset", lambda *a, **k: None)
+        monkeypatch.setattr("auth.sources.unsuppress_credential_source", lambda *a, **k: None)
         poller = _web_server_oauth._xai_device_poller
     else:
         sess.update(portal_base_url="https://m.test", client_id="cid", user_code="uc", code_verifier="cv",
                     expired_in_raw=600, interval_ms=1000)
-        monkeypatch.setattr(auth_mod, "_minimax_poll_token", provider_answers)
-        monkeypatch.setattr(auth_mod, "_minimax_save_auth_state", record)
+        monkeypatch.setattr("auth.providers.minimax._minimax_poll_token", provider_answers)
+        monkeypatch.setattr("auth.providers.minimax._minimax_save_auth_state", record)
         poller = _web_server_oauth._minimax_poller
     try:
         poller(sid)

@@ -154,14 +154,15 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
         if (time.time() - cached_at) < _TOKEN_CACHE_TTL_SECONDS:
             return token, base
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
 
         state = get_provider_auth_state("nous") or {}
     except Exception:
         state = {}
     base = resolve_portal_base_url(state)
     try:
-        from hermes_cli.auth import AuthError, resolve_nous_access_token
+        from auth.errors import AuthError
+        from auth.providers.nous import resolve_nous_access_token
     except ImportError:
         # auth module unavailable — fall back to the raw stored token.
         token = state.get("access_token")

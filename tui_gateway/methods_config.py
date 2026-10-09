@@ -434,7 +434,7 @@ def _(rid, params: dict) -> dict:
     unknown -> ``ok=False``."""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
+        from auth.secret_validation import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
         requested = str(params.get("provider") or "").strip() or None
 

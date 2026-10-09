@@ -6,19 +6,19 @@ from hermes_cli.config import load_env, save_env_value
 def test_run_anthropic_oauth_flow_prefers_claude_code_credentials(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "agent.anthropic_credentials.run_oauth_setup_token",
+        'hermes_cli.auth_anthropic.run_oauth_setup_token',
         lambda: "sk-ant-oat01-from-claude-setup",
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {
+        'auth.providers.anthropic.read_claude_code_credentials',
+        lambda**_auth_settings: {
             "accessToken": "cc-access-token",
             "refreshToken": "cc-refresh-token",
             "expiresAt": 9999999999999,
         },
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.is_claude_code_token_valid",
+        'auth.providers.anthropic.is_claude_code_token_valid',
         lambda creds: True,
     )
 
@@ -36,9 +36,9 @@ def test_run_anthropic_oauth_flow_prefers_claude_code_credentials(tmp_path, monk
 
 def test_run_anthropic_oauth_flow_manual_token_still_persists(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("agent.anthropic_credentials.run_oauth_setup_token", lambda: None)
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_credentials.is_claude_code_token_valid", lambda creds: False)
+    monkeypatch.setattr('hermes_cli.auth_anthropic.run_oauth_setup_token', lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
+    monkeypatch.setattr('auth.providers.anthropic.is_claude_code_token_valid', lambda creds: False)
     monkeypatch.setattr("builtins.input", lambda _prompt="": "sk-ant-oat01-manual-token")
     monkeypatch.setattr(
         "hermes_cli.secret_prompt.masked_secret_prompt",

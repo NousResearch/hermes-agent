@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
-from agent.anthropic_credentials import _is_oauth_token
+from auth.providers.anthropic import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
@@ -401,7 +401,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    from agent.anthropic_credentials import anthropic_route_is_oauth
+    from auth.providers.anthropic import anthropic_route_is_oauth
     if anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
@@ -865,3 +865,47 @@ def create_anthropic_message(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from pathlib import Path  # noqa: F401,E402
+from typing import Tuple  # noqa: F401,E402
+import copy  # noqa: F401,E402
+import json  # noqa: F401,E402
+import os  # noqa: F401,E402
+import platform  # noqa: F401,E402
+import secrets  # noqa: F401,E402
+import stat  # noqa: F401,E402
+from urllib.parse import urlparse  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'CredentialPersistError': ('auth.providers.anthropic', 'CredentialPersistError'),
+    'base_url_host_matches': ('utils', 'base_url_host_matches'),
+    'base_url_hostname': ('utils', 'base_url_hostname'),
+    'claude_code_credentials_path': ('auth.providers.anthropic', 'claude_code_credentials_path'),
+    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
+    'is_claude_code_token_valid': ('auth.providers.anthropic', 'is_claude_code_token_valid'),
+    'is_rotation_consumed_uncommitted': ('auth.providers.anthropic', 'is_rotation_consumed_uncommitted'),
+    'mark_rotation_consumed_uncommitted': ('auth.providers.anthropic', 'mark_rotation_consumed_uncommitted'),
+    'read_claude_code_credentials': ('auth.providers.anthropic', 'read_claude_code_credentials'),
+    'read_hermes_oauth_credentials': ('auth.providers.anthropic', 'read_hermes_oauth_credentials'),
+    'refresh_anthropic_oauth_pure': ('auth.providers.anthropic', 'refresh_anthropic_oauth_pure'),
+    'resolve_anthropic_token': ('auth.providers.anthropic', 'resolve_anthropic_token'),
+    'run_hermes_oauth_login_pure': ('hermes_cli.auth_anthropic', 'run_hermes_oauth_login_pure'),
+    'run_oauth_setup_token': ('hermes_cli.auth_anthropic', 'run_oauth_setup_token'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

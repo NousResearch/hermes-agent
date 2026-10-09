@@ -26,6 +26,10 @@ and the pool quarantine; this file covers what resolution does afterwards.
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
 
 import json
 import os
@@ -33,9 +37,9 @@ import time
 
 import pytest
 
-from agent import anthropic_credentials as AA
+import auth.providers.anthropic as AA
 from agent.auxiliary_client import _refresh_provider_credentials
-from agent.credential_pool import AUTH_TYPE_OAUTH
+from auth.credential_pool import AUTH_TYPE_OAUTH
 
 _EXPIRED_MS = 1_000
 
@@ -52,9 +56,9 @@ _SINGLETON_FILENAMES = frozenset({".credentials.json", ".anthropic_oauth.json"})
 @pytest.fixture(autouse=True)
 def _clean_spent_registry():
     """The consumed-rotation registry is process-global; isolate each test."""
-    AA._SPENT_ROTATION_FINGERPRINTS.clear()
+    _auth_auth_providers_anthropic._SPENT_ROTATION_FINGERPRINTS.clear()
     yield
-    AA._SPENT_ROTATION_FINGERPRINTS.clear()
+    _auth_auth_providers_anthropic._SPENT_ROTATION_FINGERPRINTS.clear()
 
 
 @pytest.fixture
@@ -90,8 +94,8 @@ def claude_credentials(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(AA, "claude_code_credentials_path", lambda: cred_path)
-    monkeypatch.setattr(AA, "_read_claude_code_credentials_from_keychain", lambda: None)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "claude_code_credentials_path", lambda: cred_path)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "_read_claude_code_credentials_from_keychain", lambda: None)
     return cred_path
 
 
@@ -142,21 +146,21 @@ def _add_independent_pool_entry(home):
 
 
 def test_registry_matches_only_the_recorded_secret():
-    AA.mark_rotation_consumed_uncommitted(_STALE_REFRESH, "", None)
+    _auth_auth_providers_anthropic.mark_rotation_consumed_uncommitted(_STALE_REFRESH, "", None)
 
-    assert AA.is_rotation_consumed_uncommitted(_STALE_REFRESH)
-    assert not AA.is_rotation_consumed_uncommitted(_INDEPENDENT_REFRESH)
-    assert not AA.is_rotation_consumed_uncommitted("")
-    assert not AA.is_rotation_consumed_uncommitted(None)
+    assert _auth_auth_providers_anthropic.is_rotation_consumed_uncommitted(_STALE_REFRESH)
+    assert not _auth_auth_providers_anthropic.is_rotation_consumed_uncommitted(_INDEPENDENT_REFRESH)
+    assert not _auth_auth_providers_anthropic.is_rotation_consumed_uncommitted("")
+    assert not _auth_auth_providers_anthropic.is_rotation_consumed_uncommitted(None)
 
 
 def test_registry_stays_bounded():
-    for i in range(AA._SPENT_ROTATION_MAX_TRACKED * 2):
-        AA.mark_rotation_consumed_uncommitted(f"sk-ant-ort01-{i}")
+    for i in range(_auth_auth_providers_anthropic._SPENT_ROTATION_MAX_TRACKED * 2):
+        _auth_auth_providers_anthropic.mark_rotation_consumed_uncommitted(f"sk-ant-ort01-{i}")
 
-    assert len(AA._SPENT_ROTATION_FINGERPRINTS) == AA._SPENT_ROTATION_MAX_TRACKED
-    assert AA.is_rotation_consumed_uncommitted(
-        f"sk-ant-ort01-{AA._SPENT_ROTATION_MAX_TRACKED * 2 - 1}"
+    assert len(_auth_auth_providers_anthropic._SPENT_ROTATION_FINGERPRINTS) == _auth_auth_providers_anthropic._SPENT_ROTATION_MAX_TRACKED
+    assert _auth_auth_providers_anthropic.is_rotation_consumed_uncommitted(
+        f"sk-ant-ort01-{_auth_auth_providers_anthropic._SPENT_ROTATION_MAX_TRACKED * 2 - 1}"
     ), "the most recent rotation must survive eviction"
 
 
@@ -176,10 +180,10 @@ def test_resolve_returns_none_when_the_rotation_could_not_commit(
     credentials file, so without the consumed-rotation verdict this returns the
     already-spent access token and the caller sees a success.
     """
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
-    assert AA.resolve_anthropic_token() is None, (
+    assert _auth_auth_providers_anthropic.resolve_anthropic_token(environment=_phase6_auth_environment()) is None, (
         "a consumed-but-uncommitted rotation must not resolve to a usable token"
     )
 
@@ -195,7 +199,7 @@ def test_auxiliary_refresh_reports_failure_for_a_lost_commit(
     provider recovered, which is the point at which the failure stops being
     visible anywhere.
     """
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
     assert _refresh_provider_credentials("anthropic", failed_api_key=_STALE_ACCESS) is False
@@ -206,10 +210,10 @@ def test_independent_pool_credential_stays_eligible(
 ):
     """Failing closed is scoped to the spent family, not to Anthropic as a whole."""
     _add_independent_pool_entry(hermes_home)
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
-    resolved = AA.resolve_anthropic_token()
+    resolved = _auth_auth_providers_anthropic.resolve_anthropic_token(environment=_phase6_auth_environment())
 
     assert resolved == _INDEPENDENT_ACCESS, (
         "an unrelated credential must still be selectable after the quarantine"
@@ -220,10 +224,10 @@ def test_successful_commit_leaves_the_credential_usable(
     hermes_home, claude_credentials, monkeypatch
 ):
     """Control: nothing is quarantined when the commit actually lands."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
 
-    assert AA.resolve_anthropic_token() == _ROTATED_ACCESS
-    assert AA._SPENT_ROTATION_FINGERPRINTS == {}
+    assert _auth_auth_providers_anthropic.resolve_anthropic_token(environment=_phase6_auth_environment()) == _ROTATED_ACCESS
+    assert _auth_auth_providers_anthropic._SPENT_ROTATION_FINGERPRINTS == {}
 
 
 # ---------------------------------------------------------------------------
@@ -235,16 +239,16 @@ def test_failed_commit_persists_the_verdict_to_the_sidecar(
     hermes_home, claude_credentials, monkeypatch
 ):
     """The verdict must outlive this process: it lands in the sidecar file."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
-    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
+    assert _auth_auth_providers_anthropic._refresh_oauth_token(_auth_auth_providers_anthropic.read_claude_code_credentials(environment=_phase6_auth_environment()), environment=_phase6_auth_environment()) is None
 
-    sidecar = AA._spent_rotation_sidecar_path(claude_credentials)
+    sidecar = _auth_auth_providers_anthropic._spent_rotation_sidecar_path(claude_credentials)
     assert sidecar.exists(), "the terminal verdict must be durably persisted"
     payload = json.loads(sidecar.read_text(encoding="utf-8"))
     fingerprints = set(payload["fingerprints"])
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
 
     assert fingerprint_secret_value(_STALE_REFRESH) in fingerprints
     assert fingerprint_secret_value(_STALE_ACCESS) in fingerprints
@@ -254,44 +258,7 @@ def test_failed_commit_persists_the_verdict_to_the_sidecar(
         assert secret not in raw
 
 
-_SECOND_PROCESS_WITNESS = r"""
-import json
-import sys
-
-cred_path_str, sidecar_dir = sys.argv[1], sys.argv[2]
-
-from pathlib import Path
-
-import agent.anthropic_credentials as AA
-
-cred_path = Path(cred_path_str)
-AA.claude_code_credentials_path = lambda: cred_path
-AA._read_claude_code_credentials_from_keychain = lambda *a, **k: None
-
-posted = []
-
-
-def _must_not_post(refresh_token, *a, **kw):
-    posted.append(refresh_token)
-    raise AssertionError("process B replayed a spent refresh token")
-
-
-AA.refresh_anthropic_oauth_pure = _must_not_post
-
-creds = AA.read_claude_code_credentials()
-result = {
-    "registry_empty": len(AA._SPENT_ROTATION_FINGERPRINTS) == 0,
-    "sidecar_verdict_access": AA.is_rotation_consumed_uncommitted(
-        creds["accessToken"], source_path=cred_path
-    ),
-    "sidecar_verdict_refresh": AA.is_rotation_consumed_uncommitted(
-        creds["refreshToken"], source_path=cred_path
-    ),
-    "resolved": AA._resolve_claude_code_token_from_credentials(creds),
-    "posted": posted,
-}
-print(json.dumps(result))
-"""
+_SECOND_PROCESS_WITNESS = '\nfrom hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment\n\nimport json\nimport sys\n\ncred_path_str, sidecar_dir = sys.argv[1], sys.argv[2]\n\nfrom pathlib import Path\n\nimport auth.providers.anthropic as AA\n\ncred_path = Path(cred_path_str)\nAA.claude_code_credentials_path = lambda: cred_path\nAA._read_claude_code_credentials_from_keychain = lambda *a, **k: None\n\nposted = []\n\n\ndef _must_not_post(refresh_token, *a, **kw):\n    posted.append(refresh_token)\n    raise AssertionError("process B replayed a spent refresh token")\n\n\nAA.refresh_anthropic_oauth_pure = _must_not_post\n\ncreds = AA.read_claude_code_credentials(environment=_phase6_auth_environment())\nresult = {\n    "registry_empty": len(AA._SPENT_ROTATION_FINGERPRINTS) == 0,\n    "sidecar_verdict_access": AA.is_rotation_consumed_uncommitted(\n        creds["accessToken"], source_path=cred_path\n    ),\n    "sidecar_verdict_refresh": AA.is_rotation_consumed_uncommitted(\n        creds["refreshToken"], source_path=cred_path\n    ),\n    "resolved": AA._resolve_claude_code_token_from_credentials(creds, environment=_phase6_auth_environment()),\n    "posted": posted,\n}\nprint(json.dumps(result))\n'
 
 
 def test_second_process_adopts_the_terminal_verdict(
@@ -308,10 +275,10 @@ def test_second_process_adopts_the_terminal_verdict(
     import sys
 
     # Process A: successful POST, failed durable commit.
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    monkeypatch.setattr(_auth_auth_providers_anthropic, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
-    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
-    assert AA._spent_rotation_sidecar_path(claude_credentials).exists()
+    assert _auth_auth_providers_anthropic._refresh_oauth_token(_auth_auth_providers_anthropic.read_claude_code_credentials(environment=_phase6_auth_environment()), environment=_phase6_auth_environment()) is None
+    assert _auth_auth_providers_anthropic._spent_rotation_sidecar_path(claude_credentials).exists()
 
     # Process B: fresh interpreter, same shared credential source.
     import agent as _agent_pkg
@@ -358,6 +325,6 @@ def test_control_second_process_without_sidecar_still_resolves(
     fresh["claudeAiOauth"]["expiresAt"] = int(time.time() * 1000) + 3_600_000
     claude_credentials.write_text(json.dumps(fresh), encoding="utf-8")
 
-    assert not AA._spent_rotation_sidecar_path(claude_credentials).exists()
-    creds = AA.read_claude_code_credentials()
-    assert AA._resolve_claude_code_token_from_credentials(creds) == _STALE_ACCESS
+    assert not _auth_auth_providers_anthropic._spent_rotation_sidecar_path(claude_credentials).exists()
+    creds = _auth_auth_providers_anthropic.read_claude_code_credentials(environment=_phase6_auth_environment())
+    assert _auth_auth_providers_anthropic._resolve_claude_code_token_from_credentials(creds, environment=_phase6_auth_environment()) == _STALE_ACCESS

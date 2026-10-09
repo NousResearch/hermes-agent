@@ -41,12 +41,13 @@ def home(tmp_path, monkeypatch):
 # plain registry provider. Both must honour the on-disk env row.
 @pytest.mark.parametrize("provider,primary", [("deepseek", "DEEPSEEK_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")])
 def test_on_disk_env_row_outside_registry_tuple_joins_rotation(home, provider, primary):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     extra = f"{primary}_2"
     _write_home(home, provider, {primary: SYN_PRIMARY, extra: SYN_SECONDARY}, extra)
 
-    pool = load_pool(provider)
+    pool = load_pool(provider, environment=credential_pool_environment())
     available, _ = pool._available_entries()
     assert sorted(e.runtime_api_key for e in available) == sorted([SYN_PRIMARY, SYN_SECONDARY])
     assert {pool.select().source for _ in range(4)} == {f"env:{primary}", f"env:{extra}"}
@@ -57,11 +58,12 @@ def test_on_disk_env_row_outside_registry_tuple_joins_rotation(home, provider, p
 
 
 def test_unset_env_row_stays_out_of_rotation_and_on_disk(home):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     _write_home(home, "deepseek", {"DEEPSEEK_API_KEY": SYN_PRIMARY}, "DEEPSEEK_API_KEY_2")
 
-    pool = load_pool("deepseek")
+    pool = load_pool("deepseek", environment=credential_pool_environment())
     available, _ = pool._available_entries()
     assert [e.source for e in available] == ["env:DEEPSEEK_API_KEY"]
     # load_pool() is a non-destructive read for env rows (#9331): the
@@ -74,7 +76,8 @@ def test_unset_env_row_stays_out_of_rotation_and_on_disk(home):
 # not silently enter rotation.
 @pytest.mark.parametrize("provider,primary", [("deepseek", "DEEPSEEK_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")])
 def test_numbered_env_siblings_seed_rotation_without_config(home, provider, primary, monkeypatch):
-    from agent.credential_pool import load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import load_pool
 
     for n in (3, 5):
         monkeypatch.delenv(f"{primary}_{n}", raising=False)
@@ -86,7 +89,7 @@ def test_numbered_env_siblings_seed_rotation_without_config(home, provider, prim
     from hermes_cli.config import invalidate_env_cache
     invalidate_env_cache()
 
-    pool = load_pool(provider)
+    pool = load_pool(provider, environment=credential_pool_environment())
     available, _ = pool._available_entries()
     assert {e.source for e in available} == {f"env:{primary}", f"env:{primary}_2", f"env:{primary}_3"}
     assert len({pool.select().source for _ in range(6)}) == 3

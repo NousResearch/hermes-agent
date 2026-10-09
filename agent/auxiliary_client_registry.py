@@ -57,8 +57,9 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
         AnthropicAuxiliaryClient, _AuxProbeClientStub, _aux_probe_active,
         _get_aux_model_for_provider, _normalize_resolved_model, _route_client,
     )
-    from agent.anthropic_credentials import anthropic_route_is_oauth
-    from hermes_cli.auth import get_provider_auth_state, resolve_minimax_oauth_runtime_credentials
+    from auth.providers.anthropic import anthropic_route_is_oauth
+    from hermes_cli.auth import get_provider_auth_state
+    from auth.providers.minimax import resolve_minimax_oauth_runtime_credentials
 
     # Probe mode answers "resolvable?" for availability gates and must not touch the
     # network: read the raw persisted state (access_token + inference_base_url present →

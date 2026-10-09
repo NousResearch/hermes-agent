@@ -16,7 +16,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     stays a strict single-provider check so onboarding can verify the provider just connected
     without another provider's fallback masking a failed connection. Both branches report the model.
     """
-    from hermes_cli.auth import has_usable_secret
+    from auth.secret_validation import has_usable_secret
     from hermes_cli.config import load_config
     from hermes_cli.main import _has_any_provider_configured
     from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback

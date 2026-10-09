@@ -1,3 +1,4 @@
+import auth.store as auth_storage
 import os
 import json
 from datetime import datetime, timedelta, timezone
@@ -96,7 +97,7 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
         }
     }))
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
+        'auth.providers.nous.resolve_nous_access_token',
         lambda refresh_skew_seconds=120: "fresh-token",
     )
 
@@ -123,7 +124,7 @@ def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tm
         return "fresh-token"
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
+        'auth.providers.nous.resolve_nous_access_token',
         _record_refresh,
     )
 
@@ -230,8 +231,8 @@ def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profi
 
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
     monkeypatch.setattr(auth_mod, "get_hermes_home", lambda: profile)
-    monkeypatch.setattr(auth_mod, "_global_auth_store_cache", None)
-    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile / "auth.json")
+    monkeypatch.setattr(auth_storage, "_global_auth_store_cache", None)
+    monkeypatch.setattr(auth_storage, "_auth_file_path", lambda: profile / "auth.json")
 
     state = managed_tool_gateway._read_nous_provider_state()
 

@@ -275,7 +275,7 @@ def _fetch_catalog(
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
     """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
     an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
-    from agent.credential_persistence import fingerprint_secret_value
+    from auth.persistence import fingerprint_secret_value
 
     cache_key = (base_url, fingerprint_secret_value(api_key))
     cached = _CATALOG_CACHE.get(cache_key)

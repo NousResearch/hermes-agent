@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     STATUS_EXHAUSTED,
     STATUS_OK,
     CredentialPool,
@@ -48,6 +48,7 @@ def _credential(provider="openrouter", **overrides):
 
 
 def _exhausted_pool(provider="openrouter"):
+    from hermes_cli.config_credentials import credential_pool_environment
     entry = _credential(
         provider,
         last_status=STATUS_EXHAUSTED,
@@ -55,14 +56,16 @@ def _exhausted_pool(provider="openrouter"):
         last_error_code=402,
         last_error_message="You requested up to 65536 tokens, but can only afford 4282.",
     )
-    return CredentialPool(provider, [entry])
+    return CredentialPool(provider, [entry], environment=credential_pool_environment())
 
 
 def _healthy_pool(provider="openrouter"):
-    return CredentialPool(provider, [_credential(provider, last_status=STATUS_OK)])
+    from hermes_cli.config_credentials import credential_pool_environment
+    return CredentialPool(provider, [_credential(provider, last_status=STATUS_OK)], environment=credential_pool_environment())
 
 
 def _exhausted_pool_429(provider="openrouter"):
+    from hermes_cli.config_credentials import credential_pool_environment
     entry = _credential(
         provider,
         last_status=STATUS_EXHAUSTED,
@@ -70,7 +73,7 @@ def _exhausted_pool_429(provider="openrouter"):
         last_error_code=429,
         last_error_message="rate limited",
     )
-    return CredentialPool(provider, [entry])
+    return CredentialPool(provider, [entry], environment=credential_pool_environment())
 
 
 def _patch_no_routed_client(monkeypatch):
@@ -97,7 +100,7 @@ def test_exhausted_pool_raises_typed_billing_error(monkeypatch, provider, model)
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _exhausted_pool(provider)
+        "auth.credential_pool.load_pool", lambda p, environment=None: _exhausted_pool(provider)
     )
 
     with pytest.raises(ProviderCredentialsExhaustedError) as excinfo:
@@ -120,7 +123,7 @@ def test_healthy_pool_keeps_the_existing_diagnostic(monkeypatch):
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _healthy_pool("openrouter")
+        "auth.credential_pool.load_pool", lambda p, environment=None: _healthy_pool("openrouter")
     )
 
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
@@ -129,11 +132,12 @@ def test_healthy_pool_keeps_the_existing_diagnostic(monkeypatch):
 
 def test_empty_pool_keeps_the_existing_diagnostic(monkeypatch):
     """No read of the pool (empty / unreadable) must not invent an exhaustion verdict."""
+    from hermes_cli.config_credentials import credential_pool_environment
     from agent import agent_init
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: CredentialPool("openrouter", [])
+        "auth.credential_pool.load_pool", lambda p, environment=None: CredentialPool("openrouter", [], environment=credential_pool_environment())
     )
 
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
@@ -154,14 +158,16 @@ def test_pool_billing_message_names_billing_entry():
 
 
 def test_pool_billing_message_none_when_pool_is_usable():
+    from hermes_cli.config_credentials import credential_pool_environment
     from agent.auxiliary_unavailable import pool_billing_message
 
     assert pool_billing_message("openrouter", pool=_healthy_pool()) is None
-    assert pool_billing_message("openrouter", pool=CredentialPool("openrouter", [])) is None
+    assert pool_billing_message("openrouter", pool=CredentialPool("openrouter", [], environment=credential_pool_environment())) is None
 
 
 def test_pool_billing_message_defers_non_billing_cooldown():
     """A plain 429/quota bench is not billing: the caller keeps the cooldown wording (#56810)."""
+    from hermes_cli.config_credentials import credential_pool_environment
     from agent.auxiliary_unavailable import pool_billing_message
 
     entry = _credential(
@@ -171,7 +177,7 @@ def test_pool_billing_message_defers_non_billing_cooldown():
         last_error_code=429,
         last_error_message="rate limited",
     )
-    pool = CredentialPool("openrouter", [entry])
+    pool = CredentialPool("openrouter", [entry], environment=credential_pool_environment())
     assert pool_billing_message("openrouter", pool=pool) is None
 
 
@@ -217,7 +223,7 @@ def test_openrouter_quota_cooldown_still_reports_the_cooldown(monkeypatch, tmp_p
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _exhausted_pool_429("openrouter")
+        "auth.credential_pool.load_pool", lambda p, environment=None: _exhausted_pool_429("openrouter")
     )
 
     with pytest.raises(RuntimeError) as excinfo:

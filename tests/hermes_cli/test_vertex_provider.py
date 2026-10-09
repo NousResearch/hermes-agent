@@ -13,7 +13,7 @@ import pytest
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     import agent.vertex_adapter as va
     from hermes_cli import runtime_provider as rp
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     monkeypatch.setattr(va, "get_vertex_config", lambda: (None, None))
     with pytest.raises(AuthError):

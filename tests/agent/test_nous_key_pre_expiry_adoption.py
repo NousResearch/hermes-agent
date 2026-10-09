@@ -31,7 +31,7 @@ class _Agent(ClientLifecycleMixin):
 
 def test_key_far_from_expiry_is_left_alone_without_touching_the_store():
     agent = _Agent(_jwt(time.time() + 3000))
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", side_effect=AssertionError("must not hit the store")):
+    with patch('auth.providers.nous.resolve_nous_runtime_credentials', side_effect=AssertionError("must not hit the store")):
         assert agent._adopt_nous_key_before_expiry() is False
     assert agent.adopted == []
 
@@ -46,7 +46,7 @@ def test_key_inside_the_skew_adopts_the_stores_fresh_key_without_forcing_a_refre
         calls.append(kw)
         return {"api_key": fresh, "base_url": agent.base_url}
 
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", side_effect=resolve):
+    with patch('auth.providers.nous.resolve_nous_runtime_credentials', side_effect=resolve):
         assert agent._adopt_nous_key_before_expiry() is True
     assert calls[0]["force_refresh"] is False  # the keepalive/peer refresh is adopted, never re-minted
     assert agent.adopted == [(fresh, "nous_credential_refresh")]
@@ -57,14 +57,14 @@ def test_a_fresh_key_for_a_different_account_is_never_adopted():
     logged-in singleton's account-B key and the next real request went out as B. Identity is preserved."""
     agent = _Agent(_jwt(time.time() + 60, sub="acct-A"))
     other = _jwt(time.time() + 3600, sub="acct-B")
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": other, "base_url": agent.base_url}):
+    with patch('auth.providers.nous.resolve_nous_runtime_credentials', return_value={"api_key": other, "base_url": agent.base_url}):
         assert agent._adopt_nous_key_before_expiry() is False
     assert agent.adopted == [] and agent.api_key != other
 
 
 def test_a_key_without_an_account_claim_is_left_alone_proactively():
     agent = _Agent(_jwt(time.time() + 60, sub=""))
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", side_effect=AssertionError("must not hit the store")):
+    with patch('auth.providers.nous.resolve_nous_runtime_credentials', side_effect=AssertionError("must not hit the store")):
         assert agent._adopt_nous_key_before_expiry() is False
 
 
@@ -72,7 +72,7 @@ def test_same_key_back_from_the_store_is_not_readopted():
     """No client rebuild when the store still holds the key in hand (refresh pending elsewhere)."""
     key = _jwt(time.time() + 60)
     agent = _Agent(key)
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": key, "base_url": agent.base_url}):
+    with patch('auth.providers.nous.resolve_nous_runtime_credentials', return_value={"api_key": key, "base_url": agent.base_url}):
         assert agent._adopt_nous_key_before_expiry() is False
     assert agent.adopted == []
 
@@ -83,7 +83,7 @@ def test_keepalive_thread_starts_when_an_agent_routes_to_nous(monkeypatch, tmp_p
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
     started = []
-    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: started.append(1))
+    monkeypatch.setattr("auth.keepalive.start_nous_auth_keepalive", lambda **kwargs: started.append(1))
     # Tool discovery and the SDK client are irrelevant to the keepalive wiring and dominate runtime.
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **k: {})

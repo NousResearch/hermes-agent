@@ -30,7 +30,7 @@ def test_xai_api_key_picker_merges_models_dev_when_live_unavailable():
     mdev = ["grok-build-0.1", "grok-new-from-models-dev", top]
     with (
         patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_cli.runtime_provider_credentials.resolve_api_key_provider_credentials",
             side_effect=Exception("no key"),
         ),
         patch("agent.models_dev.list_agentic_models", return_value=mdev) as mocked,

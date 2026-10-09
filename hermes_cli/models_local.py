@@ -396,7 +396,7 @@ def _lmstudio_fetch_raw_models(
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
-            from hermes_cli.auth import AuthError
+            from auth.errors import AuthError
             raise AuthError(
                 f"LM Studio rejected the request with HTTP {exc.code}.",
                 provider="lmstudio",

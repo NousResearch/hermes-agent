@@ -195,7 +195,7 @@ class CLIBillingMixin:
             return False
         print(f"  {t('cli.billing.opening_browser_remote_spending')}")
         try:
-            from hermes_cli.auth import step_up_nous_billing_scope
+            from hermes_cli.auth_nous import step_up_nous_billing_scope
             granted = step_up_nous_billing_scope(open_browser=True)
         except Exception as exc:
             print(f"  {t('cli.billing.couldnt_allow_remote_spending', error=exc)}")
@@ -215,7 +215,7 @@ class CLIBillingMixin:
         if not url:
             return False
         try:
-            from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+            from hermes_cli.auth_device_flow import _can_open_graphical_browser, _is_remote_session
             if _is_remote_session() or not _can_open_graphical_browser():
                 return False
         except Exception:

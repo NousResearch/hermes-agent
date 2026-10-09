@@ -5,6 +5,10 @@ Covers `_plugin_image_gen_providers`, `_visible_providers`, and
 """
 
 from __future__ import annotations
+import auth.providers.codex as _auth_auth_providers_codex
+import auth.provider_status as provider_status
+import hermes_cli.auth_codex as codex_login
+
 
 from types import SimpleNamespace
 
@@ -163,12 +167,12 @@ class TestCodexOAuthBootstrapHook:
     def test_hook_starts_codex_oauth_only_when_credentials_missing(self, monkeypatch, logged_in):
         from hermes_cli import auth, tools_config_post_setup
 
-        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": logged_in})
+        monkeypatch.setattr(provider_status, "get_codex_auth_status", lambda **_kwargs: {"logged_in": logged_in})
         monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
         started, saved = [], []
-        monkeypatch.setattr(auth, "_codex_device_code_login",
+        monkeypatch.setattr(codex_login, "_codex_device_code_login",
                             lambda: started.append(1) or {"tokens": {"access_token": "t"}, "last_refresh": "x"})
-        monkeypatch.setattr(auth, "_save_codex_tokens", lambda tokens, last_refresh=None, **kw: saved.append(kw))
+        monkeypatch.setattr(_auth_auth_providers_codex, "_save_codex_tokens", lambda tokens, last_refresh=None, **kw: saved.append(kw))
 
         tools_config_post_setup._POST_SETUP_HOOKS["openai_codex"]()
 
@@ -183,9 +187,9 @@ class TestCodexOAuthBootstrapHook:
         from hermes_cli import auth, tools_config_post_setup
 
         monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
-        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(provider_status, "get_codex_auth_status", lambda **_kwargs: {"logged_in": False})
         monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
-        monkeypatch.setattr(auth, "_codex_device_code_login",
+        monkeypatch.setattr(codex_login, "_codex_device_code_login",
                             lambda: pytest.fail("device-code login must not start without a human"))
 
         tools_config_post_setup._POST_SETUP_HOOKS["openai_codex"]()
@@ -197,7 +201,7 @@ class TestCodexOAuthBootstrapHook:
 
         row = {"name": "OpenAI (Codex auth)", "env_vars": [], "image_gen_plugin_name": "openai-codex",
                "post_setup": "openai_codex"}
-        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(provider_status, "get_codex_auth_status", lambda **_kwargs: {"logged_in": False})
         assert tools_config.provider_readiness_status(row, {}) == "needs_auth"
-        monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(provider_status, "get_codex_auth_status", lambda **_kwargs: {"logged_in": True})
         assert tools_config.provider_readiness_status(row, {}) == "ready"

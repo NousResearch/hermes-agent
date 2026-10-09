@@ -5,6 +5,10 @@ Split out of ``hermes_cli/model_switch.py``; every moved name is re-imported the
 ``hermes_cli.model_switch.<name>`` keeps resolving (and monkeypatching) as before."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
+
 
 import logging
 import http.client
@@ -174,8 +178,8 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     accepts a pool whose entries are all in cooldown: a rate-limited provider is not a signed-out
     one, and limits are per-model for many providers, so another model may still work."""
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider)
+        from auth.credential_pool import load_pool
+        pool = load_pool(provider, environment=_phase6_auth_environment())
         if pool.has_credentials():
             return for_picker or pool.has_available()
     except Exception:
@@ -311,7 +315,7 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
 def _auth_store_has_provider(*keys: str) -> bool:
     """True when ``auth.json`` has a ``providers`` entry under any of *keys*."""
     try:
-        from hermes_cli.auth import _load_auth_store
+        from auth.store import _load_auth_store
         store = _load_auth_store()
         providers_store = store.get("providers", {})
         return bool(store and any(k in providers_store for k in keys))
@@ -323,7 +327,7 @@ def _auth_store_has_provider(*keys: str) -> bool:
 def _raw_pool_usable(hermes_id: str, *, for_picker: bool = False) -> bool:
     """Section-1 pool check: only consult the pool when auth.json lists a raw entry."""
     try:
-        from hermes_cli.auth import _load_auth_store
+        from auth.store import _load_auth_store
         store = _load_auth_store()
         if store and store.get("credential_pool", {}).get(hermes_id):
             return _credential_pool_is_usable(hermes_id, raw_pool_present=True, for_picker=for_picker)
@@ -496,13 +500,13 @@ def _free_tier_nous_row(row: dict) -> dict | None:
     row through untouched. Builders that compute the full catalog lazily should pass
     ``models=[]`` and only compute when the returned row still has no models."""
     from hermes_cli import anon_auth
-    if not anon_auth.has_guest():
+    if not _auth_auth_providers_nous_guest.has_guest():
         return row
-    if not anon_auth.guest_enabled():
+    if not _auth_auth_providers_nous_guest.guest_enabled(environment=_phase6_auth_environment()):
         return None
     out = dict(row)
-    out["name"] = anon_auth.FREE_TIER_LABEL
-    out["models"] = [anon_auth.GUEST_MODEL]
+    out["name"] = _auth_auth_providers_nous_guest.FREE_TIER_LABEL
+    out["models"] = [_auth_auth_providers_nous_guest.GUEST_MODEL]
     out["total_models"] = 1
     # The explicit flag every consumer keys on (pricing, badges): never the display name. It also
     # tells the picker this is the free tier's identity, distinct from ``free_tier`` (an account on
@@ -860,6 +864,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
     """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
     anthropic's external credential files."""
+    from hermes_cli.config_credentials import credential_pool_environment
     if overlay.auth_type == "aws_sdk":
         has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
     else:
@@ -892,9 +897,9 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         # The pool gates anthropic behind is_provider_explicitly_configured() (aux tasks must not
         # consume Claude Code tokens); the picker is discovery-oriented, so read the files directly.
         try:
-            from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+            from auth.providers.anthropic import read_claude_code_credentials, read_hermes_oauth_credentials
             hermes_creds = read_hermes_oauth_credentials()
-            cc_creds = read_claude_code_credentials()
+            cc_creds = read_claude_code_credentials(environment=_phase6_auth_environment())
             if (hermes_creds and hermes_creds.get("accessToken")) or (cc_creds and cc_creds.get("accessToken")):
                 has_creds = True
         except Exception as exc:
@@ -1206,7 +1211,7 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
     if "lmstudio" not in curated and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio):
         from hermes_cli.models_local import fetch_lmstudio_models
-        from hermes_cli.auth import AuthError
+        from auth.errors import AuthError
         lm_base = (
             os.environ.get("LM_BASE_URL")
             or (current_base_url if is_current_lmstudio and current_base_url else None)

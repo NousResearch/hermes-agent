@@ -1,6 +1,8 @@
 """Codex model discovery from API, local cache, and config."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import json
 import logging
@@ -115,7 +117,7 @@ def codex_catalog_credential_identity() -> str:
     principal's key. Opaque non-JWT tokens
     fall back to the token itself (the caller hashes every part before anything is persisted).
     """
-    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+    from auth.providers.codex import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
     try:
         creds = resolve_codex_runtime_credentials(read_only=True)
@@ -127,7 +129,7 @@ def codex_catalog_credential_identity() -> str:
         return "missing"
     if _codex_access_token_is_expiring(token, 0):
         return "expired\n" + route
-    from agent.credential_pool import _codex_principal_identity
+    from auth.credential_pool import _codex_principal_identity
 
     principal = _codex_principal_identity(token)
     return ("/".join(principal) if principal else token) + "\n" + route
@@ -165,7 +167,7 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
     """
     try:
         from agent.model_metadata import _codex_catalog_probe_allowed
-        from hermes_cli.auth_codex import _codex_base_url
+        from auth.providers.codex import _codex_base_url
         catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
         if not _codex_catalog_probe_allowed(access_token, catalog_base):
             return []

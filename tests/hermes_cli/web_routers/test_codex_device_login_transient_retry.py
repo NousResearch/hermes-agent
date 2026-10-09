@@ -72,7 +72,7 @@ def test_poll_survives_transport_blips_and_returns_approval(monkeypatch):
 
 
 def test_one_shot_posts_retry_blips_but_not_other_errors(monkeypatch):
-    monkeypatch.setattr("hermes_cli.auth.CODEX_OAUTH_CLIENT_ID", "client-id", raising=False)
+    monkeypatch.setattr('auth.constants.CODEX_OAUTH_CLIENT_ID', "client-id", raising=False)
     device = {"user_code": "ABCD-EFGH", "device_auth_id": "dev", "interval": "5"}
     client = _ScriptedClient([ssl.SSLEOFError(8, _SSL_EOF_MESSAGE), _Response(200, dict(device))])
 

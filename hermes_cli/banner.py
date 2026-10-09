@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Welcome banner, ASCII art, skills summary, and update check for the CLI."""
 import json
 import logging

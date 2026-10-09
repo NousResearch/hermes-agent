@@ -5,7 +5,7 @@ still rotate if the current credential is already marked exhausted.
 """
 from unittest.mock import MagicMock, patch
 
-from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED
+from auth.credential_pool import PooledCredential, STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 
 

@@ -4,11 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from agent.credential_pool import CredentialPool, PooledCredential
-from hermes_cli.auth import read_credential_pool, write_credential_pool
+from auth.credential_pool import CredentialPool, PooledCredential
+from auth.pool_persistence import read_credential_pool, write_credential_pool
 
 
 def _pool(provider="openrouter", *, exhausted=False):
+    from hermes_cli.config_credentials import credential_pool_environment
     rows = [PooledCredential(
         provider=provider, id=f"row{i}", label=f"account{i}", source="manual",
         auth_type="api_key", access_token=f"fixture-{i}", priority=i,
@@ -18,7 +19,7 @@ def _pool(provider="openrouter", *, exhausted=False):
         last_error_reset_at=time.time() + 3600 if exhausted else None,
     ) for i in range(2)]
     write_credential_pool(provider, [e.to_dict() for e in rows])
-    return CredentialPool(provider, rows)
+    return CredentialPool(provider, rows, environment=credential_pool_environment())
 
 
 def test_target_reset_preserves_sibling_cooldown():

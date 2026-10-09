@@ -4,6 +4,8 @@ Availability fails closed; the gateway remains authoritative for entitlement and
 """
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import logging
 from dataclasses import dataclass
@@ -94,7 +96,7 @@ def connectors_available(
         if not resolved_loader().enabled:
             return False
         if entitlement_check is None:
-            from hermes_cli.anon_auth import is_guest_state
+            from auth.providers.nous_guest import is_guest_state
             from tools.managed_tool_gateway import _read_nous_provider_state
 
             # Availability must not mint or refresh an identity.

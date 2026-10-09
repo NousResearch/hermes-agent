@@ -61,16 +61,16 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
             has_credentials=lambda: True,
             select=lambda **_kw: entry,
         )
-        monkeypatch.setattr(rp, "load_pool", lambda _provider: pool)
+        monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: pool)
     elif credential_source == "explicit":
         kwargs["explicit_api_key"] = "explicit-token"
         monkeypatch.setattr(
             rp,
             "load_pool",
-            lambda _provider: pytest.fail("explicit credentials must bypass the pool"),
+            lambda _provider, environment=None: pytest.fail("explicit credentials must bypass the pool"),
         )
     else:
-        monkeypatch.setattr(rp, "load_pool", lambda _provider: None)
+        monkeypatch.setattr(rp, "load_pool", lambda _provider, environment=None: None)
         monkeypatch.setattr(
             rp,
             "resolve_api_key_provider_credentials",

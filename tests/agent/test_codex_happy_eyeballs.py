@@ -283,7 +283,7 @@ def test_enable_happy_eyeballs_on_client_skips_proxy_pools(no_proxy_env):
 
 
 def test_codex_auth_http_client_uses_happy_eyeballs_backend(no_proxy_env):
-    from hermes_cli.auth import _codex_http_client
+    from auth.providers.codex_http import _codex_http_client
 
     client = _codex_http_client(timeout=5.0)
     try:

@@ -145,6 +145,44 @@ Every former god file is a **facade** (public entry points + the names other pac
   `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
   Everything else: `tests/AGENTS.md`.
 
+## Phase 6 authentication ownership
+
+Shared credential storage, provider state, source suppression/removal and durable pool
+persistence belong to `auth/`. Pool selection, rotation, administration, cooldowns,
+source ingestion and single-use grant hygiene also belong there. In-tree code imports
+`auth.credential_pool` and supplies an explicit `PoolEnvironment` from the application
+composition boundary in `hermes_cli.config_credentials`; auth must never import CLI
+configuration or command structures. Generic secret-scope infrastructure stays in agent.
+
+The documented external plugin imports `agent.credential_pool.load_pool`,
+`PooledCredential`, `AUTH_TYPE_OAUTH` and `hermes_cli.auth_constants.AuthError`
+remain supported only at their external boundary. Do not use them internally or add
+them to the September deprecated-import manifest: that manifest disables plugins after
+its deadline. The Phase 6 specification explicitly preserves demonstrated public plugin
+contracts. Structural import checks in `tests/auth/test_boundary.py` implement its
+required ownership gate and are the scoped exception to the source-reading test rule.
+Shared OAuth lifecycle and built-in runtime authentication now live in `auth/oauth.py`
+and `auth/providers/`. Supply explicit settings through the application environment
+factory; auth must never import CLI configuration. Prompts, browser launching and
+plugin `auth_handler(action, args)` remain at the CLI edge. Retired implementations
+`agent.anthropic_credentials` and `hermes_cli.auth_qwen` must not return.
+Runtime secret validation, quota classification, API-key source precedence and the Nous
+keepalive belong to `auth/secret_validation.py`, `auth/failure_policy.py`, `auth/api_keys.py`
+and `auth/keepalive.py`. Keepalive callers supply both the configuration factory and thread
+scope context. Runtime route materialization remains application policy in
+`hermes_cli/runtime_provider_credentials.py`; provider/model routing is outside Phase 6.
+Import canonical operations directly; never restore the retired CLI keepalive module or
+API-key source helper. Structural checks cover both runtime and CLI source consumers.
+OAuth status snapshots belong to `auth/provider_status.py` and take explicit scoped
+settings. Anthropic environment-key lookup belongs to `auth/api_keys.py`; error
+rendering belongs to `hermes_cli/auth_error_copy.py`. Genuine login/logout/auth
+commands and plugin `auth_handler(action, args)` dispatch stay at the presentation
+edge. CLI authentication modules must not implement auth-store write transactions.
+This independent baseline has no `nous_cli`: relocate genuine presentation only
+during CLI integration, without adding internal forwarding paths.
+See `PHASE6_AUTH_POOL.md`, `PHASE6_AUTH_OAUTH.md`, `PHASE6_AUTH_CONSUMERS.md`
+and `PHASE6_AUTH_PRESENTATION.md` for ownership and verification.
+
 ## Routing Table — working in X → read X/AGENTS.md
 
 | Area | Read | Covers |

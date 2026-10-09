@@ -804,6 +804,8 @@ include = [
   "plugins.*",
   "providers",
   "providers.*",
+  "auth",
+  "auth.*",
   "hermes_platform",
   "hermes_platform.*",
   "pm",

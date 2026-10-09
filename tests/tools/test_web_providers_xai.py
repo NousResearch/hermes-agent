@@ -531,7 +531,7 @@ class TestXAIProviderOAuthPath:
             }
 
         monkeypatch.setattr(
-            "hermes_cli.auth.refresh_xai_oauth_pure",
+            'auth.providers.xai.refresh_xai_oauth_pure',
             fake_refresh,
         )
 

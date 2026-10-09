@@ -505,7 +505,7 @@ class TestPeriodicOrphanReap:
         reap_calls = []
         remaining = {"n": cycles_to_run}
 
-        def fake_cleanup():
+        def fake_cleanup(**_auth_settings):
             remaining["n"] -= 1
             if remaining["n"] <= 0:
                 bt._cleanup_running = False

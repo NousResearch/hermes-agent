@@ -8,7 +8,7 @@ import logging
 import hermes_yaml as yaml
 
 import agent.auxiliary_unavailable as unavailable
-from hermes_cli.auth_constants import AuthError
+from auth.errors import AuthError
 
 
 def _reset(monkeypatch):

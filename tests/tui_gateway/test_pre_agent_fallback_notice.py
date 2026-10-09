@@ -3,7 +3,7 @@ entry) must carry the same one-shot switch notice the messaging gateway surfaces
 private notice key must never reach the AIAgent constructor. Drives the real ``_make_agent``."""
 from unittest.mock import patch
 
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 
 
 class _StubAgent:

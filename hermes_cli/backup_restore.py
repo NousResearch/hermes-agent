@@ -137,8 +137,8 @@ def _restore_auth_json(src: Path, dst: Path) -> bool:
         }
 
     try:
-        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-        from hermes_cli.auth_oauth_grants import (
+        from auth.store import _auth_store_lock, _load_auth_store, _save_auth_store
+        from auth.oauth_grants import (
             merge_snapshot_auth_preserving_live_single_use_grants,
         )
 

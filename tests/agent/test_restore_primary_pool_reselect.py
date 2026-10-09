@@ -12,7 +12,7 @@ import time
 from unittest.mock import MagicMock
 
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     PooledCredential,
 )
@@ -44,12 +44,13 @@ def _make_entry(
 
 def _build_mock_pool(entries: list[dict], *, strategy: str = "round_robin"):
     """Build a mock CredentialPool with the given entries."""
-    from agent.credential_pool import CredentialPool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import CredentialPool
 
     pool = CredentialPool(
         provider="openai-codex",
         entries=[PooledCredential.from_dict("openai-codex", e) for e in entries],
-    )
+    environment=credential_pool_environment())
     pool._strategy = strategy
     return pool
 

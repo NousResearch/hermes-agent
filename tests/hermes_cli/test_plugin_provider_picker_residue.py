@@ -5,6 +5,7 @@ no-op), OAuth-shaped plugins had no ``_STATUS_BY_AUTH_TYPE`` builder (``authenti
 a live pool entry) and external-process sign-in evidence existed for one bundled vendor only, so the
 Desktop ``explicit_only`` picker hid out-of-tree ACP rows.
 """
+import hermes_cli.auth_model_picker as _auth_hermes_cli_auth_model_picker
 
 import os
 import stat
@@ -37,19 +38,20 @@ def plugin(monkeypatch):
 
 
 def _fake_binary(tmp_path, monkeypatch, name: str) -> None:
-    exe = tmp_path / name
-    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe = tmp_path / (name + ".cmd" if os.name == "nt" else name)
+    exe.write_text("@exit /b 0\n" if os.name == "nt" else "#!/bin/sh\nexit 0\n")
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
 def _pool_entry(provider: str, **fields):
-    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
     entry = PooledCredential(
         provider=provider, id="e1", label="acme", auth_type=AUTH_TYPE_OAUTH, priority=0,
         source="manual:example_device", base_url="https://example.invalid/v1", **fields)
-    load_pool(provider).add_entry(entry)
+    load_pool(provider, environment=credential_pool_environment()).add_entry(entry)
     return entry
 
 
@@ -69,7 +71,7 @@ def test_hermes_model_routes_registered_plugin_profiles_to_the_generic_flow(plug
     _fake_binary(tmp_path, monkeypatch, "example-acp-bin")
     _pool_entry("example-oauth", access_token="tok-1", refresh_token="rt-1")
     monkeypatch.setattr(main, "_offer_reasoning_after_pick", lambda *a, **k: None)
-    monkeypatch.setattr(auth, "_prompt_model_selection", lambda models, **k: models[-1])
+    monkeypatch.setattr(_auth_hermes_cli_auth_model_picker, "_prompt_model_selection", lambda models, **k: models[-1])
     api_key_flow_calls = []
     monkeypatch.setattr(main, "_model_flow_api_key_provider",
                         lambda config, pid, current="": api_key_flow_calls.append(pid))
@@ -114,7 +116,7 @@ def test_oauth_plugin_status_follows_the_credential_pool(plugin):
     # the live entry still wins for example-oauth
     assert auth.get_auth_status("example-oauth")["logged_in"] is True
 
-    assert auth.get_plugin_oauth_auth_status("openai-codex") == {"logged_in": False}
+    assert auth.get_auth_status("openai-codex")["logged_in"] is False
 
 
 def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolves(plugin, monkeypatch, tmp_path):

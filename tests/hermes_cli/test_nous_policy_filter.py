@@ -5,6 +5,9 @@ so that response's keys are the reachable set.
 """
 
 from __future__ import annotations
+import hermes_cli.nous_account as _auth_auth_providers_nous_account
+
+import auth.provider_state as auth_provider_state
 
 import base64
 import json
@@ -72,7 +75,7 @@ class TestNousPolicyAllowedIds:
     def _patch(self, monkeypatch, *, policy_present, api_key="sk-test", pricing=None):
         calls = []
         monkeypatch.setattr(
-            account_mod, "nous_policy_present", lambda: policy_present
+            _auth_auth_providers_nous_account, "nous_policy_present", lambda: policy_present
         )
         monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials",
             lambda: (api_key, "https://inference.example.com"),
@@ -122,7 +125,7 @@ class TestNousPolicyPresent:
         import hermes_cli.auth as auth_mod
 
         monkeypatch.setattr(
-            auth_mod,
+            auth_provider_state,
             "get_provider_auth_state",
             lambda _p: {"access_token": token} if token is not None else {},
         )
@@ -152,23 +155,23 @@ class TestNousPolicyPresent:
 class TestNousPolicyNotice:
 
     def _patch(self, monkeypatch, present):
-        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: present)
+        monkeypatch.setattr(_auth_auth_providers_nous_account, "nous_policy_present", lambda: present)
 
     def test_shows_a_line_for_a_governed_org(self, monkeypatch):
         self._patch(monkeypatch, True)
-        assert account_mod.nous_policy_notice(removed=True).strip()
+        assert _auth_auth_providers_nous_account.nous_policy_notice(removed=True).strip()
 
     @pytest.mark.parametrize("present", [False, None])
     def test_silent_otherwise(self, monkeypatch, present):
         """Absent is an older mint, not an unrestricted org."""
         self._patch(monkeypatch, present)
-        assert account_mod.nous_policy_notice(removed=True) == ""
+        assert _auth_auth_providers_nous_account.nous_policy_notice(removed=True) == ""
 
     def test_silent_when_the_filter_removed_nothing(self, monkeypatch):
         """The catalog read fails open, so a governed org can still end up with
         a full list — saying it was filtered would be false."""
         self._patch(monkeypatch, True)
-        assert account_mod.nous_policy_notice(removed=False) == ""
+        assert _auth_auth_providers_nous_account.nous_policy_notice(removed=False) == ""
 
 
 

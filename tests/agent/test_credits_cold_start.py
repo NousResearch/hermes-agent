@@ -1,3 +1,5 @@
+
+import hermes_cli.nous_account as _auth_auth_providers_nous_account
 """Tests for cold-start credits hydration at session open.
 
 The L3 cold-start seed primes agent._credits_state from /api/oauth/account (or a
@@ -316,7 +318,7 @@ def _run_bg_seed(monkeypatch, agent, *, warm):
     monkeypatch.delenv("HERMES_DEV_CREDITS", raising=False)  # fixtures would take the sync path
     monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", _gated_warm)
     monkeypatch.setattr(memory_provider, "spawn_context_thread", _capture_spawn)
-    monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda *a, **kw: _DepletedAccount())
+    monkeypatch.setattr(_auth_auth_providers_nous_account, "get_nous_portal_account_info", lambda *a, **kw: _DepletedAccount())
     result = credits_tracker.seed_credits_at_session_start(agent)
     try:
         assert len(spawned) == 1

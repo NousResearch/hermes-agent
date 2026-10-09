@@ -6,6 +6,12 @@ OpenRouter/bare-custom, Bedrock and external-process builders in
 ``hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.constants as _auth_auth_constants
+import auth.providers.minimax as _auth_auth_providers_minimax
+
+import auth.provider_state as auth_provider_state
 
 import copy
 import logging
@@ -18,19 +24,22 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
-    CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,
+from auth.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
+    CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,  # noqa: F401
     load_pool,
 )
 from agent.secret_scope import get_secret_str
-from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
-    resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
-    resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
-    resolve_external_process_provider_credentials,
-    has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
-)
+from auth.constants import ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL
+from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+from hermes_cli.auth_error_copy import format_auth_error
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials, resolve_external_process_provider_credentials
+from hermes_cli.route_identity import is_actual_local_base_url, normalize_actual_base_url
+from auth.secret_validation import has_usable_secret, looks_like_openrouter_key
+from auth.providers.nous import _agent_key_is_usable, _nous_inference_env_override, resolve_nous_runtime_credentials
+from auth.providers.codex import resolve_codex_runtime_credentials
+from auth.providers.xai import resolve_xai_oauth_runtime_credentials
+from auth.providers.qwen import resolve_qwen_runtime_credentials
+from auth.errors import AuthError
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
@@ -204,7 +213,7 @@ def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
     return path == "" or path == default_path or path.startswith(default_path + "/")
 
 
-def _resolve_plain_custom_api_mode(model_cfg: dict[str, Any], base_url: str) -> str:
+def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
     """api_mode for legacy/plain ``provider: custom`` endpoints — conservative by default: only
     direct OpenAI/xAI/Meta URLs imply Responses; named custom providers opt in via ``api_mode``."""
     if is_actual_route(base_url=base_url):
@@ -233,19 +242,19 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return not c or (c == "custom" or c.startswith("custom:") if p == "custom" else _same_registered_provider(p, c))
 
 
-def _configured_api_mode(provider: str, model_cfg: dict[str, Any]) -> Optional[str]:
+def _configured_api_mode(provider: str, model_cfg: Dict[str, Any]) -> Optional[str]:
     """Persisted ``model.api_mode`` when valid and recorded for this provider, else None."""
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
     return configured_mode if configured_mode and _provider_supports_explicit_api_mode(provider, _cfg_provider(model_cfg)) else None
 
 
-def _effective_model(model_cfg: dict[str, Any], target_model: Optional[str]) -> str:
+def _effective_model(model_cfg: Dict[str, Any], target_model: Optional[str]) -> str:
     """The caller's target model (e.g. /model switch) beats the persisted default, else api_mode
     is computed from a stale default."""
     return target_model or model_cfg.get("default") or ""
 
 
-def _copilot_runtime_api_mode(model_cfg: dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
+def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
     configured_mode = _configured_api_mode("copilot", model_cfg)
     if configured_mode:
         # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
@@ -281,7 +290,7 @@ def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:
         return api_mode
 
 
-def _configured_or_fallback_api_mode(provider: str, model_cfg: dict[str, Any], base_url: str, effective_model: Any, *,
+def _configured_or_fallback_api_mode(provider: str, model_cfg: Dict[str, Any], base_url: str, effective_model: Any, *,
                                      opencode_by_model: bool) -> str:
     """Persisted ``model.api_mode`` when it belongs to this provider, else URL/transport fallback.
     OpenCode Zen/Go serve both anthropic_messages and chat_completions models, so (when
@@ -296,7 +305,7 @@ def _configured_or_fallback_api_mode(provider: str, model_cfg: dict[str, Any], b
     return _configured_api_mode(provider, model_cfg) or _fallback_api_mode(provider, base_url, effective_model)
 
 
-def _api_key_provider_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, base_url: str, effective_model: Any, *,
+def _api_key_provider_api_mode(provider: str, model_cfg: Dict[str, Any], api_key: str, base_url: str, effective_model: Any, *,
                                opencode_by_model: bool) -> str:
     """api_mode for a registry ``api_key`` provider (explicit and env/config paths)."""
     if provider == "copilot":
@@ -310,7 +319,7 @@ def _api_key_provider_api_mode(provider: str, model_cfg: dict[str, Any], api_key
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=opencode_by_model)
 
 
-def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[dict[str, Any]],
+def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[Dict[str, Any]],
                                           requested_provider: str = "") -> str:
     """Opt-in rewrite to "codex_app_server" via ``model.openai_runtime``. Eligible: ``openai`` /
     ``openai-codex``, and a configured named custom provider (``providers.<name>``) whose id codex
@@ -332,7 +341,7 @@ _NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes au
                                  "or set ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.")
 
 
-def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> dict[str, Any]:
+def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
     """Build a resolved-runtime dict; ``extra`` carries source/requested_provider/provider-specific keys."""
     if is_actual_route(provider, base_url):
         api_mode = "chat_completions"
@@ -340,11 +349,11 @@ def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra:
     return {"provider": provider, "api_mode": api_mode, "base_url": base_url, "api_key": api_key, **extra}
 
 
-def _cfg_provider(model_cfg: dict[str, Any]) -> str:
+def _cfg_provider(model_cfg: Dict[str, Any]) -> str:
     return str(model_cfg.get("provider") or "").strip().lower()
 
 
-def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> str:
+def _config_base_url_for_provider(model_cfg: Dict[str, Any], provider: str) -> str:
     """``model.base_url`` (stripped, no trailing slash) only when ``model.provider`` is
     ``provider`` — a stale base_url must not leak into another provider."""
     configured_provider = _cfg_provider(model_cfg)
@@ -378,19 +387,19 @@ def _anthropic_base_url_override_ok(base_url: str) -> bool:
                                or _detect_api_mode_for_url(candidate) == "anthropic_messages")
 
 
-def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
+def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
     """Config base_url for native Anthropic, or "" when absent/untrustworthy."""
     cfg_base_url = _config_base_url_for_provider(model_cfg, "anthropic")
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
-    from agent.anthropic_credentials import resolve_anthropic_token
-    token = resolve_anthropic_token(model=model)
+    from auth.providers.anthropic import resolve_anthropic_token
+    token = resolve_anthropic_token(model=model, environment=_phase6_auth_environment())
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
-        if model and resolve_anthropic_token():
+        if model and resolve_anthropic_token(environment=_phase6_auth_environment()):
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
@@ -446,8 +455,8 @@ def _nous_min_key_ttl() -> int:
     return max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
 
 
-def _resolve_nous_creds() -> dict[str, Any]:
-    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
+def _resolve_nous_creds() -> Dict[str, Any]:
+    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")), environment=_phase6_auth_environment())
 
 
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
@@ -483,7 +492,7 @@ def _auto_detect_local_model(base_url: str) -> str:
     return ""
 
 
-def _get_model_config() -> dict[str, Any]:
+def _get_model_config() -> Dict[str, Any]:
     """``model`` config section with ``model`` accepted as an alias for ``default``, a dict
     ``default`` split into model/provider, and a local single-model server auto-detected."""
     config = load_config()
@@ -525,7 +534,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
-from hermes_cli.runtime_provider_custom import (
+from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
     _LLAMACPP_ALIASES, _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
@@ -533,7 +542,7 @@ from hermes_cli.runtime_provider_custom import (
     find_custom_provider_identity,
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
-from hermes_cli.runtime_provider_backends import (
+from hermes_cli.runtime_provider_backends import (  # noqa: E402,F401
     _is_external_process_provider, _resolve_azure_foundry_runtime, _resolve_bedrock_runtime,
     _resolve_external_process_runtime, _resolve_openrouter_runtime,
 )
@@ -545,7 +554,7 @@ from hermes_cli.runtime_provider_backends import (
 # pool entry carries none). Callables are evaluated lazily (registry lookups). MiniMax OAuth tokens
 # are valid only against the Anthropic Messages endpoint, so a stale model.api_mode from a prior
 # OpenAI-compatible provider is never honoured for it (it would 404 on /chat/completions).
-_POOL_ENTRY_SIMPLE_MODES: dict[str, tuple] = {
+_POOL_ENTRY_SIMPLE_MODES: Dict[str, tuple] = {
     "openai-codex": ("codex_responses", DEFAULT_CODEX_BASE_URL), "xai-oauth": ("codex_responses", DEFAULT_XAI_OAUTH_BASE_URL),
     "qwen-oauth": ("chat_completions", DEFAULT_QWEN_BASE_URL), "openrouter": ("chat_completions", OPENROUTER_BASE_URL),
     "minimax-oauth": ("anthropic_messages", lambda: getattr(PROVIDER_REGISTRY.get("minimax-oauth"), "inference_base_url", "")),
@@ -601,8 +610,8 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
 
 
 def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, requested_provider: str,
-                                     model_cfg: Optional[dict[str, Any]] = None, pool: Optional[CredentialPool] = None,
-                                     target_model: Optional[str] = None) -> dict[str, Any]:
+                                     model_cfg: Optional[Dict[str, Any]] = None, pool: Optional[CredentialPool] = None,
+                                     target_model: Optional[str] = None) -> Dict[str, Any]:
     model_cfg = model_cfg or _get_model_config()
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
@@ -654,12 +663,12 @@ def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
     config); here copilot IS the runtime target (`/model copilot/… --session`, `--provider copilot`,
     delegation/cron overrides), and a raw token routes to the language-server integrator whose
     allowlist omits enterprise-only models (400 model_not_available_for_integrator)."""
-    from hermes_cli.copilot_auth import get_copilot_api_token, validate_copilot_token
+    from auth.providers.copilot import get_copilot_api_token, validate_copilot_token
     if not pool_api_key or not validate_copilot_token(pool_api_key)[0]:
         return pool_api_key  # already an exchanged API token
     api_token, enterprise_base_url = get_copilot_api_token(pool_api_key)
     if api_token == pool_api_key and not enterprise_base_url:
-        from agent.credential_pool import _warn_copilot_raw_degradation_once
+        from auth.pool_sources import _warn_copilot_raw_degradation_once
         _warn_copilot_raw_degradation_once(pool_api_key)
         return pool_api_key
     entry.access_token = api_token
@@ -668,13 +677,14 @@ def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
     return api_token
 
 
-def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
-                       target_model) -> Optional[dict[str, Any]]:
+def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
+                       target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
+    from hermes_cli.config_credentials import credential_pool_environment
     should_use_pool = provider != "openrouter" or _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
                                                                              explicit_base_url)
     try:
-        pool = load_pool(provider) if should_use_pool else None
+        pool = load_pool(provider, environment=credential_pool_environment()) if should_use_pool else None
     except Exception:
         pool = None
     if not (pool and pool.has_credentials()):
@@ -689,7 +699,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):
         return None
-    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
+    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry), environment=credential_pool_environment()):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
     return None
@@ -721,9 +731,9 @@ def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, t
 
 
 def _explicit_nous(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
-    state = auth_mod.get_provider_auth_state("nous") or {}
+    state = auth_provider_state.get_provider_auth_state("nous") or {}
     base_url = (explicit_base_url or _nous_inference_env_override()
-                or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/"))
+                or str(state.get("inference_base_url") or _auth_auth_constants.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/"))
     # The agent_key compatibility field is used for inference only when it holds a NAS invoke JWT;
     # raw OAuth access_token fallback is handled by resolve_nous_runtime_credentials().
     api_key = api_key or (str(state.get("agent_key") or "").strip() if _agent_key_is_usable(state, _nous_min_key_ttl()) else "")
@@ -768,16 +778,16 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
 
 # Providers with a dedicated explicit-credential builder; everything else goes through the
 # registry ``api_key`` path (or None when the provider takes no explicit creds).
-_EXPLICIT_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
+_EXPLICIT_RESOLVERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "anthropic": _explicit_anthropic, "openai-codex": _explicit_codex, "nous": _explicit_nous,
     "azure-foundry": lambda rq, mc, key, url, tm: _resolve_azure_foundry_runtime(requested_provider=rq, model_cfg=mc,
                                                                                  explicit_api_key=key, explicit_base_url=url),
 }
 
 
-def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_cfg: dict[str, Any],
+def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_cfg: Dict[str, Any],
                               explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
-                              target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
+                              target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
     if not explicit_api_key and not explicit_base_url:
@@ -798,7 +808,7 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
 class _OAuthRuntimeSpec:
     """Env/auth-store OAuth providers resolved by a single credential call."""
 
-    resolve: Callable[[], dict[str, Any]]
+    resolve: Callable[[], Dict[str, Any]]
     api_mode: Any  # str, or callable(model) -> str
     default_source: str
     expiry_key: str
@@ -808,10 +818,10 @@ class _OAuthRuntimeSpec:
 
 # ``resolve`` entries are late-bound lambdas so tests can monkeypatch the module-level
 # ``resolve_*_runtime_credentials`` names.
-_OAUTH_RUNTIME_PROVIDERS: dict[str, _OAuthRuntimeSpec] = {
+_OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
     "nous": _OAuthRuntimeSpec(_resolve_nous_creds, nous_api_mode, "portal", "expires_at",
                               "Auto-detected Nous provider but credentials failed"),
-    "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(), "codex_responses", "hermes-auth-store",
+    "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(environment=_phase6_auth_environment()), "codex_responses", "hermes-auth-store",
                                       "last_refresh", "Auto-detected Codex provider but credentials failed"),
     "xai-oauth": _OAuthRuntimeSpec(lambda: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                    "last_refresh", "Auto-detected xAI OAuth provider but credentials failed", DEFAULT_XAI_OAUTH_BASE_URL),
@@ -820,7 +830,7 @@ _OAUTH_RUNTIME_PROVIDERS: dict[str, _OAuthRuntimeSpec] = {
 }
 
 
-def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[dict[str, Any]]:
+def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
     """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
     stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
@@ -831,11 +841,11 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
                     **{spec.expiry_key: creds.get(spec.expiry_key)}, requested_provider=requested_provider)
 
 
-def _minimax_oauth_runtime(provider, requested_provider) -> Optional[dict[str, Any]]:
+def _minimax_oauth_runtime(provider, requested_provider) -> Optional[Dict[str, Any]]:
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not (pconfig and pconfig.auth_type == "oauth_minimax"):
         return None
-    creds = auth_mod.resolve_minimax_oauth_runtime_credentials()
+    creds = _auth_auth_providers_minimax.resolve_minimax_oauth_runtime_credentials()
     return _runtime(provider, "anthropic_messages", creds["base_url"], creds["api_key"], source=creds.get("source", "oauth"),
                     requested_provider=requested_provider)
 
@@ -843,7 +853,7 @@ def _minimax_oauth_runtime(provider, requested_provider) -> Optional[dict[str, A
 # ── env/config paths for anthropic and registry api_key providers ──────────────────────────
 
 
-def _azure_anthropic_env_key(model_cfg: dict[str, Any]) -> str:
+def _azure_anthropic_env_key(model_cfg: Dict[str, Any]) -> str:
     """Azure Anthropic key: `key_env` / `api_key_env` hints on the model config, then an inline
     api_key (multi-profile setups), then the historical fixed names."""
     for hint_key in ("key_env", "api_key_env"):
@@ -854,7 +864,7 @@ def _azure_anthropic_env_key(model_cfg: dict[str, Any]) -> str:
             or get_secret_str("ANTHROPIC_API_KEY", "").strip())
 
 
-def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], target_model: str | None = None) -> dict[str, Any]:
+def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: str | None = None) -> Dict[str, Any]:
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
@@ -870,7 +880,7 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
 
 
-def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model) -> dict[str, Any]:
+def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model) -> Dict[str, Any]:
     """Registry ``api_key`` providers (z.ai/GLM, Kimi, MiniMax, copilot, …) from env/config."""
     creds = resolve_api_key_provider_credentials(provider)
     # Actual Computer: a loopback model_cfg base_url selects the daemon's no-auth local API; inject
@@ -941,7 +951,7 @@ def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_bas
     )
 
 
-def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
+def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
     """Vertex AI (OAuth2). The credential *path* (GOOGLE_APPLICATION_CREDENTIALS) must never be
     treated as a static API key; a short-lived token is minted per call, and mid-session expiry is
     recovered on 401 by run_agent._try_refresh_vertex_client_credentials()."""
@@ -955,7 +965,7 @@ def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
     return _runtime("vertex", "chat_completions", base_url.rstrip("/"), token, source="vertex-oauth", requested_provider=requested_provider)
 
 
-def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[dict[str, Any]]:
+def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[Dict[str, Any]]:
     """Providers decided on the REQUESTED name alone, before custom / pool / generic paths."""
     if requested_provider == "moa":
         return _runtime("moa", "chat_completions", "moa://local", "moa-virtual-provider", source="moa-virtual-provider",
@@ -978,7 +988,7 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     return None
 
 
-def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_base_url) -> Optional[dict[str, Any]]:
+def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_base_url) -> Optional[Dict[str, Any]]:
     """provider "auto"/unset with a config base_url at a custom/local endpoint routes through the
     OpenAI-compatible resolver, so resolve_provider() cannot pick up an env ANTHROPIC/OPENAI key
     and send the request to a cloud API. Only non-cloud roots take the bypass; match on HOST, not
@@ -991,14 +1001,14 @@ def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_b
     return _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
 
 
-def _tag(runtime: Optional[dict[str, Any]], requested_provider: str) -> Optional[dict[str, Any]]:
+def _tag(runtime: Optional[Dict[str, Any]], requested_provider: str) -> Optional[Dict[str, Any]]:
     """Stamp ``requested_provider`` on a runtime built by a collaborator that does not set it."""
     if runtime:
         runtime["requested_provider"] = requested_provider
     return runtime
 
 
-def _named_custom_rung(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[dict[str, Any]]:
+def _named_custom_rung(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[Dict[str, Any]]:
     """Rung 3: a configured named custom provider. Honours the ``model.openai_runtime`` opt-in like the
     pool path does for openai/openai-codex (codex resolves the provider from its own config by id)."""
     runtime = _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
@@ -1010,13 +1020,13 @@ def _named_custom_rung(requested_provider, explicit_api_key, explicit_base_url, 
     return runtime
 
 
-def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url) -> dict[str, Any]:
+def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url) -> Dict[str, Any]:
     return _tag(_resolve_openrouter_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> dict[str, Any]:
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -1057,7 +1067,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     return runtime
 
 
-def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: dict[str, Any]) -> None:
+def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
     """Reject a bare ``custom`` placeholder request that fell through the whole ladder to the
     OpenRouter default endpoint with no credential. Every other custom rung (named entry, local
     bypass, pool, ``key_cmd``) yields a key, a callable or the ``no-key-required`` placeholder, so
@@ -1126,10 +1136,10 @@ def format_runtime_provider_error(error: Exception) -> str:
     return format_auth_error(error) if isinstance(error, AuthError) else str(error)
 
 
-def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested: Optional[str] = None,
+def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,
                                   target_model: Optional[str] = None, explicit_base_url: Optional[str] = None,
                                   explicit_api_key: Optional[str] = None,
-                                  ) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+                                  ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """``resolve_runtime_provider`` plus resolution-time fallback: ``(runtime, fallback_entry_or_None)``.
 
     Only an ``AuthError`` from the primary (missing/expired credentials, exhausted quota, cooled-down pool)
@@ -1140,7 +1150,8 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, primary_failure_wording
+    from auth.errors import AuthError
+    from auth.failure_policy import primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
@@ -1151,7 +1162,7 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
             model = (entry.get("model") or "").strip()
             if not provider or not model:
                 continue
-            kwargs: dict[str, Any] = {"requested": provider, "target_model": model}
+            kwargs: Dict[str, Any] = {"requested": provider, "target_model": model}
             if entry.get("base_url"):
                 kwargs["explicit_base_url"] = entry["base_url"]
             if entry_key := resolve_entry_api_key(entry):

@@ -80,7 +80,7 @@ def test_agent_init_anthropic_url_preserves_credential_pool():
     pool = SimpleNamespace(provider="anthropic")
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_credentials._is_oauth_token", return_value=False
+        'auth.providers.anthropic._is_oauth_token', return_value=False
     ):
         agent = AIAgent(
             provider=None,

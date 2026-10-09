@@ -1,32 +1,4 @@
-"""Regression tests for cross-process races refreshing Anthropic OAuth tokens.
-
-``CredentialPool._refresh_entry`` explicitly documents (see the comment
-above the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in
-``agent/credential_pool.py``) that single-use OAuth refresh tokens require
-the whole sync -> POST -> write-back sequence to be serialized across
-Hermes *processes* via the cross-process ``_auth_store_lock`` flock,
-otherwise "two processes can both adopt the same on-disk token, both POST
-it, and the loser gets ``refresh_token_reused``".
-
-Anthropic's OAuth refresh tokens have the identical single-use property --
-``agent.anthropic_credentials._refresh_oauth_token`` says so explicitly:
-"Claude Code's OAuth refresh tokens are single-use: a successful refresh
-rotates the pair and invalidates the old refresh token." Before the PR, ``"anthropic"`` was absent from the
-``("openai-codex", "xai-oauth")`` tuple that gets the cross-process flock,
-and the *only* on-failure recovery path
-(``CredentialPool._sync_anthropic_entry_from_credentials_file``) was
-hard-scoped to ``entry.source == "claude_code"``. Entries sourced from
-Hermes's own PKCE login (``manual:hermes_pkce`` / ``hermes_pkce``) got no
-recovery at all and were marked exhausted on a lost race, even though a
-fresh, valid token pair existed on disk (written by the winner). The old
-dashboard source ``manual:dashboard_pkce`` is now retired with the removed
-dashboard flow.
-
-These tests reproduce that race deterministically with a fake OAuth server
-that enforces single-use refresh tokens, run concurrent pool instances against
-it, and assert the current protection. The process-level, cross-profile
-Claude Code witness lives in ``test_anthropic_oauth_stress.py``.
-"""
+'Regression tests for cross-process races refreshing Anthropic OAuth tokens.\n\n``CredentialPool._refresh_entry`` explicitly documents (see the comment\nabove the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in\n``agent/credential_pool.py``) that single-use OAuth refresh tokens require\nthe whole sync -> POST -> write-back sequence to be serialized across\nHermes *processes* via the cross-process ``_auth_store_lock`` flock,\notherwise "two processes can both adopt the same on-disk token, both POST\nit, and the loser gets ``refresh_token_reused``".\n\nAnthropic\'s OAuth refresh tokens have the identical single-use property --\n``auth.providers.anthropic._refresh_oauth_token`` says so explicitly:\n"Claude Code\'s OAuth refresh tokens are single-use: a successful refresh\nrotates the pair and invalidates the old refresh token." Before the PR, ``"anthropic"`` was absent from the\n``("openai-codex", "xai-oauth")`` tuple that gets the cross-process flock,\nand the *only* on-failure recovery path\n(``CredentialPool._sync_anthropic_entry_from_credentials_file``) was\nhard-scoped to ``entry.source == "claude_code"``. Entries sourced from\nHermes\'s own PKCE login (``manual:hermes_pkce`` / ``hermes_pkce``) got no\nrecovery at all and were marked exhausted on a lost race, even though a\nfresh, valid token pair existed on disk (written by the winner). The old\ndashboard source ``manual:dashboard_pkce`` is now retired with the removed\ndashboard flow.\n\nThese tests reproduce that race deterministically with a fake OAuth server\nthat enforces single-use refresh tokens, run concurrent pool instances against\nit, and assert the current protection. The process-level, cross-profile\nClaude Code witness lives in ``test_anthropic_oauth_stress.py``.\n'
 
 from __future__ import annotations
 
@@ -38,7 +10,7 @@ from dataclasses import replace as dc_replace
 
 import pytest
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_EXHAUSTED,
     CredentialPool,
@@ -79,8 +51,8 @@ def _fake_pool_store(monkeypatch):
             return dict(store)
         return list(store.get(provider, []))
 
-    monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
-    monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)
+    monkeypatch.setattr("auth.credential_pool.write_credential_pool", _write)
+    monkeypatch.setattr("auth.credential_pool.read_credential_pool", _read)
     return store
 
 
@@ -126,14 +98,15 @@ def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_
     marked exhausted, because ``_sync_anthropic_entry_from_credentials_file``
     only helps ``entry.source == "claude_code"``.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     server = _SingleUseTokenServer()
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        'auth.providers.anthropic.refresh_anthropic_oauth_pure',
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
     # No Claude Code credential file in play for this scenario.
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+        'auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None
     )
 
     shared_stale_entry = _entry(
@@ -145,8 +118,8 @@ def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_
 
     # Simulate two independent OS processes, each with its own in-memory
     # pool constructed from the SAME on-disk stale entry.
-    pool_process_a = CredentialPool("anthropic", [dc_replace(shared_stale_entry)])
-    pool_process_b = CredentialPool("anthropic", [dc_replace(shared_stale_entry)])
+    pool_process_a = CredentialPool("anthropic", [dc_replace(shared_stale_entry)], environment=credential_pool_environment())
+    pool_process_b = CredentialPool("anthropic", [dc_replace(shared_stale_entry)], environment=credential_pool_environment())
 
     results: dict[str, object] = {}
 
@@ -208,16 +181,17 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
     evidence that hermes_pkce/dashboard-sourced credentials were simply
     never given the same treatment, not that recovery is impossible.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     server = _SingleUseTokenServer()
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        'auth.providers.anthropic.refresh_anthropic_oauth_pure',
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
 
     winner_creds: dict = {}
     write_lock = threading.Lock()
 
-    def _fake_read_claude_code_credentials():
+    def _fake_read_claude_code_credentials(**_auth_settings):
         with write_lock:
             return dict(winner_creds) if winner_creds else None
 
@@ -230,11 +204,11 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
             )
 
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
+        'auth.providers.anthropic.read_claude_code_credentials',
         _fake_read_claude_code_credentials,
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials._write_claude_code_credentials",
+        'auth.providers.anthropic._write_claude_code_credentials',
         _fake_write_claude_code_credentials,
     )
 
@@ -244,8 +218,8 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
         refresh_token="stale-rt",
         source="claude_code",
     )
-    pool_process_a = CredentialPool("anthropic", [dc_replace(shared_stale_entry)])
-    pool_process_b = CredentialPool("anthropic", [dc_replace(shared_stale_entry)])
+    pool_process_a = CredentialPool("anthropic", [dc_replace(shared_stale_entry)], environment=credential_pool_environment())
+    pool_process_b = CredentialPool("anthropic", [dc_replace(shared_stale_entry)], environment=credential_pool_environment())
 
     results: dict[str, object] = {}
 

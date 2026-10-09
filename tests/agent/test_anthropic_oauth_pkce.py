@@ -57,7 +57,7 @@ def _patch_oauth_flow(
     # run headless, so force the GUI path to True — the URL capture relies on
     # webbrowser.open() being invoked.
     monkeypatch.setattr(
-        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+        "hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True
     )
     monkeypatch.setattr("builtins.input", lambda *_a, **_kw: callback_code)
 
@@ -120,7 +120,7 @@ def test_authorization_url_state_is_not_pkce_verifier(monkeypatch, tmp_path):
 
     monkeypatch.setattr(builtins, "input", fake_input)
 
-    from agent.anthropic_credentials import run_hermes_oauth_login_pure
+    from hermes_cli.auth_anthropic import run_hermes_oauth_login_pure
 
     result = run_hermes_oauth_login_pure()
     assert result is not None, "OAuth flow should succeed with matching state"
@@ -170,7 +170,7 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
         capture_token_request=captured_token,
     )
 
-    from agent.anthropic_credentials import run_hermes_oauth_login_pure
+    from hermes_cli.auth_anthropic import run_hermes_oauth_login_pure
 
     result = run_hermes_oauth_login_pure()
 

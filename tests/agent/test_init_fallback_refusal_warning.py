@@ -73,7 +73,7 @@ def test_fully_refusing_ladder_warns_with_each_reason(
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda provider: _Pool(pool_available)
+        "auth.credential_pool.load_pool", lambda provider, environment=None: _Pool(pool_available)
     )
 
     with caplog.at_level(logging.WARNING, logger="run_agent"):

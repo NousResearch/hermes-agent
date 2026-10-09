@@ -16,8 +16,17 @@ Hermes has a shared provider runtime resolver used across:
 
 Primary implementation:
 
-- `hermes_cli/runtime_provider.py` — credential resolution, custom-endpoint runtime resolution
+- `hermes_cli/runtime_provider.py` — provider/model routing and custom-endpoint runtime resolution; `hermes_cli/runtime_provider_credentials.py` materializes credentials through canonical auth operations
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
+- `auth/store.py`, `auth/provider_state.py` — auth.json loading, locking, atomic writes and provider-state transactions
+- `auth/credential_pool.py`, `auth/credential_pool_admin.py`, `auth/credential_pool_model_cooldowns.py` — pool selection, administration, rotation and cooldowns
+- `auth/pool_sources.py`, `auth/pool_refresh.py`, `auth/credential_pool_plugin.py` — source ingestion, refresh coordination and registered plugin refresh invocation
+- `auth/pool_environment.py` — explicit application configuration, metadata and protocol callbacks bound to the profile
+- `auth/oauth.py`, `auth/oauth_grants.py`, `auth/token_validation.py`, `auth/errors.py` — shared OAuth lifecycle, grant hygiene, token validation and authentication errors
+- `auth/providers/`, `auth/provider_status.py`, `auth/api_keys.py` — built-in authentication mechanics, read-only OAuth status snapshots and API-key source precedence
+- `auth/pool_persistence.py`, `auth/persistence.py` — durable pool snapshots, concurrent token/cooldown merges and borrowed-secret sanitization
+- `auth/sources.py`, `auth/source_removal.py` — source suppression, credential save/removal policy and the single removal registry
+- `hermes_cli/config_credentials.py` — application-supplied configuration/mirror and cache callbacks; auth imports no CLI configuration
 - `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
 - `agent/auxiliary_client.py` — auxiliary model routing
 - `providers/` — ABC + registry entry points (`ProviderProfile`, `register_provider`, `get_provider_profile`, `list_providers`)

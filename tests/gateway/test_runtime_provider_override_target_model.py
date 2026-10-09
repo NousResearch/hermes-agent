@@ -31,7 +31,7 @@ def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, mon
     walker (no gateway-private loop) and keeps the entry's own model."""
     import gateway.run as gateway_run
     import hermes_cli.runtime_provider as rp
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     real_resolve = rp.resolve_runtime_provider
 

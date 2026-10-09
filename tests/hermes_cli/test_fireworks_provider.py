@@ -7,6 +7,10 @@ any live network calls.
 """
 
 from __future__ import annotations
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+import auth.providers.nous as _auth_auth_providers_nous
+
 
 import contextlib
 import io
@@ -21,7 +25,7 @@ if "dotenv" not in sys.modules:
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
 
-from hermes_cli.auth import resolve_api_key_provider_credentials
+from hermes_cli.runtime_provider_credentials import resolve_api_key_provider_credentials
 from hermes_cli.models import normalize_provider
 
 
@@ -99,8 +103,8 @@ class TestFireworksDoctor:
         with contextlib.suppress(Exception):
             from hermes_cli import auth as _auth_mod
 
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
+            monkeypatch.setattr(_auth_auth_providers_nous_status, "get_nous_auth_status", lambda**_auth_settings: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
 
         buf = io.StringIO()
         with contextlib.suppress(SystemExit), contextlib.redirect_stdout(buf):
@@ -133,7 +137,7 @@ class TestFireworksAuxiliary:
 
     def test_client_sends_attribution_headers(self, monkeypatch):
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        client, _model, kwargs = self._resolve("fireworks")
+        client, model, kwargs = self._resolve("fireworks")
         assert client is not None
         headers = kwargs.get("default_headers", {})
         assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"

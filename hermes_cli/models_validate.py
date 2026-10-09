@@ -281,7 +281,7 @@ def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
 
 def _validate_lmstudio(req: _Request) -> dict[str, Any]:
     from hermes_cli import models_local as _ml
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     # probe_lmstudio_models distinguishes None (unreachable / malformed) from [] (reachable,
     # nothing chat-capable loaded); fetch_lmstudio_models collapses both to [].

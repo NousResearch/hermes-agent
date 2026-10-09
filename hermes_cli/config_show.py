@@ -182,7 +182,7 @@ def show_config():
     _section("API Keys")
     for env_key, name in _SHOW_CONFIG_API_KEYS:
         print(f"  {name:<14} {_cfg.redact_key(_cfg.get_env_value(env_key))}")
-    from hermes_cli.auth import get_anthropic_key
+    from auth.api_keys import get_anthropic_key
     print(f"  {'Anthropic':<14} {_cfg.redact_key(get_anthropic_key())}")
 
     _show_model_section(config)

@@ -7,8 +7,8 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
     captured = {"login_calls": 0}
 
     monkeypatch.setattr(
-        "hermes_cli.auth.get_xai_oauth_auth_status",
-        lambda: {"logged_in": True},
+        "auth.provider_status.get_xai_oauth_auth_status",
+        lambda **_auth_settings: {"logged_in": True},
     )
     monkeypatch.setattr(
         "hermes_cli.setup._curses_prompt_choice",
@@ -20,13 +20,13 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
         captured["force_new_login"] = force_new_login
         captured["args"] = args
 
-    monkeypatch.setattr("hermes_cli.auth._login_xai_oauth", _fake_login)
+    monkeypatch.setattr("hermes_cli.auth_xai._login_xai_oauth", _fake_login)
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        'auth.providers.xai.resolve_xai_oauth_runtime_credentials',
         lambda *args, **kwargs: {"base_url": "https://api.x.ai/v1"},
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
+        "hermes_cli.auth_model_picker._prompt_model_selection",
         lambda model_ids, current_model="": None,
     )
 
@@ -46,19 +46,19 @@ def test_xai_model_flow_cancel_skips_reauth(monkeypatch):
     from hermes_cli import main as main_mod
 
     monkeypatch.setattr(
-        "hermes_cli.auth.get_xai_oauth_auth_status",
-        lambda: {"logged_in": True},
+        "auth.provider_status.get_xai_oauth_auth_status",
+        lambda **_auth_settings: {"logged_in": True},
     )
     monkeypatch.setattr(
         "hermes_cli.setup._curses_prompt_choice",
         lambda title, choices, default, description=None: 2,
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._login_xai_oauth",
+        "hermes_cli.auth_xai._login_xai_oauth",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not reauthenticate")),
     )
     monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
+        "hermes_cli.auth_model_picker._prompt_model_selection",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not pick a model")),
     )
 

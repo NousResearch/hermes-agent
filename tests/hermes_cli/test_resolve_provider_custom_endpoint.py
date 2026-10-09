@@ -93,7 +93,8 @@ def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_h
         "model:\n  default: some/model\n  base_url: https://api.z.ai/v1\n",
         encoding="utf-8",
     )
-    from hermes_cli.auth import AuthError, resolve_provider
+    from auth.errors import AuthError
+    from hermes_cli.auth import resolve_provider
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
     with pytest.raises(AuthError):

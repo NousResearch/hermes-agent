@@ -1,3 +1,5 @@
+
+import auth.oauth as _auth_auth_oauth
 """Regression tests: edge/WAF non-JSON error responses must not abort an in-flight
 device-code login.
 
@@ -39,7 +41,7 @@ def _post_returning(*responses):
 
 
 def _poll(post, *, expires_in=600, poll_interval=5):
-    return adf._poll_device_token_generic(
+    return _auth_auth_oauth._poll_device_token_generic(
         post, expires_in=expires_in, poll_interval=poll_interval,
         validate_success=lambda payload: None,
         on_non_json_error=lambda response: RuntimeError("non-JSON error response"),

@@ -39,7 +39,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                'auth.providers.anthropic.resolve_anthropic_token',
                 return_value="***",
             ),
             patch(
@@ -74,7 +74,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                'auth.providers.anthropic.resolve_anthropic_token',
                 return_value="***",
             ),
             patch(
@@ -106,7 +106,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                'auth.providers.anthropic.resolve_anthropic_token',
                 return_value="***",
             ),
             patch(
@@ -143,7 +143,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                'auth.providers.anthropic.resolve_anthropic_token',
                 return_value="***",
             ),
             patch(
@@ -188,7 +188,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                'auth.providers.anthropic.resolve_anthropic_token',
                 return_value="***",
             ),
             patch(

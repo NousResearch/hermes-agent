@@ -9,6 +9,12 @@ also call invalidate_nous_auth_status_cache().
 """
 
 from __future__ import annotations
+import auth.providers.nous_status as _auth_auth_providers_nous_status
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.nous as _auth_auth_providers_nous
+
 
 import json
 from unittest.mock import patch
@@ -30,18 +36,19 @@ def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
 
     from hermes_cli import auth as auth_mod
 
-    auth_mod.invalidate_nous_auth_status_cache()
+    _auth_auth_providers_nous_status.invalidate_nous_auth_status_cache()
 
     call_count = {"n": 0}
 
-    def fake_compute():
+    def fake_compute(*, environment):
+        environment.require_current_scope()
         call_count["n"] += 1
         return {"logged_in": False, "source": "auth_store", "call": call_count["n"]}
 
-    with patch.object(auth_mod, "_compute_nous_auth_status", side_effect=fake_compute):
-        first = auth_mod.get_nous_auth_status()
-        second = auth_mod.get_nous_auth_status()
-        third = auth_mod.get_nous_auth_status()
+    with patch.object(_auth_auth_providers_nous_status, "_compute_nous_auth_status", side_effect=fake_compute):
+        first = _auth_auth_providers_nous_status.get_nous_auth_status(environment=_phase6_auth_environment())
+        second = _auth_auth_providers_nous_status.get_nous_auth_status(environment=_phase6_auth_environment())
+        third = _auth_auth_providers_nous_status.get_nous_auth_status(environment=_phase6_auth_environment())
 
     assert call_count["n"] == 1, (
         f"_compute_nous_auth_status was called {call_count['n']}× — "
@@ -50,6 +57,6 @@ def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
     # Each call returns a copy so callers can't mutate the cached dict.
     assert first == second == third
     first["mutated"] = True
-    assert "mutated" not in auth_mod.get_nous_auth_status()
+    assert "mutated" not in _auth_auth_providers_nous_status.get_nous_auth_status(environment=_phase6_auth_environment())
 
-    auth_mod.invalidate_nous_auth_status_cache()
+    _auth_auth_providers_nous_status.invalidate_nous_auth_status_cache()

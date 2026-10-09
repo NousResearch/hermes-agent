@@ -12,8 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.auth import AuthError, _read_codex_tokens, format_auth_error
-from hermes_cli.auth_codex import _codex_refresh_failure_error
+from auth.errors import AuthError
+from auth.providers.codex import _read_codex_tokens
+from hermes_cli.auth_error_copy import format_auth_error
+from auth.providers.codex import _codex_refresh_failure_error
 
 
 @pytest.fixture

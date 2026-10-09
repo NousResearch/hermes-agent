@@ -4,6 +4,7 @@ operations (doctor/backup/import/hooks/checkpoints) dashboard routes.
 Helpers/state that tests monkeypatch on ``web_server`` stay there and are
 reached through the late-binding seam (cycle-safe).
 """
+from hermes_cli.config_credentials import credential_environment
 
 import asyncio
 import contextlib
@@ -50,7 +51,7 @@ load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
-def _spawn_action(argv: list[str], name: str, *, log_msg: str, prefix: str,
+def _spawn_action(argv: List[str], name: str, *, log_msg: str, prefix: str,
                   profile: Optional[str] = None) -> dict:
     """Spawn a ``hermes -p <profile> <argv>`` action; spawn failure -> 500.
 
@@ -133,7 +134,7 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
 
 
-def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
+def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -215,7 +216,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     expected = await config_scoped_to_thread(profile, _snapshot)
 
     secret = body.secret or secrets.token_urlsafe(32)
-    route: dict[str, Any] = {
+    route: Dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
         "events": [e.strip() for e in body.events if e.strip()],
         "secret": secret,
@@ -243,7 +244,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     return summary
 
 
-def _webhook_key_in(subscriptions: dict[str, dict], name: str) -> str:
+def _webhook_key_in(subscriptions: Dict[str, dict], name: str) -> str:
     """Normalized key for an existing route in a lock-held subscription snapshot."""
     key = (name or "").strip().lower()
     if key not in subscriptions:
@@ -323,7 +324,7 @@ async def stop_gateway(profile: Optional[str] = None):
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 
 
-def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
+def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
     """Redacted view of one PooledCredential; ``index`` is 1-based to match
     CredentialPool.remove_index()."""
     token = entry.access_token or ""
@@ -343,16 +344,17 @@ def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
 
 @router.get("/api/credentials/pool")
 async def list_credential_pool(profile: Optional[str] = None):
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool
+    from auth.credential_pool import load_pool
+    from auth.pool_persistence import read_credential_pool
 
     def _run():
+        from hermes_cli.config_credentials import credential_pool_environment
         providers = []
         # read_credential_pool(None) lists every provider with pooled entries;
         # load_pool() gives the rich PooledCredential objects per provider.
         for provider_id in sorted(read_credential_pool().keys()):
             try:
-                pool = load_pool(provider_id)
+                pool = load_pool(provider_id, environment=credential_pool_environment())
             except Exception:
                 _log.exception("load_pool(%s) failed", provider_id)
                 continue
@@ -373,7 +375,7 @@ async def list_credential_pool(profile: Optional[str] = None):
 @router.post("/api/credentials/pool")
 async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[str] = None):
     import uuid
-    from agent.credential_pool import (
+    from auth.credential_pool import (
         AUTH_TYPE_API_KEY,
         CUSTOM_POOL_PREFIX,
         SOURCE_MANUAL,
@@ -387,8 +389,9 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
         raise HTTPException(status_code=400, detail="provider and api_key are required")
 
     def _run():
+        from hermes_cli.config_credentials import credential_pool_environment
         try:
-            pool = load_pool(provider)
+            pool = load_pool(provider, environment=credential_pool_environment())
             label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
             pool.add_entry(PooledCredential(
                 provider=provider,
@@ -411,7 +414,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
             # (mirrors `hermes auth add`).
             if not provider.startswith(CUSTOM_POOL_PREFIX):
                 try:
-                    from hermes_cli.auth import _load_auth_store, unsuppress_credential_source
+                    from auth.store import _load_auth_store
+                    from auth.sources import unsuppress_credential_source
 
                     suppressed = _load_auth_store().get("suppressed_sources", {})
                     for src in list(suppressed.get(provider, []) or []):
@@ -441,15 +445,16 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
 
     See #55217.
     """
-    from agent.credential_pool import load_pool
-    from agent.credential_sources import find_removal_step
-    from hermes_cli.auth import suppress_credential_source
+    from auth.credential_pool import load_pool
+    from auth.source_removal import find_removal_step
+    from auth.sources import suppress_credential_source
 
     provider = (provider or "").strip().lower()
 
     def _run():
+        from hermes_cli.config_credentials import credential_pool_environment
         try:
-            pool = load_pool(provider)
+            pool = load_pool(provider, environment=credential_pool_environment())
             removed = pool.remove_index(index)
         except Exception as exc:
             _log.exception("DELETE /api/credentials/pool failed")
@@ -457,9 +462,9 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
         if removed is None:
             raise HTTPException(status_code=404, detail="No pool entry at that index")
 
-        cleaned: list[str] = []
-        hints: list[str] = []
-        step = find_removal_step(provider, removed.source or "")
+        cleaned: List[str] = []
+        hints: List[str] = []
+        step = find_removal_step(provider, removed.source or "", environment=credential_environment())
         if step is not None:
             try:
                 result = step.remove_fn(provider, removed)
@@ -743,7 +748,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
             entries = hooks_cfg.get(event)
             if not isinstance(entries, list):
                 entries = hooks_cfg[event] = []
-            new_entry: dict[str, Any] = {"command": command}
+            new_entry: Dict[str, Any] = {"command": command}
             if body.matcher:
                 new_entry["matcher"] = body.matcher
             if body.timeout is not None:

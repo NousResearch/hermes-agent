@@ -1,3 +1,5 @@
+
+import auth.providers.nous as _auth_auth_providers_nous
 """Tests for the resolve_nous_access_token startup-burst memo (PR #66016).
 
 The memo collapses the startup burst of managed-tool check_fn calls into a
@@ -5,6 +7,7 @@ single expensive resolution: within the short TTL, repeat calls return the
 cached token without re-entering _provider_state_transaction (two
 cross-process file locks + state reads) or triggering a network refresh.
 """
+import auth.provider_state as auth_provider_state
 
 import json
 import time
@@ -19,7 +22,7 @@ def _fresh_memo(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
     monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
-    monkeypatch.setattr(auth, "_RESOLVE_TOKEN_CACHE", {})
+    monkeypatch.setattr(_auth_auth_providers_nous, "_RESOLVE_TOKEN_CACHE", {})
     yield
 
 
@@ -46,13 +49,13 @@ def _write_valid_auth_file(tmp_path, token="memo-token"):
 
 def _count_transactions(monkeypatch):
     calls = {"n": 0}
-    real = auth._provider_state_transaction
+    real = auth_provider_state._provider_state_transaction
 
     def _counting(provider):
         calls["n"] += 1
         return real(provider)
 
-    monkeypatch.setattr(auth, "_provider_state_transaction", _counting)
+    monkeypatch.setattr(auth_provider_state, "_provider_state_transaction", _counting)
     return calls
 
 
@@ -60,9 +63,9 @@ def test_repeat_calls_within_ttl_hit_memo(monkeypatch, tmp_path):
     _write_valid_auth_file(tmp_path)
     calls = _count_transactions(monkeypatch)
 
-    first = auth.resolve_nous_access_token()
-    second = auth.resolve_nous_access_token()
-    third = auth.resolve_nous_access_token()
+    first = _auth_auth_providers_nous.resolve_nous_access_token()
+    second = _auth_auth_providers_nous.resolve_nous_access_token()
+    third = _auth_auth_providers_nous.resolve_nous_access_token()
 
     assert first == second == third == "memo-token"
     assert calls["n"] == 1, (
@@ -74,15 +77,15 @@ def test_memo_expires_after_ttl(monkeypatch, tmp_path):
     _write_valid_auth_file(tmp_path)
     calls = _count_transactions(monkeypatch)
 
-    auth.resolve_nous_access_token()
+    _auth_auth_providers_nous.resolve_nous_access_token()
     cache_key = auth.hermes_home_key()
-    cached_at, tok = auth._RESOLVE_TOKEN_CACHE[cache_key]
+    cached_at, tok = _auth_auth_providers_nous._RESOLVE_TOKEN_CACHE[cache_key]
     monkeypatch.setattr(
-        auth,
+        _auth_auth_providers_nous,
         "_RESOLVE_TOKEN_CACHE",
-        {cache_key: (cached_at - auth._RESOLVE_TOKEN_CACHE_TTL_S - 1.0, tok)},
+        {cache_key: (cached_at - _auth_auth_providers_nous._RESOLVE_TOKEN_CACHE_TTL_S - 1.0, tok)},
     )
-    auth.resolve_nous_access_token()
+    _auth_auth_providers_nous.resolve_nous_access_token()
 
     assert calls["n"] == 2, "an expired memo must re-resolve"
 
@@ -91,8 +94,8 @@ def test_insecure_callers_bypass_memo(monkeypatch, tmp_path):
     _write_valid_auth_file(tmp_path)
     calls = _count_transactions(monkeypatch)
 
-    auth.resolve_nous_access_token()
-    auth.resolve_nous_access_token(insecure=True)
+    _auth_auth_providers_nous.resolve_nous_access_token()
+    _auth_auth_providers_nous.resolve_nous_access_token(insecure=True)
 
     assert calls["n"] == 2, "insecure callers must bypass the memo entirely"
 
@@ -116,7 +119,7 @@ def test_memo_does_not_leak_across_multiplex_profile_contexts(tmp_path):
     token_a = token_b = None
     reset_token = hermes_constants.set_hermes_home_override(str(profile_a))
     try:
-        token_a = auth.resolve_nous_access_token()
+        token_a = _auth_auth_providers_nous.resolve_nous_access_token()
     finally:
         hermes_constants.reset_hermes_home_override(reset_token)
 
@@ -124,7 +127,7 @@ def test_memo_does_not_leak_across_multiplex_profile_contexts(tmp_path):
     # B's context calls resolve_nous_access_token() shortly after profile A's.
     reset_token = hermes_constants.set_hermes_home_override(str(profile_b))
     try:
-        token_b = auth.resolve_nous_access_token()
+        token_b = _auth_auth_providers_nous.resolve_nous_access_token()
     finally:
         hermes_constants.reset_hermes_home_override(reset_token)
 

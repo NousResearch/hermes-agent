@@ -1,5 +1,7 @@
 """``hermes portal`` — the human-readable entry point for Nous Portal."""
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import sys
 import webbrowser
@@ -37,19 +39,19 @@ def _heading(title: str) -> None:
 
 def _cmd_status(args) -> int:
     """Show Portal auth + Tool Gateway routing summary."""
-    from hermes_cli.auth import get_nous_auth_status_local
+    from auth.providers.nous_status import get_nous_auth_status_local
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
     config = load_config() or {}
     try:
-        auth = get_nous_auth_status_local() or {}  # refresh-free snapshot
+        auth = get_nous_auth_status_local(environment=_phase6_auth_environment()) or {}  # refresh-free snapshot
     except Exception:
         auth = {}
     logged_in = bool(auth.get("logged_in"))
     free_tier = bool(auth.get("free_tier"))
     _heading("Nous Portal")
     if free_tier:
-        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        from auth.providers.nous_guest import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
         print(f"  Auth:    {color(f'{FREE_TIER_LABEL} · {GUEST_MODEL}', Colors.GREEN)}")
         print(f"           {UPGRADE_HINT}")
         if auth.get("inference_base_url"):

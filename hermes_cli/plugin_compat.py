@@ -14,6 +14,16 @@ def compat_report(manifests: Any = None, *, force: bool = False) -> dict[str, li
     return {}
 
 
+def load_manifest() -> Dict[str, Dict[str, str]]:
+    """Compatibility shim for callers that still import the removed scanner API."""
+    return {}
+
+
+def scan_source(src: str, rel: str, manifest: Any = None) -> List[Any]:
+    """The deprecated import scanner is retired; no removed compat paths remain to report."""
+    return []
+
+
 def removal_in_effect(today: Any = None) -> bool:
     return True
 

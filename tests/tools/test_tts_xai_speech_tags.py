@@ -187,8 +187,8 @@ def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypa
             return entry
 
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool",
-        lambda provider_id: _FakePool() if provider_id == "xai-oauth" else None,
+        "auth.credential_pool.load_pool",
+        lambda provider_id, environment=None: _FakePool() if provider_id == "xai-oauth" else None,
     )
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(

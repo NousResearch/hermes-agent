@@ -82,7 +82,7 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
             return object()  # a next entry exists
 
     pool = _StubPool()
-    monkeypatch.setattr(ac, "load_pool", lambda provider: pool)
+    monkeypatch.setattr(ac, "load_pool", lambda provider, environment=None: pool)
     monkeypatch.setattr(ac, "_evict_cached_clients", lambda provider: None)
     recovered = ac._recover_provider_pool("openrouter", exc, failed_api_key="sk-failed")
     assert recovered is benches_pool

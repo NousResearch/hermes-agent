@@ -192,7 +192,7 @@ class CLIInitMixin:
         if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
             _keys = _keys[::-1]
         else:
-            from hermes_cli.auth import looks_like_openrouter_key
+            from auth.secret_validation import looks_like_openrouter_key
             _keys[1] = _keys[1] if looks_like_openrouter_key(_keys[1]) else None
         self.api_key = api_key or _keys[0] or _keys[1]
 

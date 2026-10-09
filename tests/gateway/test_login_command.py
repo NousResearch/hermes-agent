@@ -1,3 +1,5 @@
+
+import auth.providers.nous_guest as _auth_auth_providers_nous_guest
 import asyncio
 import logging
 import threading
@@ -37,7 +39,7 @@ def _runner(monkeypatch, *, extra=None):
         return func()
 
     runner._run_login_blocking = inline
-    monkeypatch.setattr(anon_auth, "current_nous_state", lambda: None)
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "current_nous_state", lambda: None)
     return runner
 
 
@@ -193,7 +195,7 @@ async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch):
 @pytest.mark.asyncio
 async def test_already_signed_in_starts_no_task(monkeypatch):
     runner = _runner(monkeypatch)
-    monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {"auth_method": "oauth"})
+    monkeypatch.setattr(_auth_auth_providers_nous_guest, "current_nous_state", lambda: {"auth_method": "oauth"})
     flow = MagicMock()
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
 
@@ -310,9 +312,9 @@ async def test_a_replacement_reaches_a_poll_running_on_the_private_executor(monk
 @pytest.mark.asyncio
 async def test_a_completion_evicts_welcome_and_clears_its_override(monkeypatch):
     runner = _runner(monkeypatch)
-    agent = SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL)
+    agent = SimpleNamespace(provider="nous", model=_auth_auth_providers_nous_guest.GUEST_MODEL)
     runner._agent_cache = {"k1": (agent, "signature")}
-    runner._session_model_overrides["k1"] = {"model": anon_auth.GUEST_MODEL}
+    runner._session_model_overrides["k1"] = {"model": _auth_auth_providers_nous_guest.GUEST_MODEL}
 
     await runner._render_login_state(
         SimpleNamespace(source=_source(), attempt_id="attempt"),
@@ -334,13 +336,13 @@ def _durable_sweep_runner(monkeypatch, tmp_path):
     runner = _runner(monkeypatch)
     store = SessionStore(sessions_dir=tmp_path, config=runner.config)
     key = store.get_or_create_session(_source()).session_key
-    override = {"model": anon_auth.GUEST_MODEL}
+    override = {"model": _auth_auth_providers_nous_guest.GUEST_MODEL}
     store.set_model_override(key, override)
     runner.session_store = store
     runner._async_session_store = AsyncSessionStore(store)
     runner._session_model_overrides[key] = dict(override)
     runner._agent_cache[key] = (
-        SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature")
+        SimpleNamespace(provider="nous", model=_auth_auth_providers_nous_guest.GUEST_MODEL), "signature")
     return runner, store, key, override
 
 
@@ -415,7 +417,7 @@ async def test_durable_clear_fails_twice_keeps_override_and_warns(monkeypatch, t
 async def test_the_sweep_leaves_sessions_on_other_models_alone(monkeypatch):
     runner = _runner(monkeypatch)
     runner._agent_cache = {
-        "k1": (SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature"),
+        "k1": (SimpleNamespace(provider="nous", model=_auth_auth_providers_nous_guest.GUEST_MODEL), "signature"),
         "k2": (SimpleNamespace(provider="openrouter", model="openrouter/x"), "signature"),
     }
     runner._session_model_overrides["k2"] = {"model": "openrouter/x"}
@@ -434,7 +436,7 @@ async def test_the_sweep_leaves_sessions_on_other_models_alone(monkeypatch):
 async def test_the_sweep_is_skipped_when_the_model_did_not_change(monkeypatch):
     runner = _runner(monkeypatch)
     runner._agent_cache = {
-        "k1": (SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature")}
+        "k1": (SimpleNamespace(provider="nous", model=_auth_auth_providers_nous_guest.GUEST_MODEL), "signature")}
 
     await runner._render_login_state(
         SimpleNamespace(source=_source(), attempt_id="attempt"),
@@ -463,7 +465,7 @@ async def test_a_failing_sweep_still_pushes_the_completion(monkeypatch, caplog):
     runner = _runner(monkeypatch)
     runner._evict_cached_agent = MagicMock(side_effect=RuntimeError("boom"))
     runner._agent_cache = {
-        "k1": (SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature")}
+        "k1": (SimpleNamespace(provider="nous", model=_auth_auth_providers_nous_guest.GUEST_MODEL), "signature")}
     attempt = SimpleNamespace(source=_source(), attempt_id="attempt")
     state = anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True)
 

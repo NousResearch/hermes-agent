@@ -9,6 +9,7 @@ with an empty provider set and destroyed every stored credential.
 Genuine corruption still degrades, still preserves a copy, and now only claims
 to have preserved one when the copy actually landed.
 """
+import auth.store as auth_storage
 
 import errno
 import json
@@ -47,7 +48,7 @@ def test_read_failure_raises_and_leaves_the_store_alone(store_file, monkeypatch,
     monkeypatch.setattr(Path, "read_text", _fail_read(exc))
 
     with pytest.raises(OSError):
-        auth._load_auth_store(store_file)
+        auth_storage._load_auth_store(store_file)
 
     assert store_file.read_bytes() == before, "the store on disk was modified"
     assert not store_file.with_suffix(".json.corrupt").exists(), (
@@ -57,13 +58,13 @@ def test_read_failure_raises_and_leaves_the_store_alone(store_file, monkeypatch,
 def test_unparseable_json_still_degrades_and_preserves_a_copy(store_file):
     store_file.write_text("{ not json", encoding="utf-8")
 
-    result = auth._load_auth_store(store_file)
+    result = auth_storage._load_auth_store(store_file)
 
-    assert result == {"version": auth.AUTH_STORE_VERSION, "providers": {}}
+    assert result == {"version": auth_storage.AUTH_STORE_VERSION, "providers": {}}
     corrupt = store_file.with_suffix(".json.corrupt")
     assert corrupt.exists(), "genuine corruption must still be preserved"
     assert corrupt.read_text(encoding="utf-8") == "{ not json"
 
 def test_healthy_store_is_returned_unchanged(store_file):
-    result = auth._load_auth_store(store_file)
+    result = auth_storage._load_auth_store(store_file)
     assert result["providers"]["nous"]["api_key"] == "secret"

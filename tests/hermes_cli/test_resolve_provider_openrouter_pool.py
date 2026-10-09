@@ -32,14 +32,15 @@ def _clean_inference_env(monkeypatch):
 
 def _seed_openrouter_pool(token: str = "sk-or-FAKEKEY123") -> None:
     """Mimic `hermes auth add openrouter <token>` — a manual pool entry."""
-    from agent.credential_pool import (
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import (
         AUTH_TYPE_API_KEY,
         SOURCE_MANUAL,
         PooledCredential,
         load_pool,
     )
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     pool.add_entry(
         PooledCredential(
             provider="openrouter",

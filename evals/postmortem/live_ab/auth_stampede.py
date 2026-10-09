@@ -1,3 +1,5 @@
+
+import auth.providers.nous as _auth_auth_providers_nous
 """Live A/B of the Nous hourly-expiry stampede, no real network.
 
 Local server: accepts bearer FRESH, returns 401 {"type":"authentication_error", "Your API key is invalid,
@@ -53,8 +55,8 @@ srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serv
 base = f"http://127.0.0.1:{srv.server_address[1]}/v1"
 
 import hermes_cli.auth as auth_mod
-auth_mod.resolve_nous_runtime_credentials = lambda **kw: {"api_key": FRESH, "base_url": base}
-import hermes_cli.nous_auth_keepalive as ka
+_auth_auth_providers_nous.resolve_nous_runtime_credentials = lambda **kw: {"api_key": FRESH, "base_url": base}
+import auth.keepalive as ka
 ka.start_nous_auth_keepalive = lambda **kw: None  # thread itself is out of scope here; we test adoption
 
 from run_agent import AIAgent

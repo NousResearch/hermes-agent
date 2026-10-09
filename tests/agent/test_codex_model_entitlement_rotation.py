@@ -34,6 +34,7 @@ def _entitlement_400():
 
 @pytest.fixture
 def pool(tmp_path, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     root = tmp_path / "hermes-root"
     root.mkdir()
     (tmp_path / "fakehome").mkdir()
@@ -47,8 +48,8 @@ def pool(tmp_path, monkeypatch):
          "access_token": tok, "refresh_token": f"rt-{i}", "expires_at_ms": 4_000_000_000_000}
         for i, tok in enumerate(TOKENS)
     ]}}))
-    from agent.credential_pool import load_pool
-    return load_pool("openai-codex")
+    from auth.credential_pool import load_pool
+    return load_pool("openai-codex", environment=credential_pool_environment())
 
 
 def test_entitlement_400_benches_only_that_model_and_rotates(pool):

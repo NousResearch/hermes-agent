@@ -7,6 +7,12 @@ the dashboard login worker and ``refresh_codex_oauth_pure``. The CLI builds its 
 install the response hook that cuts the read off at the cap.
 """
 from __future__ import annotations
+import auth.providers.codex_http as _auth_auth_providers_codex_http
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
+import auth.providers.codex as _auth_auth_providers_codex
+
 
 import functools
 import json
@@ -15,7 +21,7 @@ import httpx
 import pytest
 
 from hermes_cli import auth_codex
-from hermes_cli.auth import AuthError
+from auth.errors import AuthError
 from hermes_cli.web_routers import oauth as web_oauth
 
 
@@ -49,10 +55,10 @@ def test_oversized_200_auth_body_is_rejected_before_being_buffered(monkeypatch):
     pulled = _serve(monkeypatch, {"access_token": "at", "refresh_token": "rt", "pad": "a" * (3 * 1024 * 1024)})
 
     with pytest.raises(AuthError) as excinfo:
-        auth_codex.refresh_codex_oauth_pure("old-at", "old-rt")
+        _auth_auth_providers_codex.refresh_codex_oauth_pure("old-at", "old-rt", environment=_phase6_auth_environment())
     assert excinfo.value.code == "codex_auth_response_too_large"
     # Stopped within one chunk of the cap, not the full 3 MiB.
-    assert auth_codex._CODEX_AUTH_BODY_MAX_BYTES < pulled[0] <= auth_codex._CODEX_AUTH_BODY_MAX_BYTES + 65536
+    assert _auth_auth_providers_codex_http._CODEX_AUTH_BODY_MAX_BYTES < pulled[0] <= _auth_auth_providers_codex_http._CODEX_AUTH_BODY_MAX_BYTES + 65536
 
     with pytest.raises(AuthError, match="exceeded 1024 KiB"):
         web_oauth._codex_exchange_tokens(httpx, {"authorization_code": "c", "code_verifier": "v"})
@@ -67,7 +73,7 @@ def test_oversized_200_auth_body_is_rejected_before_being_buffered(monkeypatch):
 def test_normal_auth_body_still_parses(monkeypatch):
     _serve(monkeypatch, {"access_token": "at-new", "refresh_token": "rt-new"})
 
-    refreshed = auth_codex.refresh_codex_oauth_pure("old-at", "old-rt")
+    refreshed = _auth_auth_providers_codex.refresh_codex_oauth_pure("old-at", "old-rt", environment=_phase6_auth_environment())
     assert refreshed["access_token"] == "at-new"
     assert web_oauth._codex_exchange_tokens(httpx, {"authorization_code": "c", "code_verifier": "v"}) == {
         "access_token": "at-new", "refresh_token": "rt-new"}

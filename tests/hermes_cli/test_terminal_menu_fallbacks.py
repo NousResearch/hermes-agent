@@ -58,7 +58,7 @@ def test_scoped_numbered_input_handles_navigation_keys(sequence, expected):
 
 
 def test_prompt_model_selection_requires_expensive_confirmation(monkeypatch, capsys):
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.auth_model_picker import _prompt_model_selection
 
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
     monkeypatch.setattr(
@@ -79,7 +79,7 @@ def test_prompt_model_selection_requires_expensive_confirmation(monkeypatch, cap
 
 
 def test_prompt_model_selection_uses_line_editor_for_custom_model(monkeypatch):
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.auth_model_picker import _prompt_model_selection
 
     monkeypatch.setattr(
         "hermes_cli.curses_ui.curses_radiolist",
@@ -98,7 +98,7 @@ def test_prompt_model_selection_uses_line_editor_for_custom_model(monkeypatch):
 def test_prompt_model_selection_fallback_uses_line_editor_for_custom_model(
     monkeypatch,
 ):
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.auth_model_picker import _prompt_model_selection
 
     monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
     monkeypatch.setattr("builtins.input", lambda _prompt="": "2")

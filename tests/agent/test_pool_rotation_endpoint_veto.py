@@ -8,7 +8,7 @@ wrong host. Rotation must be vetoed exactly like a rotation that yields nothing.
 """
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import CredentialPool, PooledCredential
+from auth.credential_pool import CredentialPool, PooledCredential
 
 _AZURE = "https://res.cognitiveservices.azure.com/openai/v1"
 _PUBLIC = "https://api.openai.com/v1"
@@ -43,7 +43,8 @@ class _AzureChild:
 
 
 def test_rotation_on_mixed_pool_never_rebinds_to_an_entry_for_another_endpoint():
-    pool = CredentialPool("openai", [_entry("az", _AZURE), _entry("pub", _PUBLIC)])
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool = CredentialPool("openai", [_entry("az", _AZURE), _entry("pub", _PUBLIC)], environment=credential_pool_environment())
     agent = _AzureChild(pool)
 
     recovered, _ = recover_with_credential_pool(

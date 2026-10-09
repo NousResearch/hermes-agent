@@ -23,11 +23,11 @@ def test_anthropic_picker_discovers_models_with_pool_api_key(monkeypatch):
     """A direct API key stored only in auth.json must reach /v1/models."""
     monkeypatch.setattr(models, "_get_model_config_dict", lambda: {"provider": "nous"})
     monkeypatch.setattr(
-        "agent.anthropic_credentials.resolve_anthropic_token",
-        lambda: None,
+        'auth.providers.anthropic.resolve_anthropic_token',
+        lambda**_auth_settings: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.read_credential_pool",
+        'auth.pool_persistence.read_credential_pool',
         lambda provider: (
             [
                 {
@@ -71,11 +71,11 @@ def test_anthropic_pool_api_key_overrides_conflicting_active_endpoint(monkeypatc
         lambda: {"provider": "anthropic", "base_url": active_endpoint},
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.resolve_anthropic_token",
-        lambda: None,
+        'auth.providers.anthropic.resolve_anthropic_token',
+        lambda**_auth_settings: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.read_credential_pool",
+        'auth.pool_persistence.read_credential_pool',
         lambda provider: (
             [
                 {

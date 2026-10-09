@@ -36,7 +36,7 @@ class TestDefaults:
 
 
     def test_get_limits_returns_defaults_when_load_config_raises(self):
-        def _boom():
+        def _boom(**_auth_settings):
             raise RuntimeError("boom")
 
         with patch("hermes_cli.config.load_config", side_effect=_boom):

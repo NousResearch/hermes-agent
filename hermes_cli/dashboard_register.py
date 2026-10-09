@@ -47,7 +47,8 @@ def _resolve_portal_base_url(override: Optional[str] = None) -> str:
     if isinstance(override, str) and override.strip():
         return override.rstrip("/")
     try:
-        from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_provider_auth_state
+        from auth.store_migrations import DEFAULT_NOUS_PORTAL_URL
+        from auth.provider_state import get_provider_auth_state
         base = (get_provider_auth_state("nous") or {}).get("portal_base_url")
         chosen = base if isinstance(base, str) and base.strip() else str(DEFAULT_NOUS_PORTAL_URL)
         return chosen.rstrip("/")
@@ -162,7 +163,8 @@ def _public_url_from_redirect(redirect_uri: Optional[str]) -> str:
 
 def cmd_dashboard_register(args) -> None:
     """Register a self-hosted dashboard OAuth client with Nous Portal."""
-    from hermes_cli.auth import AuthError, resolve_nous_access_token
+    from auth.errors import AuthError
+    from auth.providers.nous import resolve_nous_access_token
     from hermes_cli.config import is_managed, save_env_value
     # Managed installs get the client id stamped in by the orchestrator (save_env_value refuses).
     if is_managed():

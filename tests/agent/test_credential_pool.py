@@ -40,10 +40,11 @@ def _jwt_with_claims(claims: dict) -> str:
 
 
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
     monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
+        'auth.providers.codex._import_codex_cli_tokens',
         lambda: None,
     )
     _write_auth_store(
@@ -70,9 +71,9 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     assert pool.has_available() is False
     assert pool.select() is None
 
@@ -94,6 +95,7 @@ def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeyp
     exhausted so the pool reaches "no available entries" and the error
     propagates immediately.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     shared_key = "sk-deepseek-shared"
     _write_auth_store(
@@ -125,9 +127,9 @@ def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeyp
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from auth.credential_pool import load_pool, STATUS_EXHAUSTED
 
-    pool = load_pool("custom")
+    pool = load_pool("custom", environment=credential_pool_environment())
 
     # First 402 on the shared key: rotation must NOT hand back a sibling
     # entry that wraps the same depleted key — it must converge to None.
@@ -151,8 +153,9 @@ def test_stale_credential_id_prefers_api_key_hint(tmp_path, monkeypatch):
     fallback together with the primary key that actually failed. The
     healthy key must not inherit the primary's 429.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
     _write_auth_store(
         tmp_path,
         {
@@ -180,9 +183,9 @@ def test_stale_credential_id_prefers_api_key_hint(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from auth.credential_pool import load_pool, STATUS_EXHAUSTED
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     next_entry = pool.mark_exhausted_and_rotate(
         status_code=429,
         api_key_hint="sk-ant-api-primary",
@@ -207,11 +210,12 @@ def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, 
     NEXT healthy key and benched it for the full cooldown TTL, punishing an
     innocent credential.  Now it rotates without marking anything.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Keep the dev machine's live ~/.claude credentials from seeding a
     # claude_code singleton entry into this pool (same isolation as the
     # other anthropic pool tests in this file).
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
     _write_auth_store(
         tmp_path,
         {
@@ -239,10 +243,10 @@ def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, 
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+    from auth.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
 
     # Freshly loaded pool: current() is None, exactly the shape of the bug.
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
 
     next_entry = pool.mark_exhausted_and_rotate(
         status_code=429,
@@ -272,6 +276,7 @@ def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     summary" on context compression.  Terminal OAuth failures should never
     auto-recover.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -302,9 +307,9 @@ def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_DEAD
+    from auth.credential_pool import load_pool, STATUS_DEAD
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     assert pool.select().id == "cred-dead"
 
     # Simulate the exact OpenAI Codex 401 token_invalidated response shape.
@@ -337,6 +342,7 @@ def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatc
     (b) the manual-prune TTL elapses (covered by separate tests below).
     This test verifies the core invariant in the recent-entry window.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # DEAD entry from 2 hours ago — well past the exhausted TTLs (5min/1h)
     # but well within the 24h manual-prune window.
@@ -374,9 +380,9 @@ def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatc
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_DEAD
+    from auth.credential_pool import load_pool, STATUS_DEAD
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     selected = pool.select()
     # Should skip the dead entry and pick the healthy one — even though
     # the dead entry has priority 0 (would normally be picked first) and
@@ -397,6 +403,7 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     They should keep the existing 1-hour TTL cooldown semantics so the
     credential re-enters rotation once the rate window resets.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -427,9 +434,9 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from auth.credential_pool import load_pool, STATUS_EXHAUSTED
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     assert pool.select().id == "cred-1"
 
     next_entry = pool.mark_exhausted_and_rotate(
@@ -453,6 +460,7 @@ def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monk
     transition to DEAD.  A generic 401 might be a transient server-side
     issue worth retrying after the 5-min TTL.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -483,9 +491,9 @@ def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monk
         },
     )
 
-    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from auth.credential_pool import load_pool, STATUS_EXHAUSTED
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     pool.select()
 
     # 401 with no specific reason — stays exhausted, NOT dead.
@@ -508,6 +516,7 @@ def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
     window without losing recoverability — the user can always re-add
     via ``hermes auth add``.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # DEAD entry from > 24h ago
     long_ago = time.time() - (25 * 3600)
@@ -544,9 +553,9 @@ def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openai-codex")
+    pool = load_pool("openai-codex", environment=credential_pool_environment())
     # Trigger _available_entries via select; that runs the prune.
     selected = pool.select()
     assert selected is not None
@@ -564,13 +573,14 @@ def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -581,14 +591,15 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
 
 def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):
     """Runtime env keys may be used in memory but must not land in auth.json."""
+    from hermes_cli.config_credentials import credential_pool_environment
     sentinel = "S3NTINEL_DO_NOT_PERSIST_OPENROUTER"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -608,6 +619,7 @@ def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatc
 
 def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypatch):
     """One env source is one credential, even if auth.json contains stale duplicates."""
+    from hermes_cli.config_credentials import credential_pool_environment
     key = "sk-or-active-main-key"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", key)
@@ -636,9 +648,9 @@ def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypa
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
 
     assert [(entry.id, entry.runtime_api_key) for entry in pool.entries()] == [
         ("current-row", key)
@@ -650,7 +662,8 @@ def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypa
 
 
 def test_credential_pool_never_selects_empty_borrowed_entry():
-    from agent.credential_pool import CredentialPool, PooledCredential
+    from hermes_cli.config_credentials import credential_pool_environment
+    from auth.credential_pool import CredentialPool, PooledCredential
 
     pool = CredentialPool(
         "openrouter",
@@ -665,7 +678,7 @@ def test_credential_pool_never_selects_empty_borrowed_entry():
                 access_token="",
             )
         ],
-    )
+    environment=credential_pool_environment())
 
     assert pool.select() is None
     assert pool.acquire_lease() is None
@@ -673,6 +686,7 @@ def test_credential_pool_never_selects_empty_borrowed_entry():
 
 def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, monkeypatch):
     """Bitwarden-injected env vars retain source metadata but not raw values."""
+    from hermes_cli.config_credentials import credential_pool_environment
     sentinel = "S3NTINEL_DO_NOT_PERSIST_BITWARDEN"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
@@ -682,9 +696,9 @@ def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, m
     )
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -702,6 +716,7 @@ def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, m
 
 def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_path, monkeypatch):
     """Existing raw env-seeded pool entries are rewritten even if the env value matches."""
+    from hermes_cli.config_credentials import credential_pool_environment
     sentinel = "S3NTINEL_DO_NOT_PERSIST_LEGACY_RAW"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
@@ -725,9 +740,9 @@ def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -742,7 +757,7 @@ def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_
 
 
 def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
 
     sentinel = "S3NTINEL_DO_NOT_PERSIST_TO_DICT"
     credential = PooledCredential(
@@ -803,7 +818,7 @@ def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
     "future_secret_store:openrouter",
 ])
 def test_borrowed_source_variants_strip_secret_fields(source):
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
 
     sentinel = f"S3NTINEL_DO_NOT_PERSIST_{source.replace(':', '_').replace('/', '_')}"
     credential = PooledCredential(
@@ -837,7 +852,7 @@ def test_write_credential_pool_sanitizes_borrowed_payload_at_disk_boundary(tmp_p
     manual_secret = "MANUAL_SECRET_STAYS_PERSISTABLE"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from auth.pool_persistence import write_credential_pool
 
     write_credential_pool("openrouter", [
         {
@@ -880,7 +895,7 @@ def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path,
     sentinel = "S3NTINEL_DO_NOT_PERSIST_UNOWNED_OAUTH"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from auth.pool_persistence import write_credential_pool
 
     write_credential_pool("openrouter", [
         {
@@ -908,7 +923,7 @@ def test_write_credential_pool_preserves_known_provider_owned_oauth_state(tmp_pa
     sentinel = "PROVIDER_OWNED_DEVICE_CODE_STAYS_PERSISTABLE"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from auth.pool_persistence import write_credential_pool
 
     write_credential_pool("nous", [
         {
@@ -937,6 +952,7 @@ def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
     os.environ and silently wrote the stale value into auth.json, causing
     persistent 401 errors after key rotation.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -951,8 +967,8 @@ def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
 
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("openrouter")
+    from auth.credential_pool import load_pool
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -969,6 +985,7 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
     os.environ. Guards against regressions that would break production
     deployments relying on runtime-injected env vars.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -979,8 +996,8 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
 
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("openrouter")
+    from auth.credential_pool import load_pool
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -994,6 +1011,7 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
 
 
 def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, monkeypatch):
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
     token = _jwt_with_claims({
@@ -1023,9 +1041,9 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("nous")
+    pool = load_pool("nous", environment=credential_pool_environment())
     entry = pool.select()
 
     assert entry is not None
@@ -1040,7 +1058,7 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
 
 
 def test_nous_runtime_api_key_rejects_opaque_agent_key():
-    from agent.credential_pool import PooledCredential
+    from auth.credential_pool import PooledCredential
 
     entry = PooledCredential(
         provider="nous",
@@ -1087,6 +1105,7 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
     into the anthropic pool — otherwise rotation on a 401/429 could flip
     the session onto OAuth credentials mid-conversation.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -1105,7 +1124,7 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
             "expiresAt": int(time.time() * 1000) + 3_600_000,
         }
 
-    def _fake_cc():
+    def _fake_cc(**_auth_settings):
         cc_called["n"] += 1
         return {
             "accessToken": "sk-ant-oat01-claude-code-token",
@@ -1113,12 +1132,12 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
             "expiresAt": int(time.time() * 1000) + 3_600_000,
         }
 
-    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", _fake_pkce)
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", _fake_cc)
+    monkeypatch.setattr('auth.providers.anthropic.read_hermes_oauth_credentials', _fake_pkce)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', _fake_cc)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     sources = {entry.source for entry in pool.entries()}
 
     # Only the explicit API-key entry should be in the pool.
@@ -1137,6 +1156,7 @@ def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch
     Pool rotation on a transient 401 could revive them and flip the
     session onto the OAuth masquerade.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -1167,12 +1187,12 @@ def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch
         },
     )
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_hermes_oauth_credentials', lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     sources = {entry.source for entry in pool.entries()}
 
     # Stale claude_code entry must be gone, API key must be present.
@@ -1188,6 +1208,7 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     ANTHROPIC_API_KEY is empty), autodiscovered Claude Code creds should
     still be seeded into the pool as before.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-oauth-token")
@@ -1196,21 +1217,21 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
 
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        'auth.providers.anthropic.read_hermes_oauth_credentials',
         lambda: None,
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {
+        'auth.providers.anthropic.read_claude_code_credentials',
+        lambda**_auth_settings: {
             "accessToken": "sk-ant-oat01-autodiscovered-cc",
             "refreshToken": "cc-refresh",
             "expiresAt": int(time.time() * 1000) + 3_600_000,
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     sources = {entry.source for entry in pool.entries()}
 
     # Both env OAuth token and autodiscovered Claude Code creds should be there.
@@ -1220,18 +1241,19 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
 
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     """least_used strategy should select the credential with the lowest request_count."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(
-        "agent.credential_pool.get_pool_strategy",
-        lambda _provider: "least_used",
+        "auth.credential_pool.get_pool_strategy",
+        lambda _provider, environment=None: "least_used",
     )
     monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
+        "auth.pool_sources._seed_from_singletons",
+        lambda provider, entries, environment=None: (False, set()),
     )
     monkeypatch.setattr(
-        "agent.credential_pool._seed_from_env",
-        lambda provider, entries: (False, set()),
+        "auth.pool_sources._seed_from_env",
+        lambda provider, entries, environment=None: (False, set()),
     )
     _write_auth_store(
         tmp_path,
@@ -1271,9 +1293,9 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("openrouter")
+    pool = load_pool("openrouter", environment=credential_pool_environment())
     entry = pool.select()
     assert entry is not None
     assert entry.id == "key-b"
@@ -1286,6 +1308,7 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
 
 def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
     """Verify seeding from custom_providers api_key in config.yaml."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
@@ -1302,9 +1325,9 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
         ]
     }))
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("custom:together.ai")
+    pool = load_pool("custom:together.ai", environment=credential_pool_environment())
     assert pool.has_credentials()
     entries = pool.entries()
     assert len(entries) == 1
@@ -1314,6 +1337,7 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
 
 def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     """Verify seeding from model.api_key when model.provider=='custom' and base_url matches."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
@@ -1333,9 +1357,9 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
         },
     }))
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("custom:together.ai")
+    pool = load_pool("custom:together.ai", environment=credential_pool_environment())
     assert pool.has_credentials()
     entries = pool.entries()
     # Should have the model_config entry
@@ -1361,16 +1385,17 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
 
 def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):
     """Claude Code credentials must not be auto-seeded when the user never selected anthropic."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     # Claude Code credentials exist on disk
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
+        'auth.providers.anthropic.read_claude_code_credentials',
+        lambda**_auth_settings: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        'auth.providers.anthropic.read_hermes_oauth_credentials',
         lambda: None,
     )
     # User configured kimi-coding, NOT anthropic
@@ -1379,8 +1404,8 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
         lambda pid: pid == "kimi-coding",
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("anthropic")
+    from auth.credential_pool import load_pool
+    pool = load_pool("anthropic", environment=credential_pool_environment())
 
     # Should NOT have seeded the claude_code entry
     assert pool.entries() == []
@@ -1388,16 +1413,17 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
 
 def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     """Copilot credentials from `gh auth token` should be seeded into the pool."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+        'auth.providers.copilot.resolve_copilot_token',
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
+    from auth.credential_pool import load_pool
+    pool = load_pool("copilot", environment=credential_pool_environment())
 
     assert pool.has_credentials()
     entries = pool.entries()
@@ -1417,6 +1443,7 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
     removed with ``hermes auth remove copilot gh_cli``.  The gate must run
     BEFORE the network call.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -1428,7 +1455,7 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+        'auth.providers.copilot.resolve_copilot_token',
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
@@ -1440,12 +1467,12 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
         raise AssertionError("exchange must not run for a suppressed source")
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+        'auth.providers.copilot.get_copilot_api_token',
         _boom,
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
+    from auth.credential_pool import load_pool
+    pool = load_pool("copilot", environment=credential_pool_environment())
 
     assert not exchange_called
     assert not pool.has_credentials()
@@ -1460,6 +1487,7 @@ def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
     so a user's env-var-specific suppression was silently bypassed and the
     exchange ran anyway.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -1471,7 +1499,7 @@ def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+        'auth.providers.copilot.resolve_copilot_token',
         lambda: ("gho_fake_token_env", "GH_TOKEN"),
     )
 
@@ -1483,12 +1511,12 @@ def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
         raise AssertionError("exchange must not run for a suppressed env source")
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+        'auth.providers.copilot.get_copilot_api_token',
         _boom,
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
+    from auth.credential_pool import load_pool
+    pool = load_pool("copilot", environment=credential_pool_environment())
 
     assert not exchange_called
     assert pool.entries() == []
@@ -1500,6 +1528,7 @@ def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkey
     The inverse of the substring bug: GH_TOKEN misclassified as gh_cli meant
     suppressing the CLI path also silently dropped env tokens.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -1511,16 +1540,16 @@ def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkey
     )
 
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+        'auth.providers.copilot.resolve_copilot_token',
         lambda: ("gho_fake_token_env", "GH_TOKEN"),
     )
     monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+        'auth.providers.copilot.get_copilot_api_token',
         lambda token: ("capi_exchanged_token", None),
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
+    from auth.credential_pool import load_pool
+    pool = load_pool("copilot", environment=credential_pool_environment())
 
     assert [e.source for e in pool.entries()] == ["env:GH_TOKEN"]
 
@@ -1528,8 +1557,9 @@ def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkey
 def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, monkeypatch):
     """With every copilot source suppressed, resolve_copilot_token (which
     shells out to ``gh auth token``) must not run at all."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+    from auth.providers.copilot import COPILOT_ENV_VARS
     _write_auth_store(
         tmp_path,
         {
@@ -1544,10 +1574,10 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     def _boom():
         raise AssertionError("resolve_copilot_token must not run when all sources are suppressed")
 
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", _boom)
+    monkeypatch.setattr('auth.providers.copilot.resolve_copilot_token', _boom)
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
+    from auth.credential_pool import load_pool
+    pool = load_pool("copilot", environment=credential_pool_environment())
 
     assert pool.entries() == []
 
@@ -1556,29 +1586,31 @@ def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, 
     """An ambient gh-CLI Copilot credential is seeded without the token exchange (and without the
     'degraded to RAW token' warning) until copilot is actually selected; once selected, the
     degradation is reported once per token, not on every pool load (#114740)."""
+    from hermes_cli.config_credentials import credential_pool_environment
     import logging
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    from agent.credential_pool import _reset_copilot_raw_degradation_warned, load_pool
+    from auth.pool_sources import _reset_copilot_raw_degradation_warned
+    from auth.credential_pool import load_pool
     _reset_copilot_raw_degradation_warned()
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_initial", "gh auth token"))
+    monkeypatch.setattr('auth.providers.copilot.resolve_copilot_token', lambda: ("gho_raw_initial", "gh auth token"))
     exchanges = []
 
     def degraded_exchange(token):
         exchanges.append(token)
         return token, None  # exchange unavailable -> RAW token, no enterprise URL
 
-    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", degraded_exchange)
+    monkeypatch.setattr('auth.providers.copilot.get_copilot_api_token', degraded_exchange)
 
     def degradation_warnings():
         return [r for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
 
-    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+    with caplog.at_level(logging.WARNING, logger="auth.credential_pool"):
         # Main provider is deepseek; copilot is merely discovered via `gh auth token`.
         (tmp_path / "hermes" / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n", encoding="utf-8")
-        pool = load_pool("copilot")
-        load_pool("copilot")
+        pool = load_pool("copilot", environment=credential_pool_environment())
+        load_pool("copilot", environment=credential_pool_environment())
         assert exchanges == [] and degradation_warnings() == []
         assert [e.access_token for e in pool.entries()] == ["gho_raw_initial"]  # credential still listed
 
@@ -1589,23 +1621,24 @@ def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, 
         from hermes_cli import config as _cfg
         _cfg._LOAD_CONFIG_CACHE.clear()
         _cfg._RAW_CONFIG_CACHE.clear()  # same-second rewrite: the mtime signature may not change
-        load_pool("copilot")
-        load_pool("copilot")
+        load_pool("copilot", environment=credential_pool_environment())
+        load_pool("copilot", environment=credential_pool_environment())
         assert len(exchanges) == 2 and len(degradation_warnings()) == 1
 
         # A different token is a different degradation: warned again, once.
-        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_rotated", "gh auth token"))
-        load_pool("copilot")
+        monkeypatch.setattr('auth.providers.copilot.resolve_copilot_token', lambda: ("gho_raw_rotated", "gh auth token"))
+        load_pool("copilot", environment=credential_pool_environment())
         assert len(degradation_warnings()) == 2
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
     """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        'auth.providers.qwen.resolve_qwen_runtime_credentials',
         lambda **kw: {
             "provider": "qwen-oauth",
             "base_url": "https://portal.qwen.ai/v1",
@@ -1616,8 +1649,8 @@ def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("qwen-oauth")
+    from auth.credential_pool import load_pool
+    pool = load_pool("qwen-oauth", environment=credential_pool_environment())
 
     assert pool.has_credentials()
     entries = pool.entries()
@@ -1628,20 +1661,21 @@ def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
 
 def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch):
     """Qwen OAuth pool should be empty when no CLI credentials exist."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    from hermes_cli.auth import AuthError
+    from auth.errors import AuthError
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        'auth.providers.qwen.resolve_qwen_runtime_credentials',
         lambda **kw: (_ for _ in ()).throw(
             AuthError("Qwen CLI credentials not found.", provider="qwen-oauth", code="qwen_auth_missing")
         ),
     )
 
-    from agent.credential_pool import load_pool
-    pool = load_pool("qwen-oauth")
+    from auth.credential_pool import load_pool
+    pool = load_pool("qwen-oauth", environment=credential_pool_environment())
 
     assert not pool.has_credentials()
     assert pool.entries() == []
@@ -1657,6 +1691,7 @@ def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, mo
     (self-heal hooks, pool pruning by age) treat just-minted credentials as
     older than they actually are and evict them.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -1686,9 +1721,9 @@ def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, mo
         },
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("nous")
+    pool = load_pool("nous", environment=credential_pool_environment())
     entries = pool.entries()
 
     device_entries = [e for e in entries if e.source == "device_code"]
@@ -1764,12 +1799,13 @@ def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, mo
 
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     """Regression for #19566: stale rotation writes keep concurrent entries."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
     # on a dev machine would seed an extra claude_code entry and break the
     # exact-id assertions below (passes on CI where no such file exists).
-    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_hermes_oauth_credentials', lambda: None)
+    monkeypatch.setattr('auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None)
     _write_auth_store(
         tmp_path,
         {
@@ -1797,10 +1833,10 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool, write_credential_pool
+    from auth.credential_pool import load_pool
+    from auth.pool_persistence import read_credential_pool, write_credential_pool
 
-    pool = load_pool("anthropic")
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     assert {entry.id for entry in pool.entries()} == {"cred-A", "cred-B"}
 
     disk_snapshot = read_credential_pool("anthropic")
@@ -1837,6 +1873,7 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
 
 def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, refresh_token, expires_at_ms=9_999_999_999_000):
     """Helper: load an Anthropic pool seeded with a single claude_code entry."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
@@ -1844,15 +1881,15 @@ def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, ref
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        'auth.providers.anthropic.read_hermes_oauth_credentials',
         lambda: None,
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
+        'auth.providers.anthropic.read_claude_code_credentials',
+        lambda**_auth_settings: {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
     )
-    from agent.credential_pool import load_pool
-    pool = load_pool("anthropic")
+    from auth.credential_pool import load_pool
+    pool = load_pool("anthropic", environment=credential_pool_environment())
     entry = pool.select()
     assert entry is not None
     assert entry.source == "claude_code"
@@ -1873,7 +1910,7 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     fresh tokens arrived from the credentials file.
     """
     from dataclasses import replace as dc_replace
-    from agent.credential_pool import STATUS_EXHAUSTED
+    from auth.credential_pool import STATUS_EXHAUSTED
 
     pool, entry = _make_anthropic_claude_code_pool(
         tmp_path, monkeypatch,
@@ -1894,8 +1931,8 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     pool._replace_entry(entry, exhausted)
 
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
-        lambda: {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_000},
+        'auth.providers.anthropic.read_claude_code_credentials',
+        lambda**_auth_settings: {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_000},
     )
 
     synced = pool._sync_anthropic_entry_from_credentials_file(exhausted)
@@ -1912,6 +1949,7 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
 
 def _load_two_ok_pool(tmp_path, monkeypatch):
     """A pool with two OK anthropic entries, current = cred-1."""
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
         tmp_path,
@@ -1933,9 +1971,9 @@ def _load_two_ok_pool(tmp_path, monkeypatch):
             },
         },
     )
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    return load_pool("anthropic")
+    return load_pool("anthropic", environment=credential_pool_environment())
 
 
 
@@ -2028,12 +2066,13 @@ def test_reset_statuses_clears_a_cooldown_that_is_still_binding(tmp_path, monkey
     failure_reason test fail, and the guard test below keeps passing, which is
     how it is known to pin pre-existing behaviour rather than the new flag.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    assert load_pool("deepseek").reset_statuses() == 1
+    assert load_pool("deepseek", environment=credential_pool_environment()).reset_statuses() == 1
 
     entry = _disk_entry(tmp_path)
     assert entry["last_status"] is None
@@ -2043,7 +2082,7 @@ def test_reset_statuses_clears_a_cooldown_that_is_still_binding(tmp_path, monkey
     # operational symptom of the bug was the CLI refusing the provider outright
     # with "No usable credentials found", so availability is the property that
     # matters here, not any single field.
-    assert load_pool("deepseek").has_available() is True
+    assert load_pool("deepseek", environment=credential_pool_environment()).has_available() is True
 
 
 def test_reset_statuses_clears_the_classified_failure_reason(tmp_path, monkeypatch):
@@ -2054,12 +2093,13 @@ def test_reset_statuses_clears_the_classified_failure_reason(tmp_path, monkeypat
     status and no error code but still classified ``billing``. ``hermes auth
     list`` renders that leftover as though it were a current finding.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    assert load_pool("deepseek").reset_statuses() == 1
+    assert load_pool("deepseek", environment=credential_pool_environment()).reset_statuses() == 1
 
     entry = _disk_entry(tmp_path)
     assert entry.get("failure_reason") is None
@@ -2080,7 +2120,7 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from hermes_cli.auth import write_credential_pool
+    from auth.pool_persistence import write_credential_pool
 
     # A stale snapshot: same id, status cleared, intent NOT declared.
     write_credential_pool(
@@ -2116,14 +2156,15 @@ def test_live_pool_flush_does_not_resurrect_a_cooldown_reset_by_another_process(
     the save side (disk stays clear) and on the read side (the live pool lifts
     its cooldown and serves the credential again).
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    live = load_pool("deepseek")                      # process A: session already running
+    live = load_pool("deepseek", environment=credential_pool_environment())                      # process A: session already running
     assert live.has_available() is False
-    assert load_pool("deepseek").reset_statuses() == 1  # process B: `hermes auth reset deepseek`
+    assert load_pool("deepseek", environment=credential_pool_environment()).reset_statuses() == 1  # process B: `hermes auth reset deepseek`
 
     live._persist()                                   # A's next ordinary flush
     assert _disk_entry(tmp_path)["last_status"] is None
@@ -2138,13 +2179,14 @@ def test_an_exhaustion_newer_than_the_reset_still_binds(tmp_path, monkeypatch):
     the reset and has to survive both a flush and re-selection, or a single
     reset would make the credential immune to benching for the rest of the run.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    assert load_pool("deepseek").reset_statuses() == 1
-    live = load_pool("deepseek")
+    assert load_pool("deepseek", environment=credential_pool_environment()).reset_statuses() == 1
+    live = load_pool("deepseek", environment=credential_pool_environment())
     assert live.select() is not None
     live.mark_exhausted_and_rotate(status_code=402, api_key_hint="sk-test",
                                    error_context={"message": "Insufficient Balance"})

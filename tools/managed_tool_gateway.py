@@ -1,6 +1,8 @@
 """Generic managed-tool gateway helpers for Nous-hosted vendor passthroughs."""
 
 from __future__ import annotations
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
+
 
 import json
 import logging
@@ -47,14 +49,14 @@ def _read_nous_provider_state() -> Optional[dict]:
     the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
     the connector gate alone, so ``manage_connections`` vanished from its tool list."""
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from auth.provider_state import get_provider_auth_state
 
         nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
-        from hermes_cli.anon_auth import guest_enabled, is_guest_state
+        from auth.providers.nous_guest import guest_enabled, is_guest_state
 
-        if is_guest_state(nous_provider) and not guest_enabled():
+        if is_guest_state(nous_provider) and not guest_enabled(environment=_phase6_auth_environment()):
             return None
         return nous_provider
     except Exception:
@@ -114,14 +116,14 @@ def read_nous_access_token() -> Optional[str]:
     if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
         return cached_token
     try:
-        from hermes_cli.auth import resolve_nous_access_token
+        from auth.providers.nous import resolve_nous_access_token
 
         if refreshed_token := _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
             return refreshed_token
     except Exception as exc:
         # Same dead-credential rule as inference (one place decides it: anon_auth): a retired free-tier
         # identity is replaced once, here, instead of handing back its stale token forever.
-        from hermes_cli.anon_auth import AnonCredentialDead
+        from auth.providers.nous_guest import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
             return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
@@ -130,15 +132,15 @@ def read_nous_access_token() -> Optional[str]:
 
 
 def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
-    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
-    from hermes_cli.auth import resolve_nous_access_token
+    from auth.providers.nous_guest import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
+    from auth.providers.nous import resolve_nous_access_token
 
     clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
     # Same rule as inference: a locked account is retired but never silently replaced.
     if code == ANON_ACCOUNT_LOCKED:
         return None
     try:
-        if ensure_portal_identity(explicit=True) is None:
+        if ensure_portal_identity(explicit=True, environment=_phase6_auth_environment()) is None:
             return None
         return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
     except Exception as exc:

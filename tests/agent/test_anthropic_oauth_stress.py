@@ -13,6 +13,9 @@ because two in-process mocks happened to finish quickly.
 """
 
 from __future__ import annotations
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
+import auth.store as auth_storage
 
 import json
 import multiprocessing as mp
@@ -25,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.credential_pool import (
+from auth.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_EXHAUSTED,
     CredentialPool,
@@ -43,16 +46,17 @@ def _process_claude_code_refresh_worker(
     result_queue,
 ) -> None:
     """Refresh one shared Claude Code credential from an independent process."""
+    from hermes_cli.config_credentials import credential_pool_environment
     os.environ["HERMES_HOME"] = profile_home
 
-    from agent import anthropic_credentials as anthropic_mod
-    from agent import credential_pool as credential_pool_mod
+    import auth.providers.anthropic as anthropic_mod
+    from auth import credential_pool as credential_pool_mod
     from hermes_cli import auth as auth_mod
 
     shared_path = Path(shared_credentials_path)
     server_path = Path(server_state_path)
 
-    def read_shared_credentials():
+    def read_shared_credentials(**_auth_settings):
         data = json.loads(shared_path.read_text(encoding="utf-8"))
         oauth = data["claudeAiOauth"]
         return {
@@ -76,7 +80,7 @@ def _process_claude_code_refresh_worker(
         # protects only the fake server's accounting; the production lock is
         # what must ensure that the second Hermes process never calls this
         # function after the first one has rotated the shared credential.
-        with auth_mod._auth_store_lock(timeout_seconds=10, target_path=server_path):
+        with auth_storage._auth_store_lock(timeout_seconds=10, target_path=server_path):
             state = json.loads(server_path.read_text(encoding="utf-8"))
             state["calls"].append(refresh_token)
             if refresh_token in state["spent"]:
@@ -98,11 +102,11 @@ def _process_claude_code_refresh_worker(
 
     # Keep this worker hermetic: each profile has its own auth store, while
     # both workers deliberately point at the same Claude credential source.
-    auth_mod._global_auth_file_path = lambda: None
-    anthropic_mod.claude_code_credentials_path = lambda: shared_path
-    anthropic_mod.read_claude_code_credentials = read_shared_credentials
-    anthropic_mod._write_claude_code_credentials = write_shared_credentials
-    anthropic_mod.refresh_anthropic_oauth_pure = fake_refresh
+    auth_storage._global_auth_file_path = lambda: None
+    _auth_auth_providers_anthropic.claude_code_credentials_path = lambda: shared_path
+    _auth_auth_providers_anthropic.read_claude_code_credentials = read_shared_credentials
+    _auth_auth_providers_anthropic._write_claude_code_credentials = write_shared_credentials
+    _auth_auth_providers_anthropic.refresh_anthropic_oauth_pure = fake_refresh
 
     result_queue.put({"kind": "ready", "pid": os.getpid()})
     if not start_event.wait(timeout=10):
@@ -110,7 +114,7 @@ def _process_claude_code_refresh_worker(
         return
 
     entry = _entry(id="pool-entry", refresh_token="stale-rt", source="claude_code")
-    pool = credential_pool_mod.CredentialPool("anthropic", [entry])
+    pool = credential_pool_mod.CredentialPool("anthropic", [entry], environment=credential_pool_environment())
     try:
         refreshed = pool._refresh_entry(pool.entries()[0], force=True)
         result_queue.put({
@@ -186,20 +190,21 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
     Every participant must end up with a usable, non-exhausted credential and
     the single-use stale token must be POSTed exactly once.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     server = _SingleUseTokenServer(delay_seconds=0.02)
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        'auth.providers.anthropic.refresh_anthropic_oauth_pure',
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+        'auth.providers.anthropic.read_claude_code_credentials', lambda**_auth_settings: None
     )
 
     shared_stale_entry = _entry(
         id="pool-entry", refresh_token="stale-rt", source="manual:hermes_pkce"
     )
     pools = [
-        CredentialPool("anthropic", [dc_replace(shared_stale_entry)])
+        CredentialPool("anthropic", [dc_replace(shared_stale_entry)], environment=credential_pool_environment())
         for _ in range(CONCURRENCY)
     ]
 

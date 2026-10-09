@@ -178,6 +178,7 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
     base_url, the pool key ``custom:b.ai`` no longer equals the preferred
     candidate (the slug ``b-ai``), silently skipping the model_config seed.
     """
+    from hermes_cli.config_credentials import credential_pool_environment
     config = {
         "model": {
             "default": "b-ai-model",
@@ -207,9 +208,9 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from agent.credential_pool import load_pool
+    from auth.credential_pool import load_pool
 
-    pool = load_pool("custom:b.ai")
+    pool = load_pool("custom:b.ai", environment=credential_pool_environment())
     entries = pool.entries() if hasattr(pool, "entries") else []
     seeded = [e for e in entries if getattr(e, "source", "") == "model_config"]
     assert seeded, "legacy-named pool must still seed model_config from model.api_key"
@@ -236,11 +237,12 @@ def test_named_provider_pool_requires_matching_endpoint(tmp_path, monkeypatch):
     base_url must never receive it (trailing slash is the same endpoint)."""
     _write_keyed_provider_home(tmp_path, monkeypatch)
 
-    from agent.credential_pool import custom_provider_pool_key_candidates
+    from auth.credential_pool import custom_provider_pool_key_candidates
+    from hermes_cli.config_credentials import credential_pool_environment
     from hermes_cli import runtime_provider as rp
 
-    assert custom_provider_pool_key_candidates("https://elsewhere.example/v1", "b-ai") == []
-    assert custom_provider_pool_key_candidates(ENDPOINT + "/", "b-ai")[0] == "b-ai"
+    assert custom_provider_pool_key_candidates("https://elsewhere.example/v1", "b-ai", environment=credential_pool_environment()) == []
+    assert custom_provider_pool_key_candidates(ENDPOINT + "/", "b-ai", environment=credential_pool_environment())[0] == "b-ai"
     resolved = rp.resolve_runtime_provider(requested="b-ai", explicit_base_url="https://elsewhere.example/v1")
     assert resolved["base_url"] == "https://elsewhere.example/v1"
     assert resolved["api_key"] != POOL_KEY

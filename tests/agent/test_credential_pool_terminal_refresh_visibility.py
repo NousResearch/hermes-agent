@@ -8,6 +8,11 @@ token — for the user this is the moment the login is lost, and a debug-only li
 later refresh attempt.
 """
 from __future__ import annotations
+import auth.providers.anthropic as _auth_auth_providers_anthropic
+
+import auth.oauth as _auth_auth_oauth
+
+from hermes_cli import auth as provider_auth
 
 import base64
 import json
@@ -17,9 +22,9 @@ import time
 
 import pytest
 
-from agent import anthropic_credentials as ac
-from agent import credential_pool as cp
-from agent.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential
+import auth.providers.anthropic as ac
+from auth import credential_pool as cp
+from auth.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential
 
 
 def _pool(provider: str) -> CredentialPool:
@@ -32,6 +37,9 @@ def _pool(provider: str) -> CredentialPool:
     pool._unmatched_rotation_streak = 0
     pool._persisted_token_pairs = {}
     pool.provider = provider
+    from hermes_cli.config_credentials import credential_pool_environment
+    pool.environment = credential_pool_environment()
+    pool._provider_hooks = pool.environment.provider_hooks(pool.provider)
     return pool
 
 
@@ -59,7 +67,7 @@ def test_terminal_refresh_quarantine_warns_with_reauth_hint(
     monkeypatch.setattr(pool, sync_name, lambda e: e)  # no peer rotated in the meantime
     monkeypatch.setattr(pool, clear_name, lambda e, exc: cleared.append(e.id))
     monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources: None)
-    monkeypatch.setattr(cp.auth_mod, terminal_predicate, lambda exc: True)
+    monkeypatch.setattr(_auth_auth_oauth, terminal_predicate, lambda exc: True)
 
     with caplog.at_level(logging.INFO, logger=cp.logger.name):
         result = pool._recover_failed_refresh(entry, RuntimeError("invalid_grant"))
@@ -78,7 +86,7 @@ def test_anthropic_dead_grant_warns_and_marks_dead(monkeypatch, caplog):
     pool._entries = [entry]
     monkeypatch.setattr(pool, "_sync_entry_from_pool_store", lambda e: e)
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
-    exc = ac.AnthropicOAuthError(400, "invalid_grant", "refresh token revoked", what="refresh")
+    exc = _auth_auth_providers_anthropic.AnthropicOAuthError(400, "invalid_grant", "refresh token revoked", what="refresh")
 
     with caplog.at_level(logging.INFO, logger=cp.logger.name):
         result = pool._recover_failed_refresh(entry, exc)
@@ -114,7 +122,7 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
     monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda e: e)
     monkeypatch.setattr(pool, "_clear_terminal_tokens_state", lambda e, exc: None)
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
-    monkeypatch.setattr(cp.auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
+    monkeypatch.setattr(_auth_auth_oauth, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
 
     assert pool._recover_failed_refresh(entry, RuntimeError("invalid_grant")) is None
 

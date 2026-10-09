@@ -1,3 +1,5 @@
+
+from hermes_cli.config_credentials import credential_pool_environment as _phase6_auth_environment
 """Regression tests: resolve_anthropic_token() must honour the profile secret scope.
 
 BUG LOCATION
@@ -32,7 +34,7 @@ import pytest
 from unittest.mock import patch
 
 from agent import secret_scope as ss
-from agent.anthropic_credentials import resolve_anthropic_token
+from auth.providers.anthropic import resolve_anthropic_token
 
 
 @pytest.fixture(autouse=True)
@@ -50,8 +52,8 @@ def _pin_file_and_pool_sources():
     This isolates the three os.getenv() call sites (sources 1, 2, 5) so each
     test exercises exactly the env-var reading behaviour under scope control.
     """
-    with patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=None), \
-         patch("agent.anthropic_credentials._resolve_anthropic_pool_token", return_value=None):
+    with patch('auth.providers.anthropic.read_claude_code_credentials', return_value=None), \
+         patch('auth.providers.anthropic._resolve_anthropic_pool_token', return_value=None):
         yield
 
 
@@ -76,7 +78,7 @@ class TestApiKeyScopeIsolation:
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-ant-api-CORRECT-PROFILE"})
         try:
-            result = resolve_anthropic_token()
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok)
 
@@ -100,13 +102,13 @@ class TestApiKeyScopeIsolation:
 
         tok_a = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-ant-api-PROFILE-A"})
         try:
-            result_a = resolve_anthropic_token()
+            result_a = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok_a)
 
         tok_b = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-ant-api-PROFILE-B"})
         try:
-            result_b = resolve_anthropic_token()
+            result_b = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok_b)
 
@@ -148,7 +150,7 @@ class TestOAuthTokenLeakageFromEnviron:
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-ant-api-PROFILE-A"})
         try:
-            result = resolve_anthropic_token()
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok)
 
@@ -172,7 +174,7 @@ class TestOAuthTokenLeakageFromEnviron:
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"ANTHROPIC_TOKEN": "sk-ant-oat-PROFILE-A-OWN-OAUTH"})
         try:
-            result = resolve_anthropic_token()
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok)
 
@@ -202,7 +204,7 @@ class TestClaudeCodeOAuthTokenLeakage:
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-ant-api-PROFILE-X"})
         try:
-            result = resolve_anthropic_token()
+            result = resolve_anthropic_token(environment=_phase6_auth_environment())
         finally:
             ss.reset_secret_scope(tok)
 
@@ -251,4 +253,4 @@ class TestCronSchedulerUnscopedCall:
         # No set_secret_scope() call — simulates cron scheduler context
 
         with pytest.raises(ss.UnscopedSecretError, match="ANTHROPIC"):
-            resolve_anthropic_token()
+            resolve_anthropic_token(environment=_phase6_auth_environment())

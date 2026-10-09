@@ -403,7 +403,18 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        current_fingerprint = _process_fingerprint(int(pid))
+        if not current_fingerprint or "|" not in current_fingerprint:
+            return True
+        recorded_epoch, recorded_start = started_at.rsplit("|", 1)
+        current_epoch, current_start = current_fingerprint.rsplit("|", 1)
+        if recorded_epoch != current_epoch:
+            return True
+        from gateway.status import start_time_fingerprints_match
+        try:
+            return not start_time_fingerprints_match(recorded_start, current_start)
+        except (TypeError, ValueError):
+            return True
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
@@ -1143,6 +1154,62 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
+def _pid_is_task_worker(pid: int, task_id: str) -> bool:
+    """True when the live process command still names this exact Kanban card."""
+    try:
+        from gateway.status import _read_process_cmdline
+        cmdline = _read_process_cmdline(int(pid)) or ""
+    except Exception:
+        return False
+    pattern = r"(?:^|\s)work\s+kanban\s+task\s+" + re.escape(task_id) + r"(?:\s|$)"
+    return re.search(pattern, cmdline) is not None
+
+
+def _repair_live_worker_identity(conn: sqlite3.Connection, row) -> bool:
+    """Repair a false fingerprint mismatch without releasing the live claim.
+
+    The command line is independent evidence that the still-live PID is the
+    worker for this exact card.  Refresh its fingerprint, leave the card
+    running, and make the mismatch visible instead of spawning a duplicate.
+    """
+    pid, task_id = int(row["worker_pid"]), row["id"]
+    if not _kb._pid_alive(pid) or not _pid_is_task_worker(pid, task_id):
+        return False
+    refreshed = _process_fingerprint(pid)
+    if not refreshed:
+        return False
+    run_id = _kb._current_run_id(conn, task_id)
+    conn.execute(
+        "UPDATE tasks SET worker_started_at = ? "
+        "WHERE id = ? AND status = 'running' AND worker_pid = ? AND claim_lock IS ?",
+        (refreshed, task_id, pid, row["claim_lock"]),
+    )
+    if run_id is not None:
+        conn.execute(
+            "UPDATE task_runs SET worker_started_at = ? WHERE id = ? AND worker_pid = ?",
+            (refreshed, run_id, pid),
+        )
+    payload = {
+        "pid": pid,
+        "previous_started_at": _kb._row_get(row, "worker_started_at"),
+        "refreshed_started_at": refreshed,
+        "action": "claim_held_no_duplicate_spawn",
+    }
+    _kb._insert_comment(
+        conn, task_id, "dispatcher",
+        "⛔ Worker liveness warning: the saved process identity changed, but the live process still "
+        "names this exact card. Hermes kept the existing worker and did not start a second one.",
+        int(time.time()),
+    )
+    _kb._append_event(conn, task_id, "worker_identity_repaired", payload, run_id=run_id)
+    _kb._log.warning(
+        "kanban: task %s worker pid %s had a false identity mismatch; "
+        "refreshed fingerprint and held claim (no duplicate spawn)",
+        task_id, pid,
+    )
+    return True
+
+
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
@@ -1163,6 +1230,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+                continue
+
+            # Defense in depth: a raw-live process whose command still names
+            # this exact card is our worker even if its start-time fingerprint
+            # drifted.  Repair and alert; never release its claim beside it.
+            if _repair_live_worker_identity(conn, row):
                 continue
 
             pid = int(row["worker_pid"])

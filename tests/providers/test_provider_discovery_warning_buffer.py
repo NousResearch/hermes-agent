@@ -519,10 +519,8 @@ _SETUP_FAILURE_PROBE = (
     "assert len(_pl.getLogger().handlers) == 0, 'precondition: root has handlers'\n"
     "assert len(_pl.getLogger('providers').handlers) == 0, 'precondition: providers logger has handlers'\n"
     "import hermes_cli.main_provider_replay as _r\n"
-    "if hasattr(_r, 'dispatch_replay_provider_failures'):\n"
-    "    _r.dispatch_replay_provider_failures(_m._replay_provider_failures)\n"
-    "else:\n"
-    "    _m._replay_provider_failures()\n"
+    "assert hasattr(_r, 'dispatch_replay_provider_failures'), 'dispatch entry missing'\n"
+    "_r.dispatch_replay_provider_failures(_m._replay_provider_failures)\n"
     "assert len(_p.get_provider_load_failures()) >= 1, 'failures must stay buffered'\n"
     "sys.stdout.write('PROBE_OK')\n"
 )
@@ -538,11 +536,7 @@ def test_setup_failure_still_binds_replay_and_dispatch_stays_quiet():
     dispatch path must then stay silent on raw stderr and leave the
     failure buffered. Pre-fix this fails: the dispatch-shaped call emits
     the buffered warning with zero handlers attached.
-    """
-    import pathlib
-
-    source = pathlib.Path("hermes_cli/main.py").read_text()
-    assert "dispatch_replay_provider_failures" in source
+ """
 
     proc = subprocess.run(
         [sys.executable, "-c", _SETUP_FAILURE_PROBE],

@@ -47,7 +47,7 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
             _offset = _dt.timedelta(0)
 
             @classmethod
-            def now(cls, tz=None):  # noqa: D102
+            def now(cls, tz=None):
                 return _dt.datetime.now(tz) + cls._offset
 
         _backup.datetime = _ShimDatetime
@@ -892,7 +892,7 @@ class TestValidation:
             zf.writestr("config.yaml", "test")
         buf.seek(0)
         with zipfile.ZipFile(buf, "r") as zf:
-            ok, reason = _validate_backup_zip(zf)
+            ok, _reason = _validate_backup_zip(zf)
         assert ok
 
 
@@ -2727,7 +2727,7 @@ class TestImportLiveSessionDatabase:
         """A connection open across the import converges on the imported data."""
         from hermes_cli.backup import run_import
 
-        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        _home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
 
         holder = sqlite3.connect(str(live_db))
         # Read first so the connection has cached pages of the pre-import file.
@@ -2752,7 +2752,7 @@ class TestImportLiveSessionDatabase:
         # hermes_cli.backup_restore and resolves _safe_restore_db there.
         import hermes_cli.backup_restore as backup_restore_mod
 
-        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        _home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
         monkeypatch.setattr(backup_restore_mod, "_safe_restore_db", lambda src, dst: False)
 
         assert backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
@@ -2773,7 +2773,7 @@ class TestImportLiveSessionDatabase:
         different image and SQLite would replay it on the next open."""
         from hermes_cli.backup import run_import
 
-        home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
+        _home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
         with zipfile.ZipFile(zip_path, "a") as zf:
             zf.writestr("state.db-wal", b"foreign-wal-from-archive")
             zf.writestr("state.db-shm", b"foreign-shm")

@@ -18,8 +18,8 @@ from typing import Any, Dict, List
 _STR = 3
 
 
-def _opt(name: str, description: str, *, choices: List[str] | None = None) -> Dict[str, Any]:
-    row: Dict[str, Any] = {
+def _opt(name: str, description: str, *, choices: list[str] | None = None) -> dict[str, Any]:
+    row: dict[str, Any] = {
         "type": _STR,
         "name": name,
         "description": description,
@@ -30,8 +30,8 @@ def _opt(name: str, description: str, *, choices: List[str] | None = None) -> Di
     return row
 
 
-def _cmd(name: str, description: str, *options: Dict[str, Any]) -> Dict[str, Any]:
-    row: Dict[str, Any] = {"name": name, "description": description}
+def _cmd(name: str, description: str, *options: dict[str, Any]) -> dict[str, Any]:
+    row: dict[str, Any] = {"name": name, "description": description}
     if options:
         row["options"] = list(options)
     return row
@@ -43,7 +43,7 @@ _REASONING_CHOICES = [
 ]
 
 
-def build_relay_command_manifest() -> List[Dict[str, Any]]:
+def build_relay_command_manifest() -> list[dict[str, Any]]:
     """The relay lane's Discord slash-command manifest (native-tree mirror)."""
     return [
         _cmd("new", "Start a new conversation"),

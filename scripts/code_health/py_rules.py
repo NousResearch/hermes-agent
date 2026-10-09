@@ -11,6 +11,7 @@ import ast
 import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+import itertools
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _CAPTURE_CALLS = {
@@ -716,7 +717,7 @@ def _reaped_after_kill(tree: ast.Module, kinds: dict[int, str]) -> set[int]:
             stmts = getattr(node, field, None)
             if not isinstance(stmts, list):
                 continue
-            for first, second in zip(stmts, stmts[1:]):
+            for first, second in itertools.pairwise(stmts):
                 kill = first.value if isinstance(first, ast.Expr) else None
                 wait = second.value if isinstance(second, _WAIT_STATEMENTS) else None
                 if not (isinstance(kill, ast.Call) and isinstance(wait, ast.Call)):
@@ -735,9 +736,7 @@ def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
         if not isinstance(node, ast.Call) or id(node) in bounded:
             continue
         head, _, leaf = _call_name(node).rpartition(".")
-        if head == "subprocess" and leaf in _SUBPROCESS_WAITS and not _deadline(node):
-            yield node.lineno
-        elif leaf == "urlopen" and not _deadline(node, "timeout", 2):
+        if head == "subprocess" and leaf in _SUBPROCESS_WAITS and not _deadline(node) or leaf == "urlopen" and not _deadline(node, "timeout", 2):
             yield node.lineno
         elif leaf in _PROCESS_WAITS and id(node) in kinds:
             if kinds[id(node)] == "async" or not _deadline(node, "timeout", _PROCESS_WAITS[leaf]):

@@ -810,6 +810,7 @@ function Disable-TreelessGraphWrites([string]$Dir) {
 }
 
 function Stage-Repository {
+    $pinned = $false
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
     if (-not (Test-Path (Join-Path $InstallDir ".git")) -and (Test-Path -LiteralPath $InstallDir)) {
@@ -949,8 +950,13 @@ function Stage-Repository {
         # prints none to a pipe unless asked.
         $progress = @()
         if (Test-QuietOutput) { $progress = @('--progress') }
+        # A pinned install materializes only the pin (below): checking out the
+        # branch tip first fetches and rewrites every file the two differ in.
+        $checkout = @()
+        if ($Commit) { $checkout = @('--no-checkout') }
         try {
             $cloned = $false
+            $deferred = $false
             foreach ($attempt in 1..3) {
                 # Blobless: every commit, tree and release tag (runtime identity is
                 # the nearest reachable release; -Commit pins and branch switches
@@ -959,7 +965,7 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -969,15 +975,33 @@ function Stage-Repository {
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
                 Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
-                if (-not $LASTEXITCODE) {
-                    foreach ($attempt in 1..2) {
-                        Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
-                        if (-not $LASTEXITCODE) { $cloned = $true; break }
-                        if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
-                    }
-                }
+                if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" git_clone_failed }
+            if ($Commit) {
+                # Pin before publishing: a pinned or deferred clone has no files yet,
+                # and a failure here leaves only the staging dir, which finally removes.
+                Invoke-Native { git -C $tree merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
+                if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
+            }
+            if ($Commit -or $deferred) {
+                # The checkout step is where throttled downloads die: retry it alone.
+                # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
+                $what = if ($Commit) { $Commit } else { "files" }
+                $materialized = $false
+                foreach ($attempt in 1..2) {
+                    Invoke-Logged "Checking out $what (attempt $attempt of 2)" {
+                        if ($Commit) { git -C $tree checkout --force --detach $Commit } else { git -C $tree reset --hard HEAD }
+                    }
+                    if (-not $LASTEXITCODE) { $materialized = $true; break }
+                    if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
+                }
+                if (-not $materialized) {
+                    $what = if ($Commit) { $Commit } else { "the cloned tree" }
+                    Fail "could not check out $what; no checkout published" git_checkout_failed
+                }
+                $pinned = [bool]$Commit
+            }
             Move-Item -LiteralPath $tree -Destination $InstallDir
             Disable-TreelessGraphWrites $InstallDir
             Write-Ok "Hermes Agent cloned"
@@ -985,10 +1009,11 @@ function Stage-Repository {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    if ($Commit) {
-        # A pin must come from the branch being installed: the complete marker
-        # records both, and a commit off that branch would make the next plain
-        # rerun "update" onto a different line.
+    if ($Commit -and -not $pinned) {
+        # A rerun over an existing checkout pins here (a fresh clone pinned
+        # before publishing). A pin must come from the branch being installed:
+        # the complete marker records both, and a commit off that branch would
+        # make the next plain rerun "update" onto a different line.
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
         if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
         Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }

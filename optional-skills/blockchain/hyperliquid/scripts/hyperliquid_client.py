@@ -171,7 +171,7 @@ def _format_timestamp_ms(value: Any) -> str:
         ts_ms = int(value)
     except (TypeError, ValueError):
         return "-"
-    return dt.datetime.fromtimestamp(ts_ms / 1000, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return dt.datetime.fromtimestamp(ts_ms / 1000, dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _compact_number(value: Any, decimals: int = 2) -> str:

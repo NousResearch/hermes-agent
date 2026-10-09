@@ -352,7 +352,7 @@ class GatewayControlServer:
                 None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
-        except (asyncio.TimeoutError, ConnectionError, OSError):
+        except (TimeoutError, ConnectionError, OSError):
             pass
         except Exception:
             logger.debug("Control socket connection handler error", exc_info=True)

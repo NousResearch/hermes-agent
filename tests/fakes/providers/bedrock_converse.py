@@ -89,7 +89,7 @@ class ToolUse:
     tool_use_id: str = ""
 
 
-Block = Union[Text, Reasoning, ToolUse]
+Block = Text | Reasoning | ToolUse
 
 
 @dataclass
@@ -132,7 +132,7 @@ class Drop:
     clean: bool = False
 
 
-Reply = Union[Turn, HttpError, StreamException, Drop]
+Reply = Turn | HttpError | StreamException | Drop
 
 
 # --------------------------------------------------------------------------------------------------
@@ -302,7 +302,7 @@ class FakeBedrock:
     _ids: int = 0
     _httpd: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "FakeBedrock":
+    def __enter__(self) -> FakeBedrock:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         self._httpd.daemon_threads = True
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()

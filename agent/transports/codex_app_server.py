@@ -219,7 +219,7 @@ class CodexAppServerClient:
         for _rid, pending in pending_items:
             pending.put_nowait(synthetic)
 
-    def __enter__(self) -> "CodexAppServerClient":
+    def __enter__(self) -> CodexAppServerClient:
         return self
 
     def __exit__(self, *exc: object) -> None:

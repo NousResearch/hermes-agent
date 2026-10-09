@@ -24,13 +24,13 @@ Desktop, chat); a gateway-start outcome waits for the home's first agent to deli
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_cli.memory_provider_migration import (
-    _home_consent, _home_label, _install_command, _interactive, _unattended_consent,
+    STARTUP_RETRY_SECONDS, _failed_recently, _home_consent, _home_label, _install_command, _interactive,
+    _note_failure, _unattended_consent,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,30 +274,6 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     atomic_config_write(path, config)
 
 
-STARTUP_RETRY_SECONDS = 3600.0
-
-
-def _failure_stamp(home: Path, feature: LeftCoreFeature) -> Path:
-    """Touched on every failed automatic install; its mtime gates the next startup attempt."""
-    return home / "cache" / f"left-core-{feature.plugin}.failed"
-
-
-def _note_failure(home: Path, feature: LeftCoreFeature) -> None:
-    stamp = _failure_stamp(home, feature)
-    try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
-    except OSError as exc:
-        logger.debug("left-core retry stamp not written for %s: %s", home, exc)
-
-
-def _failed_recently(home: Path, feature: LeftCoreFeature) -> bool:
-    try:
-        return time.time() - _failure_stamp(home, feature).stat().st_mtime < STARTUP_RETRY_SECONDS
-    except OSError:
-        return False
-
-
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
              backoff: bool = False) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
@@ -322,12 +298,12 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         if present:
             continue
-        if backoff and _failed_recently(home, feature):
+        if backoff and _failed_recently(home, feature.plugin):
             logger.info("%s plugin install failed recently for %s; retrying after %ds or on `hermes update`",
                         feature.label, home, STARTUP_RETRY_SECONDS)
             continue
         if catalog_source(feature.plugin) is None:
-            _note_failure(home, feature)
+            _note_failure(home, feature.plugin)
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
                 f"Hermes cannot find in the plugin catalog yet. Run `{_install_command(feature.plugin, home)}` "
                 f"once it is listed.")
@@ -371,7 +347,7 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
         say(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
             f"catalog ({feature.unchanged}).")
         return True
-    _note_failure(home, feature)
+    _note_failure(home, feature.plugin)
     error = _first_cause(str(result.get("error") or ""))
     say(f"  ⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin could not be installed "
         f"automatically: {error}. Run `{_install_command(feature.plugin, home)}`.")

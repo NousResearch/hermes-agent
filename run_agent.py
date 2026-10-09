@@ -54,7 +54,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
-def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
+def _gateway_origin_json(agent: AIAgent) -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
     Mirrors ``SessionSource.to_dict()`` so state.db consumers see the same fields ``record_gateway_session_peer`` writes.
@@ -268,7 +268,7 @@ class AIAgent(
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
         session_db=None, parent_session_id: str | None = None,
-        iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
+        iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
         fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
@@ -1452,7 +1452,7 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
     return names
 
 
-def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, model: str) -> None:
+def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
     entry = {

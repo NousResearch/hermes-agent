@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -212,7 +212,7 @@ def write_loop_heartbeat(
     ``start_time`` (process start, epoch seconds) lets supervisors detect PID reuse."""
     path = get_loop_heartbeat_path(home)
     payload: dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
-                               "updated_at": datetime.now(timezone.utc).isoformat(),
+                               "updated_at": datetime.now(UTC).isoformat(),
                                "monotonic": time.monotonic()}
     if start_time is not None:
         payload["start_time"] = float(start_time)
@@ -244,7 +244,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
     except OSError:
         return
     header = {"event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
+              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
         fh.flush()

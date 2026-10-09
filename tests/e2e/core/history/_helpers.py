@@ -395,7 +395,7 @@ class TuiGateway:
         self._wlock = threading.Lock()
         self.stored: dict[str, str] = {}
 
-    def __enter__(self) -> "TuiGateway":
+    def __enter__(self) -> TuiGateway:
         # A ``hermes chat -q`` hop leaves the always-on gateway owning this home, and the standalone
         # stdio entry refuses a home a gateway owns (it would be a second state.db writer). Stop
         # the owner first so each "gw" hop is still a fresh process on the same durable store.

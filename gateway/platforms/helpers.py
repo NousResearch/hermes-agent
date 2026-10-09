@@ -60,7 +60,7 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
-    def absorb(self, other: "MessageDeduplicator") -> None:
+    def absorb(self, other: MessageDeduplicator) -> None:
         """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
         cutoff = time.time() - self._ttl
         self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
@@ -135,7 +135,7 @@ _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def _keep_link_target(match: "re.Match[str]") -> str:
+def _keep_link_target(match: re.Match[str]) -> str:
     r"""``[label](https://url)`` -> ``label\nurl``.
 
     The bare URL is the only thing a platform with its own data detection
@@ -345,8 +345,8 @@ def convert_table_to_bullets(text: str) -> str:
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
-                             display_label: str | None = None, defaults: 'list[str] | None' = None,
-                             logger_: 'logging.Logger | None' = None) -> 'list[re.Pattern]':
+                             display_label: str | None = None, defaults: list[str] | None = None,
+                             logger_: logging.Logger | None = None) -> list[re.Pattern]:
     """Compile regex wake-word/mention patterns from config or env values.
 
     * **Config-style** (dingtalk, telegram): pass ``platform_label``. ``raw`` must be a
@@ -459,11 +459,11 @@ def split_at_paragraph_boundary(text, max_chars, len_fn=None):
     return text[:cut], text[cut:]
 
 
-def split_markdown_atoms(text: str) -> "list[str]":
+def split_markdown_atoms(text: str) -> list[str]:
     """Split markdown into indivisible atoms: fenced code blocks, tables
     (consecutive ``|...|`` lines) and paragraphs. Blank lines belong to no atom."""
-    atoms: "list[str]" = []
-    current_lines: "list[str]" = []
+    atoms: list[str] = []
+    current_lines: list[str] = []
     in_fence = False
 
     def _flush_current() -> None:
@@ -505,10 +505,10 @@ def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
     return '\n\n'
 
 
-def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
+def merge_streaming_fences(chunks: list[str]) -> list[str]:
     """Rejoin chunks truncated mid-fence: while chunk *i* has an unclosed fence
     and a successor exists, merge the successor in via :func:`infer_block_separator`."""
-    result: "list[str]" = []
+    result: list[str] = []
     i = 0
     while i < len(chunks):
         current = chunks[i]
@@ -520,12 +520,12 @@ def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
     return result
 
 
-def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     """Close orphaned ``` fences at each chunk boundary and reopen (with the
     original language tag) on the next, so every chunk is fence-balanced alone."""
     if len(chunks) <= 1:
         return chunks
-    out: "list[str]" = []
+    out: list[str] = []
     carry_lang = None
     for chunk in chunks:
         body = f"```{carry_lang}\n{chunk}" if carry_lang is not None else chunk
@@ -535,7 +535,7 @@ def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
     return out
 
 
-def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tuple[bool, str]":
+def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
@@ -549,7 +549,7 @@ def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=Non
     """Greedily pack *blocks* (joined with *sep*) into chunks of at most *max_length*; an
     oversized block goes through *overflow(block)* (-> list of chunks) if given, else as-is."""
     _len = len_fn or len
-    packed: "list[str]" = []
+    packed: list[str] = []
     current = ""
     for block in blocks:
         candidate = block if not current else f"{current}{sep}{block}"
@@ -596,9 +596,9 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if _len(text) <= max_chars:
         return [text]
     # Phase 2: greedy merge; oversized fence/table atoms stay indivisible.
-    chunks: "list[str]" = []
-    indivisible_set: "set[int]" = set()
-    current_parts: "list[str]" = []
+    chunks: list[str] = []
+    indivisible_set: set[int] = set()
+    current_parts: list[str] = []
     current_len = 0
     for atom in split_markdown_atoms(text):
         atom_len = _len(atom)
@@ -616,7 +616,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if current_parts:
         chunks.append('\n\n'.join(current_parts))
     # Phase 3: split still-oversized divisible chunks at paragraph boundaries.
-    result: "list[str]" = []
+    result: list[str] = []
     for idx, chunk in enumerate(chunks):
         if _len(chunk) <= max_chars or idx in indivisible_set or text_has_unclosed_fence(chunk):
             result.append(chunk)
@@ -631,7 +631,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
         if remaining:
             result.append(remaining)
     # Phase 4: merge small chunks with neighbours.
-    merged: "list[str]" = result[:1]
+    merged: list[str] = result[:1]
     for chunk in result[1:]:
         combined = merged[-1] + '\n\n' + chunk
         if _len(combined) <= max_chars:
@@ -647,7 +647,7 @@ def _chunk_newline_preferred(text, limit, len_fn):
         return [text]
     # Reserve headroom for fence markers a balancing pass may add.
     split_limit = max(limit - 16, limit // 2, 1) if "```" in text else limit
-    chunks: "list[str]" = []
+    chunks: list[str] = []
     remaining = text
     while len_fn(remaining) > split_limit:
         budget = _cp_budget(remaining, split_limit, len_fn)

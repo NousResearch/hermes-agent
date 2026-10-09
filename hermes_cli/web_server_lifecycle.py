@@ -194,7 +194,7 @@ def _eager_reconcile_own_session_db() -> None:
         )
 
 
-def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
+def _read_bound_port(server: uvicorn.Server, fallback: int) -> int:
     """Read the OS-assigned port from the live uvicorn socket (ephemeral port-0 discovery)."""
     if server.servers and server.servers[0].sockets:
         return server.servers[0].sockets[0].getsockname()[1]

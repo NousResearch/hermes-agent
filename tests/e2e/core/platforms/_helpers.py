@@ -125,7 +125,7 @@ class GatewayUnderTest:
     def db_path(self) -> Path:
         return self.hermes_home / "state.db"
 
-    def start(self, timeout: float = 60.0) -> "GatewayUnderTest":
+    def start(self, timeout: float = 60.0) -> GatewayUnderTest:
         assert self.proc is None or self.proc.poll() is not None
         log = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(

@@ -295,7 +295,7 @@ class GitHubSource(SkillSource):
         referenced = _referenced_support_paths(skill_md)
         if referenced is None:
             return None
-        files: dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
+        files: dict[str, str | bytes] = {"SKILL.md": skill_md}
         if tree is not None:
             complete = self._collect_tree_files(repo, skill_dir, tree[1], pinned_ref, referenced, files)
             if complete is None:
@@ -335,7 +335,7 @@ class GitHubSource(SkillSource):
 
     def _collect_tree_files(
         self, repo: str, skill_path: str, entries: list[dict], ref: Optional[str], referenced: set,
-        files: dict[str, Union[str, bytes]],
+        files: dict[str, str | bytes],
     ) -> Optional[bool]:
         """Download the FULL skill directory from the pinned tree into ``files``. Link-driven fetching
         silently dropped support files under non-canonical dirs (``reference/``, ``agents/``, root

@@ -685,7 +685,7 @@ def _banner_skill_lines(skills_by_category: dict[str, list[str]], skills_enabled
 
 
 def build_welcome_banner(
-    console: "Console", model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
+    console: Console, model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
     session_id: str | None = None, get_toolset_for_tool=None, context_length: int | None = None, provider: str | None = None,
     availability: dict[str, Any] | None = None, skills_by_category: dict[str, list[str]] | None = None,
     context_pinned: bool = False,

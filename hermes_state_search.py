@@ -826,7 +826,7 @@ class SessionSearchMixin:
         # left-to-right without backtracking); a leftover unmatched quote becomes whitespace.
         _quoted_parts: list = []
 
-        def _hold(m: "re.Match[str]") -> str:
+        def _hold(m: re.Match[str]) -> str:
             _quoted_parts.append(m.group(0))
             return f"\x00Q{len(_quoted_parts) - 1}\x00"
 

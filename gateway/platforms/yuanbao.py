@@ -26,7 +26,7 @@ import urllib.parse
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as dc_field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple
@@ -337,24 +337,24 @@ class InboundPipeline:
             return name_or_mw.name, name_or_mw
         return name_or_mw, handler
 
-    def use(self, name_or_mw, handler=None, when=None) -> "InboundPipeline":
+    def use(self, name_or_mw, handler=None, when=None) -> InboundPipeline:
         """Append ``pipeline.use(SomeMiddleware())`` or ``pipeline.use("name", fn)``."""
         return self._insert_relative(None, 0, name_or_mw, handler, when)
 
-    def _insert_relative(self, target: Optional[str], offset: int, name_or_mw, handler, when) -> "InboundPipeline":
+    def _insert_relative(self, target: Optional[str], offset: int, name_or_mw, handler, when) -> InboundPipeline:
         """Insert at index(target)+offset; appends when *target* is None or not registered."""
         name, h = self._normalize(name_or_mw, handler)
         idx = next((i for i, (n, _, _) in enumerate(self._middlewares) if n == target), None)
         self._middlewares.insert(len(self._middlewares) if idx is None else idx + offset, (name, h, when))
         return self
 
-    def use_before(self, target: str, name_or_mw, handler=None, when=None) -> "InboundPipeline":
+    def use_before(self, target: str, name_or_mw, handler=None, when=None) -> InboundPipeline:
         return self._insert_relative(target, 0, name_or_mw, handler, when)
 
-    def use_after(self, target: str, name_or_mw, handler=None, when=None) -> "InboundPipeline":
+    def use_after(self, target: str, name_or_mw, handler=None, when=None) -> InboundPipeline:
         return self._insert_relative(target, 1, name_or_mw, handler, when)
 
-    def remove(self, name: str) -> "InboundPipeline":
+    def remove(self, name: str) -> InboundPipeline:
         self._middlewares = [(n, h, w) for n, h, w in self._middlewares if n != name]
         return self
 
@@ -671,7 +671,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             return
         # Branch B: not found in transcript → append system note
         store.append_to_transcript(sid, {
-            "role": "system", "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "role": "system", "timestamp": datetime.now(tz=UTC).isoformat(),
             "content": f'[recall] message_id="{recalled_id}" has been recalled; do not quote or reference it.',
         })
         logger.info("[%s] Recall: system note for msg_id=%s (branch B)", adapter.name, recalled_id)
@@ -1103,7 +1103,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
                     body_text = f"{text}\n{summary}" if text else summary
             entry: dict = {
                 "role": "user", "content": f"[{sender_display}|{source.user_id or 'unknown'}]\n{body_text}",
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True,
+                "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True,
             }
             if msg_id:
                 entry["message_id"] = msg_id
@@ -1721,7 +1721,7 @@ class DispatchMiddleware(InboundMiddleware):
         task.add_done_callback(adapter._inbound_tasks.discard)
 
     @staticmethod
-    async def _consume_group_queue(adapter: "YuanbaoAdapter", session_key: str) -> None:
+    async def _consume_group_queue(adapter: YuanbaoAdapter, session_key: str) -> None:
         """Drain the group queue one dispatch at a time, waiting for each to finish; exits after 2s idle."""
         queue = adapter._group_queues.get(session_key)
         if not queue:
@@ -1730,7 +1730,7 @@ class DispatchMiddleware(InboundMiddleware):
             while True:
                 try:
                     dispatch_fn = await asyncio.wait_for(queue.get(), timeout=2.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 logger.debug("[%s] Group queue: dispatching for %s (remaining=%d)", adapter.name, (session_key or "")[:50], queue.qsize())
                 try:
@@ -1766,7 +1766,7 @@ class ConnectionManager:
     _DEBOUNCE_WINDOW: float = 1.5  # seconds to wait for companion frames of a multi-part message
     _LOOPS = (("_heartbeat_task", "_heartbeat_loop", "heartbeat"), ("_recv_task", "_receive_loop", "recv"))
 
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+    def __init__(self, adapter: YuanbaoAdapter) -> None:
         self._adapter = adapter
         self._ws = None  # websockets connection
         self._connect_id: Optional[str] = None
@@ -1823,7 +1823,7 @@ class ConnectionManager:
             self._connected(cancel_existing=False)
             logger.info("[%s] Connected. connectId=%s botId=%s", adapter.name, self._connect_id, adapter._bot_id)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("[%s] Connection timed out", adapter.name)
         except Exception as exc:
             logger.error("[%s] connect() failed: %s", adapter.name, exc, exc_info=True)
@@ -1915,7 +1915,7 @@ class ConnectionManager:
                     return False
                 logger.info("[%s] BIND_ACK received: connectId=%s", adapter.name, self._connect_id)
                 return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("[%s] AUTH_BIND timeout", adapter.name)
         except Exception as exc:
             logger.error("[%s] AUTH_BIND error: %s", adapter.name, exc, exc_info=True)
@@ -1959,7 +1959,7 @@ class ConnectionManager:
                     try:
                         await asyncio.wait_for(pong_future, timeout=10.0)
                         self._consecutive_hb_timeouts = 0
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         self._pending_acks.pop(msg_id, None)
                         self._consecutive_hb_timeouts += 1
                         logger.warning("[%s] PONG timeout (%d/%d)", adapter.name, self._consecutive_hb_timeouts, HEARTBEAT_TIMEOUT_THRESHOLD)
@@ -2131,7 +2131,7 @@ class ConnectionManager:
                 self._connected(cancel_existing=True)
                 logger.info("[%s] Reconnected on attempt %d. connectId=%s", adapter.name, attempt + 1, self._connect_id)
                 return True
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[%s] Reconnect attempt %d timed out", adapter.name, attempt + 1)
             except Exception as exc:
                 logger.warning("[%s] Reconnect attempt %d failed: %s", adapter.name, attempt + 1, exc)
@@ -2146,7 +2146,7 @@ class ConnectionManager:
         if ws is not None:
             try:
                 await asyncio.wait_for(ws.close(), timeout=WS_CLOSE_TIMEOUT_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # No close-frame echo in time; websockets force-closes the transport on cancel.
                 logger.debug("[%s] WS close handshake exceeded %.1fs — dropping connection", self._adapter.name, WS_CLOSE_TIMEOUT_S)
             except Exception:
@@ -2173,15 +2173,15 @@ class MediaSendHandler(ABC):
         return True
 
     @abstractmethod
-    async def acquire_file(self, adapter: "YuanbaoAdapter", **kwargs: Any) -> tuple[bytes, str, str]:
+    async def acquire_file(self, adapter: YuanbaoAdapter, **kwargs: Any) -> tuple[bytes, str, str]:
         """(file_bytes, filename, content_type); raise ValueError when unobtainable."""
 
     @abstractmethod
     def build_msg_body(self, upload_result: dict, **kwargs: Any) -> list:
         """Platform-specific MsgBody list from the COS upload result."""
 
-    async def handle(self, adapter: "YuanbaoAdapter", chat_id: str, reply_to: Optional[str] = None,
-                     caption: Optional[str] = None, **kwargs: Any) -> "SendResult":
+    async def handle(self, adapter: YuanbaoAdapter, chat_id: str, reply_to: Optional[str] = None,
+                     caption: Optional[str] = None, **kwargs: Any) -> SendResult:
         if adapter._connection.ws is None:
             return SendResult(success=False, error="Not connected", retryable=True)
         adapter._outbound.slow_notifier.cancel(chat_id)
@@ -2277,7 +2277,7 @@ class StickerHandler(MediaSendHandler):
 
 class HeartbeatManager:
     """Reply heartbeat lifecycle: RUNNING every 2s, auto-FINISH after 30s idle, explicit stop."""
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+    def __init__(self, adapter: YuanbaoAdapter) -> None:
         self._adapter = adapter
         self._reply_heartbeat_tasks: dict[str, asyncio.Task] = {}
         self._reply_hb_last_active: dict[str, float] = {}
@@ -2347,7 +2347,7 @@ class HeartbeatManager:
 
 class SlowResponseNotifier:
     """Per-chat timer that sends a courtesy 'please wait' after SLOW_RESPONSE_TIMEOUT_S without a reply."""
-    def __init__(self, adapter: "YuanbaoAdapter", sender: "MessageSender") -> None:
+    def __init__(self, adapter: YuanbaoAdapter, sender: MessageSender) -> None:
         self._adapter = adapter
         self._sender = sender
         self._tasks: dict[str, asyncio.Task] = {}
@@ -2383,7 +2383,7 @@ class MessageSender:
     # @nickname bounded by whitespace / line edges
     _AT_USER_RE = re.compile(r'(?:(?<=\s)|(?<=^))@(\S+?)(?=\s|$)', re.MULTILINE)
 
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+    def __init__(self, adapter: YuanbaoAdapter) -> None:
         self._adapter = adapter
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()
         self._media_handlers: dict[str, MediaSendHandler] = {
@@ -2400,7 +2400,7 @@ class MessageSender:
             self._chat_locks[chat_id] = asyncio.Lock()
         return self._chat_locks[chat_id]
 
-    async def send_text(self, chat_id: str, content: str, reply_to: Optional[str] = None, group_code: str = "") -> "SendResult":
+    async def send_text(self, chat_id: str, content: str, reply_to: Optional[str] = None, group_code: str = "") -> SendResult:
         """Send text with auto-chunking and per-chat-id ordering guarantee."""
         adapter = self._adapter
         if adapter._connection.ws is None:
@@ -2420,7 +2420,7 @@ class MessageSender:
         return SendResult(success=True)
 
     async def send_media(self, chat_id: str, handler_name: str, reply_to: Optional[str] = None,
-                         caption: Optional[str] = None, **kwargs: Any) -> "SendResult":
+                         caption: Optional[str] = None, **kwargs: Any) -> SendResult:
         handler = self._media_handlers.get(handler_name)
         if handler is None:
             return SendResult(success=False, error=f"Unknown media handler: {handler_name!r}")
@@ -2429,7 +2429,7 @@ class MessageSender:
     async def send_direct(self, chat_id: str, message: str, media_files: Optional[list[tuple[str, bool]]] = None) -> dict[str, Any]:
         """send_message tool entry: text first, then each media file by extension, on the running adapter."""
         adapter = self._adapter
-        last_result: Optional["SendResult"] = None
+        last_result: Optional[SendResult] = None
         if message.strip():
             last_result = await adapter.send(chat_id, message)
             if not last_result.success:
@@ -2443,19 +2443,19 @@ class MessageSender:
             return {"error": "No deliverable text or media remained after processing"}
         return {"success": True, "platform": "yuanbao", "chat_id": chat_id, "message_id": last_result.message_id}
 
-    async def dispatch_msg_body(self, chat_id: str, msg_body: list, reply_to: Optional[str] = None, group_code: str = "") -> "SendResult":
+    async def dispatch_msg_body(self, chat_id: str, msg_body: list, reply_to: Optional[str] = None, group_code: str = "") -> SendResult:
         """Lock + dispatch an arbitrary MsgBody to C2C or group."""
         async with self.get_chat_lock(chat_id):
             result = await self._send_msg_body(chat_id, msg_body, reply_to, group_code)
         return self._to_send_result(result)
 
     @staticmethod
-    def _to_send_result(raw: dict) -> "SendResult":
+    def _to_send_result(raw: dict) -> SendResult:
         if raw.get("success"):
             return SendResult(success=True, message_id=raw.get("msg_key"))
         return SendResult(success=False, error=raw.get("error", "Unknown error"))
 
-    async def send_text_chunk(self, chat_id: str, text: str, reply_to: Optional[str] = None, retry: int = 3, group_code: str = "") -> "SendResult":
+    async def send_text_chunk(self, chat_id: str, text: str, reply_to: Optional[str] = None, retry: int = 3, group_code: str = "") -> SendResult:
         """Send a single text chunk with retry (exponential backoff: 1s, 2s, 4s)."""
         adapter = self._adapter
         last_error: str = "Unknown error"
@@ -2532,12 +2532,12 @@ class MessageSender:
         ), req_id)
 
     @staticmethod
-    async def _dispatch_encoded(adapter: "YuanbaoAdapter", encoded: bytes, req_id: str) -> dict:
+    async def _dispatch_encoded(adapter: YuanbaoAdapter, encoded: bytes, req_id: str) -> dict:
         """Send pre-encoded bytes via WS → ``{"success", "msg_key" | "error"}``."""
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
             return {"success": True, "msg_key": response.get("msg_id", "")}
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -2579,7 +2579,7 @@ class MessageSender:
 class OutboundManager:
     """Composes MessageSender, HeartbeatManager and SlowResponseNotifier (sender cancels the notifier
     before a send and emits the FINISH heartbeat after)."""
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+    def __init__(self, adapter: YuanbaoAdapter) -> None:
         self._adapter = adapter
         self.sender: MessageSender = MessageSender(adapter)
         self.heartbeat: HeartbeatManager = HeartbeatManager(adapter)
@@ -2598,16 +2598,16 @@ class YuanbaoAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
-    _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    _active_instance: ClassVar[Optional[YuanbaoAdapter]] = None
     # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
     # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
     # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
     # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
     # unscoped path.
-    _active_instances: ClassVar[dict[str, "YuanbaoAdapter"]] = {}
+    _active_instances: ClassVar[dict[str, YuanbaoAdapter]] = {}
 
     @classmethod
-    def get_active(cls) -> Optional["YuanbaoAdapter"]:
+    def get_active(cls) -> Optional[YuanbaoAdapter]:
         from hermes_constants import get_hermes_home_override, hermes_home_key
 
         if get_hermes_home_override() is None:
@@ -2615,7 +2615,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         return cls._active_instances.get(hermes_home_key())
 
     @classmethod
-    def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
+    def set_active(cls, adapter: Optional[YuanbaoAdapter]) -> None:
         from hermes_constants import get_hermes_home_override, hermes_home_key
 
         if get_hermes_home_override() is None:
@@ -2767,7 +2767,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
                 return None
             biz_data = response.get("data", b"") or response.get("body", b"")
             return decode_rsp(biz_data) if biz_data and isinstance(biz_data, bytes) else empty
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[%s] %s timeout: group=%s", self.name, label, group_code)
         except Exception as exc:
             logger.warning("[%s] %s failed: %s", self.name, label, exc)

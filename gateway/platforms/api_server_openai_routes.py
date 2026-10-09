@@ -37,7 +37,7 @@ async def _iter_stream_items(stream_q, agent_task, response):
     while True:
         try:
             item = await asyncio.wait_for(stream_q.get(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if agent_task.done():
                 while True:
                     try:
@@ -805,7 +805,7 @@ class OpenAICompatRoutesMixin:
         agent_task.add_done_callback(_done)
         return agent_task, agent_ref
 
-    async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+    async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
@@ -1006,7 +1006,7 @@ class OpenAICompatRoutesMixin:
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(
-        self, request: "web.Request", body: dict[str, Any], compute, *,
+        self, request: web.Request, body: dict[str, Any], compute, *,
         log_label: str, fingerprint_keys: list[str], route: str) -> tuple:
         """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
         -> ``((result, usage), None)`` or ``(None, 500 response)``.
@@ -1041,8 +1041,8 @@ class OpenAICompatRoutesMixin:
             return None, _error_response(message, 500, err_type="server_error")
 
     async def _prepare_sse_response(
-        self, request: "web.Request", session_id: Optional[str], gateway_session_key: Optional[str],
-    ) -> "web.StreamResponse":
+        self, request: web.Request, session_id: Optional[str], gateway_session_key: Optional[str],
+    ) -> web.StreamResponse:
         """Open a prepared SSE StreamResponse with CORS + session headers (the CORS middleware
         can't inject headers after ``prepare()`` flushes them, so they are resolved here)."""
         sse_headers = self._sse_headers(request)
@@ -1055,9 +1055,9 @@ class OpenAICompatRoutesMixin:
         return response
 
     async def _write_sse_chat_completion(
-        self, request: "web.Request", completion_id: str, model: str,
+        self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
-        gateway_session_key: str | None = None) -> "web.StreamResponse":
+        gateway_session_key: str | None = None) -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
@@ -1146,10 +1146,10 @@ class OpenAICompatRoutesMixin:
         return response
 
     async def _write_sse_responses(
-        self, request: "web.Request", response_id: str, model: str, created_at: int, stream_q,
+        self, request: web.Request, response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: list[dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False) -> "web.StreamResponse":
+        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False) -> web.StreamResponse:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -1205,7 +1205,7 @@ class OpenAICompatRoutesMixin:
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(st.agent_error)[:300])
         return response
 
-    async def _replay_sse_responses(self, request: "web.Request", replay: dict[str, Any]) -> "web.StreamResponse":
+    async def _replay_sse_responses(self, request: web.Request, replay: dict[str, Any]) -> web.StreamResponse:
         """Re-emit a settled idempotent record as SSE. A record made by the streaming path replays
         its exact frames; one made by the nonstreaming path gets ``created`` + its terminal event."""
         from gateway.platforms.api_server import _sse_frame
@@ -1224,7 +1224,7 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(data, event=event_type))
         return response
 
-    async def _responses_durable_replay(self, request: "web.Request", body: dict[str, Any], stream: bool) -> tuple:
+    async def _responses_durable_replay(self, request: web.Request, body: dict[str, Any], stream: bool) -> tuple:
         """Canonical Idempotency-Key record for POST /v1/responses ->
         ``(durable_key, idempotency_scope, idempotency_key, replayed_response_or_None)``."""
         durable_key = idempotency_scope = None
@@ -1262,7 +1262,7 @@ class OpenAICompatRoutesMixin:
                     replay['response'], headers=replay.get('headers') or {})
         return durable_key, idempotency_scope, idempotency_key, None
 
-    async def _handle_responses(self, request: "web.Request") -> "web.Response":
+    async def _handle_responses(self, request: web.Request) -> web.Response:
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _coerce_request_bool,
@@ -1400,7 +1400,7 @@ class OpenAICompatRoutesMixin:
                 'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})
         return web.json_response(response_data, headers=response_headers)
 
-    async def _handle_get_response(self, request: "web.Request") -> "web.Response":
+    async def _handle_get_response(self, request: web.Request) -> web.Response:
         """GET /v1/responses/{response_id} — retrieve a stored response."""
         from gateway.platforms.api_server import _error_response
         auth_err = self._check_auth(request)
@@ -1412,7 +1412,7 @@ class OpenAICompatRoutesMixin:
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response(stored["response"])
 
-    async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
+    async def _handle_delete_response(self, request: web.Request) -> web.Response:
         """DELETE /v1/responses/{response_id} — delete a stored response."""
         from gateway.platforms.api_server import _error_response
         auth_err = self._check_auth(request)

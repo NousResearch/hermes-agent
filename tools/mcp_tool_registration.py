@@ -153,7 +153,7 @@ def _remove_server_scope(key, scope: str) -> None:
     _restore_server_toolset_alias(key)
 
 
-def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: dict) -> list[dict]:
+def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> list[dict]:
     """Utility schemas allowed by config (``tools.resources``/``tools.prompts``) and advertised
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
     family is served); without it fall back to the legacy session-method check, which never
@@ -367,7 +367,7 @@ def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: C
     return registered
 
 
-def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should_register) -> None:
+def _write_schema_cache(name: str, server: MCPServerTask, config: dict, should_register) -> None:
     """Write-through: persist the manifest so the next startup registers this server lazily (no spawn). Never raises."""
     try:
         # Write-through (#56832): refresh the on-disk schema cache after a live connect so the next startup
@@ -397,7 +397,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
         logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
 
 
-def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> list[str]:
+def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> list[str]:
     """Register a connected server's tools plus utilities (initial discovery and list_changed
     refresh); returns the names. Toolset aliases derive from the live registry, not
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""

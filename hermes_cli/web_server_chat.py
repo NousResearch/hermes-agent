@@ -51,7 +51,7 @@ PTY_REGISTRY = PtySessionRegistry(
     ttl=30 * 60, max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
 
 
-async def _close_stalled_pty_input(ws: "WebSocket", *, path: str) -> None:
+async def _close_stalled_pty_input(ws: WebSocket, *, path: str) -> None:
     """Close only the terminal socket when its child stops accepting input."""
     _log.warning("pty input stalled path=%s; recycling terminal session", path)
     try:
@@ -60,7 +60,7 @@ async def _close_stalled_pty_input(ws: "WebSocket", *, path: str) -> None:
         pass
 
 
-async def _legacy_pump(ws: "WebSocket", bridge) -> None:
+async def _legacy_pump(ws: WebSocket, bridge) -> None:
     """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
     bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
 
@@ -134,7 +134,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 from hermes_cli.web_server_boundary import _LOOPBACK_HOSTS
 
 
-def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
+def _ws_client_reason(ws: WebSocket) -> Optional[str]:
     """Return a rejection reason token for the peer IP, or None when allowed
     (:func:`hermes_cli.web_server_boundary.ws_client_reason` on the dashboard app state)."""
     from hermes_cli.web_server import app
@@ -142,12 +142,12 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     return ws_client_reason(ws, app.state)
 
 
-def _ws_client_is_allowed(ws: "WebSocket") -> bool:
+def _ws_client_is_allowed(ws: WebSocket) -> bool:
     """True when the peer IP passes :func:`_ws_client_reason`."""
     return _ws_client_reason(ws) is None
 
 
-def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
+def _ws_host_origin_reason(ws: WebSocket) -> Optional[str]:
     """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed
     (:func:`hermes_cli.web_server_boundary.ws_host_origin_reason` on the dashboard app state)."""
     from hermes_cli.web_server import app
@@ -155,12 +155,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     return ws_host_origin_reason(ws, app.state)
 
 
-def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+def _ws_host_origin_is_allowed(ws: WebSocket) -> bool:
     """True when the upgrade passes the dashboard Host/Origin guard."""
     return _ws_host_origin_reason(ws) is None
 
 
-def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+def _ws_request_is_allowed(ws: WebSocket) -> bool:
     """Return True when the WebSocket upgrade matches dashboard boundaries."""
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
@@ -172,7 +172,7 @@ from hermes_cli.web_server_boundary import (
 )
 
 
-def _ws_request_view(ws: "WebSocket") -> "Request":
+def _ws_request_view(ws: WebSocket) -> Request:
     """A ``Request`` facade over a ``WebSocket`` for the auth helpers.
 
     ``_verify_access_token`` only touches ``request.headers`` (X-Forwarded-For
@@ -197,7 +197,7 @@ def _ws_request_view(ws: "WebSocket") -> "Request":
     })
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(ws: WebSocket) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when accepted, else a short token (``no_credential``,
@@ -326,7 +326,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     return "token_mismatch", "token"
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(ws: WebSocket) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
 
@@ -491,7 +491,7 @@ async def _resolve_chat_argv_async(
         return await asyncio.to_thread(_resolve_chat_argv, **kwargs)
 
 
-def _active_session_file_for_channel(app: "FastAPI", channel: str) -> Path:
+def _active_session_file_for_channel(app: FastAPI, channel: str) -> Path:
     """Return the per-channel file where a dashboard TUI writes its active sid."""
     from hermes_cli.web_server import _get_pty_active_session_files
     files = _get_pty_active_session_files(app)

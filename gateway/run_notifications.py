@@ -1155,7 +1155,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin):
                 return False
         return True
 
-    async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
+    async def _preflight_completion_delivery(self, evt: dict) -> _CompletionClaim:
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
         Adapter acceptance is not proof of delivery: the inner resolver can still fail closed inside

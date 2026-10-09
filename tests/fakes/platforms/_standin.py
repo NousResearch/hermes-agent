@@ -97,7 +97,7 @@ class StandinServer:
     def build_app(self) -> web.Application:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def start(self) -> "StandinServer":
+    def start(self) -> StandinServer:
         self._thread = threading.Thread(target=self._serve, name=type(self).__name__, daemon=True)
         self._thread.start()
         if not self._ready.wait(30):
@@ -139,7 +139,7 @@ class StandinServer:
     async def on_shutdown(self) -> None:
         """Subclasses close long-lived sockets here."""
 
-    def __enter__(self) -> "StandinServer":
+    def __enter__(self) -> StandinServer:
         return self.start()
 
     def __exit__(self, *_exc: object) -> None:
@@ -195,4 +195,5 @@ class StandinServer:
             p = {k: (v[:80] + "…" if isinstance(v, str) and len(v) > 80 else v) for k, v in c.params.items()
                  if k not in ("reply_markup", "blocks", "embeds", "components")}
             out.append(f"  {'!' if c.faulted else ' '}{c.method} {json.dumps(p, default=str)[:240]}")
-        return "--- stand-in calls (last %d)\n%s" % (len(rows), "\n".join(out))
+        return f'''--- stand-in calls (last {len(rows):d})\n{"""
+""".join(out)}'''

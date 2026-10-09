@@ -13,7 +13,7 @@ import secrets
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -372,7 +372,7 @@ def _status_card(
 
 def _epoch_ms_to_iso(value: Any) -> Optional[str]:
     """Epoch ms (Qwen CLI ``expiry_date``) -> the aware ISO string the other cards send."""
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat() if value else None
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat() if value else None
 
 
 # Hand-written status cards per provider id: (hauth getter name, raw -> card).

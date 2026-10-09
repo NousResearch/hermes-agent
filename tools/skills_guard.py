@@ -13,7 +13,7 @@ import hashlib
 import json
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
@@ -662,7 +662,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
     verdict = _determine_verdict(findings)
-    return ScanResult(name, source, trust, verdict, findings, datetime.now(timezone.utc).isoformat(),
+    return ScanResult(name, source, trust, verdict, findings, datetime.now(UTC).isoformat(),
                       _build_summary(name, source, trust, verdict, findings))
 
 

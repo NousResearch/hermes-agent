@@ -6,7 +6,7 @@ import logging
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1452,7 +1452,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
     tap_list = TapsManager().list_taps()
     snapshot = {
         "hermes_version": "0.1.0",
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "skills": [
             {"name": entry["name"], "source": entry.get("source", ""),
              "identifier": entry.get("identifier", ""),

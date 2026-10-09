@@ -43,7 +43,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
-def _env_multiplex_profiles_override() -> "bool | None":
+def _env_multiplex_profiles_override() -> bool | None:
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml
@@ -68,7 +68,7 @@ def _env_multiplex_profiles_override() -> "bool | None":
 ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
 
 
-def _env_on_all_adapters_down_override() -> "str | None":
+def _env_on_all_adapters_down_override() -> str | None:
     """GATEWAY_ON_ALL_ADAPTERS_DOWN operator override: 'exit'/'stay_alive' for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml value
@@ -267,7 +267,7 @@ class Platform(Enum):
         return cls._add_pseudo_member(value) if registered else None
 
     @classmethod
-    def _add_pseudo_member(cls, value: str) -> "Platform":
+    def _add_pseudo_member(cls, value: str) -> Platform:
         pseudo = object.__new__(cls)
         pseudo._value_ = value
         pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
@@ -276,7 +276,7 @@ class Platform(Enum):
         return pseudo
 
     @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> "tuple[set, dict]":
+    def _scan_bundled_plugin_platforms(cls) -> tuple[set, dict]:
         """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
         manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
         never shadow a directory name, so the directory stays the canonical platform value."""
@@ -359,7 +359,7 @@ class HomeChannel:
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: dict[str, Any]) -> HomeChannel:
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
@@ -386,7 +386,7 @@ class ChannelOverride:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
+    def from_dict(cls, data: dict[str, Any]) -> ChannelOverride:
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
@@ -395,7 +395,7 @@ class ChannelOverride:
 # authenticate another way and must never be skipped for a missing token.
 # Platforms absent from this map authenticate some other way (session files, port-bound webhooks,
 # api_key-only) and must never be skipped for a missing token. See #64674.
-PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
+PLATFORM_TOKEN_ENV_NAMES: dict[Platform, str] = {
     Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
     Platform.DISCORD: "DISCORD_BOT_TOKEN",
     Platform.SLACK: "SLACK_BOT_TOKEN",
@@ -442,7 +442,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: dict[str, Any]) -> PlatformConfig:
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -518,7 +518,7 @@ class StreamingConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StreamingConfig":
+    def from_dict(cls, data: dict[str, Any]) -> StreamingConfig:
         if not isinstance(data, dict) or not data:
             return cls()
 
@@ -721,7 +721,7 @@ class GatewayConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "GatewayConfig":
+    def from_dict(cls, data: dict[str, Any]) -> GatewayConfig:
         data = _coerce_dict(data)
         nested_gateway = _coerce_dict(data.get("gateway"))
 
@@ -865,7 +865,7 @@ def load_gateway_config() -> GatewayConfig:
     return config
 
 
-def _validate_gateway_config(config: "GatewayConfig") -> None:
+def _validate_gateway_config(config: GatewayConfig) -> None:
     """Validate and sanitize a loaded GatewayConfig in place (after all sources are merged)."""
     try:
         # Reject known-weak placeholder tokens. Ported from openclaw/openclaw#64586: users who copy

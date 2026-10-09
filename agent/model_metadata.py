@@ -533,7 +533,7 @@ def _lmstudio_server_root(base_url: str) -> str:
 def _server_root(base_url: str) -> str:
     """Probe root for a local server: IPv4-resolved, ``/v1`` suffix stripped."""
     server_url = _localhost_to_ipv4(base_url.rstrip("/"))
-    return server_url[:-3] if server_url.endswith("/v1") else server_url
+    return server_url.removesuffix("/v1")
 
 
 # Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys

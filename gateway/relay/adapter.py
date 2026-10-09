@@ -175,7 +175,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self._revocation_monitor: Optional[asyncio.Task[None]] = None
         # Lazily built client for the connector's /relay/media routes; None when
         # dial URL or creds are absent (media lanes degrade to text fallbacks).
-        self._media_client: Optional["RelayMediaClient"] = None
+        self._media_client: Optional[RelayMediaClient] = None
         # prompt_id -> pending-prompt state for the interactive `prompt` op; the
         # user's pick comes back as a prompt_response naming this id and resolves the
         # waiting primitive like native button callbacks. Expire lazily (_pop_prompt).
@@ -189,7 +189,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self._prompt_owner_nonce: str = secrets.token_hex(3)
         # Prompt ids this process already resolved, newest last (repeat answers are
         # consumed silently instead of treated as stale).
-        self._resolved_prompts: "OrderedDict[str, float]" = OrderedDict()
+        self._resolved_prompts: OrderedDict[str, float] = OrderedDict()
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -662,7 +662,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     async def _card_frame(
         self, chat_id: str, op: str, reply_to: Optional[str], metadata: dict[str, Any], **fields: Any
-    ) -> Union[SendResult, dict[str, Any]]:
+    ) -> SendResult | dict[str, Any]:
         """Emit one task-card op: the connector result dict, or a failed SendResult
         when the lane is unavailable / the transport raised.
 
@@ -1174,7 +1174,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 await asyncio.wait_for(
                     self._revocation_monitor, timeout=_RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
             self._revocation_monitor = None
         if self._transport is not None:
@@ -1420,7 +1420,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             self._auto_thread_waiters[key] = waiter
         try:
             await asyncio.wait_for(waiter.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         finally:
             # Only the waiter we installed, and only if no later call replaced it; a

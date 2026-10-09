@@ -20,7 +20,7 @@ from agent.vault_store import VaultItemMeta
 class UnlockRequired(Exception):
     """The backend is locked for this session; the surface must prompt for the master password."""
 
-    def __init__(self, backend: "LoginBackend"):
+    def __init__(self, backend: LoginBackend):
         super().__init__(f"{backend.display_name} is locked")
         self.backend = backend
 

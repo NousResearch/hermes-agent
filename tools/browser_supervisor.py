@@ -513,7 +513,7 @@ class _SupervisorRegistry:
         with self._lock:
             return self._by_task.pop(task_id, None)
 
-    def capture(self, task_id: str, *, timeout: float = 10.0) -> "CapturedCDP":
+    def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
         """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
         current connection and default page session (``tools.browser_supervisor_capture``)."""
         from tools.browser_supervisor_capture import capture

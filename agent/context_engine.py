@@ -85,7 +85,7 @@ class ContextEngine(ABC):
     def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def should_compress_info(self, prompt_tokens: int | None = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> tuple[bool, str | None]:
         """Return ``(should_compress, reason)``.
 
         Engines with block reasons (summary-LLM cooldown, anti-thrashing guard) override
@@ -223,7 +223,7 @@ class ContextEngine(ABC):
             "compression_count": self.compression_count,
         }
 
-    def clone_for_agent(self) -> "ContextEngine":
+    def clone_for_agent(self) -> ContextEngine:
         """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
         instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
         Override when the engine holds uncopyable state (locks, DB connections): return a fresh

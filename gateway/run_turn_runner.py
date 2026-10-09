@@ -123,7 +123,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     # controls snapshot. Class-level so every publish/snapshot seam can read it unconditionally.
     _approval_owner = None
 
-    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+    def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
         from gateway.session_authorities import active_authority

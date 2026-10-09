@@ -736,6 +736,57 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_integration_gate_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """The newest ``integration_acceptance`` receipt refused the gate.
+
+    Each condition is surfaced verbatim so the board shows WHICH one is
+    unproven, and "GitHub/git could not answer" is a different, louder
+    diagnostic than "nobody has merged the PR yet" — the first needs an
+    operator, the second just needs the merge.
+    """
+    if _task_field(task, "status") in ("done", "archived"):
+        return []
+    receipt_event = next(
+        (ev for ev in reversed(list(events)) if _event_kind(ev) == "integration_acceptance"), None)
+    if receipt_event is None:
+        return []
+    receipt = _parse_payload(receipt_event)
+    if not receipt or receipt.get("ok"):
+        return []
+    from hermes_cli.kanban_integration_gate import UNPROVABLE_PHASES, describe_receipt
+
+    phase = str(receipt.get("phase") or "unknown")
+    unprovable = phase in UNPROVABLE_PHASES
+    failing = next((c for c in receipt.get("conditions") or [] if not c.get("ok")), {})
+    ts = _event_ts(receipt_event) or int(receipt.get("verified_at") or 0) or now
+    gate_id = str(_task_field(task, "id") or "")
+    actions = [_cli_hint("Inspect every gate condition",
+                         f"hermes kanban integration-gate show {gate_id}", suggested=True)]
+    if not unprovable and phase != "waiting_for_merge":
+        actions.append(_cli_hint("Re-run the gate once the condition holds",
+                                 f"hermes kanban complete {gate_id}"))
+    title = (f"Integration gate cannot be proven ({phase})" if unprovable
+             else "Integration gate waiting for the merge" if phase == "waiting_for_merge"
+             else f"Integration gate blocked ({phase})")
+    return [Diagnostic(
+        kind="integration_gate_blocked",
+        severity="warning" if phase == "waiting_for_merge" else "error",
+        title=title,
+        detail="\n".join([
+            failing.get("detail") or receipt.get("detail") or "gate verification failed",
+            *describe_receipt(receipt),
+        ]),
+        actions=actions,
+        first_seen_at=ts, last_seen_at=ts, count=1,
+        data={"phase": phase, "unprovable": unprovable,
+              "failing_condition": failing.get("name"),
+              "conditions": receipt.get("conditions") or [],
+              "pr_url": receipt.get("pr_url"),
+              "merge_commit_sha": receipt.get("merge_commit_sha"),
+              "integration_branch": receipt.get("integration_branch")},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -745,6 +796,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
     _rule_running_with_open_parents,
+    _rule_integration_gate_blocked,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,

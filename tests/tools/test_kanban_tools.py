@@ -41,10 +41,8 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def worker_env(monkeypatch, tmp_path):
-    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
+def _claimed_worker_task(monkeypatch, tmp_path, **task_fields):
+    """Isolated HERMES_HOME plus one claimed task this process is the worker of."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -53,13 +51,20 @@ def worker_env(monkeypatch, tmp_path):
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
+    # The card's assignee must resolve to a profile home: acceptance reads the
+    # contract repo as THAT profile's gh login (#122689), and a card assigned to
+    # a profile that does not exist is an identity failure, not a gate verdict.
+    worker_profile = home / "profiles" / "test-worker"
+    worker_profile.mkdir(parents=True)
+    (worker_profile / ".env").write_text("", encoding="utf-8")
+
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kbc.connect()
     try:
-        tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
+        tid = kb.create_task(conn, title="worker-test", assignee="test-worker", **task_fields)
         kb.claim_task(conn, tid)
         run_id = kb._current_run_id(conn, tid)
     finally:
@@ -69,6 +74,13 @@ def worker_env(monkeypatch, tmp_path):
     # run-lifecycle tools can prove ownership (see test_unbound_worker_cannot_mutate_card).
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
+
+
+@pytest.fixture
+def worker_env(monkeypatch, tmp_path):
+    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
+    after we've created the task."""
+    return _claimed_worker_task(monkeypatch, tmp_path)
 
 
 def test_show_defaults_to_env_task_id(worker_env):
@@ -253,6 +265,100 @@ def test_complete_reports_registered_attachments(worker_env):
 
     readback = json.loads(kt._handle_attachments({"task_id": worker_env}))
     assert readback["attachments"] == d["attachments"]
+
+
+def _acceptance_receipt(conn, task_id):
+    """``(event id, receipt)`` of the card's newest PR-acceptance receipt."""
+    row = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id=? AND kind='pr_acceptance' "
+        "ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+    return (row["id"], json.loads(row["payload"])) if row else (None, None)
+
+
+def test_complete_reports_the_gate_receipt_this_attempt_wrote(monkeypatch, tmp_path):
+    """A refused completion gate's reason has to reach the worker, correlated by
+    the attempt id this call minted rather than by whatever sits on the card.
+
+    The card declares a repository completion contract and the handoff names no
+    PR, so the acceptance gate refuses at its first phase without asking GitHub
+    anything — a deterministic refusal that still persists a stamped receipt.
+    """
+    tid = _claimed_worker_task(monkeypatch, tmp_path, completion_contract="acme/repo")
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    error = json.loads(kt._handle_complete({"summary": "shipped it"}))["error"]
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+        _, receipt = _acceptance_receipt(conn, tid)
+    finally:
+        conn.close()
+    # The handler passed its own id down, so the gate stamped the receipt this
+    # call then read back…
+    assert receipt["completion_attempt_id"] is not None
+    # …and the worker is told the verdict, the phase it stopped at and the
+    # receipt's own prose, never the generic "unknown id, stale run" guess.
+    assert "PR acceptance refused" in error
+    assert "missing at the pr_binding phase" in error
+    assert receipt["detail"] in error and receipt["recovery"] in error
+    assert "unknown id" not in error
+
+
+def test_complete_never_reports_a_rival_attempts_receipt(monkeypatch, tmp_path):
+    """The gates verify GitHub/git with no transaction open, so a concurrent
+    attempt's receipt lands above this call's event floor too — and the card's
+    ``last_failure_error`` is one shared column whose last writer wins.
+
+    This call is refused for a reason no gate explains (it no longer owns the
+    run), so the worker must get the generic message: acting on a rival's
+    condition is acting on a fact about somebody else's call.
+    """
+    tid = _claimed_worker_task(monkeypatch, tmp_path, completion_contract="acme/repo")
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_completion_attempt import (
+        latest_event_id, new_completion_attempt_id,
+    )
+    from tools import kanban_tools as kt
+
+    rival_id = new_completion_attempt_id()
+    floor = {}
+
+    def rival_attempt_then_lose_the_run(task_id):
+        """Runs after this call read its event floor, before complete_task."""
+        conn = kbc.connect()
+        try:
+            floor["read"] = latest_event_id(conn, task_id)
+            # The rival's own attempt refuses, leaving ITS stamped receipt and
+            # the card's shared last_failure_error behind.
+            assert kb.complete_task(conn, task_id, summary="rival",
+                                    completion_attempt_id=rival_id) is False
+        finally:
+            conn.close()
+        # And this attempt is refused before any gate of its own runs: the run
+        # it claims to own is not the card's.
+        return 10_000
+
+    monkeypatch.setattr(kt, "_worker_run_id", rival_attempt_then_lose_the_run)
+    error = json.loads(kt._handle_complete({"summary": "mine"}))["error"]
+
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        event_id, receipt = _acceptance_receipt(conn, tid)
+    finally:
+        conn.close()
+    assert task.status == "running"
+    # The rival's receipt really is the one above this call's floor…
+    assert receipt["completion_attempt_id"] == rival_id and event_id > floor["read"]
+    # …and it really did write the shared column this handler must not read.
+    assert "published_pr" in (task.last_failure_error or "")
+    # The worker gets its own generic reason, with nothing of the rival's in it.
+    assert "could not complete" in error and "stale run" in error
+    assert "PR acceptance" not in error and "published_pr" not in error
 
 
 def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
@@ -829,6 +935,13 @@ def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
+    # The card's assignee must resolve to a profile home: acceptance reads the
+    # contract repo as THAT profile's gh login (#122689), and a card assigned to
+    # a profile that does not exist is an identity failure, not a gate verdict.
+    worker_profile = home / "profiles" / "test-worker"
+    worker_profile.mkdir(parents=True)
+    (worker_profile / ".env").write_text("", encoding="utf-8")
+
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
@@ -1041,6 +1154,13 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    # The card's assignee must resolve to a profile home: acceptance reads the
+    # contract repo as THAT profile's gh login (#122689), and a card assigned to
+    # a profile that does not exist is an identity failure, not a gate verdict.
+    worker_profile = home / "profiles" / "test-worker"
+    worker_profile.mkdir(parents=True)
+    (worker_profile / ".env").write_text("", encoding="utf-8")
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

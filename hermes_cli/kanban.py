@@ -29,6 +29,10 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_completion_attempt import (
+    completion_refusal, latest_event_id, new_completion_attempt_id,
+)
+from hermes_cli.kanban_integration_gate_cli import _dispatch_integration_gate
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -918,10 +922,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            event_floor = latest_event_id(conn, tid)
+            # This attempt's own id: the gates stamp it onto whatever receipt
+            # they persist, so a concurrent attempt's receipt can never be read
+            # back as this one's reason.
+            attempt_id = new_completion_attempt_id()
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        completion_attempt_id=attempt_id)
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -932,13 +942,19 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"describing what was done (an empty completion is not evidence).")
                 return False
             if not done:
-                # complete_task returns bare False for a dependency refusal too;
-                # name the open parents instead of claiming the id is unknown.
-                blockers = kb.unsatisfied_parents(conn, tid)
-                if blockers:
-                    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
-                    fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
-                                     f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                # A completion gate that refused left the real reason behind;
+                # "unknown id or terminal state" is for when nothing did.
+                refusal = completion_refusal(conn, tid, event_floor, attempt_id)
+                if refusal:
+                    fail_msg[tid] = refusal
+                else:
+                    # complete_task returns bare False for a dependency refusal too;
+                    # name the open parents instead of claiming the id is unknown.
+                    blockers = kb.unsatisfied_parents(conn, tid)
+                    if blockers:
+                        detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                        fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
+                                         f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
@@ -1324,6 +1340,7 @@ _HANDLERS = {
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "integration-gate": _dispatch_integration_gate,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- opt-in fail-closed completion gates: the verification, the receipts and the snapshot discipline all live in siblings (kanban_pr_acceptance*, kanban_integration_gate*, kanban_completion_attempt); what lands here is the declaration table in the schema constant plus the minimal prepare/record wiring at the two existing transition chokepoints (complete_task, request_review), which is where a terminal transition can be refused at all
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
@@ -9,7 +10,8 @@ board-enumerating machine flows (gateway notifier/watcher/dispatcher, ``pin_firs
 always resolve through the pin, so workers physically cannot see other boards.
 Concurrency: WAL + ``BEGIN IMMEDIATE`` + compare-and-swap on ``tasks.status``/``claim_lock`` —
 SQLite serializes writers so one claimer wins, losers see zero rows (no retries, no distributed
-locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
+locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs,
+integration_gates (opt-in; see ``kanban_integration_gate_store``).
 """
 
 from __future__ import annotations
@@ -908,6 +910,35 @@ CREATE TABLE IF NOT EXISTS task_links (
     PRIMARY KEY (parent_id, child_id)
 );
 
+-- Opt-in integration gate (``hermes kanban integration-gate configure``). A
+-- gate card sits below an Implementation card and its QA card and above the
+-- next Implementation card; completing it asserts that the implementation QA
+-- passed is actually integrated into the configured branch. Legacy/untyped
+-- ``task_links`` keep their plain done/archived-parent semantics — an EMPTY
+-- table is completely inert, which is the whole point of the opt-in: no card
+-- changes behaviour until a row names it. The row is a declaration only;
+-- configuring one never creates links or moves cards.
+CREATE TABLE IF NOT EXISTS integration_gates (
+    gate_task_id           TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    implementation_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    qa_task_id             TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    -- Absolute path to the local clone the merge commit is proved against.
+    repository_path        TEXT NOT NULL,
+    integration_remote     TEXT NOT NULL DEFAULT 'origin',
+    integration_branch     TEXT NOT NULL DEFAULT 'develop',
+    -- Retired knob, kept so a board written by an earlier build opens
+    -- unchanged. NOTHING reads it: a human merger is mandatory for every gate,
+    -- so a row that stored 0 is still gated on a human (the store's SELECT
+    -- omits the column and its writes pin it back to 1).
+    require_human_merge    INTEGER NOT NULL DEFAULT 1,
+    created_at             INTEGER NOT NULL DEFAULT 0,
+    CHECK (require_human_merge IN (0, 1)),
+    CHECK (implementation_task_id <> gate_task_id AND qa_task_id <> gate_task_id
+           AND implementation_task_id <> qa_task_id),
+    CHECK (length(repository_path) > 0 AND length(integration_remote) > 0
+           AND length(integration_branch) > 0)
+);
+
 CREATE TABLE IF NOT EXISTS task_comments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -1005,6 +1036,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_gates_implementation  ON integration_gates(implementation_task_id);
+CREATE INDEX IF NOT EXISTS idx_gates_qa              ON integration_gates(qa_task_id);
 """
 
 
@@ -2660,6 +2693,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    completion_attempt_id: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2677,20 +2711,40 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+
+    Two opt-in gates can refuse the transition, each proving its evidence
+    outside the write txn and rechecking its snapshot inside it: a GitHub
+    completion contract (``pr_acceptance``) and a declared integration gate
+    (``integration_acceptance``). Both persist a receipt on refusal and leave
+    the card in place, so a refused gate never promotes a child. Each receipt
+    is stamped with this attempt's ``completion_attempt_id`` — passed in by a
+    caller that means to read its own refusal back (the CLI), otherwise minted
+    here, so every attempt is identifiable either way.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    from hermes_cli.kanban_completion_attempt import new_completion_attempt_id
+    from hermes_cli.kanban_integration_gate_store import (
+        prepare_integration_gate, record_integration_gate,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
+    attempt_id = completion_attempt_id or new_completion_attempt_id()
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
-    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata,
+                                    attempt_id=attempt_id)
     if acceptance is False:
+        return False
+    # Declared integration gates verify GitHub + git OUTSIDE the write txn; a
+    # card with no declaration is unaffected (None).
+    gate = prepare_integration_gate(conn, task_id, expected_run_id, attempt_id=attempt_id)
+    if gate is False:
         return False
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
@@ -2698,6 +2752,8 @@ def complete_task(
         if not _parents_satisfied(conn, task_id):
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+            return False
+        if gate is not None and not record_integration_gate(conn, task_id, gate):
             return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -3291,6 +3347,16 @@ def request_review(
     claim is only cleared with proof of ownership (``expected_run_id``) or
     ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
 
+    A card whose ``completion_contract`` names a repository has its exact PR
+    pinned from ``metadata["published_pr"]`` here, in this transaction, so the
+    reviewer's ``complete_task`` needs no republication; the wrong key raises
+    :class:`~hermes_cli.kanban_pr_acceptance_store.PublishedPrBindingError`.
+    The pin happens only once the transition's own compare-and-swap has WON, so
+    a refused handoff — stale ``expected_run_id``, a status that is not
+    running/ready, a lost claim race, unsatisfied parents, a live claim, or
+    missing reviewer provenance — leaves ``completion_contract`` and the event
+    log exactly as it found them.
+
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
     *reviewer's* completion is what cleans the managed scratch workspace up, so
@@ -3300,6 +3366,8 @@ def request_review(
     :class:`ArtifactPreservationError`, rolling the whole transition back: the
     task stays ``running`` and retryable, with no attachments and no event.
     """
+
+    from hermes_cli.kanban_pr_acceptance_store import bind_published_pr
 
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
@@ -3382,6 +3450,18 @@ def request_review(
                 return _ret(
                     False, "task is not in running/ready (or expected_run_id did not match the current run)",
                 )
+            # Pin the card's exact PR from THIS handoff: the implementer is the
+            # only actor that knows the URL, and the reviewer's completion is
+            # what the acceptance gate runs for. Deliberately AFTER the CAS
+            # above: every refusal in this function returns normally, and a
+            # normal return out of ``write_txn`` COMMITS — so binding before the
+            # transition won, or before the reviewer provenance resolved, would
+            # let a refused handoff still pin the card's PR permanently (and
+            # append ``pr_pinned``) on a run it never owned. Raising here
+            # instead rolls the whole transition back (task still ``running``
+            # and retryable), which is what the wrong key or another repo's PR
+            # must do.
+            bind_published_pr(conn, task_id, metadata, run_id=trow["current_run_id"])
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
@@ -3858,6 +3938,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
+    conn.execute(
+        "DELETE FROM integration_gates WHERE gate_task_id = ? "
+        "OR implementation_task_id = ? OR qa_task_id = ?", (task_id, task_id, task_id),
+    )
     for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 

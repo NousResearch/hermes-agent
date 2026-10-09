@@ -146,6 +146,30 @@ _BOARD_SPECS = [
     )),
 ]
 
+_INTEGRATION_GATE_SPECS = [
+    _cmd("configure", [
+        _arg("gate_task_id", help="Gate card id"),
+        _arg("--implementation", required=True,
+             help="Implementation task id (must already be a direct parent of the gate)"),
+        _arg("--qa", required=True, help="QA task id (must already be a direct parent of the gate)"),
+        _arg("--repo", required=True,
+             help="Absolute path to the local clone the merge commit is proved against"),
+        _arg("--remote", default="origin",
+             help="Remote fetched before proving the merge (default: origin)"),
+        _arg("--branch", default="develop",
+             help="Integration branch the PR must be merged into (default: develop)"),
+        # No bot-merge opt-out exists: a human merger is mandatory for every
+        # gate, because a bot merging its own unreviewed work is the failure the
+        # gate is for.
+        _json_flag(),
+    ], help="Declare (or re-declare) the integration gate on a card"),
+    _cmd("show", [_arg("gate_task_id"), _json_flag()],
+         help="Show a gate's configuration and its latest per-condition verification"),
+    _cmd("list", [_json_flag()], aliases=["ls"], help="List declared integration gates"),
+    _cmd("rm", [_arg("gate_task_id")], aliases=["remove"],
+         help="Remove a gate declaration (the card becomes ordinary again)"),
+]
+
 # Top-level ``hermes kanban <action>`` records, in ``--help`` order.
 _SPECS = [
     _cmd("init", help="Create kanban.db if missing (idempotent)"),
@@ -273,6 +297,20 @@ _SPECS = [
     ], aliases=["diag"], help="List active diagnostics on the current board"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
+    _cmd("integration-gate", children=("integration_gate_action", _INTEGRATION_GATE_SPECS),
+         help="Declare/inspect integration gates (Implementation + QA -> gate -> downstream)",
+         description=(
+             "An integration gate is an opt-in card that cannot complete until the "
+             "implementation its QA passed is actually integrated: the exact implementation PR "
+             "is merged BY A HUMAN (always — there is no bot-merge opt-out) into the configured "
+             "integration branch, and "
+             "that merge commit is an ancestor of the freshly fetched remote branch. Squash "
+             "merges are handled by proving the PR's merge_commit_sha, not its head. Any "
+             "condition that cannot be proven blocks the gate, so the downstream card is never "
+             "promoted on unverified work. Declaring a gate writes one declaration row and an "
+             "audit event — it never creates links or moves cards, so Implementation and QA must "
+             "already be direct parents of the gate card."
+         )),
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),

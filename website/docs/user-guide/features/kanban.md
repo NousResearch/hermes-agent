@@ -52,9 +52,12 @@ Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
 accepts the same `completion_contract`. Use `local-only` for intentionally local
 work; existing and undeclared cards retain that default. Prose URLs are not policy.
 
-After publishing, pass `metadata.published_pr` to completion. The first matching
-URL binds the card permanently; retries cannot substitute a green sibling PR.
-CLI `show --json` and `kanban_show` expose the persisted contract.
+After publishing, pass `metadata.published_pr` to completion — that exact key, not
+`pr_url` or `pr`, which are rejected with an actionable error rather than guessed
+at. The first matching URL binds the card permanently; retries cannot substitute a
+green sibling PR. A `kanban_request_review` handoff carrying `published_pr` pins it
+too, so the reviewer approving the card does not have to republish it. CLI
+`show --json` and `kanban_show` expose the persisted contract.
 
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
 dashboard completion. It reads classic branch protection and active ruleset
@@ -62,8 +65,8 @@ required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
+acceptance or GitHub API failures. A repository with no declared policy at all needs
+a local-only contract (see below). `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /
 `GH_CONFIG_DIR` from the profile's own `.env`, never the ambient login of the
@@ -78,9 +81,44 @@ login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
 retryable infra failure.
 
+A card that would otherwise be accepted has its checks collected a **second**
+time, and the PR rechecked once more after that, before acceptance is recorded.
+A rerun queues a new required run against the *same* head commit, so the PR
+itself never moves and a single pass can record "green" for evidence that is
+already out of date; every required check has to still be `success` on the
+re-read, and a newer queued, running, failed, cancelled, timed-out, skipped,
+neutral or unrecognised run fails closed. It is exactly one extra pass — never a
+retry loop — and the receipt keeps the first pass alongside it. A PR record that
+cannot be read as a pull request (a proxy's error envelope, `merged: "false"` as
+a *string*) is classified as infrastructure trouble, never as an acceptance.
+
+### Declaring required checks (private repositories on a free plan)
+
+The Repository Rules API answers `403` on a private repository without a paid plan,
+and such a repository exposes no `branchProtectionRule` either — so GitHub reports no
+policy the gate could judge the PR against. Declare the policy yourself:
+
+```yaml
+kanban:
+  completion_checks:
+    "acme/repo":
+      required_checks: ["build", "unit-tests"]
+```
+
+Each declared check must exist on the PR's exact head **and** be successful. The
+declaration is unioned with whatever GitHub policy *is* readable, and an unreadable
+Rules endpoint no longer stops the checks read — the receipt records it as
+unavailable and acceptance rests on the declared list. A repository with neither a
+readable GitHub policy nor an entry here can never satisfy a repository contract:
+"every check that happened to run is green" is deliberately **not** accepted as a
+substitute for a declared policy. Use a `local-only` contract for non-CI work.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
-store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
-instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+store PR URL, SHA, required contexts and where each was declared, check IDs/URLs,
+classifications and recovery instructions, plus the phase collection stopped at —
+so "Rules was unreadable", "the checks endpoint returned nothing" and "we never got
+as far as asking CI" stay distinguishable instead of all reading as `checks: []`.
+`last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
 human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
@@ -93,6 +131,88 @@ transaction or a continuous post-completion monitor. This is a single-user lifec
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
+
+## Integration gates (opt-in)
+
+A PR completion contract proves CI was green on the exact head. It does not prove
+anyone *merged* it — so a downstream card can start on work that only ever existed
+in a branch. An **integration gate** is an opt-in card that closes that gap:
+
+```
+Implementation ──┬──> QA ──┬──> Integration gate ──> downstream Implementation
+                 └─────────┘
+```
+
+Both the Implementation and QA cards must already be direct parents of the gate
+card (`hermes kanban link`), then:
+
+```bash
+hermes kanban integration-gate configure <gate-card> \
+  --implementation <impl-card> --qa <qa-card> \
+  --repo /abs/path/to/clone --remote origin --branch develop
+```
+
+Completing the gate card verifies, and refuses unless it can prove, all of:
+
+1. the declared Implementation and QA cards are **still direct parents** of the
+   gate — unlinking one makes the board's own dependency check easier to satisfy
+   (with both gone it is vacuously true), so the gate checks the edges by name;
+2. the Implementation and QA cards are `done`;
+3. QA's latest completed run carries structured `metadata.decision == "PASS"` —
+   prose saying "PASS" is never evidence;
+4. QA's `metadata.revision` equals the exact head the PR acceptance receipt passed;
+5. the Implementation card is pinned to an exact PR, and GitHub's answer for it is
+   structurally a pull request (every field is type-checked before it is read, so
+   `merged: "false"` — a truthy *string* — can never read as a merge);
+6. that PR's **current head is still the head** acceptance passed and QA reviewed:
+   a PR that took another push afterwards and was then merged integrated something
+   nobody judged, and its squash merge commit looks identical either way;
+7. the PR is **merged** (`merged is true`, strictly);
+8. its base is the configured integration branch;
+9. the merger is a **human** — mandatory for every gate, with no flag, config key
+   or stored column that relaxes it (a bot merging its own unreviewed work is the
+   failure the gate exists to catch), and an actor GitHub reports as a `Bot`, with
+   a `…[bot]` login, in an unreadable shape, or not at all fails closed;
+10. `git fetch <remote> <branch>` succeeds in the configured clone;
+11. the PR's `merge_commit_sha` is an ancestor of the integration branch tip — the
+    *merge commit*, because a squash merge discards the PR head, which would
+    otherwise make every squash unprovable. `refs/remotes/<remote>/<branch>` is
+    mutable, so it is resolved **once** to an exact commit and that captured
+    commit is what the ancestry check asks about and the receipt records.
+
+Anything that cannot be proven blocks the gate, so the downstream card is never
+promoted on unverified work. Nothing here merges, pushes or writes to GitHub.
+
+Configuring a gate writes one declaration row and an audit event — it never
+creates links, moves cards or changes status, so declaring one on a live board
+changes nothing until the gate card is completed. An empty declaration table is
+completely inert: cards with no gate keep ordinary done-parent promotion.
+
+Each attempt appends an immutable, secret-free `integration_acceptance` receipt
+listing every condition and the one it stopped at. Inspect it with
+`hermes kanban integration-gate show <gate-card>` (or `list`, `rm`); board
+diagnostics surface the same thing, and deliberately separate "GitHub or git could
+not answer" (an operator problem) from "nobody has merged the PR yet" (just wait).
+A `git` that is missing, unusable or hung is also "could not prove", never "that
+commit is not in the branch".
+
+The GitHub and git work runs with no SQLite transaction open, so every fact the
+verification approved from is fingerprinted beforehand and re-read inside the
+transaction that would complete the card: the gate's run and status, the
+declaration, both parents' statuses and runs **and the two links that make them
+parents**, the implementation's pinned contract, its accepted `pr_acceptance`
+receipt, and the completed QA run's own summary and metadata. If any of them
+moved in between — `hermes kanban edit` rewriting the completed QA result, a
+`hermes kanban unlink`, a re-declaration, a rival claim — the completion is
+refused rather than promoting the downstream card on evidence that no longer
+exists.
+
+Because several attempts on one card are ordinary (a worker retries, an operator
+completes by hand, two connections race), each attempt carries its own id and
+stamps it on whatever receipt it persists. `hermes kanban complete` reports only
+the receipt matching the attempt it just made, so a concurrent attempt's
+condition is never shown as the reason yours was refused; a refusal no gate wrote
+a receipt for keeps the generic message.
 
 ## Kanban vs. `delegate_task`
 

@@ -118,7 +118,20 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+                "workers alongside ``summary``.\n"
+                "On a card whose completion_contract names a GitHub "
+                "repository (OWNER/REPO), one key is read as policy: "
+                "\"published_pr\" must be the exact PR URL you "
+                "published for THIS card, in the form "
+                "\"https://github.com/OWNER/REPO/pull/123\". That exact "
+                "spelling is the only key read — \"pr_url\", \"pr\", "
+                "\"pull_request\" and friends are rejected with an "
+                "error instead of being guessed at, and a URL in prose "
+                "is never policy. The first matching URL pins the card "
+                "permanently: a retry cannot substitute a different PR. "
+                "Once pinned (including by your own "
+                "kanban_request_review handoff) you do not need to "
+                "repeat it."
         )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
@@ -249,7 +262,17 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
             "type": "object",
             "description": (
                 "Optional structured handoff facts for the reviewer, such "
-                "as changed_files, tests_run, commit, or decisions."
+                "as changed_files, tests_run, commit, or decisions.\n"
+                "If this card's completion_contract names a GitHub "
+                "repository (OWNER/REPO) and you published a PR, put its "
+                "exact URL under \"published_pr\" "
+                "(\"https://github.com/OWNER/REPO/pull/123\"). This "
+                "handoff pins it to the card permanently, so the reviewer "
+                "completing the card does not have to republish it. That "
+                "exact key is the only one read: a URL under \"pr_url\", "
+                "\"pr\" or \"pull_request\", or a PR from another "
+                "repository, is rejected with an error and this handoff "
+                "is rolled back (the card stays yours and retryable)."
             ),
             "additionalProperties": True,
         },

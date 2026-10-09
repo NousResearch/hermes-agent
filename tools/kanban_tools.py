@@ -17,6 +17,9 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.kanban_completion_attempt import (
+    completion_refusal, latest_event_id, new_completion_attempt_id,
+)
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -746,10 +749,18 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        # This attempt's own id, and the event floor it will be looked for
+        # above: the opt-in completion gates stamp the id onto whatever receipt
+        # they persist, so a concurrent attempt's receipt (which lands above the
+        # same floor, since the gates verify GitHub/git with no transaction
+        # open) can never be read back as this call's reason.
+        event_floor = latest_event_id(conn, tid)
+        attempt_id = new_completion_attempt_id()
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                completion_attempt_id=attempt_id)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -784,10 +795,18 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
-        task = kb.get_task(conn, tid)
         if not ok:
-            # complete_task reports every refusal as bare False; a reopened or
-            # never-finished parent is the actionable one. Name the blockers so
+            # A gate that refused THIS attempt left its reason behind, stamped
+            # with this attempt's id. The card's last_failure_error is never
+            # consulted: one shared column whose last writer wins would report a
+            # rival attempt's condition as this worker's, and a worker that reads
+            # "waiting for a human merge" when its own refusal was an unsatisfied
+            # parent acts on a fact about somebody else's call.
+            refusal = completion_refusal(conn, tid, event_floor, attempt_id)
+            if refusal:
+                raise _Reject(refusal)
+            # complete_task reports every other refusal as bare False; a reopened
+            # or never-finished parent is the actionable one. Name the blockers so
             # the worker/operator completes the parents instead of re-running.
             blockers = kb.unsatisfied_parents(conn, tid)
             if blockers:
@@ -795,8 +814,8 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
-            _check(False, (task.last_failure_error if task else None) or
-                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
+            _check(False, f"could not complete {tid} (unknown id, unsatisfied parents, "
+                          f"stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has

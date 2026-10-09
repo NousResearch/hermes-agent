@@ -717,6 +717,62 @@ def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
     return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 
 
+_NETWORK_STALL_FINGERPRINT = "timed out after"
+
+
+def is_http2_transport_failure(stderr: str, returncode: Optional[int] = None) -> bool:
+    """True when a fetch failure is curl's HTTP/2 layer dying mid-transfer, or the
+    network stalling so long the updater's own bounded fetch gave up on it.
+
+    Field shapes seen on real installs: ``curl 16 Error in the HTTP2 framing layer``
+    (the update-blocker class — the transfer dies partway and the fetch exits 128),
+    ``curl 92 HTTP/2 stream ... not closed cleanly`` (PROTOCOL_ERROR), and curl 56
+    with ``the remote end hung up unexpectedly``. HTTP/2 multiplexing to GitHub
+    breaks on some networks/MTUs/intermediaries while HTTP/1.1 succeeds, so the
+    remedy is a retry with ``http.version=HTTP/1.1`` (#93759, #95777 neighbours).
+
+    A stall is the same fault seen from the other side: on the networks #95777
+    describes, HTTP/2 connects and then stops making progress, so the fetch only
+    ends when ``NETWORK_GIT_TIMEOUT_SECONDS`` fires. ``run_git`` reports that as
+    return code 124 with ``git fetch timed out after 300s (...)`` in stderr — no
+    curl fingerprint to match, so the timeout is recognised by its return code and
+    the sentinel phrase rather than by any HTTP/2 wording. Gated on the timeout
+    return code so a pack-objects crash or an auth failure can never be mistaken
+    for it, and a genuinely slow large transfer simply spends one more fetch.
+    """
+    text = stderr or ""
+    if "Error in the HTTP2 framing layer" in text:
+        return True
+    if "HTTP/2 stream" in text and "not closed cleanly" in text:
+        return True
+    if "curl 56" in text and "hung up unexpectedly" in text:
+        return True
+    return returncode == 124 and _NETWORK_STALL_FINGERPRINT in text
+
+
+def fetch_with_http1_fallback(runner: Callable[..., subprocess.CompletedProcess],
+                              git_cmd: List[str], fetch_args: List[str]
+                              ) -> subprocess.CompletedProcess:
+    """Run a fetch; on an HTTP/2 transport death, retry once over HTTP/1.1.
+
+    GitHub's HTTP/2 endpoint dies mid-transfer on some networks while HTTP/1.1
+    succeeds, and the failure is not the user's fault — without the fallback the
+    updater just reports a dead fetch and the install stays stale indefinitely
+    (2026-10-07 field incident: every update blocked for days until HTTP/1.1
+    was set by hand). The retry pins ``-c http.version=HTTP/1.1`` for that
+    invocation only, so nothing about the checkout's config changes on success
+    or failure. The retry's result is returned whatever its exit code, so the
+    caller keeps its normal failure handling.
+    """
+    result = runner(git_cmd, fetch_args)
+    if result.returncode == 0 or not is_http2_transport_failure(
+            getattr(result, "stderr", "") or "", result.returncode):
+        return result
+    logger.info("HTTP/2 transport failure on fetch; retrying with http.version=HTTP/1.1")
+    http1_cmd = git_cmd[:1] + ["-c", "http.version=HTTP/1.1"] + git_cmd[1:]
+    return runner(http1_cmd, fetch_args)
+
+
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
                                       git_cmd: list[str], fetch_args: list[str],
                                       repo_root: Path) -> subprocess.CompletedProcess:

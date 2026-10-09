@@ -1917,10 +1917,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
-        from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
+        from hermes_cli.gitlock import (fetch_with_partial_clone_recovery,
+                                        fetch_with_http1_fallback,
+                                        is_partial_clone_pack_objects_crash)
         # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
+        # The HTTP/1.1 fallback sits outside it: a framing-layer death is a transport fault, not a
+        # pack fault, so the retry composes — either layer can rescue the fetch (2026-10-07 incident:
+        # days of blocked updates from curl 16 until HTTP/1.1 was set by hand).
         fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
+            lambda gc, a: fetch_with_http1_fallback(
+                lambda gc2, a2: _git_run(gc2, a2, network=True), gc, a),
+            git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"

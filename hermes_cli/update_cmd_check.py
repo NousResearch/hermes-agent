@@ -104,9 +104,14 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    from hermes_cli.gitlock import fetch_with_http1_fallback
+    # The same HTTP/2 transport death that blocks the apply fetch blocks this one
+    # (2026-10-07 field incident, #135081): `hermes update --check` is a supported
+    # update path and must retry over HTTP/1.1 too, or a user checking for updates
+    # is told there are none when the fetch never happened.
+    return fetch_with_http1_fallback(
+        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        git_cmd, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)])
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -122,12 +127,14 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    from hermes_cli.gitlock import fetch_with_http1_fallback, fetch_with_partial_clone_recovery
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
-    return fetch_with_partial_clone_recovery(
-        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
-        git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
+    return fetch_with_http1_fallback(
+        lambda gc, a: fetch_with_partial_clone_recovery(
+            lambda gc2, a2: _git(gc2, root, a2, **_uc()._no_prompt_git_kwargs()),
+            gc, a, root),
+        git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)]), f"origin/{branch}"
 
 
 def repair_shallow_grafts(root: Path) -> None:

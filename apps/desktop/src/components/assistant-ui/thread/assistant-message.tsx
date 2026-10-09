@@ -26,7 +26,7 @@ import {
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
-import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
+import { ResponseMessageIds, responseMessageRole } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -131,9 +131,11 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
     // Shared id->index map: a per-row scan for its own position was
     // mounted-rows x transcript-length on every streamed chunk (#126486).
     for (let j = threadMessageIndex(messages, s.message.id) - 1; j >= 0; j--) {
-      const prev = messages[j] as { content?: unknown; role?: string }
+      const prev = messages[j]
 
-      if (prev.role === 'assistant') {
+      // A background completion starts its own continuation: the reply it
+      // triggers is the user's answer, never a reply to an earlier delivery.
+      if (prev.role === 'assistant' || responseMessageRole(prev) === 'background') {
         return null
       }
 

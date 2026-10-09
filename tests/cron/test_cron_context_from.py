@@ -433,5 +433,3 @@ class TestContextBlockFence:
         block = prompt[opening:closing + 4]
         assert "## Follow-up notes" in block  # still inside the data block
         assert prompt.index("## Follow-up notes") < prompt.index("Summarize")
-
-

@@ -1543,26 +1543,26 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    # Assignment-time validation is only an admission check. Profile
+    # authority can be revoked while a task waits in ``ready``/``review``;
+    # revalidate before claiming or predicting a spawn in dry-run.
+    try:
+        _kb._validate_pr_task_assignee_authority(body=row["body"], assignee=assignee)
+    except ValueError as exc:
+        if not dry_run:
+            with _kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
+                    "WHERE id = ? AND status IN ('ready', 'review')",
+                    (task_id,),
+                )
+                _kb._append_event(conn, task_id, "authority_revoked", {"reason": str(exc)})
+        result.skipped_nonspawnable.append(task_id)
+        return False
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    # Assignment-time validation is only an admission check. Profile
-    # authority can be revoked while a task waits in ``ready``; revalidate
-    # immediately before claiming so a stale write-capability proof cannot
-    # authorize spawning a mutation-capable worker.
-    try:
-        _kb._validate_pr_task_assignee_authority(body=row["body"], assignee=assignee)
-    except ValueError as exc:
-        with _kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
-                "WHERE id = ? AND status IN ('ready', 'review')",
-                (task_id,),
-            )
-            _kb._append_event(conn, task_id, "authority_revoked", {"reason": str(exc)})
-        result.skipped_nonspawnable.append(task_id)
-        return False
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
@@ -1745,7 +1745,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, body FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

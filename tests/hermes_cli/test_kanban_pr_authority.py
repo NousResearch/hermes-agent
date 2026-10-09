@@ -7,6 +7,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -343,6 +344,88 @@ def test_dispatch_default_assignment_does_not_persist_invalid_write_owner(
             "WHERE task_id = ? AND kind = 'assigned'",
             (task_id,),
         ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("lane", ["ready", "review"])
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    ("action", "authority", "allowed"),
+    [
+        ("repair_and_push", "write", True),
+        ("repair_and_push", "read_only", False),
+        ("repair_and_push", "unknown", False),
+        ("review", "read_only", True),
+        (None, "read_only", True),
+    ],
+)
+def test_assigned_dispatch_rechecks_authority_before_spawn_or_dry_run(
+    kanban_home, lane, dry_run, action, authority, allowed
+):
+    """Both lanes use the persisted body; dry-run predicts without writing."""
+    _write_profile(kanban_home, "maintainer", "write")
+    body = _pr_body(action=action) if action is not None else "Inspect a report."
+    spawned_tasks = []
+
+    def spawn(task, workspace):
+        spawned_tasks.append((task, workspace))
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="Assigned work", body=body, assignee="maintainer"
+        )
+        if lane == "review":
+            assert kb.request_review(conn, task_id, reviewer="maintainer") is True
+        _write_profile(kanban_home, "maintainer", authority)
+
+        def snapshot():
+            return {
+                table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
+                for table in ("tasks", "task_events", "task_runs", "task_comments")
+            }
+
+        before = snapshot()
+        result = kbd.dispatch_once(
+            conn, spawn_fn=spawn, dry_run=dry_run, max_spawn=1,
+            reconcile_orphans=False,
+        )
+        task = kb.get_task(conn, task_id)
+
+        if dry_run:
+            assert spawned_tasks == []
+            assert snapshot() == before
+            assert result.spawned == ([(task_id, "maintainer", "")] if allowed else [])
+        elif allowed:
+            assert len(spawned_tasks) == 1
+            claimed, workspace = spawned_tasks[0]
+            assert (claimed.id, claimed.assignee, claimed.body) == (
+                task_id, "maintainer", body
+            )
+            assert task.status == "running"
+            assert task.claim_lock is not None
+            assert task.current_run_id is not None
+            assert Path(workspace).is_dir()
+            assert Path(workspace).is_relative_to(kanban_home)
+            assert result.spawned == [(task_id, "maintainer", workspace)]
+            if lane == "review":
+                assert "sdlc-review" in claimed.skills
+        else:
+            assert spawned_tasks == []
+            assert result.spawned == []
+            assert task.status == "blocked"
+            assert task.block_kind == "capability"
+            assert task.claim_lock is None
+            assert task.current_run_id is None
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,)
+            ).fetchone()[0] == 0
+            events = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'authority_revoked'", (task_id,)
+            ).fetchall()
+            assert len(events) == 1
+            assert json.loads(events[0]["payload"])["reason"]
+
+        assert result.skipped_nonspawnable == ([] if allowed else [task_id])
 
 
 def test_dispatch_dry_run_does_not_report_unauthorized_default_spawn(kanban_home):

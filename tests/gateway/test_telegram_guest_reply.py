@@ -1,6 +1,11 @@
 """Integration tests for Telegram guest mode reply flow (Bot API 10.0).
 
-Normal query: stub fires, skill runs, OPC edits the stub with the text result.
+Branch 1 — normal query: stub fires, skill runs, OPC edits stub with text or
+           media button.
+Branch 2 — deliver_<token> with valid token: answerGuestQuery with cached media,
+           no stub, no edit cycle.
+Branch 3 — deliver_<token> with invalid/expired token: answerGuestQuery with
+           "something went wrong", no stub.
 
 Guest messages arrive as a native ``telegram.Message`` on ``update.guest_message``,
 carrying its own ``guest_query_id`` and a normal, populated ``from_user`` — that's
@@ -8,7 +13,9 @@ how PTB >=22.8 actually models Bot API 10.0 guest bots (there is no api_kwargs
 involved). Every fixture below builds updates that shape, not a raw dict.
 """
 
+import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,6 +72,26 @@ class _FakeInlineQueryResultArticle:
         self.input_message_content = input_message_content
 
 
+class _FakeInlineQueryResultCachedVideo:
+    def __init__(self, *, id, video_file_id, title=None, **_kw):
+        self.id, self.video_file_id, self.title = id, video_file_id, title
+
+
+class _FakeInlineQueryResultCachedPhoto:
+    def __init__(self, *, id, photo_file_id, title=None, **_kw):
+        self.id, self.photo_file_id, self.title = id, photo_file_id, title
+
+
+class _FakeInlineQueryResultCachedAudio:
+    def __init__(self, *, id, audio_file_id, title=None, **_kw):
+        self.id, self.audio_file_id, self.title = id, audio_file_id, title
+
+
+class _FakeInlineQueryResultCachedDocument:
+    def __init__(self, *, id, document_file_id, title=None, **_kw):
+        self.id, self.document_file_id, self.title = id, document_file_id, title
+
+
 class _FakeInlineKeyboardButton:
     def __init__(self, text, switch_inline_query_current_chat=None, **_kw):
         self.text = text
@@ -80,6 +107,10 @@ class _FakeInlineKeyboardMarkup:
 def _real_inline_result_classes(monkeypatch):
     monkeypatch.setattr(_tg_adapter_mod, "InputTextMessageContent", _FakeInputTextMessageContent)
     monkeypatch.setattr(_tg_adapter_mod, "InlineQueryResultArticle", _FakeInlineQueryResultArticle)
+    monkeypatch.setattr(_tg_adapter_mod, "InlineQueryResultCachedVideo", _FakeInlineQueryResultCachedVideo)
+    monkeypatch.setattr(_tg_adapter_mod, "InlineQueryResultCachedPhoto", _FakeInlineQueryResultCachedPhoto)
+    monkeypatch.setattr(_tg_adapter_mod, "InlineQueryResultCachedAudio", _FakeInlineQueryResultCachedAudio)
+    monkeypatch.setattr(_tg_adapter_mod, "InlineQueryResultCachedDocument", _FakeInlineQueryResultCachedDocument)
     monkeypatch.setattr(_tg_adapter_mod, "InlineKeyboardButton", _FakeInlineKeyboardButton)
     monkeypatch.setattr(_tg_adapter_mod, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
 
@@ -419,6 +450,130 @@ async def test_guest_session_isolated_per_caller(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Branch 1 OPC — media result: edit_message_text with deliver button
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch1_opc_media_result_edits_stub_with_button():
+    """OPC media result: edit_message_text with switch_inline_query_current_chat button."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+
+    from gateway.platforms.base import ProcessingOutcome
+
+    adapter = _make_adapter()
+    adapter._guest_inline_message_ids["42"] = "imi_abc"
+    adapter._guest_reply_buffer["42"] = "Here is your video."
+    adapter._guest_turn_media["42"] = {"file_id": "fid_video", "media_kind": "video"}
+    adapter._guest_only_chats.add("42")
+
+    event = MagicMock()
+    event.source.chat_id = "42"
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.edit_message_text.assert_awaited()
+    call = adapter._bot.edit_message_text.await_args_list[-1]
+    assert call.kwargs["inline_message_id"] == "imi_abc"
+    assert "✅ Ready" in call.kwargs["text"]
+    markup = call.kwargs.get("reply_markup")
+    assert markup is not None, "reply_markup must be present"
+    button = markup.inline_keyboard[0][0]
+    assert button.switch_inline_query_current_chat.startswith("deliver_")
+
+    # Token must exist in store
+    token = button.switch_inline_query_current_chat[len("deliver_"):]
+    assert token in gmt._TOKEN_STORE
+    assert gmt._TOKEN_STORE[token]["media_kind"] == "video"
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Branch 2 — valid token: answerGuestQuery with cached media, no stub
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch2_valid_token_answers_with_cached_media():
+    """Branch 2: deliver_<token> with a valid token dispatches straight to
+    answer_guest_query with the cached media — no stub, no LLM pass.
+
+    Invokes the real handler (not a hand-built API call) so token
+    resolution, caller authorization, and dispatch are all actually
+    exercised, not just that the mock records whatever call the test made
+    directly."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+    token = gmt.mint_token("fid_video", "video")
+
+    adapter = _make_adapter()
+    update, msg = _make_guest_update(caller_id="111222333", gqid="gqid_branch2", text=f"deliver_{token}")
+
+    with patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    adapter._bot.answer_guest_query.assert_awaited_once()
+    call = adapter._bot.answer_guest_query.await_args
+    assert call.args[0] == "gqid_branch2"
+    result = call.args[1]
+    assert result.id == "delivery"
+    assert result.video_file_id == "fid_video"
+    # No stub / no edit cycle — Branch 2 never touches guest turn state.
+    assert adapter._pending_guest_queries == {}
+
+    gmt._TOKEN_STORE.clear()
+
+
+@pytest.mark.asyncio
+async def test_deliver_token_denied_for_unauthorized_caller():
+    """A valid, unexpired token must still be denied if the caller isn't
+    authorized — the caller gate sits in front of the deliver_<token>
+    branch too, so a leaked token can't be redeemed by a stranger."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+    token = gmt.mint_token("fid_video", "video")
+
+    adapter = _make_adapter()
+    update, msg = _make_guest_update(caller_id="999", gqid="gqid_branch2", text=f"deliver_{token}")
+
+    with patch.object(adapter, "_is_callback_user_authorized", return_value=False):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    adapter._bot.answer_guest_query.assert_not_called()
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Branch 3 — invalid/expired token: "something went wrong" result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch3_expired_token_answers_with_error():
+    """Branch 3: deliver_<token> with an expired token answers with
+    "something went wrong" instead of the cached media — via the real
+    handler, not a hand-built API call."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+    token = gmt.mint_token("fid", "video")
+    gmt._TOKEN_STORE[token]["expires_at"] = time.monotonic() - 1  # force expiry
+
+    adapter = _make_adapter()
+    update, msg = _make_guest_update(caller_id="111222333", gqid="gqid_branch3", text=f"deliver_{token}")
+
+    with patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    adapter._bot.answer_guest_query.assert_awaited_once()
+    call = adapter._bot.answer_guest_query.await_args
+    assert call.args[0] == "gqid_branch3"
+    result = call.args[1]
+    assert "wrong" in result.input_message_content.message_text.lower()
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
 # Callback handler — no delivery attempt, only answerCallbackQuery
 # ---------------------------------------------------------------------------
 
@@ -436,3 +591,161 @@ async def test_callback_on_stub_only_dismisses_loading():
 
     cq.answer.assert_awaited_once()
     adapter._bot.answer_guest_query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _guest_media_send — hard path containment for the MEDIA: staging flow.
+# The delivery note only asks the model to stage under HERMES_HOME/cache; a
+# guest turn coerced into naming any other host path must be refused.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_guest_media_send_rejects_path_outside_staging_root(tmp_path, monkeypatch):
+    """A path outside HERMES_HOME/cache is rejected before any open()/upload."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    outside_file = tmp_path / "auth.json"
+    outside_file.write_text('{"api_key": "secret"}')
+
+    adapter = _make_adapter()
+    adapter._bot.send_document = AsyncMock()
+
+    result = await adapter._guest_media_send("42", "document", str(outside_file))
+
+    assert result.success is False
+    assert "outside the allowed staging directory" in result.error
+    adapter._bot.send_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_allows_path_inside_staging_root(tmp_path, monkeypatch):
+    """A path inside HERMES_HOME/cache proceeds to staging."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    cache_dir = tmp_path / "cache" / "videos"
+    cache_dir.mkdir(parents=True)
+    video_file = cache_dir / "clip.mp4"
+    video_file.write_bytes(b"fake video bytes")
+
+    adapter = _make_adapter()
+
+    sent_video = MagicMock()
+    sent_video.video = MagicMock(file_id="fid_ok")
+    adapter._bot.send_video = AsyncMock(return_value=sent_video)
+
+    result = await adapter._guest_media_send("42", "video", str(video_file))
+
+    assert result.success is True
+    adapter._bot.send_video.assert_awaited_once()
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_ok"
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_null_byte_path_fails_cleanly(tmp_path, monkeypatch):
+    """A path resolve() itself chokes on (embedded null byte) returns a clean
+    failure SendResult instead of raising out of the adapter."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    adapter = _make_adapter()
+    adapter._bot.send_document = AsyncMock()
+
+    result = await adapter._guest_media_send(
+        "42", "document", str(tmp_path / "cache") + "/evil\x00.pdf"
+    )
+
+    assert result.success is False
+    assert "path validation failed" in result.error
+    adapter._bot.send_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_restages_when_file_content_changes(tmp_path, monkeypatch):
+    """Re-generating a file at the same path (new mtime) re-stages and mints a
+    fresh file_id instead of serving the stale cached one."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    photo = cache_dir / "chart.png"
+    photo.write_bytes(b"v1")
+    os.utime(photo, (1000, 1000))
+
+    adapter = _make_adapter()
+    fids = iter(["fid_v1", "fid_v2"])
+
+    def _mint(*a, **kw):
+        sent = MagicMock()
+        sent.photo = [MagicMock(file_id=next(fids))]
+        return sent
+
+    adapter._bot.send_photo = AsyncMock(side_effect=_mint)
+
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_v1"
+
+    # Same path, same mtime -> served from cache, no second upload.
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._bot.send_photo.await_count == 1
+
+    # Same path, new content/mtime -> re-staged, fresh file_id.
+    photo.write_bytes(b"v2 -- regenerated")
+    os.utime(photo, (2000, 2000))
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._bot.send_photo.await_count == 2
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_v2"
+
+
+_STREAMED_FINAL = (
+    "Found the original clip by the author:\n\n"
+    "**Example Clip Title**\n"
+    "https://video.example.com/watch?v=abc123XYZ00 - original, 0:45"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lead,first_frame_len", [
+    ("\n\n", 80),  # streamed text carries whitespace that final_response strips
+    ("", 80),      # first frame ends mid-URL: tail continuation re-sends the URL head
+    ("", 47),      # first frame ends mid-word
+])
+async def test_streamed_guest_reply_delivers_final_once(lead, first_frame_len):
+    """The guest buffer must end up holding the final answer exactly once, however
+    the first streamed frame lines up with the authoritative final_response."""
+    import asyncio
+    from gateway.platforms.base import ProcessingOutcome
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _make_adapter()
+    _register_guest_chat(adapter, "42")
+    consumer = GatewayStreamConsumer(
+        adapter, "42", StreamConsumerConfig(edit_interval=0.05, buffer_threshold=20, cursor=" ▉"))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(None)  # tool call before any text
+    streamed = lead + _STREAMED_FINAL
+    split = len(lead) + first_frame_len
+    consumer.on_delta(streamed[:split])
+    await asyncio.sleep(0.2)  # first frame goes out
+    consumer.on_delta(streamed[split:])
+    consumer.finish(final_text=_STREAMED_FINAL)
+    await task
+
+    assert adapter._guest_reply_buffer["42"].strip() == _STREAMED_FINAL
+
+    event = MagicMock()
+    event.source.chat_id = "42"
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    shown = adapter._bot.edit_message_text.await_args_list[-1].kwargs["text"]
+    assert shown.count("Found the original") == 1
+    assert shown.count("https://") == 1

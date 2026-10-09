@@ -78,6 +78,8 @@ from plugins.platforms.telegram.telegram_network import _iter_exception_graph, _
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+    from telegram import (
+        InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument)
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -93,6 +95,7 @@ except ImportError:
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
     InlineQueryResultArticle = InputTextMessageContent = Any
+    InlineQueryResultCachedPhoto = InlineQueryResultCachedVideo = InlineQueryResultCachedAudio = InlineQueryResultCachedDocument = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
@@ -313,6 +316,7 @@ def check_telegram_requirements() -> bool:
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler, InlineQueryResultArticle, InputTextMessageContent
+    global InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -327,6 +331,9 @@ def check_telegram_requirements() -> bool:
         Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent = (
             getattr(_tg, n) for n in ("Update", "Bot", "Message", "InlineKeyboardButton", "InlineKeyboardMarkup",
                                       "InlineQueryResultArticle", "InputTextMessageContent"))
+        InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument = (
+            getattr(_tg, n) for n in ("InlineQueryResultCachedPhoto", "InlineQueryResultCachedVideo",
+                                      "InlineQueryResultCachedAudio", "InlineQueryResultCachedDocument"))
         LinkPreviewOptions = getattr(_tg, "LinkPreviewOptions", None)
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler = (
             getattr(_ext, n) for n in ("Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler", "MessageHandler"))
@@ -5158,6 +5165,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "audio", audio_path, caption)
         _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
@@ -5205,6 +5214,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
+        if self._is_guest_chat(chat_id):
+            return await self._guest_send_images(str(chat_id), images)
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -5278,6 +5289,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "photo", image_path, caption)
         # Pre-compress large raster images to progressive JPEG once; the photo send and the document
         # fallback both reuse the compressed file so either upload stays under media_write_timeout.
         compressed = self._compress_image_to_jpeg(image_path)
@@ -5339,6 +5352,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "document", file_path, caption or file_name)
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
             lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
@@ -5357,6 +5372,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
         ``320x320`` video with ``duration=0`` and no thumbnail, which clients then draw as a square
         tile whatever the true aspect ratio (portrait reels and 16:9 clips alike).
         """
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "video", video_path, caption)
         geometry = await asyncio.to_thread(_probe_video_geometry, video_path)
         thumb_path = (
             await asyncio.to_thread(_video_thumbnail_jpeg, video_path, geometry.get("duration"))
@@ -5391,6 +5408,8 @@ class TelegramAdapter(TelegramGuestModeMixin, TelegramHeldInboundMixin, BasePlat
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "photo", image_url, caption)
         photo_caption = self._caption_1024(caption)
         try:
             msg = await self._send_media(

@@ -1939,7 +1939,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        # The path follows on its own line: `content` is the only record of where the audio lives
+        # (no media column; consumers parse these markers back out), and every failure branch
+        # already keeps it. Same grammar as `_build_media_placeholder`'s audio marker, not the
+        # stt-disabled prose, so a consumer matching media markers recovers the attachment.
+        from tools.credential_files import to_agent_visible_cache_path
+        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
+        return transcript, f'"{transcript}"\n[User sent audio: {agent_path}]'
 
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: list[str]

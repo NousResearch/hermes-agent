@@ -24,7 +24,7 @@ def _rp():
 # ── Azure Foundry ──────────────────────────────────────────────────────────────────────────
 
 
-def _azure_entra_credentials(cfg_entra: Dict[str, Any]) -> Any:
+def _azure_entra_credentials(cfg_entra: dict[str, Any]) -> Any:
     """Callable api_key minting a fresh Entra JWT per request (OpenAI SDK accepts it natively;
     ``build_anthropic_client`` injects the bearer via an httpx hook)."""
     AuthError = _rp().AuthError
@@ -63,9 +63,9 @@ def _azure_foundry_api_key(rp, explicit_api_key: str) -> str:
     return api_key
 
 
-def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[str, Any],
+def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[str, Any],
                                    explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
-                                   target_model: Optional[str] = None) -> Dict[str, Any]:
+                                   target_model: Optional[str] = None) -> dict[str, Any]:
     """Azure Foundry: ``model.base_url`` + ``model.api_mode`` (or explicit overrides), API key from
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
@@ -115,7 +115,7 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
 
 def _resolve_openrouter_runtime(
     *, requested_provider: str, explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Terminal resolver: OpenRouter, or a bare/aliased ``custom`` endpoint. base_url precedence:
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
     OPENAI_BASE_URL never picks the endpoint (config.yaml is the single source of truth for endpoint
@@ -202,7 +202,7 @@ def _resolve_openrouter_runtime(
 # ── AWS Bedrock ────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
+def _resolve_bedrock_runtime(requested_provider: str, model_cfg: dict[str, Any], target_model: Optional[str]) -> dict[str, Any]:
     """AWS Bedrock with triple-path routing: bare in-Region OpenAI IDs → Bedrock Mantle's Responses
     endpoint (their ``us.``/``global.`` profile IDs are bedrock-runtime IDs and take Converse);
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
@@ -269,7 +269,7 @@ def _is_external_process_provider(provider: str) -> bool:
     return profile is not None and getattr(profile, "auth_type", "") == "external_process"
 
 
-def _resolve_external_process_runtime(provider: str, requested_provider: str) -> Dict[str, Any]:
+def _resolve_external_process_runtime(provider: str, requested_provider: str) -> dict[str, Any]:
     rp = _rp()
     creds = rp.resolve_external_process_provider_credentials(provider)
     return rp._runtime(provider, "chat_completions", creds.get("base_url", "").rstrip("/"), creds.get("api_key", ""),

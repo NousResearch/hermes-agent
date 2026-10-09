@@ -47,7 +47,7 @@ def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
     return _env_value(env_var).strip()
 
 
-def _terminal_backend_rows() -> List[Dict[str, str]]:
+def _terminal_backend_rows() -> list[dict[str, str]]:
     """Built-in picker rows plus plugin-registered backends, computed per request
     so a plugin installed after server start still shows up."""
     from hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
@@ -559,7 +559,7 @@ async def select_toolset_provider(
                     except KeyError as exc:
                         raise _bad_request(str(exc).strip('"'))
                 save_config(config)
-                response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
+                response: dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
                 if body.capability is not None:
                     response["capability"] = body.capability
 
@@ -609,8 +609,8 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
                 raise _bad_request(
                     f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}")
 
-            saved: List[str] = []
-            skipped: List[str] = []
+            saved: list[str] = []
+            skipped: list[str] = []
             for key, value in body.env.items():
                 if value and value.strip():
                     try:

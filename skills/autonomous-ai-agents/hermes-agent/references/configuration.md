@@ -54,7 +54,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | `kanban` | Multi-agent work-queue tools (gated to workers) |
 | `debugging` | Extra introspection tools (off by default) |
 | `safe` | Minimal low-risk toolset for locked-down sessions |
-| `spotify`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials). `homeassistant` (`ha_*` tools) is not built in: it comes from the `homeassistant` catalog plugin (`hermes plugins install homeassistant`) |
+| `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials). `homeassistant` (`ha_*` tools) and `spotify` (`spotify_*` tools) are not built in: they come from the `homeassistant` / `spotify` catalog plugins (`hermes plugins install <name>`) |
 
 Tool changes take effect on `/reset` (new session) — never mid-conversation, to preserve prompt caching.
 

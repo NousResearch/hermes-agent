@@ -35,8 +35,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -216,7 +216,7 @@ class GatewayAdapterLifecycleMixin:
         finally:
             adapter._platform_lock_takeover_allowed = False
 
-    async def _handle_reaction_event(self, ctx: Dict[str, Any]) -> None:
+    async def _handle_reaction_event(self, ctx: dict[str, Any]) -> None:
         """Fan a normalised reaction event out to the HookRegistry; errors never block the adapter."""
         event_name = str(ctx.get("event_name") or "reaction:added")
         with _log_suppressed(logging.DEBUG, "[Gateway] reaction hook emit failed", exc_info=True):
@@ -541,7 +541,7 @@ class GatewayAdapterLifecycleMixin:
         except Exception:
             _process_takes_profile = False
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
-        inflight: Dict[str, "asyncio.Task"] = {}
+        inflight: dict[str, "asyncio.Task"] = {}
 
         async def _dispatch(row, session_id, session_db, profile_name) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
@@ -1024,10 +1024,10 @@ class GatewayAdapterLifecycleMixin:
         self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 
-    def _primary_resource_claims(self, active: str) -> Dict[tuple, str]:
+    def _primary_resource_claims(self, active: str) -> dict[tuple, str]:
         """Resource claim -> owning profile for every live or queued primary adapter (credential:
         one account polled once; listener: one bind+port). A queued retryable primary owns both."""
-        claimed: Dict[tuple, str] = {}
+        claimed: dict[tuple, str] = {}
         for _plat, _ad in self.adapters.items():
             fp = self._adapter_credential_fingerprint(_ad)
             for claim in ((_plat, fp) if fp is not None else None, self._adapter_listener_claim(_plat, _ad)):
@@ -1160,7 +1160,7 @@ class GatewayAdapterLifecycleMixin:
         return owner_origin, incoming
 
     def _refuse_duplicate_claim(
-        self, claim, claimed: Dict[tuple, str], profile_name: str, platform: Platform, kind: str,
+        self, claim, claimed: dict[tuple, str], profile_name: str, platform: Platform, kind: str,
         *, owner_origin: Optional[str] = None, incoming_origin: Optional[str] = None,
     ) -> bool:
         """Log + park a secondary adapter whose credential/listener another profile owns (True when
@@ -1247,7 +1247,7 @@ class GatewayAdapterLifecycleMixin:
         return lines
 
     async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
+        self, profile_name: str, profile_home: "Path", claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope

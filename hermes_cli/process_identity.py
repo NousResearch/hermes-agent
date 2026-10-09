@@ -563,10 +563,33 @@ def attach_self_to_kill_on_close_job() -> bool:
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Declare the winapi signatures. With ctypes' default int marshalling the
+        # 64-bit current-process pseudo-handle (0xFFFFFFFFFFFFFFFF) crosses the
+        # call as a truncated 32-bit int, AssignProcessToJobObject fails with
+        # ERROR_INVALID_HANDLE, and this best-effort attach silently no-ops — so
+        # the kill-on-close safety net for Windows stdio MCP orphans (#61059)
+        # never actually engaged (#132069).
+        #
+        # LimitFlags: SILENT_BREAKAWAY_OK is deliberately absent. It made every
+        # child of this process start OUTSIDE the job (kernel-verified: a plain
+        # Popen child of an attached process reads IsProcessInJob == False with
+        # it set), so the job could never catch the MCP trees it exists for.
+        # BREAKAWAY_OK stays: deliberate CREATE_BREAKAWAY_FROM_JOB spawns (the
+        # update relaunch, detached watchers) still escape explicitly.
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
         JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
-        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000
         JobObjectExtendedLimitInformation = 9
 
         class IO_COUNTERS(ctypes.Structure):
@@ -596,7 +619,7 @@ def attach_self_to_kill_on_close_job() -> bool:
             return False
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = (
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
         )
         ok = kernel32.SetInformationJobObject(job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info))
         if not ok or not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):

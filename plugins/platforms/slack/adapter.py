@@ -1515,7 +1515,7 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning(
                     "[Slack] chat_postEphemeral for relayed slash failed (%s) — "
-                    "falling back to response_url", e)
+                    "falling back to response_url", e, exc_info=True)
         if ctx.get("response_url"):
             return await self._send_slash_ephemeral(ctx, content)
         return SendResult(success=False, error="No ephemeral route available")
@@ -6168,6 +6168,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             return current_profile_name("default") or "default"
         except Exception:
+            logger.debug("[Slack] slash relay: profile name unresolved", exc_info=True)
             return "default"
 
     def _resolve_foreign_slash_owner(self, command: dict) -> Optional[str]:
@@ -6246,6 +6247,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             claimed = await asyncio.to_thread(slash_relay.is_claimed, row_id)
         except Exception:
+            logger.debug("[Slack] slash relay: claim check failed", exc_info=True)
             return
         if claimed:
             return

@@ -371,7 +371,7 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
     reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
     from gateway.drain_control import current_instantiation_epoch
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     start = get_process_start_time(int(pid))
     if start is None:
         return None
@@ -404,7 +404,8 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return True
     if isinstance(started_at, str) and "|" in started_at:
         return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+    from gateway.status import _start_times_agree
+    from runtime.process_identity import get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
         return True

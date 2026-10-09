@@ -35,10 +35,10 @@ def _current_notepad_file() -> Path:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
-    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    # the pre-move CLI SQLite utility / ``cron.jobs`` cached; resolve the new ``storage.sqlite_util``
+    # owner at call time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from cron.jobs import _ensure_cron_dir
-    from hermes_cli.sqlite_util import open_db
+    from storage.sqlite_util import open_db
 
     path = _current_notepad_file()
     _ensure_cron_dir(path.parent)
@@ -59,7 +59,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    from hermes_cli.sqlite_util import transaction
+    from storage.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn

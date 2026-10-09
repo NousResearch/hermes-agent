@@ -418,7 +418,7 @@ def cli_provider_setup(provider: Any) -> Iterator[None]:
 # ---- dashboard / Desktop OAuth sessions ------------------------------------------------------
 
 def web_setup_surface() -> str:
-    from hermes_cli.process_identity import is_desktop_owned_backend
+    from runtime.desktop_identity import is_desktop_owned_backend
 
     return "desktop" if is_desktop_owned_backend() else "dashboard"
 

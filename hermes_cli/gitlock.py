@@ -13,12 +13,8 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import (
-    NO_LAZY_FETCH_ENV,
-    bounded_probe_run,
-    noninteractive_git_env,
-    windows_hide_flags,
-)
+from runtime.git_subprocess import NO_LAZY_FETCH_ENV, noninteractive_git_env
+from runtime.subprocess_compat import bounded_probe_run, windows_hide_flags
 from hermes_cli.update_custody import run_git
 
 logger = logging.getLogger(__name__)
@@ -787,7 +783,7 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
     downloads trees again (#129514: 434 GB, disk full mid-update). Runs in the dependency-free
     bootstrap interpreter.
     """
-    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from runtime.git_subprocess import no_prompt_git_kwargs
 
     try:
         if convert_treeless_checkout(repo_root, **no_prompt_git_kwargs()):

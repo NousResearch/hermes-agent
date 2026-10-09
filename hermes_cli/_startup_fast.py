@@ -28,17 +28,15 @@ import os
 import sys
 
 __all__ = [
+    "project_root_str", "normalize_hermes_home_env",
+    "ensure_project_root_on_path",
+    "is_global_fast_version_argv",
+    "is_container_startup_environment",
     "active_profile_may_override_home",
     "container_mode_may_be_active",
-    "ensure_project_root_on_path",
-    "is_container_startup_environment",
-    "is_desktop_ssh_backend_argv",
-    "is_global_fast_version_argv",
-    "normalize_hermes_home_env",
-    "print_fast_version_info",
-    "project_root_str",
-    "read_install_method",
     "read_openai_version",
+    "read_install_method",
+    "print_fast_version_info",
     "try_fast_version",
 ]
 
@@ -101,17 +99,6 @@ def ensure_project_root_on_path() -> None:
 
 def is_global_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"])
-
-
-def is_desktop_ssh_backend_argv(argv: list[str]) -> bool:
-    """Is ``argv`` the Desktop client's SSH backend spawn (``serve --ssh-session-token-file``)?
-
-    That child has a fixed identity: Desktop names the remote profile explicitly (or none for
-    the root home) and hands its session token through a 0600 FILE, never the
-    ``HERMES_DASHBOARD_SESSION_TOKEN`` env var the local pool spawn uses. Every reader of
-    "is this process Desktop's backend" needs both shapes; this is the argv half.
-    """
-    return "--ssh-session-token-file" in argv
 
 
 def is_container_startup_environment() -> bool:

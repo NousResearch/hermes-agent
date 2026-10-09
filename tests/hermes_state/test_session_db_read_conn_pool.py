@@ -13,7 +13,7 @@ process stayed alive, so the supervisor's restart-on-exit never fired.
 Worse, those connections were opened WITHOUT ``check_same_thread=False`` (both
 writer opens pass it), so ``close()`` on them raised ``ProgrammingError`` from
 a different thread and the bare ``except Exception: pass`` hid it -- leaving
-``hermes_cli.sqlite_safe_read``'s registry permanently over-counted as well.
+``storage.sqlite_safe_read``'s registry permanently over-counted as well.
 
 The contract pinned here: reads borrow from a BOUNDED pool, connections are
 returned and reused, surplus connections are closed rather than dropped, and
@@ -47,7 +47,7 @@ from hermes_state import SessionDB
 
 def _live_count(path) -> int:
     """Live-connection count the tracking registry holds for *path*."""
-    import hermes_cli.sqlite_safe_read as mod
+    import storage.sqlite_safe_read as mod
 
     with mod._live_lock:
         return mod._live_connections.get(mod._key(path), 0)

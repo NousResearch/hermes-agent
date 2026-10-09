@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.process_identity — spawn tags, the machine spawn
+"""Tests for runtime.process_identity — spawn tags, the machine spawn
 ledger, and the updater's ledger-identified reap rung.
 
 Layer context (Aug 2026, after the 12-minute Windows update hang): reapers
@@ -26,7 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import process_identity as pi
+from runtime import desktop_identity
+from runtime import process_identity as pi
 
 
 class _FakeNoSuchProcess(Exception):
@@ -135,6 +136,7 @@ def test_register_self_writes_and_prunes_dead(tmp_path):
     assert me["create_time"] == pytest.approx(50.0, abs=0.01)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="surrogate-escaped argv is POSIX-specific")
 def test_register_self_survives_non_utf8_argv(tmp_path):
     ledger = tmp_path / "spawn-ledger.json"
     fake = _fake_psutil({999: 50.0})
@@ -304,18 +306,27 @@ def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
     ssh_argv = ["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                 "--ssh-session-token-file", "/home/u/.hermes/desktop-ssh/abc.token"]
 
-    assert pi.is_desktop_owned_backend(ssh_argv) is True
+    assert desktop_identity.is_desktop_owned_backend(ssh_argv) is True
     monkeypatch.setattr(sys, "argv", ["hermes", *ssh_argv])
-    assert pi.is_desktop_owned_backend() is True
+    assert desktop_identity.is_desktop_owned_backend() is True
     # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
-    assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False
+    assert desktop_identity.is_desktop_owned_backend(
+        ["serve", "--host", "127.0.0.1", "--port", "0"]
+    ) is False
 
 
 # ---------------------------------------------------------------------------
 # Host-reclaim rung: reap_orphaned_backend_owner (#121964)
 # ---------------------------------------------------------------------------
 
-def _reap(entry_pid=555, create=55.0, procs=None, kill_fn=None, **entry_kw):
+def _reap(
+    entry_pid=555,
+    create=55.0,
+    procs=None,
+    kill_fn=None,
+    reparented_orphan_fn=None,
+    **entry_kw,
+):
     """Run the reclaim predicate with a faked psutil world; returns (result, kills)."""
     entry = _entry(entry_pid, create, **entry_kw)
     kills = []
@@ -323,7 +334,11 @@ def _reap(entry_pid=555, create=55.0, procs=None, kill_fn=None, **entry_kw):
     with patch.dict(sys.modules, {"psutil": fake}), \
          patch.object(pi, "ledger_entries", return_value=[entry]):
         result = pi.reap_orphaned_backend_owner(
-            entry_pid, create, kill_fn=(kills.append if kill_fn is None else kill_fn))
+            entry_pid,
+            create,
+            kill_fn=(kills.append if kill_fn is None else kill_fn),
+            reparented_orphan_fn=reparented_orphan_fn,
+        )
     return result, kills
 
 
@@ -365,7 +380,11 @@ def test_reclaim_reaps_null_spawner_orphan_to_init():
     with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
          patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()):
         # Ancient orphan: create_time far past vs real clock → past the lock-write grace.
-        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+        result, kills = _reap(
+            procs={555: 1000.0},
+            create=1000.0,
+            reparented_orphan_fn=dashboard_procs._reparented_orphan_backend,
+        )
     assert result == 555
     assert kills == [555]
 
@@ -374,7 +393,10 @@ def test_reclaim_spares_null_spawner_with_live_parent():
     from hermes_cli import dashboard_procs
 
     with patch.object(dashboard_procs, "_process_ppid", return_value=1234):
-        result, kills = _reap(procs={555: 55.0})
+        result, kills = _reap(
+            procs={555: 55.0},
+            reparented_orphan_fn=dashboard_procs._reparented_orphan_backend,
+        )
     assert result is None
     assert kills == []
 
@@ -385,7 +407,11 @@ def test_reclaim_spares_lock_claimed_orphan():
 
     with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
          patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value={555}):
-        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+        result, kills = _reap(
+            procs={555: 1000.0},
+            create=1000.0,
+            reparented_orphan_fn=dashboard_procs._reparented_orphan_backend,
+        )
     assert result is None
     assert kills == []
 

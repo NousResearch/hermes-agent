@@ -272,7 +272,7 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
         except subprocess.TimeoutExpired as exc:
             # git.exe's git-remote-https inherits the pipes: kill the tree, not git.exe alone (and
             # never the job: it also holds the update's other children).
-            from hermes_cli._subprocess_compat import kill_and_drain
+            from runtime.processes import kill_and_drain
 
             drained = kill_and_drain(proc, _DRAIN_SECONDS)
             if drained is not None:

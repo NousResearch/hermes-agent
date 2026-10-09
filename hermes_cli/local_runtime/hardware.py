@@ -235,7 +235,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
         _gpu_query_cache = (now, None)
         return None
 
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
             [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",

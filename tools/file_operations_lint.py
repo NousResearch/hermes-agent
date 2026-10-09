@@ -196,7 +196,7 @@ class LintMixin:
         import shutil
         import subprocess
 
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         from hermes_constants import with_hermes_node_path
         from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
 

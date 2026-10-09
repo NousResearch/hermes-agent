@@ -31,7 +31,7 @@ def test_runtime_health_lines_flags_stale_running_with_dead_pid(monkeypatch):
     )
     # Recorded PID is gone (ungraceful kill); no real process is touched.
     monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: False)
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+    monkeypatch.setattr(status_mod._process_identity, "get_process_start_time", lambda pid: None)
 
     lines = _runtime_health_lines()
 
@@ -74,7 +74,7 @@ def test_runtime_health_lines_flag_stale_heartbeat_with_live_pid(monkeypatch):
               "updated_at": _iso_age(900), "active_agents": 0, "platforms": {}}
     monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
     monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: 111)
+    monkeypatch.setattr(status_mod._process_identity, "get_process_start_time", lambda pid: 111)
 
     stale = [ln for ln in _runtime_health_lines() if ln.startswith("⚠ Gateway heartbeat stale:")]
     assert len(stale) == 1, _runtime_health_lines()
@@ -112,9 +112,7 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
         "gateway_state": "running",
     }
     monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: pid == 12345)
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+    monkeypatch.setattr(status_mod._process_identity, "get_process_start_time", lambda pid: None)
     monkeypatch.setattr(status_mod, "_looks_like_gateway_process", lambda pid: False)
 
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
-
-

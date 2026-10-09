@@ -73,7 +73,7 @@ def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
     audit mid-list. :func:`noninteractive_repo_git_env` because ``status`` executes the repo's
     ``core.fsmonitor`` and clean filters (GHSA-7x36-8jrh-v4pw)."""
-    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    from runtime.git_subprocess import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
     env = noninteractive_repo_git_env(cwd)
     if env is None:
         return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="",

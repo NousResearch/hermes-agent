@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+from runtime.git_subprocess import NO_LAZY_FETCH_ENV, noninteractive_git_env
+from runtime.subprocess_compat import windows_hide_flags
 from hermes_cli.update_cmd_common import _record_stop
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module

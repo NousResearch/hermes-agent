@@ -26,7 +26,7 @@ def client(monkeypatch):
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(_gw_status, "_pid_exists", lambda pid: False)
-    monkeypatch.setattr(_gw_status, "_get_process_start_time", lambda pid: None)
+    monkeypatch.setattr(_gw_status._process_identity, "get_process_start_time", lambda pid: None)
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c

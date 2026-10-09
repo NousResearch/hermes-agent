@@ -157,6 +157,24 @@ class TestSystemdServiceRefresh:
         ), "daemon-reload must not run when write was refused"
 
 
+class TestTempHomeServiceDefinitionGuard:
+    """_temp_home_in_service_definition() — structural temp-dir detection."""
+
+    def test_detects_tmp_home_in_systemd_unit(self):
+        unit = '[Service]\nEnvironment="HERMES_HOME=/tmp/hermes-e2e-41264"\n'
+        assert (
+            gateway_cli._temp_home_in_service_definition(unit)
+            == "/tmp/hermes-e2e-41264"
+        )
+
+    def test_detects_tempdir_env_home(self, monkeypatch, tmp_path):
+        import tempfile as _tempfile
+
+        monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
+        unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
+        assert gateway_cli._temp_home_in_service_definition(unit) is not None
+
+
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"
@@ -252,7 +270,7 @@ class TestUninstallRefusesForeignUnit:
 class TestGetCronDrainTimeout:
     def test_missing_config_falls_back_to_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
-        monkeypatch.setattr(gateway_cli, "read_raw_config", dict)
+        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
         assert (
             gateway_cli._get_cron_drain_timeout() == DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
         )
@@ -350,7 +368,7 @@ class TestGeneratedSystemdUnits:
         """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
         plist rewrite by `hermes gateway start` cannot strip the FD floor and
         reintroduce EMFILE crashes (launchd default soft limit is 256)."""
-        from hermes_cli import resource_limits
+        from runtime import resource_limits
 
         monkeypatch.setattr(
             resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
@@ -365,7 +383,7 @@ class TestGeneratedSystemdUnits:
     def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
         """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
         plist must then not contain a SoftResourceLimits block at all."""
-        from hermes_cli import resource_limits
+        from runtime import resource_limits
 
         monkeypatch.setattr(
             resource_limits, "configured_nofile_soft_limit", lambda config=None: None
@@ -1426,7 +1444,7 @@ class TestSystemUnitHermesHome:
             lambda run_as_user=None: ("alice", "alice", str(target_home), 1001),
         )
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
-        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", list)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
 
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/root/bin/node")
         root_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
@@ -1447,7 +1465,7 @@ class TestSystemUnitHermesHome:
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", str(tmp_path), 1001),
         )
-        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", list)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
 
         system_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
         user_unit = gateway_cli.generate_systemd_unit(system=False)
@@ -1480,7 +1498,7 @@ class TestSystemUnitHermesHome:
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
         )
-        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", list)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
         monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
@@ -1610,7 +1628,7 @@ class TestSystemServiceIdentityRootHandling:
         root_info = pwd.getpwnam("root")
         root_group = grp.getgrgid(root_info.pw_gid).gr_name
 
-        username, _group, home, _uid = gateway_cli._system_service_identity(run_as_user="root")
+        username, group, home, _uid = gateway_cli._system_service_identity(run_as_user="root")
         assert username == "root"
         assert home == root_info.pw_dir
 
@@ -2142,7 +2160,8 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            # Test each variant fresh (every variant ships the same unit name)
+            name = "hermes.service" if i == 0 else "hermes.service"  # same name
+            # Test each variant fresh
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",
                 encoding="utf-8",

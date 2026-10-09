@@ -17,7 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from runtime.git_subprocess import harden_git_argv, noninteractive_git_env
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30

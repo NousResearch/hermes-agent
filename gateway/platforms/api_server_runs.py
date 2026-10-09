@@ -218,7 +218,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_store = store_factory()
     self._run_owner_pid = os.getpid()
     try:
-        from gateway.status import get_process_start_time
+        from runtime.process_identity import get_process_start_time
         self._run_owner_started = int(get_process_start_time(self._run_owner_pid) or 0)
     except Exception:
         self._run_owner_started = 0
@@ -399,7 +399,8 @@ def _check_run_auth(self, request: "web.Request", *, permission: str, _api_serve
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
     """True when the recorded owner pid still exists and is the same process incarnation."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+        from gateway.status import _pid_exists
+        from runtime.process_identity import get_process_start_time, start_time_fingerprints_match
         return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
             not owner_started
             or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))

@@ -1580,7 +1580,8 @@ def _force_kill_stuck_gateways(killed_pids) -> None:
         if _stuck:
             print()
             print(f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing")
-            from gateway.status import get_process_start_time, terminate_pid
+            from gateway.status import terminate_pid
+            from runtime.process_identity import get_process_start_time
             for pid in _stuck:
                 with suppress(ProcessLookupError, PermissionError, OSError):
                     # taskkill /T /F on Windows (no SIGKILL there), SIGKILL on POSIX.

@@ -35,7 +35,7 @@ def _print_output_tail(result: subprocess.CompletedProcess, printer=None) -> Non
 
 def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
     """Hide Windows children unless their output is going to a real console."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     flags = windows_hide_flags()
     try:
         if flags and streams_to_console and sys.stdout is not None and sys.stdout.isatty():

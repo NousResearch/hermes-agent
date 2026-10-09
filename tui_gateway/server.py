@@ -269,7 +269,7 @@ class _SlashWorker:
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's

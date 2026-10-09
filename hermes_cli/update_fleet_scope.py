@@ -58,7 +58,7 @@ def _ledger_gateway_home(pid: int) -> str | None:
     only for an exact live ``(pid, create_time)`` match. Proof for a gateway whose environment is
     unreadable (elevated, or another account's service) while its create time still is."""
     with suppress(Exception):
-        from hermes_cli.process_identity import ledger_entries
+        from runtime.process_identity import ledger_entries
         for entry in ledger_entries(verified_only=True):
             if entry.get("pid") == pid and entry.get("purpose") == "gateway":
                 return entry.get("hermes_home") or None

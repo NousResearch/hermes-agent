@@ -292,7 +292,7 @@ def _persist_running(data: dict[str, Any]) -> None:
         stored = read_run_record(str(data.get("update_id")))
         if stored is not None and stored[1].get("finished_at"):
             return
-        from hermes_cli.process_identity import _process_create_time
+        from runtime.process_identity import _process_create_time
 
         payload = (json.dumps({**data, "writer_pid": os.getpid(),
                                "writer_create_time": _process_create_time(os.getpid())},
@@ -302,7 +302,7 @@ def _persist_running(data: dict[str, Any]) -> None:
 
 
 def _owner_alive(record: dict[str, Any]) -> bool:
-    from hermes_cli.process_identity import _pid_alive_matches
+    from runtime.process_identity import _pid_alive_matches
 
     identities = {}
     for key, time_key in (("pid", "pid_create_time"), ("writer_pid", "writer_create_time")):
@@ -366,7 +366,7 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         # A handoff receipt from an older interpreter may predate the field.
         receipt.data["correlation_id"] = receipt.data.get("correlation_id") or _launcher_correlation_id()
         with suppress(Exception):
-            from hermes_cli.process_identity import _process_create_time
+            from runtime.process_identity import _process_create_time
 
             receipt.data.setdefault("pid_create_time", _process_create_time(receipt.data["pid"]))
         if not previous:

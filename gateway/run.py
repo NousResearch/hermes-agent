@@ -4782,8 +4782,9 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     # pidfile exists.
     try:
         from gateway.status import (
-            _get_pid_path, _get_process_hermes_home, _get_process_start_time, _pid_from_record,
+            _get_pid_path, _get_process_hermes_home, _pid_from_record,
             _read_pid_record, _record_looks_like_gateway, _read_process_cmdline, _same_hermes_home)
+        from runtime.process_identity import get_process_start_time
         our_home = _get_process_hermes_home()
 
         def refuse(msg: str, *args, level=logging.WARNING) -> bool:
@@ -4800,7 +4801,7 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
         recorded_start = record.get("start_time")
         if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
             return True
-        if _get_process_start_time(existing_pid) != recorded_start:
+        if get_process_start_time(existing_pid) != recorded_start:
             return refuse("pid record start-time does not match the live process %s (stale/PID-reuse record).",
                           existing_pid)
         recorded_home = record.get("hermes_home")
@@ -5175,7 +5176,8 @@ def main():
 
     def _register_identity() -> None:
         # Ledger registration + Windows job-object attach so update-time reapers can identify this gateway.
-        from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
+        from runtime.processes import attach_self_to_kill_on_close_job
+        from runtime.process_identity import register_self
         register_self("gateway")
         attach_self_to_kill_on_close_job()
 
@@ -5187,7 +5189,7 @@ def main():
 
     def _utf8_stdio() -> None:
         # Windows: gateway logs and banner would UnicodeEncodeError on cp1252 consoles. No-op on POSIX.
-        from hermes_cli.stdio import configure_windows_stdio
+        from runtime.stdio import configure_windows_stdio
         configure_windows_stdio()
 
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):

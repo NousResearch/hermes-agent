@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from runtime.resource_limits import DEFAULT_NOFILE_SOFT_LIMIT
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -49,7 +51,7 @@ DEFAULT_CONFIG = {
         "journal_size_limit": None,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
-    "runtime": {"nofile_soft_limit": 4096},
+    "runtime": {"nofile_soft_limit": DEFAULT_NOFILE_SOFT_LIMIT},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the

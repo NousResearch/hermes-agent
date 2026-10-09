@@ -106,7 +106,7 @@ def _detect_openclaw_processes() -> list[str]:
         # bounded_probe_run: plain subprocess.run(timeout=...) can hang forever on Windows when a
         # conhost.exe descendant holds duplicated pipe handles — a hang is not an exception.
         # See #87134.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from runtime.subprocess_compat import bounded_probe_run
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = bounded_probe_run(["tasklist", "/FI", f"IMAGENAME eq {exe}"], timeout=5)

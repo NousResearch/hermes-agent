@@ -290,7 +290,7 @@ def _reinstall_sidecar_deps() -> None:
     except pm.InstallError as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
-    from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
+    from runtime.subprocess_compat import windows_hide_flags  # no console flash on Windows
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -1046,7 +1046,7 @@ class PhotonAdapter(BasePlatformAdapter):
             "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
-        from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
+        from runtime.subprocess_compat import windows_hide_flags  # hide child console on Windows
         await self._apply_spectrum_patch(windows_hide_flags())
         try:
             self._sidecar_proc = subprocess.Popen(

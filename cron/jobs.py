@@ -1293,7 +1293,7 @@ def ticker_heartbeat_writer_alive() -> bool:
     bare-epoch stamp names no writer and is NOT proof of a live scheduler by itself."""
     fields = _read_marker_fields("ticker_heartbeat")
     try:
-        from hermes_cli._subprocess_compat import pid_exists_stdlib
+        from runtime.process_identity import pid_exists_stdlib
         return len(fields) >= 2 and pid_exists_stdlib(int(fields[1]))
     except Exception:
         return False

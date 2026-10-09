@@ -15,7 +15,7 @@ import os
 import subprocess
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_repo_git_env
+from runtime.git_subprocess import harden_git_argv, noninteractive_repo_git_env
 
 TAIL_LINES = 20
 TAIL_CHARS = 2_000

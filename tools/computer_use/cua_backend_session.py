@@ -14,7 +14,7 @@ import os
 import threading
 from typing import Any, Dict, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_field, _tool_envelope
 

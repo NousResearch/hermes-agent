@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.sqlite_runtime import (
+from runtime.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable,
     probe_sqlite_runtime,
 )

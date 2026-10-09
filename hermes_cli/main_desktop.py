@@ -1809,7 +1809,7 @@ def cmd_gui(args: argparse.Namespace):
         # macOS/Linux keep the foreground run below: those launches are
         # expected to stay attached to the terminal, and the desktop_console
         # drain is a Windows-only concern.
-        from hermes_cli._subprocess_compat import (
+        from runtime.subprocess_compat import (
             windows_detach_flags,
             windows_detach_flags_without_breakaway,
         )

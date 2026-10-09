@@ -19,7 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import kill_process_tree, noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
+from runtime.processes import kill_popen_process_tree
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -173,7 +174,7 @@ def _run_bounded_repack(repo_root: str) -> None:
 
     def _reap() -> None:
         if proc.poll() is None:
-            kill_process_tree(proc)
+            kill_popen_process_tree(proc)
 
     atexit.register(_reap)
     try:
@@ -219,8 +220,8 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     *freshness_window* s, capped at *fetch_timeout*, and never retried: on failure the cached
     remote-tracking ref is used (the pre-push stale-base gate backstops genuine staleness).
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env
     from hermes_cli.update_cmd_check import tracking_refspec
+    from runtime.git_subprocess import noninteractive_git_env
 
     def _run(args, timeout: float = 20):
         return _git(args, repo_root, timeout=timeout, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
@@ -380,7 +381,7 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
 
     Every failed attempt is swept with ``_cleanup_failed_worktree_add`` so the retry is not poisoned.
     """
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from runtime.git_subprocess import noninteractive_repo_git_env
 
     # The checkout runs repo-named smudge filters too; refuse when they cannot be neutralized.
     env = noninteractive_repo_git_env(repo_root)
@@ -556,7 +557,7 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
     ignored: they are our own scaffolding, and counting them would keep every worktree of such a
     repo forever.
     """
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from runtime.git_subprocess import noninteractive_repo_git_env
     try:
         # Reclaimers run this unattended; status reads the index (core.fsmonitor, clean filters).
         env = noninteractive_repo_git_env(worktree_path)

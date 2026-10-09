@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from runtime.subprocess_compat import windows_detach_flags
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -125,11 +125,12 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
 def _profile_gateway_writer_identity(profile_home: Path, runtime: Optional[dict]) -> Optional[tuple]:
     """``(pid, start_time)`` of the profile's LIVE gateway, or None.
 
-    Uses the same validated-liveness helper and the same ``_get_process_start_time`` that stamped
+    Uses the same validated-liveness helper and the same runtime process-start fingerprint that stamped
     the record, so equality is exact (no unit/clock-source mismatch).
     """
     try:
-        from gateway.status import _get_process_start_time, get_runtime_status_running_pid
+        from gateway.status import get_runtime_status_running_pid
+        from runtime.process_identity import get_process_start_time as _get_process_start_time
         pid = get_runtime_status_running_pid(runtime, expected_home=profile_home)
         if pid is None:
             return None

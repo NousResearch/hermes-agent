@@ -88,7 +88,7 @@ class TestGatewayPidState:
 
         monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123 if pid == 111 else 456)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123 if pid == 111 else 456)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
         assert status.get_running_pid_cached(ttl_seconds=60) == 111
@@ -109,7 +109,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
         monkeypatch.setattr(
             status,
@@ -247,7 +247,7 @@ class TestScopedGatewayPidQuery:
         profile_dir, pid_path, _ = self._write_scoped_profile(tmp_path)
         monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(
             status, "_read_process_cmdline",
             lambda pid: "python -m hermes_cli.main gateway --profile wiki",
@@ -332,7 +332,7 @@ class TestGatewayRuntimeStatus:
 
         entry = status.read_runtime_status()["platforms"]["telegram"]
         assert entry["writer_pid"] == os.getpid()
-        assert entry["writer_start_time"] == status._get_process_start_time(
+        assert entry["writer_start_time"] == status._process_identity.get_process_start_time(
             os.getpid()
         )
 
@@ -391,7 +391,7 @@ class TestGatewayRuntimeStatus:
         coder_home = Path("/opt/data/profiles/coder")
 
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: None)
         # PID 139 is now the live DEFAULT gateway (bare, no -p coder).
         monkeypatch.setattr(
             status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
@@ -415,7 +415,7 @@ class TestGatewayRuntimeStatus:
         coder_home = Path("/opt/data/profiles/coder")
 
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 1000)
         for cmdline in (
             "hermes -p coder gateway run --replace",
             "/opt/hermes/.venv/bin/hermes --profile coder gateway run --replace",
@@ -656,9 +656,9 @@ class TestGetProcessStartTime:
         import subprocess
         p = subprocess.Popen(["sleep", "20"])
         try:
-            a = status._get_process_start_time(p.pid)
+            a = status._process_identity.get_process_start_time(p.pid)
             time.sleep(0.2)
-            b = status._get_process_start_time(p.pid)
+            b = status._process_identity.get_process_start_time(p.pid)
             assert a is not None and isinstance(a, int)
             assert a == b  # same process → identical fingerprint
         finally:
@@ -680,13 +680,13 @@ class TestTerminatePid:
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
 
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 456)
 
         status.terminate_pid(123, force=True, expected_start_time=456)
 
         # taskkill is spawned with the no-window flag so the windowless
         # pythonw.exe backend doesn't flash a conhost window on force-kill.
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
 
         assert calls == [
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
@@ -704,7 +704,7 @@ class TestTerminatePid:
 
     @pytest.mark.platforms("windows")
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 999)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
@@ -794,7 +794,7 @@ class TestScopedLocks:
         # Post-#21561 the liveness probe routes through
         # ``gateway.status._pid_exists`` (psutil-first, safe on Windows).
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
@@ -823,7 +823,7 @@ class TestScopedLocks:
         # ``gateway.status._pid_exists`` (psutil-first, safe on Windows),
         # not ``os.kill``.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: None)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
         # On macOS ``ps`` is available, so _read_process_cmdline returns the
         # unrelated process's name.  This confirms the PID was reused.
@@ -859,7 +859,7 @@ class TestScopedLocks:
 
         # Live process can resolve start_time; disk cannot — the mismatch
         # that previously failed the self-reacquire short-circuit.
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654321)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 987654321)
         # If we wrongly fall through to staleness, a gateway-looking self PID
         # would be treated as a live foreign holder (return False).
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
@@ -886,7 +886,7 @@ class TestScopedLocks:
             "start_time": None,
             "kind": "hermes-gateway",
         }))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654321)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 987654321)
 
         status.release_scoped_lock("discord-bot-token", "secret")
 
@@ -912,7 +912,7 @@ class TestScopedLocks:
             "scope": "discord-bot-token",
         }))
 
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654321)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 987654321)
 
         acquired, existing = status.acquire_scoped_lock(
             "discord-bot-token", "secret", metadata={"platform": "discord"}
@@ -1116,7 +1116,7 @@ class TestTakeoverMarker:
 
     def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 42)
 
         ok = status.write_takeover_marker(target_pid=12345)
 
@@ -1145,7 +1145,7 @@ class TestTakeoverMarker:
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Simulate Windows: no start_time available for any PID.
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: None)
 
         ok = status.write_takeover_marker(target_pid=os.getpid())
         assert ok is True
@@ -1161,7 +1161,7 @@ class TestTakeoverMarker:
     def test_write_marker_records_replacer_hermes_home(self, tmp_path, monkeypatch):
         """The marker stamps the replacer's HERMES_HOME for cross-profile guard (#29092)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 42)
 
         status.write_takeover_marker(target_pid=12345)
 
@@ -1176,7 +1176,7 @@ class TestTakeoverMarker:
         left in place so the profile it was actually meant for can consume it.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 100)
         marker_path = tmp_path / ".gateway-takeover.json"
         from datetime import datetime, timezone
         # Marker names OUR pid + start_time (the coincidental match the bug
@@ -1201,7 +1201,7 @@ class TestTakeoverMarker:
         single-profile setups and mixed old/new deployments keep working.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 100)
         marker_path = tmp_path / ".gateway-takeover.json"
         from datetime import datetime, timezone
         marker_path.write_text(json.dumps({
@@ -1244,7 +1244,7 @@ class TestScopedLockTakeover:
 
         alive = iter([True, True, False])
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda _pid: 123)
         monkeypatch.setattr(
             status,
             "_read_process_cmdline",
@@ -1280,7 +1280,7 @@ class TestScopedLockTakeover:
         (target_home / "gateway.pid").write_text(json.dumps(bad_pid_record))
 
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda _pid: 123)
         monkeypatch.setattr(
             status,
             "_read_process_cmdline",
@@ -1301,7 +1301,7 @@ class TestPlannedStopMarker:
 
     def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 42)
 
         ok = status.write_planned_stop_marker(target_pid=12345)
 
@@ -1321,8 +1321,8 @@ class TestPlannedStopMarker:
         """Regression for #34597: a legitimate stop must be recognised on
         platforms without ``/proc``.
 
-        ``_get_process_start_time`` returns None on macOS / native Windows
-        (no ``/proc/<pid>/stat``). The planned-stop watcher only runs there,
+        ``runtime.process_identity.get_process_start_time`` can return None when no
+        process-start fingerprint is available. The planned-stop watcher only runs there,
         so if the authoritative consume required a non-None start_time match
         it would always return False — and ``hermes gateway stop`` would be
         misclassified as an unexpected ``UNKNOWN`` exit, exit 1, and revived
@@ -1332,7 +1332,7 @@ class TestPlannedStopMarker:
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Simulate Windows: no start_time available for any PID.
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: None)
 
         ok = status.write_planned_stop_marker(target_pid=os.getpid())
         assert ok is True
@@ -1356,11 +1356,11 @@ class TestPlannedStopMarker:
         still reject — otherwise PID reuse could resurrect a stale marker.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 100)
         status.write_planned_stop_marker(target_pid=os.getpid())
 
         # Simulate PID reuse: same PID, different start_time.
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 9999)
 
         result = status.consume_planned_stop_marker_for_self()
 
@@ -1747,7 +1747,7 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
     monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
     monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
     monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
-    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 20.0)
+    monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda _pid: 20.0)
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)

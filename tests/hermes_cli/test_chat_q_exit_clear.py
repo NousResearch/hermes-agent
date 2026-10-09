@@ -120,7 +120,7 @@ def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
     import subprocess as sp
 
     import hermes_cli.cli_session_mixin as mixin_mod
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     calls = []
     monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))

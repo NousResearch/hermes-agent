@@ -49,7 +49,7 @@ class ResponseStore:
         self._conn.execute('CREATE TABLE IF NOT EXISTS response_output_order '
             '(request_key TEXT NOT NULL, item_id TEXT NOT NULL, output_index INTEGER NOT NULL, '
             'PRIMARY KEY(request_key,item_id), UNIQUE(request_key,output_index))')
-        from hermes_cli.sqlite_util import add_column_if_missing
+        from storage.sqlite_util import add_column_if_missing
         add_column_if_missing(self._conn, 'response_keys', 'model_json', 'model_json TEXT')
         self._conn.commit()
         # Conversation history lives here: owner-only perms, once at init (not per commit).

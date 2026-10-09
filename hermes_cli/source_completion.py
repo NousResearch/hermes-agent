@@ -99,7 +99,7 @@ def _complete_locked(
     from hermes_cli.venv_sync import publish_launchers
 
     try:
-        from hermes_cli._subprocess_compat import expose_pm_git
+        from runtime.git_subprocess import expose_pm_git
 
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.

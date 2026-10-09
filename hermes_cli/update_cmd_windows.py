@@ -57,7 +57,7 @@ def _planned_stop_markers(running_pids, profile_processes, service_gateway_pids)
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
-        from gateway.status import _get_process_start_time
+        from runtime.process_identity import get_process_start_time as _get_process_start_time
         from utils import atomic_json_write
         atomic_json_write(
             _planned_stop_marker_path(profile_path),
@@ -404,7 +404,7 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[di
     NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
     respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
     try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from runtime.process_identity import ledger_entries, spawner_is_dead
     except Exception:
         return []
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
@@ -520,8 +520,8 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         try:
             proc = psutil.Process(int(pid))
             # Fingerprint from the SAME psutil handle, centisecond-quantized like
-            # gateway.status.get_process_start_time so pid_is_hermes round-trips at kill time.
-            process_start_time = round(proc.create_time() * 100)
+            # runtime.process_identity.get_process_start_time so pid_is_hermes round-trips at kill time.
+            process_start_time = int(round(proc.create_time() * 100))
         except psutil.NoSuchProcess:
             continue  # exited during classification — nothing to reap
         except Exception:
@@ -561,7 +561,7 @@ def _ledger_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[i
     (PID reuse can't forge it), purpose is a REAPABLE kind (never interactive), and the recorded SPAWNER is
     provably dead. Safe in ANY context. Unlisted holders fall to later rungs and never disqualify identified ones."""
     try:
-        from hermes_cli.process_identity import REAPABLE_PURPOSES, ledger_entries, spawner_is_dead
+        from runtime.process_identity import REAPABLE_PURPOSES, ledger_entries, spawner_is_dead
         entries = ledger_entries()
     except Exception:
         return []
@@ -604,8 +604,8 @@ def _stop_process_trees(pids: list[int] | list[tuple[int, int]]) -> None:
 
     See #70026.
     """
-    from gateway.status import get_process_start_time
-    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
+    from runtime.process_identity import get_process_start_time, pid_is_hermes
+    from runtime.subprocess_compat import windows_hide_flags
     for entry in pids:
         pid, expected_start_time = entry if isinstance(entry, tuple) else (int(entry), get_process_start_time(int(entry)))
         try:
@@ -649,7 +649,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     """
     from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from runtime.process_identity import ledger_entries, spawner_is_dead
         if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
@@ -666,7 +666,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
 
 def _win_service(name: str):
     """``(psutil, service)`` for the named SCM service (psutil imported here so tests can stub the module)."""
-    import psutil
+    import psutil  # noqa: PLC0415
     return psutil, psutil.win_service_get(name)
 
 
@@ -949,7 +949,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if not _m()._is_windows():
         return None
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
-        import gateway.status
+        import gateway.status  # noqa: F401 — fail before the first stop, not half-way through it
+        from gateway.status import terminate_pid
+        from runtime.process_identity import get_process_start_time
+
         from hermes_cli.gateway import _capture_gateway_argv
     from hermes_cli import update_pause_record as pause_record
     with _abort_on_error("Could not read the gateways an earlier update paused"):
@@ -1038,7 +1041,7 @@ def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids
     from hermes_cli.update_cmd import _m
     mapped = [int(p) for p in running_pids if int(p) not in service_gateway_pids and int(p) in profile_processes]
     born = {**{int(k): v for k, v in (born or {}).items()},
-            **{p: round(float(profile_processes[p].create_time) * 100) for p in mapped
+            **{p: int(round(float(profile_processes[p].create_time) * 100)) for p in mapped
                if float(getattr(profile_processes[p], "create_time", 0) or 0) > 0}}
     # Resolve venv-side launchers before any request: the launcher keeps ``.pyd`` mapped and would trip the
     # venv-holder guard, so it is killed with the survivors, under the identity it has now.
@@ -1299,7 +1302,7 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
 
 def _service_running(name: str) -> bool:
     try:
-        import psutil
+        import psutil  # noqa: PLC0415 -- the same module _win_service resolves (tests stub it)
     except ImportError:
         return False
     try:

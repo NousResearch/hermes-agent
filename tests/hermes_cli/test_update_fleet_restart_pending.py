@@ -468,7 +468,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
     # the same incarnation the plan recorded.
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     monkeypatch.setattr(
         pi, "ledger_entries",
@@ -510,7 +510,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
     import hermes_cli.update_inventory as ui
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     args = _update_args()
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())

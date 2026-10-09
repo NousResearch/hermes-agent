@@ -88,7 +88,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path) -> List[dict]:
     if not path.exists():
         return []
     out = []
@@ -119,7 +119,7 @@ class Control:
             self.set_behaviors({})
         return self
 
-    def set_behaviors(self, behaviors: dict[str, dict]) -> None:
+    def set_behaviors(self, behaviors: Dict[str, dict]) -> None:
         _atomic_write(self.behaviors, json.dumps(behaviors))
 
     def behavior(self, name: str) -> dict:
@@ -153,7 +153,7 @@ class VirtualClock:
 def _virtual_datetime_class(clock: VirtualClock):
     class VirtualDatetime(REAL_DATETIME):
         @classmethod
-        def now(cls, tz=None):
+        def now(cls, tz=None):  # noqa: D401 - datetime API
             return REAL_DATETIME.fromtimestamp(clock.now_ts(), tz)
 
     return VirtualDatetime
@@ -241,11 +241,11 @@ class FakeSink:
 
 def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     """Install the virtual clock + fakes. ``setattr_fn`` is ``monkeypatch.setattr`` in pytest."""
-    from cron import executions
-    from cron import jobs
-    from cron import scheduler
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
     import hermes_time
-    from tools import send_message_tool
+    import tools.send_message_tool as send_message_tool
 
     setattr_fn(hermes_time, "datetime", _virtual_datetime_class(clock))
     proxy = _TimeProxy(clock)
@@ -269,7 +269,7 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     # Durability is not under test (SIGKILL keeps the page cache); per-write fsync of
     # jobs.json/markers dominates wall time at virtual cadence. Atomic renames stay real.
     setattr_fn(os, "fsync", lambda _fd: None)
-    from hermes_cli import sqlite_util
+    import storage.sqlite_util as sqlite_util
 
     real_open_db = sqlite_util.open_db
 
@@ -327,7 +327,7 @@ class SchedulerHost:
     def __init__(self):
         self.gate: Optional[_StepGate] = None
         self.thread: Optional[threading.Thread] = None
-        self.errors: list[BaseException] = []
+        self.errors: List[BaseException] = []
 
     @property
     def alive(self) -> bool:
@@ -413,7 +413,7 @@ class ChildHost:
 
     label = "child"
 
-    def __init__(self, control: Control, env: dict[str, str], repo_root: Path):
+    def __init__(self, control: Control, env: Dict[str, str], repo_root: Path):
         self.control = control
         self.env = env
         self.repo_root = repo_root
@@ -438,7 +438,7 @@ class ChildHost:
         for name in ("go", "idle", "stop"):
             (self.control.child / name).unlink(missing_ok=True)
         self.go = 0
-        log = open(self.control.child / "stderr.log", "a", encoding="utf-8")
+        log = open(self.control.child / "stderr.log", "a", encoding="utf-8")  # noqa: SIM115
         self.proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), str(self.control.root)],
             cwd=str(self.repo_root), env=self.env, stdin=subprocess.DEVNULL,
@@ -491,7 +491,7 @@ def tick_together(hosts: Iterable[Any]) -> None:
 
 # --- external-provider replicas contending for one fire ----------------------------------------
 
-_CLAIM_ROUND: list[Optional[int]] = [None]  # one round in flight per process at a time
+_CLAIM_ROUND: List[Optional[int]] = [None]  # one round in flight per process at a time
 
 
 def replica_scheduler():
@@ -514,7 +514,7 @@ def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2
     """Wrap ``cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
     waits until ``parties`` replicas have entered the claim for the current round, then runs the
     REAL claim and logs who won. It only delays, never changes a decision."""
-    from cron import jobs
+    import cron.jobs as jobs
 
     real = jobs.claim_job_for_fire
 
@@ -540,7 +540,7 @@ class ReplicaHost:
     """A second replica in its own OS process: fires ``req-<n>.json`` requests in order and
     answers ``res-<n>.json`` with whether its ``fire_due`` claimed the fire."""
 
-    def __init__(self, control: Control, env: dict[str, str], repo_root: Path):
+    def __init__(self, control: Control, env: Dict[str, str], repo_root: Path):
         self.control, self.env, self.repo_root = control, env, repo_root
         self.proc: Optional[subprocess.Popen] = None
 
@@ -554,7 +554,7 @@ class ReplicaHost:
             raise AssertionError(f"replica exited rc={self.proc.returncode}:\n{tail}")
 
     def start(self) -> None:
-        log = open(self.control.replica / "stderr.log", "a", encoding="utf-8")
+        log = open(self.control.replica / "stderr.log", "a", encoding="utf-8")  # noqa: SIM115
         self.proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), str(self.control.root), "replica"],
             cwd=str(self.repo_root), env=self.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -648,7 +648,7 @@ def effective_outcome(row: dict, deliveries: Dict[str, str]) -> Optional[str]:
     return deliveries.get(row["id"], "queued")
 
 
-def ledger_rows(home: Path, where: str = "") -> list[dict]:
+def ledger_rows(home: Path, where: str = "") -> List[dict]:
     path = Path(home) / "cron" / "executions.db"
     if not path.exists():
         return []
@@ -661,13 +661,13 @@ def ledger_rows(home: Path, where: str = "") -> list[dict]:
         conn.close()
 
 
-def non_terminal(home: Path, ignore: Iterable[str] = ()) -> list[dict]:
+def non_terminal(home: Path, ignore: Iterable[str] = ()) -> List[dict]:
     ignore = set(ignore)
     return [r for r in ledger_rows(home, "status IN ('claimed', 'running')")
             if r["id"] not in ignore]
 
 
-def store_jobs(home: Path) -> list[dict]:
+def store_jobs(home: Path) -> List[dict]:
     path = Path(home) / "cron" / "jobs.json"
     if not path.exists():
         return []

@@ -93,6 +93,26 @@ def test_startup_fast_import_weight():
     )
 
 
+def test_desktop_identity_import_weight():
+    """The Desktop ownership seam is imported before main.py's heavy import wall."""
+    probe = (
+        "import sys, json\n"
+        "import runtime.desktop_identity\n"
+        "print(json.dumps(sorted(sys.modules.keys())))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+    loaded = set(json.loads(result.stdout))
+    offenders = [m for m in _FORBIDDEN_MODULES if m in loaded]
+    assert not offenders, f"runtime.desktop_identity imported heavy modules: {offenders}"
+
+
 def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
     env = {**os.environ, **env_overrides}
     env.pop("HERMES_DEV", None)

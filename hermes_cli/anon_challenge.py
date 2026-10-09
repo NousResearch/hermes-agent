@@ -123,7 +123,7 @@ def client_surface() -> str:
     status = sys.modules.get("gateway.status")
     if status is not None and status.owns_gateway_runtime_lock():
         return "gateway"
-    from hermes_cli.process_identity import is_desktop_owned_backend
+    from runtime.desktop_identity import is_desktop_owned_backend
     return "desktop" if is_desktop_owned_backend() else "cli"
 
 

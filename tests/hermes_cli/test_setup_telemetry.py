@@ -36,7 +36,7 @@ def test_disabling_collection_closes_the_send_consent_window(monkeypatch, tmp_pa
     from hermes_cli.observability.shared_metrics_sender import (
         reconcile_send_consent,
     )
-    from hermes_cli.sqlite_util import write_txn
+    from storage.sqlite_util import write_txn
 
     store = SharedMetricsStore(
         database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"

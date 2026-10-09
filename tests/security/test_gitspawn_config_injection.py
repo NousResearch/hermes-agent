@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._subprocess_compat import (
+from runtime.git_subprocess import (
     FILTER_DISCOVERY_FAILED,
     NO_DRIVER_DIFF_FLAGS,
     harden_git_argv,

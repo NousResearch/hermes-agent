@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli._subprocess_compat import bounded_git_probe
+from runtime.git_subprocess import bounded_git_probe
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -530,7 +530,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if git_root is not None:
         # ``status`` hashes re-timestamped files through the repo-named clean filter; skip it when
         # the filter overrides cannot be discovered rather than run it half-hardened.
-        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        from runtime.git_subprocess import noninteractive_repo_git_env
         status_env = noninteractive_repo_git_env(root)
         status = "" if status_env is None else bounded_git_probe(
             ["git", "-C", str(root), "status", "--porcelain=2", "--branch"], timeout=_GIT_TIMEOUT, env=status_env)

@@ -34,7 +34,7 @@ import time
 import zlib
 from pathlib import Path
 
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+from runtime.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 from tests.conformance.persistence._harness import REPO_ROOT, kill9_and_reap, wait_for
 
 ROLES = Path(__file__).with_name("_roles.py")

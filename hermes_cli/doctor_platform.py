@@ -76,10 +76,10 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
 
     Opening through SQLite — even read-only — creates -wal/-shm sidecars, which a diagnostic must not do.
     ``read_header_bytes_preopen`` rather than a bare ``open()``: closing *any* descriptor cancels this
-    process's POSIX advisory locks (see ``hermes_cli.sqlite_safe_read``), and the dashboard console runs
+    process's POSIX advisory locks (see ``storage.sqlite_safe_read``), and the dashboard console runs
     ``run_doctor`` in-process with live ``SessionDB`` connections — the helper refuses then (unreadable).
     """
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    from storage.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     header = read_header_bytes_preopen(db_path, length=20)
     if header is None:
         return None, "database is open in this process" if has_live_connection(db_path) else _unreadable_reason(db_path)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+from runtime.git_subprocess import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
 logger = logging.getLogger(__name__)
 

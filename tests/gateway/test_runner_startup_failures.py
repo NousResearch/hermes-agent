@@ -195,7 +195,7 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "runtime.process_identity.get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     # _pid_exists never goes False — the force-kill did not take.
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
@@ -297,7 +297,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "runtime.process_identity.get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks",

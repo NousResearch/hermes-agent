@@ -19,8 +19,8 @@ import time
 
 import pytest
 
-from hermes_cli import _subprocess_compat
-from hermes_cli._subprocess_compat import bounded_git_probe, kill_process_tree
+from runtime.git_subprocess import bounded_git_probe
+from runtime.processes import kill_popen_process_tree
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 
@@ -105,7 +105,7 @@ def test_group_kill_skipped_when_child_shares_our_group():
         stdin=subprocess.DEVNULL,
     )
     assert os.getpgid(proc.pid) == os.getpgid(0)  # shared group precondition
-    kill_process_tree(proc)
+    kill_popen_process_tree(proc)
     proc.wait(timeout=5)
     # We are alive to make this assertion — killpg on our own group would have
     # taken the test runner down. The direct child is still killed.
@@ -130,4 +130,4 @@ def test_kill_helper_swallow_all_failures():
         def kill(self):
             raise OSError("already reaped")
 
-    kill_process_tree(_Dead())  # must not raise
+    kill_popen_process_tree(_Dead())  # must not raise

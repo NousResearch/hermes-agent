@@ -28,6 +28,33 @@ print('PM interpreter and application dependencies load as hermes')
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_runtime_source_shipped_and_cli_starts(built_image: str) -> None:
+    """Check the real .dockerignore-filtered image, not just setuptools discovery."""
+    probe = """
+from pathlib import Path
+import sys
+
+root = Path('/opt/hermes/runtime')
+required = {
+    '__init__.py', 'desktop_identity.py', 'git_subprocess.py', 'processes.py',
+    'process_identity.py', 'resource_limits.py', 'sqlite_runtime.py',
+    'stdio.py', 'subprocess_compat.py',
+}
+missing = sorted(name for name in required if not (root / name).is_file())
+assert not missing, f'Docker build omitted runtime source: {missing}'
+from hermes_cli.main import main
+sys.argv = ['hermes', '--version']
+raise SystemExit(main())
+"""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
+         "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Hermes" in result.stdout
+
+
 def test_dashboard_ships_generated_icon_without_build_environment(built_image: str) -> None:
     probe = """
 from pathlib import Path

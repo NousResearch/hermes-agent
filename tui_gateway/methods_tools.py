@@ -195,7 +195,7 @@ def _capture_run_kwargs(timeout: int) -> dict:
     not crash the gateway thread on Windows), no stdin, no console flash under the desktop parent."""
     return dict(
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-        stdin=subprocess.DEVNULL, creationflags=_tools_mod("hermes_cli._subprocess_compat").windows_hide_flags())
+        stdin=subprocess.DEVNULL, creationflags=_tools_mod("runtime.subprocess_compat").windows_hide_flags())
 
 
 def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fail_code: int,
@@ -450,7 +450,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     # Same-interpreter re-exec: ambient PYTHONPATH must survive the env factory's
     # Hermes-owned strip (no-boot-through-venv).
-    _compat = _tools_mod("hermes_cli._subprocess_compat")
+    _compat = _tools_mod("runtime.subprocess_compat")
     return _captured_exec(
         rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {

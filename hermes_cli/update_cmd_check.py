@@ -14,7 +14,7 @@ from typing import Any
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()

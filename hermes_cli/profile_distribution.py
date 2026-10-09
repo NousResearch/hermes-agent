@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, SETUP_PROFILE_MARKER, profile_path_contains_private_store,

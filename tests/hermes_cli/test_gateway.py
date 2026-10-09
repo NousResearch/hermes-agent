@@ -86,7 +86,7 @@ def _run_native_windows_gateway_start_diag(
     else:
         env[_BREAKAWAY_MARKER] = breakaway_marker
 
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+    from runtime.subprocess_compat import windows_detach_flags_without_breakaway
 
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -590,7 +590,7 @@ class TestStopProfileGateway:
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
         monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
-        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
+        monkeypatch.setattr("runtime.process_identity.get_process_start_time", lambda target: 100)
         monkeypatch.setattr(
             gateway_windows,
             "_drain_gateway_pid",
@@ -633,7 +633,8 @@ class TestStopProfileGateway:
         monkeypatch.setattr(status, "_pid_exists", lambda target: alive["value"])
         # The original gateway (start time 100) exits during the drain and its PID is recycled (999).
         monkeypatch.setattr(
-            status, "get_process_start_time", lambda target: 100 if clock["now"] < 7.0 else 999
+            "runtime.process_identity.get_process_start_time",
+            lambda target: 100 if clock["now"] < 7.0 else 999,
         )
 
         def _terminate(target, force=False, expected_start_time=None):

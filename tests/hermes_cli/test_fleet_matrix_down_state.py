@@ -82,7 +82,7 @@ def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
     """A dead gateway's PID reused by an unrelated process (#93258) must not
     be reported STALE just because *some* process now answers to that PID.
     """
-    from gateway.status import _get_process_start_time
+    from runtime.process_identity import get_process_start_time as _get_process_start_time
 
     reused_pid = os.getpid()
     wrong_start_time = (_get_process_start_time(reused_pid) or 0) + 12345
@@ -104,7 +104,7 @@ def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
 
 def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
     """A record whose start_time matches the live process is not recycled."""
-    from gateway.status import _get_process_start_time
+    from runtime.process_identity import get_process_start_time as _get_process_start_time
 
     pid = os.getpid()
     _verify_self_as_gateway(monkeypatch)

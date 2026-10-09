@@ -34,7 +34,7 @@ def _write_self_marker(marker, *, stale: bool = False):
     written_at = "2000-01-01T00:00:00+00:00" if stale else status_mod._utc_now_iso()
     record = {
         "target_pid": os.getpid(),
-        "target_start_time": status_mod._get_process_start_time(os.getpid()),
+        "target_start_time": status_mod._process_identity.get_process_start_time(os.getpid()),
         "stopper_pid": os.getpid(),
         "written_at": written_at,
     }

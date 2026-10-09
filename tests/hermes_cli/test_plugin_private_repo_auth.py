@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from hermes_cli import git_credentials, plugins_cmd
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 
 
 def _auth_headers_for(env: dict, origin: str) -> list[str]:

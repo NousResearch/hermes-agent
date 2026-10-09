@@ -23,7 +23,7 @@ GGML_DEVICE_IGPU = 2
 
 def probe_devices(engine_dir: Path, backend: str) -> list[dict]:
     """GPU/iGPU devices the ``backend`` library in ``engine_dir`` registers; [] on any failure."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     try:
         out = subprocess.run(

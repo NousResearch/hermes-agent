@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)

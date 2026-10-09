@@ -23,7 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
+from runtime.desktop_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -1141,7 +1141,8 @@ def _reclaim_host_from_orphaned_owner(role: str) -> bool:
     False and the caller stays observe-only. Never raises.
     """
     from gateway import host_rendezvous as hr
-    from hermes_cli.process_identity import reap_orphaned_backend_owner
+    from hermes_cli.dashboard_procs import _reparented_orphan_backend
+    from runtime.process_identity import reap_orphaned_backend_owner
 
     try:
         owner = hr.read_record(role)
@@ -1155,7 +1156,11 @@ def _reclaim_host_from_orphaned_owner(role: str) -> bool:
     if owner.pid == os.getpid():
         return False  # never reap our own incarnation on a re-entrant claim
     try:
-        if reap_orphaned_backend_owner(owner.pid, owner.create_time) is None:
+        if reap_orphaned_backend_owner(
+                owner.pid,
+                owner.create_time,
+                reparented_orphan_fn=_reparented_orphan_backend,
+        ) is None:
             return False
     except Exception:
         return False
@@ -1248,7 +1253,7 @@ def _on_server_started(
         _reap_orphaned_desktop_local_serves()
 
     def _reap_mcp_helpers() -> None:
-        from hermes_cli.process_identity import reap_orphaned_mcp_helpers
+        from runtime.process_identity import reap_orphaned_mcp_helpers
 
         reap_orphaned_mcp_helpers()
 
@@ -1297,7 +1302,8 @@ def _on_server_started(
     # ACTUAL port — what lets `hermes update` relaunch a manually-started serve
     # on its real endpoint (#63206).
     def _register_identity() -> None:
-        from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
+        from runtime.processes import attach_self_to_kill_on_close_job
+        from runtime.process_identity import register_self
 
         register_self(
             "serve" if headless else "dashboard",
@@ -1469,9 +1475,13 @@ def start_server(
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    try:
+        from hermes_cli.config import load_config_readonly
+        from runtime.resource_limits import apply_nofile_soft_limit
 
-    apply_nofile_soft_limit()
+        apply_nofile_soft_limit(load_config_readonly())
+    except Exception:
+        _log.debug("Could not apply RLIMIT_NOFILE startup policy", exc_info=True)
 
     import uvicorn
 

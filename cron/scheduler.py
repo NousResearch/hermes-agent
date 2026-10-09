@@ -40,7 +40,7 @@ from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
@@ -1349,7 +1349,7 @@ def _is_fd_exhaustion(exc: BaseException) -> bool:
 
 def _reclaim_fds_best_effort() -> None:
     """Best-effort fd reclamation: gc.collect() closes file objects stuck in reference cycles;
-    apply_nofile_soft_limit() raises the RLIMIT_NOFILE soft limit for headroom. Never raises.
+    apply_nofile_soft_limit(config) raises the RLIMIT_NOFILE soft limit for headroom. Never raises.
 
     The cron FD-leak family (#60859, #79742, #80792) leaks descriptors from abandoned workers/sessions. Two
     safe, idempotent levers:
@@ -1359,9 +1359,9 @@ def _reclaim_fds_best_effort() -> None:
 
         gc.collect()
     with contextlib.suppress(Exception):
-        from hermes_cli.resource_limits import apply_nofile_soft_limit
+        from runtime.resource_limits import apply_nofile_soft_limit
 
-        apply_nofile_soft_limit(None)
+        apply_nofile_soft_limit(load_config_readonly())
 
 
 def drain_delivery_queue(adapters, loop) -> int:

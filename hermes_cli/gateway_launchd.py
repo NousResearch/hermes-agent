@@ -285,7 +285,7 @@ def _spawn_detached_gateway() -> bool:
     gateway.log, stderr is timestamped into gateway.error.log, and the PID is tracked via the gateway.pid
     file that `run_gateway` writes, so stop/status/restart keep working.
     """
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from runtime.subprocess_compat import windows_detach_popen_kwargs
     from hermes_constants import get_hermes_home
     from tools.environments.local import served_profile_child_env
     log_dir = _gw().get_hermes_home() / "logs"
@@ -376,8 +376,10 @@ def generate_launchd_plist() -> str:
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
     nofile_block = ""
     try:
-        from hermes_cli.resource_limits import configured_nofile_soft_limit
-        nofile_target = configured_nofile_soft_limit()
+        from hermes_cli.config import load_config_readonly
+        from runtime.resource_limits import configured_nofile_soft_limit
+
+        nofile_target = configured_nofile_soft_limit(load_config_readonly())
     except Exception:
         nofile_target = None
     if nofile_target:

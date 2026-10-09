@@ -421,7 +421,7 @@ _COMPILE_ALL = (
 
 def _run_python(argv: list[str], *, stdin: str = "", timeout: float = 60) -> str | None:
     """Stdout of a read-only interpreter child (it never writes the checkout), None when it failed."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding="utf-8",

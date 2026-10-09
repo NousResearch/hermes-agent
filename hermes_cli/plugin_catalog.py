@@ -404,7 +404,7 @@ def in_tree_catalog_time() -> Optional[float]:
     resolved: Optional[float] = None
     if (root / ".git").exists():
         try:
-            from hermes_cli._subprocess_compat import bounded_git_probe
+            from runtime.git_subprocess import bounded_git_probe
 
             # Path history needs missing trees on tree:0 clones. The shared probe disables
             # lazy fetch only for its child and bounds timeout cleanup on every platform.

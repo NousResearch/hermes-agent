@@ -58,7 +58,7 @@ def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProce
     :func:`noninteractive_repo_git_env` (GHSA-7x36-8jrh-v4pw): the dispatcher runs ``worktree add``
     unattended, which executes the repo's hooks, ``core.fsmonitor`` and smudge filters.
     """
-    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    from runtime.git_subprocess import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
     env = noninteractive_repo_git_env(repo_root)
     if env is None:
         return subprocess.CompletedProcess(["git", "-C", str(repo_root), *args], 1, "", FILTER_DISCOVERY_FAILED)

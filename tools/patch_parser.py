@@ -193,55 +193,80 @@ _LINE_TIERS: tuple[Callable[[str], str], ...] = (lambda line: line, str.rstrip, 
 _HINT_WINDOW_BEFORE, _HINT_WINDOW_AFTER = 500, 2000  # chars around an @@ hint @@ it narrows to
 
 
-def _line_spans(content: str, search_lines: list[str]) -> list[tuple[int, int]]:
-    """Every ``(start, end)`` char span whose lines equal ``search_lines`` under the first tier
-    that matches anywhere in ``content``. All candidates come back so the caller decides
-    ambiguity before narrowing: a first-match seek turns two normalized matches into one."""
+def _line_spans(content: str, search_lines: list[str]) -> list[list[tuple[int, int]]]:
+    """Per tier, every ``(start, end)`` char span whose lines equal ``search_lines``. The caller
+    picks the tier inside each scope it searches, so an exact match elsewhere cannot hide a
+    whitespace-equivalent one in the scope the patch's order points at."""
     lines = content.split('\n')
     starts = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
     n = len(search_lines)
+    tiers = []
     for tier in _LINE_TIERS:
         wanted = [tier(line) for line in search_lines]
-        spans = [(starts[i], starts[i + n - 1] + len(lines[i + n - 1]))
-                 for i in range(len(lines) - n + 1)
-                 if [tier(line) for line in lines[i:i + n]] == wanted]
-        if spans:
-            return spans
-    return []
+        tiers.append([(starts[i], starts[i + n - 1] + len(lines[i + n - 1]))
+                      for i in range(len(lines) - n + 1)
+                      if [tier(line) for line in lines[i:i + n]] == wanted])
+    return tiers
+
+
+def _positions(content: str, needle: str) -> list[int]:
+    """Start of every (overlapping) occurrence of ``needle``."""
+    return [m.start() for m in re.finditer(f"(?={re.escape(needle)})", content)] if needle else []
+
+
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def _hint_windows(content: str, hint: Optional[str]) -> list[tuple[int, int]]:
+    """The window around EVERY occurrence of an @@ hint @@ (a repeated hint proves nothing)."""
+    return [(max(0, pos - _HINT_WINDOW_BEFORE), min(len(content), pos + _HINT_WINDOW_AFTER))
+            for pos in _positions(content, hint or "")]
+
+
+def _distinct(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """One span per physical site: spans that overlap are the same site seen twice."""
+    sites: list[tuple[int, int]] = []
+    for span in spans:
+        if not any(_overlaps(span, site) for site in sites):
+            sites.append(span)
+    return sites
 
 
 def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int,
                  *, ordered: bool) -> tuple[Optional[tuple[int, int]], int]:
-    """``(span, candidates)``: the one span this hunk may edit, else ``(None, candidates)``.
+    """``(span, candidates)``: the one source site this hunk may edit, else ``(None, candidates)``.
 
-    Candidates count line matches under the winning tier AND raw substring hits, so neither
-    whitespace normalization nor whole-line matching hides a competing site. Competing sites
-    are resolved only by order the patch states: an ``ordered`` hunk (the first of several, or
-    one of a run of identical hunks) takes the first candidate at or after ``cursor``; any
-    other hunk needs exactly one candidate after the previous hunk, or exactly one inside the
-    window around its @@ hint @@."""
-    spans = _line_spans(content, pattern.split('\n'))
-    if not spans:
-        return None, 0
+    A site is a whole-line match under the first tier that matches inside the scope searched,
+    or a raw substring hit elsewhere (a raw hit overlapping a line match is that same site), so
+    neither normalization nor whole-line matching hides a competing site. Scope comes first:
+    after a previous hunk only the rest of the file is searched, and the whole file only when
+    nothing matches there. Competing sites are resolved only by order the patch states: an
+    ``ordered`` hunk (the first of several, or one of a run of identical hunks) takes the first
+    site at or after ``cursor``; any other hunk needs exactly one site, or exactly one site
+    across the windows around every occurrence of its @@ hint @@."""
+    tiers = _line_spans(content, pattern.split('\n'))
+    raw = [(pos, pos + len(pattern)) for pos in _positions(content, pattern)]
 
-    def count(lo: int, hi: int) -> int:
-        return max(sum(lo <= s and e <= hi for s, e in spans),
-                   _count_occurrences(content[lo:hi], pattern))
+    def sites(lo: int, hi: int) -> list[tuple[int, int]]:
+        inside = lambda span: lo <= span[0] and span[1] <= hi
+        lines = next((found for tier in tiers if (found := [s for s in tier if inside(s)])), [])
+        extra = [r for r in raw if inside(r) and not any(_overlaps(r, line) for line in lines)]
+        return sorted(lines + _distinct(extra))
 
-    total = count(0, len(content))
-    if total == 1:
-        return spans[0], 1
-    after = [s for s in spans if s[0] >= cursor]
-    if after and (ordered or (cursor and count(cursor, len(content)) == 1)):
-        return after[0], total
-    hint_pos = content.find(hunk.context_hint) if hunk.context_hint else -1
-    if hint_pos != -1:
-        lo = max(0, hint_pos - _HINT_WINDOW_BEFORE)
-        hi = min(len(content), hint_pos + _HINT_WINDOW_AFTER)
-        in_window = [s for s in spans if lo <= s[0] and s[1] <= hi]
-        if len(in_window) == 1 and count(lo, hi) == 1:
-            return in_window[0], total
-    return None, total
+    whole = sites(0, len(content))
+    if not any(tiers):
+        return None, len(whole)  # no whole-line site anywhere: the fuzzy chain decides
+    after = sites(cursor, len(content)) if cursor else whole
+    if len(after) == 1 or (after and ordered):
+        return after[0], len(after)
+    pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
+    if len(pool) == 1:
+        return pool[0], 1
+    picks = [sites(lo, hi) for lo, hi in _hint_windows(content, hunk.context_hint)]
+    if picks and all(len(p) <= 1 for p in picks) and len(_distinct([p[0] for p in picks if p])) == 1:
+        return next(p[0] for p in picks if p), len(pool)
+    return None, len(pool)
 
 
 def _v4a_advice(hunk: Hunk) -> str:
@@ -250,21 +275,34 @@ def _v4a_advice(hunk: Hunk) -> str:
             "add a unique @@ hint @@ to this hunk or include unique context lines in its search text")
 
 
+def _fuzzy_spans(text: str, pattern: str) -> list[tuple[int, int]]:
+    """The spans the fuzzy strategy chain matches (its first matching strategy), in ``text``."""
+    from tools.fuzzy_match import STRATEGIES
+    return next((spans for _name, find in STRATEGIES if (spans := find(text, pattern))), [])
+
+
 def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str,
                         cursor: int) -> tuple[str, int, Optional[str]]:
-    """No line match: the fuzzy strategy chain over the whole file (it refuses its own
-    ambiguity), then once more inside the @@ hint @@ window. -> (content, cursor, error)."""
+    """No whole-line site: the fuzzy strategy chain over the whole file (it refuses its own
+    ambiguity), then inside the windows around the @@ hint @@, which must all agree on one
+    site. -> (content, cursor, error); the cursor is the end of the text actually written,
+    never a search for the replacement (that text may already exist earlier in the file)."""
     from tools.fuzzy_match import fuzzy_find_and_replace
     new, count, _strategy, error = fuzzy_find_and_replace(content, pattern, replacement)
     if count:
-        return new, max(cursor, new.find(replacement) + len(replacement)), None
-    hint_pos = content.find(hunk.context_hint) if hunk.context_hint else -1
-    if error and hint_pos != -1:
-        lo = max(0, hint_pos - _HINT_WINDOW_BEFORE)
-        hi = min(len(content), hint_pos + _HINT_WINDOW_AFTER)
+        return new, len(new) - (len(content) - _fuzzy_spans(content, pattern)[0][1]), None
+    windows = [(lo, hi, _fuzzy_spans(content[lo:hi], pattern))
+               for lo, hi in _hint_windows(content, hunk.context_hint)] if error else []
+    targets = _distinct([(lo + s, lo + e) for lo, _hi, spans in windows for s, e in spans])
+    if len(targets) > 1 or any(len(spans) > 1 for *_w, spans in windows):
+        return content, cursor, (f"context hint '{hunk.context_hint}' selects {len(targets)} "
+                                 f"different matches — {_v4a_advice(hunk)}")
+    if targets:
+        lo, hi, spans = next(w for w in windows if w[2])
         window, count, _strategy, error = fuzzy_find_and_replace(content[lo:hi], pattern, replacement)
         if count:
-            return content[:lo] + window + content[hi:], lo + len(window), None
+            return (content[:lo] + window + content[hi:],
+                    lo + len(window) - (hi - lo - spans[0][1]), None)
     replace_all_advice = "Provide more context to make it unique, or use replace_all=True."
     return content, cursor, error and error.replace(replace_all_advice, _v4a_advice(hunk).capitalize() + ".")
 
@@ -297,11 +335,14 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> tuple[str, list[str], int]:
             if hunk.context_hint and not _count_occurrences(content, hunk.context_hint):
                 errors.append(f"addition-only hunk context hint '{hunk.context_hint}' not found")
                 continue
-            new_content, error = _insert_addition_only(content, hunk, replacement)
+            new_content, error, at = _insert_addition_only(content, hunk, replacement)
             if error:
                 errors.append(error)
-            else:
-                content = new_content
+                continue
+            # The cursor keeps marking the same site: text inserted before it shifts that site.
+            if at < cursor:
+                cursor = min(len(new_content), cursor + len(new_content) - len(content))
+            content = new_content
             continue
         pattern = '\n'.join(search_lines)
         # Order the patch itself states: the first hunk of several starts at the top of the file,
@@ -570,20 +611,23 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
         True, f"# Moved: {op.file_path} -> {op.new_path}")
 
 
-def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tuple[Optional[str], Optional[str]]:
-    """Place an addition-only hunk after its context hint (or at EOF). Returns (content, error)."""
+def _insert_addition_only(new_content: str, hunk: Hunk,
+                          insert_text: str) -> tuple[Optional[str], Optional[str], int]:
+    """Place an addition-only hunk after its context hint (or at EOF).
+    Returns (content, error, offset in the old content where the text went)."""
     if hunk.context_hint:
         occurrences, ambiguous = _hint_ambiguity(
             new_content, hunk.context_hint, " — provide a more unique hint")
         if ambiguous:
-            return None, f"Addition-only hunk: {ambiguous}"
+            return None, f"Addition-only hunk: {ambiguous}", 0
         if occurrences == 1:
             eol = new_content.find('\n', new_content.find(hunk.context_hint))
             if eol == -1:
-                return new_content + '\n' + insert_text, None
-            return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None
+                return new_content + '\n' + insert_text, None, len(new_content)
+            return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None, eol + 1
     # No hint / hint not found — append at end as a safe fallback.
-    return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
+    kept = new_content.rstrip('\n')
+    return kept + '\n' + insert_text + '\n', None, len(kept)
 
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:

@@ -1115,6 +1115,94 @@ class TestHunkSelectionAmbiguity:
         assert "return True" in text and "return False" not in text and "return 1" in text
 
 
+def _apply_body(tmp_path, source, body):
+    """Apply a raw V4A Update body (hunks with their own @@ lines) to f.py on disk."""
+    (tmp_path / "f.py").write_bytes(source.encode())
+    fo = _DiskFileOps(tmp_path)
+    ops, err = parse_v4a_patch(f"*** Begin Patch\n*** Update File: f.py\n{body}\n*** End Patch")
+    assert err is None
+    return apply_v4a_operations(ops, fo), fo, (tmp_path / "f.py").read_bytes().decode()
+
+
+class TestHunkTargetIdentity:
+    """The site a hunk edits, and the cursor the next hunk starts from, are the source sites
+    the patch points at: never the first text that happens to look the same elsewhere."""
+
+    @pytest.mark.parametrize("drift", ["label  = pending", "label\t= pending"])
+    def test_cursor_follows_a_fuzzy_edit_not_an_earlier_copy_of_its_text(self, tmp_path, drift):
+        source = f"label = done\nvalue = old\n{drift}\nvalue = old\nvalue = old\n"
+        body = ("@@\n-label = pending\n+label = done\n"
+                "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "label = done\nvalue = old\nlabel = done\nvalue = one\nvalue = two\n"
+
+    @pytest.mark.parametrize("indent", ["  ", "\t"])
+    def test_raw_and_normalized_hits_at_different_sites_are_two_candidates(self, tmp_path, indent):
+        source = ('note = "        return False"\ndef first():\n' + indent + "return False\n"
+                  '# anchor\nnote = "        return False"\ndef second():\n' + indent + "return False\n")
+        body = "@@\n # anchor\n@@\n-        return False\n+        return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "ambiguous" in result.error
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("gap", [2100, 3000])
+    @pytest.mark.parametrize("spacing", [" = ", "  = "], ids=["line-match", "fuzzy-match"])
+    def test_a_repeated_hint_does_not_pick_its_first_window(self, tmp_path, gap, spacing):
+        block = f"# target\nvalue{spacing}old\n"
+        source = block + "# " + "x" * gap + "\n" + block
+
+        result, fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("spacing", [" = ", "  = "], ids=["line-match", "fuzzy-match"])
+    def test_a_unique_hint_still_selects_its_block(self, tmp_path, spacing):
+        source = f"# first\nvalue{spacing}old\n# " + "x" * 3000 + f"\n# target\nvalue{spacing}old\n"
+
+        result, fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
+
+        assert result.success is True, result.error
+        assert final.startswith(f"# first\nvalue{spacing}old\n") and final.endswith("# target\nvalue = new\n")
+
+    @pytest.mark.parametrize("addition", ["# x", "# " + "x" * 100], ids=["short", "long"])
+    def test_an_insertion_before_the_cursor_keeps_it_on_the_same_site(self, tmp_path, addition):
+        source = "# top\n# first\nvalue = old\n# second\nvalue = old\n# third\nvalue = old\n"
+        body = ("@@\n # second\n@@ # top @@\n+" + addition + "\n"
+                "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == ("# top\n" + addition + "\n# first\nvalue = old\n"
+                         "# second\nvalue = one\n# third\nvalue = two\n")
+
+    @pytest.mark.parametrize("indent", ["  ", "\t", "    "], ids=["two-space", "tab", "same-indent"])
+    def test_anchor_scope_wins_over_an_exact_match_before_it(self, tmp_path, indent):
+        source = "def first():\n    return False\ndef second():\n" + indent + "return False\n"
+        body = "@@\n def second():\n@@\n-    return False\n+    return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def first():\n    return False\ndef second():\n" + indent + "return True\n"
+
+    def test_a_unique_site_before_the_anchor_is_still_edited(self, tmp_path):
+        source = "def first():\n    return False\ndef second():\n    return 1\n"
+        body = "@@\n def second():\n@@\n-    return False\n+    return True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def first():\n    return True\ndef second():\n    return 1\n"
+
+
 class TestMoveThenUpdateSameFile:
     """A rename-then-edit patch must validate and apply (was rejected).
 

@@ -36,7 +36,6 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
-  resolveResumedBusy,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -1899,24 +1898,6 @@ describe('appendLiveSessionProjection', () => {
     const untimed = appendLiveSessionProjection(stored, { session_id: 's1', inflight })
 
     expect(untimed.filter(message => message.role === 'assistant')).toHaveLength(2)
-  })
-})
-
-describe('resolveResumedBusy', () => {
-  it('keeps a live busy turn when the resume snapshot stalely reports idle (#70449)', () => {
-    expect(resolveResumedBusy(false, true)).toBe(true)
-    expect(resolveResumedBusy(undefined, true)).toBe(true)
-    expect(resolveResumedBusy(null, true)).toBe(true)
-  })
-
-  it('clears busy when both the snapshot and the live cache agree the turn ended', () => {
-    expect(resolveResumedBusy(false, false)).toBe(false)
-    expect(resolveResumedBusy(undefined, false)).toBe(false)
-  })
-
-  it('adopts a running turn reported by the snapshot even without live state', () => {
-    expect(resolveResumedBusy(true, false)).toBe(true)
-    expect(resolveResumedBusy(true, true)).toBe(true)
   })
 })
 

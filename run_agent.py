@@ -1034,7 +1034,52 @@ class AIAgent(
                 self._todo_store.restore(last_todo_response, revision=history_revision)
                 if not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        # Revision floor from the session DB. Compression archives todo tool results out of the
+        # model-visible history (they collapse to a one-line summary), so a fresh agent after compaction
+        # hydrates at revision 0 while clients (desktop store, gateway tool_progress) still hold the
+        # pre-compaction watermark and reject every lower revision as a stale replay — the archived list
+        # resurrects and new writes look ignored. The DB keeps archived rows, so it is the monotonic floor.
+        try:
+            floor = self._todo_db_revision_floor()
+            if floor is not None:
+                floor_revision, floor_items = floor
+                store_revision = int(self._todo_store.snapshot().get("revision", 0) or 0)
+                if floor_revision > store_revision:
+                    self._todo_store.restore(floor_items, revision=floor_revision)
+                    if not self.quiet_mode:
+                        self._vprint(f"{self.log_prefix}📋 Restored {len(floor_items)} todo item(s) from session DB")
+        except Exception:
+            logger.debug("todo revision floor unavailable", exc_info=True)
         _set_interrupt(False)
+
+    def _todo_db_revision_floor(self) -> Optional[tuple]:
+        """Newest persisted todo result for this session → ``(revision, todos)``, or None.
+
+        ``SessionDB.get_latest_todo_result`` deliberately includes archived (``compacted = 1``) rows and
+        applies the same pairing/size validation as history hydration, so it survives compression — the
+        only place the pre-compaction revision still lives. Persistence-isolated forks must not read the
+        canonical DB (same rule as ``_get_session_db_for_recall``).
+        """
+        if getattr(self, "_persist_disabled", False):
+            return None
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if session_db is None or not session_id:
+            return None
+        content = session_db.get_latest_todo_result(session_id)
+        if not isinstance(content, str) or '"todos"' not in content:
+            return None
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
+            return None
+        try:
+            revision = max(0, int(data.get("revision", 1) or 0))
+        except (TypeError, ValueError):
+            revision = 1
+        return revision, data["todos"]
 
     def _latest_todo_response(self, history: list[dict[str, Any]]) -> Optional[tuple]:
         """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""

@@ -22,6 +22,10 @@ export interface HudIpcDeps {
   closeHudWindow: () => void
   resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
+  /** The Mini Assistant's pin state, and the one place that changes it (it
+   *  persists across launches, so main owns it, not the window). */
+  getAlwaysOnTop: () => boolean
+  setAlwaysOnTop: (on: boolean) => boolean
 }
 
 export function registerHudIpc({
@@ -31,7 +35,9 @@ export function registerHudIpc({
   openHudWindow,
   closeHudWindow,
   resetHudLayout,
-  setHudSessionId
+  setHudSessionId,
+  getAlwaysOnTop,
+  setAlwaysOnTop
 }: HudIpcDeps) {
   const hudDrag = createHudDragSession()
 
@@ -149,6 +155,15 @@ export function registerHudIpc({
 
     return { ok: true }
   })
+
+  // The Mini Assistant's pin. Read and written from the bar's own pin button
+  // AND from Settings (where there may be no bar at all), so both go through
+  // main's persisted preference rather than the window's current z-order.
+  ipcMain.handle('hermes:hud:always-on-top:get', () => ({ alwaysOnTop: getAlwaysOnTop() }))
+
+  ipcMain.handle('hermes:hud:always-on-top:set', (_event, on) => ({
+    alwaysOnTop: setAlwaysOnTop(on === true)
+  }))
 
   // Let clicks fall through the HUD wherever it isn't really there. An
   // always-on-top window eats every click inside its rectangle, and most of that

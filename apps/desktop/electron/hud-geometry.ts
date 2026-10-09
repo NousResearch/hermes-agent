@@ -9,8 +9,23 @@ export interface HudWorkArea {
   y: number
 }
 
+/**
+ * Where a HUD with no remembered geometry parks.
+ *
+ * `bottom-center` is the standing default (a game-chat frame belongs centered
+ * above the taskbar). `bottom-right` is the tray's entry point: clicking the
+ * icon near the clock should raise the bar in the corner the click came from,
+ * clear of the taskbar and of whatever the user has parked at the center.
+ * Only the FIRST open chooses — once the user moves or resizes it,
+ * hud-state.json wins either way.
+ */
+export type HudBoundsAnchor = 'bottom-center' | 'bottom-right'
+
 /** Display-aware default bounds used to spawn and recover the HUD layout. */
-export function defaultHudBounds(area?: HudWorkArea): {
+export function defaultHudBounds(
+  area?: HudWorkArea,
+  { anchor = 'bottom-center' }: { anchor?: HudBoundsAnchor } = {}
+): {
   height: number
   width: number
   x?: number
@@ -26,7 +41,14 @@ export function defaultHudBounds(area?: HudWorkArea): {
   return {
     width,
     height,
-    x: Math.round(area.x + (area.width - width) / 2),
+    x: Math.round(
+      anchor === 'bottom-right'
+        ? // Clamped at the left edge: a display narrower than the bar plus its
+          // margins would otherwise place x off-screen, and a window spawned
+          // outside the visible area is a window the user cannot reach.
+          Math.max(area.x, area.x + area.width - width - HUD_BOTTOM_MARGIN)
+        : area.x + (area.width - width) / 2
+    ),
     y: Math.round(Math.max(area.y, area.y + area.height - height - HUD_BOTTOM_MARGIN))
   }
 }

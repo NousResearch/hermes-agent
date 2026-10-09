@@ -8,7 +8,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
-import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
+import { $hudAlwaysOnTop, $hudMode, closeHud, resetHudLayout, setHudAlwaysOnTop } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
@@ -183,9 +183,26 @@ export function ComposerControls({
 
 function HudWindowButtons() {
   const { t } = useI18n()
+  // Main's persisted preference, not the window's current z-order: the choice
+  // outlives the bar, so the button has to show what will happen NEXT time too.
+  const alwaysOnTop = useStore($hudAlwaysOnTop)
+  const pinLabel = alwaysOnTop ? t.titlebar.unpinMiniAssistant : t.titlebar.pinMiniAssistant
 
   return (
     <>
+      <Tip label={pinLabel} placement="toolbar">
+        <Button
+          aria-label={pinLabel}
+          aria-pressed={alwaysOnTop}
+          className={cn(GHOST_ICON_BTN, 'p-0')}
+          onClick={() => setHudAlwaysOnTop(!alwaysOnTop)}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name={alwaysOnTop ? 'pinned' : 'pin'} size="0.875rem" />
+        </Button>
+      </Tip>
       <Tip label={t.titlebar.resetHudLayout} placement="toolbar">
         <Button
           aria-label={t.titlebar.resetHudLayout}

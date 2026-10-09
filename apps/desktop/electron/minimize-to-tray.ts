@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions, nativeImage, Tray } from 'electron'
 
 export interface MinimizeToTrayStatus {
   enabled: boolean
@@ -12,6 +12,12 @@ interface Options {
   preferencesPath: string
   getIconPath: () => string | undefined
   restoreMainWindow: () => void
+  /** Left-click / double-click-adjacent action. Defaults to restoreMainWindow. */
+  onClick?: () => void
+  /** The tray's context menu as an Electron template. Defaults to the
+   *  Show/Quit pair — a caller that only wants hide-on-close need not know
+   *  anything about menu items. */
+  buildMenu?: () => MenuItemConstructorOptions[]
   isQuittingForHandoff: () => boolean
   log: (message: string) => void
 }
@@ -184,20 +190,29 @@ export function createMinimizeToTray(options: Options) {
           })
         )
         tray.setToolTip('Hermes')
+        // A caller-supplied menu is rebuilt from scratch on every (re)create,
+        // so its labels can never go stale, and each click re-enters the
+        // caller's action router rather than closing over this module's view
+        // of the app.
         tray.setContextMenu(
-          Menu.buildFromTemplate([
-            { label: 'Show Hermes', click: restore },
-            { type: 'separator' },
-            // Do not bypass the ordinary active-work confirmation or teardown.
-            { label: 'Quit Hermes', click: () => app.quit() }
-          ])
+          Menu.buildFromTemplate(
+            options.buildMenu?.() ?? [
+              { label: 'Show Hermes', click: restore },
+              { type: 'separator' },
+              // Do not bypass the ordinary active-work confirmation or teardown.
+              { label: 'Quit Hermes', click: () => app.quit() }
+            ]
+          )
         )
 
         // macOS single-click opens the native menu, not the window behind it.
         if (process.platform !== 'darwin') {
-          tray.on('click', restore)
+          tray.on('click', () => (options.onClick ?? restore)())
         }
 
+        // A double click is always "show me the app": whatever the single
+        // click is configured to do, two clicks in a row are the user asking
+        // for the window, not for a second fresh conversation.
         tray.on('double-click', restore)
       } catch (error) {
         restoreHidden()

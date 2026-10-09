@@ -177,8 +177,49 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:hud:game-overlay', listener)
 
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
+    },
+    // The Mini Assistant's pin: read and write the PERSISTED preference, not
+    // the window's current z-order — the choice outlives the window.
+    alwaysOnTop: {
+      get: () => ipcRenderer.invoke('hermes:hud:always-on-top:get'),
+      set: on => ipcRenderer.invoke('hermes:hud:always-on-top:set', on),
+      onChanged: callback => {
+        const listener = (_event, state) => callback(state)
+        ipcRenderer.on('hermes:hud:always-on-top-changed', listener)
+
+        return () => ipcRenderer.removeListener('hermes:hud:always-on-top-changed', listener)
+      }
+    },
+    // Main asking the band to drop what it is showing and start a fresh
+    // conversation — a tray click on an already-open Mini Assistant.
+    onNewConversation: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('hermes:hud:new-conversation', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:new-conversation', listener)
     }
   },
+  // Tray quick access: what the tray icon does when clicked, and whether
+  // Hermes comes back on its own at login. Device-local, like the tray.
+  trayPreferences: {
+    get: () => ipcRenderer.invoke('hermes:tray-preferences:get'),
+    set: patch => ipcRenderer.invoke('hermes:tray-preferences:set', patch),
+    onChanged: callback => {
+      const listener = (_event, preferences) => callback(preferences)
+      ipcRenderer.on('hermes:tray-preferences:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:tray-preferences:changed', listener)
+    }
+  },
+  // Main asking the shell to move somewhere — the tray menu's "Settings".
+  onShellNavigate: callback => {
+    const listener = (_event, request) => callback(request)
+    ipcRenderer.on('hermes:shell:navigate', listener)
+
+    return () => ipcRenderer.removeListener('hermes:shell:navigate', listener)
+  },
+  // Summon the Mini Assistant from anywhere in the renderer.
+  openMiniAssistant: request => ipcRenderer.invoke('hermes:mini-assistant:open', request),
   hudModifier: {
     getSettings: () => ipcRenderer.invoke('hermes:hud-modifier:settings:get'),
     setEnabled: enabled => ipcRenderer.invoke('hermes:hud-modifier:settings:set', enabled),

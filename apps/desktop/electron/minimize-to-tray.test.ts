@@ -396,3 +396,82 @@ test('persistence, disabling, failed tray creation, and handoff never strand hid
   disabled.main.close()
   expect(disabled.main.destroyed).toBe(true)
 })
+
+test('an injected tray menu and click action own the tray gestures (#tray-quick-access)', async () => {
+  // Windows: macOS gets the menu on single-click instead of the click handler.
+  setPlatform('win32')
+
+  try {
+    const main = new Window()
+    native.windows.push(main)
+    const actions: string[] = []
+
+    const controller = createMinimizeToTray({
+      preferencesPath: path.join(home, 'minimize-to-tray.json'),
+      getIconPath: () => 'icon.png',
+      restoreMainWindow: () => main.showInactive(),
+      onClick: () => actions.push('click'),
+      buildMenu: () => [
+        { click: () => actions.push('new-conversation'), label: 'New conversation' },
+        { click: () => actions.push('open-app'), label: 'Open Hermes' },
+        { click: () => actions.push('settings'), label: 'Settings' },
+        { type: 'separator' },
+        { click: () => actions.push('quit'), label: 'Quit Hermes' }
+      ],
+      isQuittingForHandoff: () => false,
+      log: vi.fn()
+    })
+
+    controller.registerWindow(main as unknown as BrowserWindow, { closeToTray: true })
+
+    await controller.start()
+    await controller.setEnabled(true)
+
+    const tray = native.trays[0]
+
+    expect(tray.menu.map(item => item.label)).toEqual([
+      'New conversation',
+      'Open Hermes',
+      'Settings',
+      undefined,
+      'Quit Hermes'
+    ])
+
+    // Left click goes to the injected action and NOTHING else: the caller
+    // decides between the Mini Assistant and the app window, so the tray
+    // must not also raise the window behind it.
+    main.minimize()
+    await flushDeferredHide()
+    tray.emit('click')
+    expect(actions).toEqual(['click'])
+    expect(main.visible).toBe(false)
+
+    tray.menu[0].click()
+    expect(actions).toEqual(['click', 'new-conversation'])
+
+    // A double click is always "show me the app", whatever the click is for.
+    tray.emit('double-click')
+    expect(main.visible).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('a tray click with no injected action still restores the app window', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+
+    native.trays[0].emit('click')
+    expect(main.visible).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})

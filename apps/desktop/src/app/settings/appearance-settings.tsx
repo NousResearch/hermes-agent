@@ -86,6 +86,7 @@ import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { TerminalFontSetting } from './terminal-font-setting'
+import { TrayAccessSettings } from './tray-access-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 // display.resume_last_session lives in the backend config record (shared with
@@ -787,6 +788,15 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('window-layout') && (
             <div id={settingElementId(ids.minimizeToTray)}>
               <MinimizeToTraySetting />
+            </div>
+          )}
+
+          {/* Quick access: what the tray icon does, the Mini Assistant's pin,
+              and launch-at-login. Inert without the tray above it, so it sits
+              directly beneath rather than in another group. */}
+          {show('window-layout') && (
+            <div id={settingElementId(ids.trayAccess)}>
+              <TrayAccessSettings />
             </div>
           )}
 

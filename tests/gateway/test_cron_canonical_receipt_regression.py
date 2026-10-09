@@ -105,8 +105,13 @@ def test_cron_tracks_real_canonical_receipt(canonical_bot, phase):
     assert len(before) == 1 and before[0]['status'] == 'queued', (initial, before)
     admission_id = before[0]['admission_id']
     if phase == 'settled':
+        from tools.bot_live_delivery import read_delivery_result
+        key = job['_bot_chat_delivery_receipts']['bot-chat:(own)']['delivery_id']
         bot.model.release.set()
         wait_for(lambda: owned_rows()[0]['status'] == 'terminal')
+        # The owner republishes the receipt cron reads from an async refresh AFTER the row commits;
+        # until then cron correctly reports "claimed ... do not resend". Sync on the published receipt.
+        wait_for(lambda: (read_delivery_result(bot.home, key) or {}).get('status') == 'settled')
         observed = _deliver_to_bot_chat(job, content, '')
     else:
         observed = initial

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import sqlite3
@@ -83,6 +84,56 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
     )
     assert manifest["id"] == snapshot_id
     assert manifest["files"] == {"config.yaml": 10}
+
+
+@pytest.mark.parametrize("fault_site", ("open", "json.dump"))
+def test_manifest_write_failure_is_not_published_and_cleans_staging(
+    tmp_path, monkeypatch, capsys, fault_site
+) -> None:
+    from hermes_cli import backup
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    if fault_site == "open":
+        real_open = builtins.open
+
+        def fail_manifest_open(path, mode="r", *args, **kwargs):
+            candidate = Path(path) if isinstance(path, (str, os.PathLike)) else None
+            if (
+                candidate is not None
+                and candidate.name == "manifest.json"
+                and candidate.parent.name.endswith(".partial")
+                and "w" in mode
+            ):
+                raise OSError("manifest unavailable")
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fail_manifest_open)
+    else:
+        real_dump = json.dump
+
+        def fail_manifest_dump(obj, fp, *args, **kwargs):
+            candidate = Path(fp.name)
+            if candidate.name == "manifest.json" and candidate.parent.name.endswith(".partial"):
+                raise OSError("manifest unavailable")
+            return real_dump(obj, fp, *args, **kwargs)
+
+        monkeypatch.setattr(json, "dump", fail_manifest_dump)
+
+    with pytest.raises(OSError, match="manifest unavailable"):
+        backup.create_quick_snapshot(hermes_home=home)
+    root = home / "state-snapshots"
+    assert not [
+        path for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    ]
+    assert list(root.glob(".*.partial")) == []
+    assert (
+        "Snapshot FAILED: could not write manifest: OSError: manifest unavailable"
+        in capsys.readouterr().out
+    )
 
 
 @pytest.mark.platforms("posix")  # POSIX permission bits

@@ -102,6 +102,11 @@ def _uma_machine(monkeypatch, *, view):
     monkeypatch.setattr(hw, "_ram_bytes",
                         lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: view)
+    # The quirk fixtures model ONE card; without this the real nvidia-smi row list (this dev
+    # box is dual-GPU) would leak in and take the aggregate path.
+    monkeypatch.setattr(hw, "_nvidia_cards", lambda: [{
+        "gpu_name": "", "total_bytes": UMA_SMI_TOTAL, "free_bytes": 14848 << 20,
+        "used_bytes": 0, "gpu_util_percent": 0, "gpu_pci_id": None}])
 
 
 def test_budget_unified_pool_planning(monkeypatch):

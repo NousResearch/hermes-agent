@@ -148,7 +148,7 @@ def live_gateway_ticking(home: Optional[Union[Path, str]] = None) -> Optional[di
     return record if record_serves_profile(record, home) else None
 
 
-def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+def _claim_owner_is_dead(claim: dict[str, Any]) -> bool:
     """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
     ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
     or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""

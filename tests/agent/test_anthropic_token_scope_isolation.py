@@ -153,8 +153,8 @@ class TestOAuthTokenLeakageFromEnviron:
             ss.reset_secret_scope(tok)
 
         assert result != "sk-ant-oat-LEAKED-PROFILE-B", (
-            f"Profile B's OAuth token leaked from os.environ[ANTHROPIC_TOKEN] "
-            f"(anthropic_adapter.py:1218). Profile A received the wrong credential."
+            "Profile B's OAuth token leaked from os.environ[ANTHROPIC_TOKEN] "
+            "(anthropic_adapter.py:1218). Profile A received the wrong credential."
         )
         assert result == "sk-ant-api-PROFILE-A", (
             f"Expected Profile A's API key but got {result!r}."
@@ -207,8 +207,8 @@ class TestClaudeCodeOAuthTokenLeakage:
             ss.reset_secret_scope(tok)
 
         assert result != "sk-ant-oat-CC-LEAKED-ENVIRON", (
-            f"CLAUDE_CODE_OAUTH_TOKEN leaked from os.environ (anthropic_adapter.py:1226). "
-            f"Profile X's Anthropic call used the wrong credential."
+            "CLAUDE_CODE_OAUTH_TOKEN leaked from os.environ (anthropic_adapter.py:1226). "
+            "Profile X's Anthropic call used the wrong credential."
         )
         assert result == "sk-ant-api-PROFILE-X", (
             f"Expected Profile X's API key but got {result!r}."

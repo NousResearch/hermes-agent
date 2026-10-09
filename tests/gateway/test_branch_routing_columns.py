@@ -108,7 +108,7 @@ class TestBranchRoutingColumns:
             captured_new_session_id["id"] = target_session_id
             raise RuntimeError("simulated crash before switch_session")
 
-        import unittest.mock as mock
+        from unittest import mock
 
         with mock.patch.object(store, "switch_session", side_effect=_crash_before_switch):
             with pytest.raises(RuntimeError, match="simulated crash"):

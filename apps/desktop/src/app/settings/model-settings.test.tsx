@@ -91,6 +91,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // A success toast arms a 5 s auto-dismiss timer; left running, it fires after this file's
+  // jsdom window is gone and vitest reports "window is not defined" as an unhandled error.
+  clearNotifications()
   vi.clearAllMocks()
   profileSwitchHandler = null
 })

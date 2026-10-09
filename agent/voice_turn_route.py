@@ -34,7 +34,7 @@ _EXTRA_FIELDS = (
 )
 
 
-def _route_target(agent: Any, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
     """The entry to bind, or None when the slot follows the main model (``auto`` + no model)."""
     provider = str(cfg.get("provider") or "").strip().lower()
     model = str(cfg.get("model") or "").strip()
@@ -60,7 +60,7 @@ def _route_target(agent: Any, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {**cfg, "provider": provider, "model": model, "base_url": base_url or ""}
 
 
-def _fits(agent: Any, messages: List[Dict[str, Any]], system_prompt: str) -> bool:
+def _fits(agent: Any, messages: list[dict[str, Any]], system_prompt: str) -> bool:
     from agent.model_metadata import estimate_request_tokens_rough
     limit = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0
     if not limit:
@@ -95,7 +95,7 @@ def _lowest_effort(agent: Any) -> Optional[str]:
     return None
 
 
-def _voice_reasoning(agent: Any, effort: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """``effort`` for the active route: reasoning OFF becomes the lowest valid level where OFF is
     not an option."""
     if not (isinstance(effort, dict) and effort.get("enabled") is False):
@@ -104,7 +104,7 @@ def _voice_reasoning(agent: Any, effort: Optional[Dict[str, Any]]) -> Optional[D
     return {"enabled": True, "effort": lowest} if lowest else effort
 
 
-def _capture(agent: Any) -> Dict[str, Any]:
+def _capture(agent: Any) -> dict[str, Any]:
     from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
@@ -112,14 +112,14 @@ def _capture(agent: Any) -> Dict[str, Any]:
     }
 
 
-def _reinstall(agent: Any, state: Dict[str, Any]) -> None:
+def _reinstall(agent: Any, state: dict[str, Any]) -> None:
     from agent.route_binding import reinstall_runtime_snapshot
     reinstall_runtime_snapshot(agent, state["snapshot"])
     for name in _EXTRA_FIELDS:
         setattr(agent, name, state[name])
 
 
-def _warn_once(agent: Any, target: Dict[str, Any], reason: str) -> None:
+def _warn_once(agent: Any, target: dict[str, Any], reason: str) -> None:
     logger.warning("auxiliary.%s route %s/%s not used: %s; the voice turn runs on %s/%s",
                    TASK, target["provider"], target["model"], reason, agent.provider, agent.model)
     if getattr(agent, "_warned_voice_route", False):
@@ -131,7 +131,7 @@ def _warn_once(agent: Any, target: Dict[str, Any], reason: str) -> None:
              f"using {agent.model}.")
 
 
-def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_prompt: Any) -> Any:
+def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_prompt: Any) -> Any:
     """Bind the voice route for a marked turn; returns the system prompt the turn should send."""
     if not getattr(agent, "_voice_turn_pending", False):
         return system_prompt
@@ -143,7 +143,7 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
     target = _route_target(agent, cfg)
     if target is None and effort is None:
         return system_prompt
-    state: Dict[str, Any] = {"reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None))}
+    state: dict[str, Any] = {"reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None))}
     agent._voice_route_state = state
     if target is not None:
         state.update(_capture(agent))
@@ -175,7 +175,7 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
 class _SessionRuntimeView:
     """``agent`` with the session's own route and effort in place of a live voice turn's."""
 
-    def __init__(self, agent: Any, state: Dict[str, Any]) -> None:
+    def __init__(self, agent: Any, state: dict[str, Any]) -> None:
         snapshot = state.get("snapshot") or {}
         own = {name: snapshot[name] for name in ("model", "provider", "base_url", "api_mode") if name in snapshot}
         if "anthropic_base_url" in snapshot:

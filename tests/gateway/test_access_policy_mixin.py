@@ -114,7 +114,7 @@ def test_wildcard_allowlist_admits_strangers_on_every_path(name):
 
 def test_mixin_host_without_prefix_is_rejected_at_class_creation():
     with pytest.raises(TypeError, match="ALLOW_ALL_ENV_PREFIX"):
-        class Host(OwnAccessPolicyMixin):  # noqa: F841
+        class Host(OwnAccessPolicyMixin):
             _dm_policy = "open"
 
 

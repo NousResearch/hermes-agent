@@ -239,7 +239,14 @@ class _Cred:
         for key, env, *rest in self.fixed:
             default = rest[0] if rest else ""
             value = _env_first(env) or default if isinstance(env, tuple) else getenv(env, default)
-            extra[key] = rest[1](value) if len(rest) > 1 else value
+            value = rest[1](value) if len(rest) > 1 else value
+            # An unset env with no default must not clobber the yaml value ``from_dict``
+            # promoted into ``extra`` (#135509); ``_env_extras`` below already skips blanks.
+            # ``== ""`` keeps bool-False flags (bluebubbles ``require_mention``) and
+            # ``_int_or`` port defaults being written.
+            if value == "":
+                continue
+            extra[key] = value
         _env_extras(extra, self.optional)
         _env_extras(extra, self.optional_stripped, strip=True)
         if self.then is not None:

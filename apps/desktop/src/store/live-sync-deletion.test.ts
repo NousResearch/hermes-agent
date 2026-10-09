@@ -5,7 +5,14 @@ import type { GatewayEventContext } from '@/app/session/hooks/use-message-stream
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { makeSessionInfo } from '@/test/session-info'
 
-import { $cronSessions, $messagingSessions, $sessions, setCronSessions, setMessagingSessions, setSessions } from './session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  setCronSessions,
+  setMessagingSessions,
+  setSessions
+} from './session'
 import { notifySessionsDeleted } from './session-live-deletion'
 import {
   $removedSessionIds,
@@ -13,7 +20,7 @@ import {
   sessionRemovalIntersected,
   untombstoneSessions
 } from './session-removal'
-import { $sessionStates, clearAllSessionStates, publishSessionState } from './session-states'
+import { $sessionStates, clearAllSessionStates, publishSessionState, recordSessionEventScope } from './session-states'
 
 afterEach(() => {
   setSessions([])
@@ -35,12 +42,40 @@ it('evicts exact sidebar IDs synchronously and fences pages even after tree prun
     expect(store.get().map(row => row.id)).toEqual(['keep-id'])
   }
 
-  expect($removedSessionIds.get().has('delete-id')).toBe(true)
+  // External events must never poison the legacy, profile-blind overlay.
+  expect($removedSessionIds.get().has('delete-id')).toBe(false)
   // The tree's catch-up prune cannot let an older sidebar page resurrect rows.
   $removedSessionIds.set(new Set())
   expect(sessionRemovalIntersected(snapshot, 'delete-id')).toBe(true)
   expect(sessionRemovalIntersected(snapshot, 'not-loaded-id')).toBe(true)
   expect(sessionRemovalIntersected(snapshot, 'keep-id')).toBe(false)
+})
+
+it('fences an unseen deleted ID without fencing a foreign-profile page', () => {
+  const snapshot = captureSessionTombstoneGenerations()
+  notifySessionsDeleted({ session_ids: ['unseen-collision'], profile: 'default' })
+  expect(sessionRemovalIntersected(snapshot, 'unseen-collision', 'default')).toBe(true)
+  expect(sessionRemovalIntersected(snapshot, 'unseen-collision', 'other')).toBe(false)
+  // A fresh authoritative read may re-admit an ID restored after deletion.
+  expect(sessionRemovalIntersected(captureSessionTombstoneGenerations(), 'unseen-collision', 'default')).toBe(false)
+})
+
+it.each([setCronSessions, setMessagingSessions])('protects a live lineage tip in a dedicated sidebar list', setRows => {
+  setRows([makeSessionInfo({ id: 'live-tip', profile: 'default', _lineage_ids: ['live-root', 'live-tip'] })])
+  publishSessionState('lineage-writer', { ...createClientSessionState('live-root'), busy: true })
+  notifySessionsDeleted({ session_ids: ['live-tip'], profile: 'default' })
+  expect([...$cronSessions.get(), ...$messagingSessions.get()].map(row => row.id)).toEqual(['live-tip'])
+})
+
+it('does not let a known foreign writer block deletion of an owned twin', () => {
+  const snapshot = captureSessionTombstoneGenerations()
+  setSessions([makeSessionInfo({ id: 'writer-twin', profile: 'default' })])
+  recordSessionEventScope({ session_id: 'foreign-writer', connectionId: 'local', profile: 'other' })
+  publishSessionState('foreign-writer', { ...createClientSessionState('writer-twin'), busy: true })
+  notifySessionsDeleted({ session_ids: ['writer-twin'], profile: 'default' })
+  expect($sessions.get()).toHaveLength(0)
+  expect(sessionRemovalIntersected(snapshot, 'writer-twin', 'default')).toBe(true)
+  expect($sessionStates.get()['foreign-writer'].busy).toBe(true)
 })
 
 it('routes native deletion only from the active connection without touching transcript state', () => {
@@ -75,7 +110,11 @@ it.each(['busy', 'awaitingResponse', 'turnLive', 'needsInput'] as const)(
     ])
     publishSessionState('busy-runtime', { ...createClientSessionState('busy-id'), [flag]: true })
     notifySessionsDeleted({ session_ids: ['busy-id', 'other-id', 'collision-id'], profile: 'default' })
-    expect($messagingSessions.get()).toHaveLength(4)
+    expect($messagingSessions.get().map(row => [row.id, row.profile])).toEqual([
+      ['busy-id', 'default'],
+      ['other-id', 'other'],
+      ['collision-id', 'other']
+    ])
     expect($removedSessionIds.get().size).toBe(0)
   }
 )

@@ -83,6 +83,50 @@ class GatewayNotificationRouteGuardMixin:
         owner_db = await asyncio.to_thread(self.session_store._db_for_key, session_key)
         return AsyncSessionDB(owner_db) if owner_db is not None else None
 
+    async def _route_owner_session_db(self, session_key: str) -> Any:
+        """Return the AsyncSessionDB for *session_key*, honoring test pins while keeping
+        multiplexed profile routes bound to their owning profile store."""
+        from gateway.run import _SESSION_DB_UNPINNED
+        from gateway.session import SessionStore
+
+        store = getattr(self, "session_store", None)
+        pinned = getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED)
+        if isinstance(store, SessionStore) and (
+            pinned is _SESSION_DB_UNPINNED or store._named_profile_for_key(session_key) is not None
+        ):
+            return await self._watch_owner_db_for_key(session_key)
+        return cast(Any, self._session_db)
+
+    async def _classify_non_compression_target(
+        self, parent: Dict[str, Any], parent_session_id: str, end_reason: str,
+    ) -> str:
+        """Classify a non-compression ended completion target, healing legacy delegate hijacks."""
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from gateway.session import SessionStore
+
+        if end_reason == "session_switch":
+            session_key = str(parent.get("session_key") or "").strip()
+            store = getattr(self, "session_store", None)
+            if session_key and isinstance(store, SessionStore):
+                entry = await self.async_session_store.lookup_by_session_key(session_key)
+                if entry is None and not getattr(store, "_routing_db_loaded", True):
+                    return "retry"
+                if entry is not None and entry.origin is not None:
+                    try:
+                        repaired = await asyncio.to_thread(
+                            store._reconcile_poisoned_delegate_route,
+                            session_key, entry, entry.origin,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Async-completion poisoned-route check failed for %s",
+                            parent_session_id, exc_info=True,
+                        )
+                        return "retry"
+                    if repaired is not None and repaired.session_id == parent_session_id:
+                        return "deliver"
+        return "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
+
     async def _watch_event_route_verdict(self, evt: dict) -> str:
         """Return owned, drop, or retry for a queued process watch event's spawning route."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
@@ -299,7 +343,7 @@ class GatewayNotificationRouteGuardMixin:
         closed; the result stays in the delegation records.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = cast(Any, self._session_db)
+        session_db = await self._route_owner_session_db(session_entry.session_key)
         if session_db is None:
             logger.warning(
                 "Async-delegation completion has no session database; "

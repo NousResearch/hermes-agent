@@ -131,3 +131,48 @@ def test_handoff_refuses_exited_foreign_or_non_child_callers(clean_queue):
     finally:
         process_registry.kill_all(source="test")
         _unregister_subagent(sid)
+
+
+def test_discord_subagent_handoff_arms_completion_watcher_and_preserves_gateway_key(monkeypatch, clean_queue):
+    """A Discord child's process has notify_on_complete disarmed at spawn; handing it to the parent
+    must re-arm completion delivery and keep the gateway session_key for watch/completion routing."""
+    import gateway.run as gateway_run
+    from types import SimpleNamespace
+
+    sid = "sa-0-handoff-discord"
+    parent = _Parent()
+    parent._gateway_session_key = "agent:main:discord:thread:chan1:thread1"
+    child = _Child(parent)
+    _register(sid, child)
+    armed = []
+    monkeypatch.setattr(
+        gateway_run, "_gateway_runner_ref",
+        lambda: SimpleNamespace(arm_process_watcher=lambda w: armed.append(w) or True),
+    )
+    try:
+        handed = process_registry.spawn_local(
+            "sleep 30", task_id=sid, owner_task_id=sid,
+            session_key="agent:main:discord:thread:chan1:thread1",
+        )
+        handed.watcher_platform = "discord"
+        handed.watcher_chat_id = "chan1"
+        handed.watcher_thread_id = "thread1"
+        handed.notify_on_complete = False
+        handed.watcher_interval = 0
+
+        out = json.loads(_handle_process(
+            {"action": "handoff", "session_id": handed.id, "data": "Discord CI poller"}, task_id=sid))
+
+        assert out["status"] == "handed_off"
+        assert handed.notify_on_complete is True
+        assert handed.session_key == "agent:main:discord:thread:chan1:thread1"
+        assert handed.parent_session_id == "sess-handoff"
+        assert len(armed) == 1
+        assert armed[0]["session_id"] == handed.id
+        assert armed[0]["session_key"] == "agent:main:discord:thread:chan1:thread1"
+        assert armed[0]["parent_session_id"] == "sess-handoff"
+        assert armed[0]["notify_on_complete"] is True
+    finally:
+        process_registry.kill_all(source="test")
+        _unregister_subagent(sid)
+

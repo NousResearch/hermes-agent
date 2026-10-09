@@ -242,3 +242,70 @@ async def test_child_completion_reaches_owner_after_its_chat_compresses(discord_
     assert resolved is not None and resolved.session_id == "chat-tip"
     assert db.get_session(original_owner_id)["end_reason"] == "compression"
     assert db.get_session("delegate-child")["source"] == "subagent"
+
+
+@pytest.mark.asyncio
+async def test_completion_preflight_restores_poisoned_route_instead_of_dropping(discord_store):
+    """A completion pinned to a hijacked chat owner must heal the route before pre-flight drops it."""
+    from gateway.session import AsyncSessionStore
+    from hermes_state import AsyncSessionDB
+
+    store, parent, db = discord_store
+    source = parent.origin
+    assert source is not None
+    db.create_session("delegate-child", source="subagent", parent_session_id=parent.session_id)
+    db._write_sql(
+        "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
+        "chat_type = ?, thread_id = ? WHERE id = ?",
+        ("discord", parent.session_key, source.user_id, source.chat_id,
+         source.chat_type, source.thread_id, "delegate-child"),
+    )
+    db.end_session(parent.session_id, "session_switch")
+    with store._lock:
+        store._replace_route_locked(parent.session_key, parent, "delegate-child", parent.updated_at)
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_db = AsyncSessionDB(db)
+
+    verdict = await runner._classify_completion_target(parent.session_id)
+
+    assert verdict == "deliver"
+    assert store.lookup_by_session_key(parent.session_key).session_id == parent.session_id
+    assert db.get_session(parent.session_id)["ended_at"] is None
+    assert db.get_session("delegate-child")["session_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_async_delegation_session_uses_exact_profile_db(monkeypatch, tmp_path):
+    """Multiplexed route resolution must read the profile DB encoded in session_key."""
+    import gateway.run as gateway_run
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_state import AsyncSessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
+    research_home = get_profile_dir("research")
+    research_home.mkdir(parents=True)
+    (research_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    runner = GatewayRunner(GatewayConfig(
+        multiplex_profiles=True, sessions_dir=tmp_path / "sessions",
+    ))
+    entry = runner.session_store.get_or_create_session(SessionSource(
+        platform=Platform.DISCORD, chat_id="room", chat_type="thread",
+        thread_id="topic", user_id="person", profile="research",
+    ))
+    owner_db = runner.session_store._db_for_key(entry.session_key)
+    owner_db.create_session("delegate-child", source="subagent", parent_session_id=entry.session_id)
+    wrong_db = runner.session_store._db_for_key("agent:main:discord:thread:other")
+    runner._session_db = AsyncSessionDB(wrong_db)
+
+    resolved = await runner._resolve_async_delegation_session(entry, "delegate-child")
+
+    assert resolved is not None and resolved.session_id == entry.session_id
+

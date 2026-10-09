@@ -1267,7 +1267,6 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         session live or compression-rotated with a live continuation; the resolver still retargets),
         ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
         rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
-        from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return "retry"
@@ -1282,9 +1281,9 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
         if end_reason != "compression":
-            # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
-            # ends stay routable and the resolver retargets. Boundary set shared with the resolver.
-            return "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
+            # Only a USER-closed session (/new, user_exit, session_switch) is unreachable unless a
+            # legacy delegate hijack caused the switch; idle/timeout ends stay routable.
+            return await self._classify_non_compression_target(parent, parent_session_id, end_reason)
         try:
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
             if not tip_session_id or tip_session_id == parent_session_id:

@@ -1,20 +1,20 @@
 name: feishu-streaming-cards
-repo: https://github.com/hutao562/hermes-lark-streaming
-sha: fa97f3cea5f02b2aaed3ef4aefe85e4098dba763
+repo: https://github.com/hutao562/hermes-plugin-feishu-streaming
+sha: fee5142d832b050dadb3ce01fb48b84ec7abd84a
 subdir: plugin
 description: "Feishu/Lark streaming cards (CardKit v2) for the Hermes gateway: every turn renders as one live typewriter card with a collapsible reasoning panel, a structured tool panel, in-card heartbeat, clarify single-select, document delivery, cron result cards and an in-footer model switcher. Disclosure — this is an opt-in enhancement that subclasses the bundled FeishuAdapter and registers under the same 'feishu' platform name (registry last-writer-wins), inheriting the bundled entry's setup/status contract surfaces; it talks only to the Feishu open platform APIs with the FEISHU_APP_ID/FEISHU_APP_SECRET you configure and sends message content there; card interaction buttons (model switch, clarify) are dispatched as the clicking user via Hermes synthetic events; English-first README with a Chinese translation alongside."
 maintainer: hutao562
 tier: community
 category: platform
 requires_hermes: ">=0.21.1"
-docs_url: https://github.com/hutao562/hermes-lark-streaming#readme
+docs_url: https://github.com/hutao562/hermes-plugin-feishu-streaming#readme
 version: "0.17.8"
 title: Feishu Streaming Cards
 screenshots:
-  - https://raw.githubusercontent.com/hutao562/hermes-lark-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/streaming.jpg
-  - https://raw.githubusercontent.com/hutao562/hermes-lark-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/reasoning.jpg
-  - https://raw.githubusercontent.com/hutao562/hermes-lark-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/interrupt.jpg
-  - https://raw.githubusercontent.com/hutao562/hermes-lark-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/abort.jpg
+  - https://raw.githubusercontent.com/hutao562/hermes-plugin-feishu-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/streaming.jpg
+  - https://raw.githubusercontent.com/hutao562/hermes-plugin-feishu-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/reasoning.jpg
+  - https://raw.githubusercontent.com/hutao562/hermes-plugin-feishu-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/interrupt.jpg
+  - https://raw.githubusercontent.com/hutao562/hermes-plugin-feishu-streaming/fa97f3cea5f02b2aaed3ef4aefe85e4098dba763/assets/abort.jpg
 platforms: []
 capabilities:
   provides_tools: []

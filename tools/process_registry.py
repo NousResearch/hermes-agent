@@ -32,7 +32,9 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import (
+    format_process_notification, is_child_process_notification, should_surface_notification,
+)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -1887,17 +1889,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             if evt.get("type") == "completion" and self._drain_should_skip(
                 _evt_sid, skip_poll_observed=skip_poll_observed):
                 continue
-            # Subagent-owned process notifications are suppressed by default — the
-            # child's delegation result is the deliverable. Judge ownership on
-            # owner_task_id (RAW spawning id; task_id is the container key, collapsed
-            # by _resolve_container_task_id). Dropped, NOT requeued: children never
-            # drain, so a requeue would pin the event forever. 'async_delegation'
-            # is the result itself and is NEVER suppressed.
+            # Drop raw child process noise here; children never drain requeued notices.
+            # Real delegation and work-closeout results remain deliverable.
             _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+            if is_child_process_notification(evt):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not should_surface_notification(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "

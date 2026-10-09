@@ -25,19 +25,16 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_route_guard import GatewayNotificationRouteGuardMixin
+from tools.process_registry_notifications import should_surface_notification
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-# A failed /update leaves the previous version running; the full pip/git log stays on the host
-# (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
+# A failed /update leaves the prior version running; its full log stays on the host.
 def _update_failed_notice() -> str:
     return t("gateway.update.failed_notice")
 
-# An update's completion notice waits for its target platform adapter to (re)connect before it
-# can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
-# configured at all — no adapter will ever appear — would keep itself on disk and re-log a
-# deferred line on every poll, in every process, forever. Stop waiting past this age.
+# Bound notices awaiting a disconnected adapter; an unconfigured target may never connect.
 _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
 
 
@@ -1011,10 +1008,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
     async def _drain_watch_notifications(self, completion_queue) -> None:
         """Consume queued watch events and inject them when notifications are enabled.
 
-        The queue is ALWAYS drained (so watch events don't rot or requeue-spin) but injection is
-        skipped when the OWNING profile's ``display.background_process_notifications`` is ``off``
-        — one shared queue carries every served profile's events, so the gate is evaluated per
-        event inside its profile scope, never once for the ambient (launch) profile.
+        Drain every queued watch event; evaluate notification policy inside each event's owning
+        profile scope because one shared queue serves all profiles.
 
         See #9290.
         """
@@ -1022,6 +1017,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             async with self._completion_event_scope(evt):
+                if not should_surface_notification(evt):
+                    continue
                 if self._load_background_notifications_mode() == "off":
                     continue
                 synth_text = _format_gateway_process_notification(evt)
@@ -1444,6 +1441,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
+        if not should_surface_notification(evt):
+            return None
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
@@ -1586,7 +1585,10 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         getattr(self, "_completion_notification_batch_flush_tasks", set()).clear()
 
     async def _enqueue_process_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
-        """Fan in concurrent process completions that share one conversation."""
+        """Fan in policy-admitted completions with compatible conversation owners."""
+        async with self._completion_event_scope(evt):
+            if not should_surface_notification(evt):
+                return None
         # Lazy defaults: lifecycle tests build GatewayRunner via object.__new__.
         for attr, default in (
             ("_completion_notification_batches", dict), ("_completion_notification_batch_tasks", dict),
@@ -1598,7 +1600,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                 setattr(self, attr, default())
         if self._completion_notification_batches_stopping:
             return False
-        key = self._event_route_key(evt, self._COMPLETION_BATCH_KEY_FIELDS)
+        key_fields = (*self._COMPLETION_BATCH_KEY_FIELDS, "parent_session_id", "origin_session_id")
+        key = self._event_route_key(evt, key_fields)
         future = asyncio.get_running_loop().create_future()
         self._completion_notification_batches.setdefault(key, []).append((synth_text, evt, future))
         if key not in self._completion_notification_batch_tasks:
@@ -1835,11 +1838,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000
-        # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
-        # output was cut.
+        # Truncate on a line boundary so a completion never starts mid-line (#23284).
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
@@ -1851,6 +1851,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             "type": "completion",
             "session_id": session_id,
             **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
+            "owner_task_id": getattr(session, "owner_task_id", "") or "",
+            "task_id": getattr(session, "task_id", "") or "",
             "message_id": str(watcher.get("message_id") or "").strip() or None,
             "started_at": getattr(session, "started_at", None),
             "command": _redact_gateway_user_facing_secrets(_command),
@@ -1928,6 +1930,15 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             session = process_registry.get(session_id)
             if session is None:
                 break
+            owner_evt = {"owner_task_id": getattr(session, "owner_task_id", ""),
+                         "task_id": getattr(session, "task_id", "")}
+            async with self._completion_event_scope(watcher):
+                surface = should_surface_notification(owner_evt)
+            if not surface:
+                # Handoff can change the owner while the process is still running.
+                if session.exited:
+                    break
+                continue
             if silent:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:
@@ -1937,15 +1948,13 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             has_new_output = current_output_len > last_output_len
             last_output_len = current_output_len
             if session.exited:
-                # Agent-notify: inject a synthetic message unless the agent already consumed the result via
-                # wait/log (poll() is read-only and deliberately does NOT mark consumed).
+                # A read-only poll does not consume the completion; wait/log does.
                 if agent_notify and not process_registry.is_completion_consumed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
-                    # Captured before injection: afterwards the key is busy either way (the injected
-                    # turn itself installs the guard).
+                    # Capture busy state before injection installs its own guard.
                     turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:

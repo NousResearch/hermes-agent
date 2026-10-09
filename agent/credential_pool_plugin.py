@@ -86,7 +86,7 @@ def is_terminal_plugin_refresh_error(exc: BaseException) -> bool:
 
 def recover_failed_plugin_refresh(
     pool: "CredentialPool", entry: "PooledCredential", exc: Exception,
-) -> Tuple[bool, Optional["PooledCredential"]]:
+) -> tuple[bool, Optional["PooledCredential"]]:
     """Recovery for a plugin hook that raised: adopt a peer's rotation, or quarantine a dead grant.
 
     Returns ``(handled, result)``; ``handled=False`` means the caller should bench the row as a

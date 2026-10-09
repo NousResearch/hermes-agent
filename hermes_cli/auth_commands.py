@@ -188,7 +188,7 @@ def _format_exhausted_status(entry) -> str:
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
         return head
-    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
+    remaining = max(0, math.ceil(exhausted_until - time.time()))
     if remaining <= 0:
         return f"{head} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
@@ -491,7 +491,7 @@ def auth_priority_command(args) -> None:
     index, matched, error = pool.resolve_target(getattr(args, "target", None))
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
-    requested = int(getattr(args, "priority"))
+    requested = int(args.priority)
     moved = pool.move_entry(matched.id, requested)
     if moved is None:
         raise SystemExit(f'No credential matching "{getattr(args, "target", None)}" for provider {provider}.')

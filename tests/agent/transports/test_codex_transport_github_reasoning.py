@@ -12,7 +12,7 @@ from agent.transports import get_transport
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     return get_transport("codex_responses")
 
 

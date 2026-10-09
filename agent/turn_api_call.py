@@ -30,7 +30,6 @@ def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
         thinking_spinner.stop("")
     if agent.thinking_callback:
         agent.thinking_callback("")
-    return None
 
 
 @dataclass
@@ -224,7 +223,7 @@ class NousRateGuardVerdict:
     active_system_prompt: Any
     retry_count: Any
     compression_attempts: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def nous_rate_limit_guard(
@@ -235,7 +234,7 @@ def nous_rate_limit_guard(
     SDK retries) counts against RPH. Never lets the guard itself break the agent loop."""
     from agent.conversation_loop import _arm_fallback_restart
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> NousRateGuardVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> NousRateGuardVerdict:
         return NousRateGuardVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,

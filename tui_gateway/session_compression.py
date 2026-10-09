@@ -212,10 +212,12 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         # never confirmed.
         if not result.get("confirm_required"):
             return
-        logger.warning("Queued model switch to %s dropped for session %s: selection guard needs a confirm", model, sid)
         detail = result.get("confirm_message") or result.get("warning") or ""
+        logger.warning("Queued model switch to %s dropped for session %s: %s", model, sid, detail.split("\n", 1)[0])
         current = getattr(session["agent"], "model", "") or "the current model"
-        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm.\n\n{detail}"
+        # One line: the TUI status bar truncates and the Desktop toast collapses newlines. The full
+        # guard text comes back in the confirm prompt when the user picks it again.
+        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm."
     except Exception as e:
         logger.warning("Queued model switch to %s failed for session %s: %s", model, sid, e)
         text = f"Could not switch model: {e}"
@@ -332,10 +334,8 @@ def _sync_session_key_after_compress(
         from tools import approval
         with contextlib.suppress(Exception):
             approval.unregister_gateway_notify(old_key)
-        with contextlib.suppress(Exception):
-            if approval.is_session_yolo_enabled(old_key):
-                approval.enable_session_yolo(new_session_id)
-                approval.disable_session_yolo(old_key)
+        from tools.approval_yolo import transfer_session_yolo
+        transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced

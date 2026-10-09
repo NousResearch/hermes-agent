@@ -292,10 +292,10 @@ def _handler_for(fake: CatalogFake) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
             return True
 
-        def do_CONNECT(self) -> None:  # noqa: N802
+        def do_CONNECT(self) -> None:
             self._refuse_egress("CONNECT")
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self._refuse_egress("GET"):
                 return
             dialect = fake.routes.get(bare_path(self.path), "unknown")
@@ -317,7 +317,7 @@ def _handler_for(fake: CatalogFake) -> type[BaseHTTPRequestHandler]:
             # ``models`` is LM Studio's native listing key; OpenAI-shaped readers ignore it.
             self._json(200, {"object": "list", "data": rows, "models": rows})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             if self._refuse_egress("POST"):
                 return

@@ -133,8 +133,7 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
     aliases = _pc()._plugin_aliases(key) | {target.name}
-    if _pc()._read_manifest(target).get("provides_tools"):
-        _pc()._toggle_plugin_toolset(key, enable=False)
+    _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 

@@ -34,7 +34,7 @@ for var in list(os.environ):
 os.environ.pop("FAL_KEY", None)
 os.environ.pop("HERMES_PROFILE", None)
 
-from sandbox import isolate_host  # noqa: E402
+from sandbox import isolate_host
 
 tmp_root = tempfile.mkdtemp(prefix=f"ab-{ARM}-{TASK_ID}-")
 hermes_home = os.path.join(tmp_root, ".hermes")
@@ -51,7 +51,7 @@ os.chdir(workspace)
 sys.path.insert(0, HARNESS)
 sys.path.insert(0, TREE)
 
-import tasks as taskmod  # noqa: E402
+import tasks as taskmod
 TASK = taskmod.TASKS_BY_ID[TASK_ID]
 
 # --- seed session DB for recall tasks (both arms, always — cheap) ---------
@@ -95,7 +95,7 @@ if TASK.get("fixtures"):
 EVENTS = []
 CALLBACK_LOG = []
 
-from tools import desktop_ui  # noqa: E402
+from tools import desktop_ui
 desktop_ui.set_emitter(lambda sid, event, payload: EVENTS.append(
     {"sid": sid, "event": event, "payload": payload}))
 
@@ -172,8 +172,8 @@ def connection_cb(payload):
         {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})
 
 # --- import the tree's model_tools + patch registry stubs ------------------
-import model_tools  # noqa: E402  (triggers registrations + plugin discovery)
-from tools.registry import registry  # noqa: E402
+import model_tools
+from tools.registry import registry
 
 def _stub_entry(name, handler):
     entry = registry.get_entry(name)
@@ -209,7 +209,7 @@ TOOLSETS = ["file", "terminal", "search", "web", "todo", "session_search",
             "clarify", "image_gen", "computer_use", "cronjob", "memory",
             "desktop_ui", "project", "code_execution"]
 
-from run_agent import AIAgent  # noqa: E402
+from run_agent import AIAgent
 
 agent = AIAgent(
     base_url="https://openrouter.ai/api/v1",
@@ -260,7 +260,7 @@ try:
         convo = agent.run_conversation(_reply)
 except SystemExit:
     raise
-except BaseException as e:  # noqa: BLE001
+except BaseException as e:
     error = f"{type(e).__name__}: {e}"
     traceback.print_exc()
 wall = time.time() - t0
@@ -335,7 +335,7 @@ score, notes = 0.0, ["run errored: %s" % error] if error else (0.0, [])
 if not error:
     try:
         score, notes = TASK["grade"](ctx)
-    except Exception as ge:  # noqa: BLE001
+    except Exception as ge:
         score, notes = 0.0, [f"grader crashed: {ge}"]
 else:
     score, notes = 0.0, ["run errored: %s" % error]

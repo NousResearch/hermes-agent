@@ -39,7 +39,7 @@ _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
 
 # PR -> (extra env, script). A script prints ``open`` while the defect reproduces, ``fixed`` once
 # it no longer does; anything else (including a crash) fails the cell that asked.
-PROBES: Dict[int, tuple] = {
+PROBES: dict[int, tuple] = {
     # No timezone configured: the next cron occurrence kept the base time's fixed UTC offset, so a
     # 09:00 job in a DST process zone fired at 10:00 local the day after spring-forward.
     119970: ({"TZ": "America/New_York"}, r'''
@@ -53,7 +53,7 @@ print("fixed" if nxt == "2026-03-08T09:00:00-04:00" else "open")
 }
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def gap_open(pr: int) -> bool:
     """True while the defect PR ``pr`` fixes still reproduces on this tree."""
     extra_env, script = PROBES[pr]

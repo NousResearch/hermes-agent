@@ -23,6 +23,30 @@ test('desktop development composition reuses prepared icon pixels instead of pro
   expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
 })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+test('desktop development composition restages native inputs only when their receipt is stale', async () => {
+  const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
+  const { recordNativeInputs } = await import('../apps/desktop/scripts/prepared-native-deps.mjs')
+  const input = fixture()
+  put(join(input.source, 'package-lock.json'), '{}')
+  const nativeDeps = join(input.source, 'apps/desktop/build/native-deps')
+  cpSync(input.nativeDeps, nativeDeps, { recursive: true })
+  const staged = () => {
+    const commands = []
+    buildSourceDesktop({ source: input.source, run: (command, args) => commands.push([command, ...args]) })
+    return commands.some(command => command.some(arg => /stage-native-deps\.mjs$/.test(arg)))
+  }
+  expect(staged()).toBe(true) // no receipt
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  expect(staged()).toBe(false)
+  put(join(nativeDeps, 'native/helper-fixture'), 'tampered')
+  expect(staged()).toBe(true) // the tree no longer matches its digest
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch, degraded: true })
+  expect(staged()).toBe(true) // a soft-failed component restages until the host can complete it
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  put(join(input.source, 'package-lock.json'), '{"lockfileVersion":3}')
+  expect(staged()).toBe(true) // a dependency pin moved
+})
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'desktop build with spaces-'))
@@ -157,6 +181,61 @@ test('in-tree desktop products rebuild after build exists without replacing prep
     expect(files(input.out)).toEqual(built)
   }
 }, 30000)
+
+test('a stamp-only change reuses the renderer bytes and rebakes only main/preload; a source change recompiles', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  const renderer = () => files(input.out).filter(([name]) => !/electron-|preload|hermes-build\.json/.test(name))
+  const before = renderer()
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'c'.repeat(40) }))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+  expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  expect(renderer()).toEqual(before)
+  const run = () => JSON.parse(execFileSync(process.execPath, [join(input.out, 'electron-main.mjs')], { cwd: tmpdir(), encoding: 'utf8' }))
+  expect(run().stamp.commit).toBe('c'.repeat(40))
+  // A tampered output is never reused: the receipt's output hash no longer matches.
+  put(join(input.out, 'index.html'), '<html>tampered</html>')
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'd'.repeat(40) }))
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(readFileSync(join(input.out, 'index.html'), 'utf8')).not.toContain('tampered')
+  put(join(input.source, 'apps/desktop/src/index.js'), 'document.getElementById("app").textContent = "changed source"')
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(files(join(input.out, 'assets')).map(([, b]) => Buffer.from(b, 'base64').toString()).join('')).toContain('changed source')
+}, 60000)
+
+test('a renderer built under different VITE_*/NODE_ENV settings is never reused or certified', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  const restamp = commit => put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit }))
+  const saved = { probe: process.env.VITE_PERF_PROBE, node: process.env.NODE_ENV }
+  try {
+    process.env.NODE_ENV = 'production' // vitest itself runs with NODE_ENV=test
+    process.env.VITE_PERF_PROBE = '1'
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    delete process.env.VITE_PERF_PROBE
+    // The probe build's receipt no longer describes a plain build: neither gate accepts it.
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+    restamp('e'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    // Unset NODE_ENV means production (vite's own build default): the production receipt stays
+    // current without it, and the next stamp-only build reuses it.
+    delete process.env.NODE_ENV
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+    restamp('f'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+    process.env.NODE_ENV = 'development'
+    restamp('a'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  } finally {
+    for (const [key, value] of [['VITE_PERF_PROBE', saved.probe], ['NODE_ENV', saved.node]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
+}, 90000)
 
 test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')

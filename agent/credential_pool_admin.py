@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Callable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
@@ -26,7 +26,7 @@ class CredentialNotSavedError(RuntimeError):
 
 
 class CredentialPoolAdminMixin:
-    def entries(self) -> List[PooledCredential]:
+    def entries(self) -> list[PooledCredential]:
         with self._lock:
             return list(self._entries)
 
@@ -113,7 +113,7 @@ class CredentialPoolAdminMixin:
             self._persist()
             return self._find(lambda e: e.id == credential_id)
 
-    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+    def resolve_target(self, target: Any) -> tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."

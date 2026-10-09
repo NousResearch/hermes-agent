@@ -7431,8 +7431,15 @@ def _resolve_call_client(
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
+            # Do NOT forward resolved_model here: it was configured for the
+            # provider that just failed to resolve, and the auto chain may
+            # land on a different provider (e.g. the main one) whose model
+            # namespace it does not belong to — a bare slug then reaches the
+            # wire and the wrong provider rejects it with a cryptic format
+            # error that masks the dead provider (#94780). Auto derives its
+            # own vision model per selected backend.
             effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
+                provider="auto", async_mode=async_mode,
                 main_runtime=main_runtime)
         if client is not None:
             resolved_provider = effective_provider or resolved_provider

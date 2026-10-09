@@ -69,7 +69,11 @@ def _tts_lease_async(lease: str, active: bool) -> None:
             (acquire_tts_lease if active else release_tts_lease)(lease)
         except Exception as e:
             logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
-    threading.Thread(target=_run, name=f"tts-lease-{lease}", daemon=True).start()
+    from contextvars import copy_context
+
+    threading.Thread(
+        target=copy_context().run, args=(_run,), name=f"tts-lease-{lease}", daemon=True
+    ).start()
 
 
 def _running_sessions() -> list:

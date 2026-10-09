@@ -213,6 +213,10 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Extend the `pre_verify` gate to text-response stops (turns that edited no files) so a
+        # hook can police the reply text itself (language, style, compliance); the hook scopes
+        # itself. Off by default: the hook call stays tied to edited-code turns, no default cost.
+        "pre_verify_text_stops": False,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

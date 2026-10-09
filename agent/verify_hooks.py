@@ -34,6 +34,18 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return DEFAULT_MAX_VERIFY_NUDGES
 
 
+def pre_verify_text_stops(config: Optional[dict[str, Any]] = None) -> bool:
+    """Opt-in: also fire the ``pre_verify`` gate on text-response stops.
+
+    With this on, registered ``pre_verify`` hooks see turns that ended with a text
+    answer and no file edits too — a hook that polices the reply text itself
+    (language, style, compliance) scopes itself; ``max_verify_nudges`` still caps
+    continuations. Off (default) keeps the gate tied to edited-code turns, so there
+    is no default continuation cost.
+    """
+    return is_truthy_value(_agent_cfg(config).get("pre_verify_text_stops"), default=False)
+
+
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Return the optional guidance appended to verification-stop nudges."""
     if not is_truthy_value(_agent_cfg(config).get("verify_guidance", True), default=True):
@@ -53,4 +65,4 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     return agent_cfg if isinstance(agent_cfg, dict) else {}
 
 
-__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges"]
+__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges", "pre_verify_text_stops"]

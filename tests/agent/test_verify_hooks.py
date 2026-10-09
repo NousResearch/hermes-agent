@@ -33,6 +33,20 @@ class TestMaxVerifyNudges:
         )
 
 
+class TestPreVerifyTextStops:
+    def test_default_off(self):
+        assert verify_hooks.pre_verify_text_stops({}) is False
+        assert verify_hooks.pre_verify_text_stops({"agent": {}}) is False
+
+    def test_reads_truthy_config(self):
+        assert verify_hooks.pre_verify_text_stops({"agent": {"pre_verify_text_stops": True}}) is True
+        assert verify_hooks.pre_verify_text_stops({"agent": {"pre_verify_text_stops": "yes"}}) is True
+
+    def test_not_truthy_is_false(self):
+        assert verify_hooks.pre_verify_text_stops({"agent": {"pre_verify_text_stops": "maybe"}}) is False
+        assert verify_hooks.pre_verify_text_stops({"agent": {"pre_verify_text_stops": 0}}) is False
+
+
 class TestCodingVerifyGuidance:
     def test_enabled_by_default(self):
         assert (

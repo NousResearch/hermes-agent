@@ -1272,6 +1272,7 @@ agent:
   verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
   max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  pre_verify_text_stops: false # Also fire the pre_verify gate on text-response stops (no file edits)
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
 ```
 

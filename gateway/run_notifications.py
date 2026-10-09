@@ -1102,26 +1102,28 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                      if name != primary and session_owned_by_profile(self.config, name, raw_sid)), None)
 
     def _resolve_injection_adapter(self, platform_name: str, source=None):
-        """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
-        Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
-        fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
+        """Resolve aliases within the receiving bot's adapter map, never a routed runtime's bot."""
         from gateway.delivery import resolve_delivery_transport
+        from gateway.session_identity import identity_of
         if source is not None:
             owner = self._transport_owner(source)
             if owner is not None:
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
-        # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
-        adapters = self._adapters_for_profile(getattr(source, "profile", None))
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+            profile = identity.transport_profile
+            adapters = (self._primary_adapters() if profile == (getattr(self, "_primary_profile_name", None) or "default")
+                        else self._profile_adapters_map().get(profile, {}))
+        else:
+            adapters = self._adapters_for_profile(getattr(source, "profile", None))
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:
             _transport = None
-        if _transport is not None:
-            return _transport.adapter
-        return next((a for p, a in adapters.items() if p.value == platform_name), None)
+        return (_transport.adapter if _transport is not None else
+                next((a for p, a in adapters.items() if p.value == platform_name), None))
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
@@ -1824,9 +1826,12 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                 return
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
-                await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
-                )
+                metadata = _non_conversational_metadata(send_meta, platform=platform_name)
+                send_for_platform = getattr(adapter, "send_for_platform", None)
+                if callable(send_for_platform):
+                    await send_for_platform(platform_name, chat_id, message_text, metadata=metadata)
+                else:
+                    await adapter.send(chat_id, message_text, metadata=metadata)
 
     @staticmethod
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
@@ -1983,14 +1988,11 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
                     from gateway.warning_notifications import present_notification
                     async with self._completion_event_scope(watcher):
-                        # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
                         await present_notification(
                             lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher, session),
                             platform=platform_name, diagnostic=session.exit_code not in {0, None})
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
-                # New output — deliver a status update (only in "all" mode; agent_notify watchers
-                # only care about completion).
                 await self._send_watcher_message(
                     platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher, session,
                 )

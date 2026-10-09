@@ -472,8 +472,10 @@ def _require_rendered_remote(server_name: str, config: dict) -> dict:
     unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
     if unresolved:
         refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
-        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
-                         ".env or secret source")
+        unset = ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                           ".env or secret source")
+        unset.failure_class = "missing_credentials"  # type: ignore[attr-defined]
+        raise unset
     return config
 
 

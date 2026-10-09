@@ -63,13 +63,14 @@ def _get_project_plugins_dir() -> Optional[Path]:
 
 
 def _is_memory_provider_dir(path: Path) -> bool:
-    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract."""
+    """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract.
+    A miss in the first 8 KB falls back to parsing, so a long module docstring cannot hide a provider."""
     init_file = path / "__init__.py"
     try:
         if not init_file.exists():
             return False
         source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
-        return "register_memory_provider" in source or "MemoryProvider" in source
+        return "register_memory_provider" in source or "MemoryProvider" in source or _defines_memory_provider(path)
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False

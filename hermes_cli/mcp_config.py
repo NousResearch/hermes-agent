@@ -802,10 +802,12 @@ def probe_failure_class(exc: BaseException) -> str:
 
     if tagged := tagged_failure_class(exc):
         return tagged
-    from tools.mcp_tool_errors import _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
+    from tools.mcp_tool_errors import InvalidMcpUrlError, _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
     from tools.mcp_tool_node_abi import NodeAbiMismatchError
     try:
         root = _unwrap_exception_group(exc)
+        if isinstance(root, InvalidMcpUrlError):  # the configured URL is not http(s)://host
+            return "config_invalid"
         if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
             return "auth_required"
         # A missing stdio command (FileNotFoundError) or a native module built for another Node.

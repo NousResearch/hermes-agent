@@ -57,9 +57,11 @@ def probe_with_rollback(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):
             details["initialized"] = False
-            raise RuntimeError(
+            no_token = RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
                 "this provider may require a manually-registered OAuth client.")
+            no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
+            raise no_token
     except Exception as exc:
         if not details.get("initialized"):
             undo()
@@ -178,6 +180,7 @@ def run_worker(
             if home_token is not None:
                 reset_hermes_home_override(home_token)
     except Exception as exc:
+        from hermes_cli.mcp_config import probe_failure_class
         from tools.mcp_dashboard_oauth import exception_message
         msg = exception_message(exc)
         with suppress(Exception):
@@ -185,7 +188,12 @@ def run_worker(
             msg = humanize_oauth_registration_error(
                 server_name, exc, server_url=cfg.get("url") if isinstance(cfg, dict) else None
             ) or msg
+        failure_class = probe_failure_class(exc)
+        if failure_class == "connect_failed" and server_name not in msg:  # e.g. a bare "Not Found"
+            msg = f"Could not connect to '{server_name}' ({msg}). Check its URL and that this machine can reach it."
         if flow is not None:
+            # Read by ``start``: its error is rebuilt from text, so the class rides on the flow.
+            flow.failure_class = failure_class
             flow.mark_error(msg)
     finally:
         if flow is not None:
@@ -340,7 +348,9 @@ def start(
                 auth_url=snapshot["authorization_url"], flow=flow,
                 detail=_ssh_detail(flow.redirect_uri) if client_redirect_uri is None else "")
         if snapshot.get("status") == "error":
-            raise RuntimeError(snapshot.get("error") or "the OAuth flow failed before authorization")
+            failed = RuntimeError(snapshot.get("error") or "the OAuth flow failed before authorization")
+            failed.failure_class = getattr(flow, "failure_class", None)  # type: ignore[attr-defined]
+            raise failed
         time.sleep(0.05)
     flow.mark_error("Timed out waiting for MCP authorization URL")
     raise TimeoutError(f"timed out waiting for the authorization URL for '{server_name}'")

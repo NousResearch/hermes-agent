@@ -131,7 +131,7 @@ def _write_dead_exe(target: Path, missing_python: Path) -> None:
 
 @pytest.mark.platforms("windows")  # PATHEXT picks .exe before .cmd on Windows only
 def test_dead_exe_never_shadows_kept_cmd(tmp_path, monkeypatch):
-    default_home, default_python = _make_home(tmp_path, "default")
+    _default_home, default_python = _make_home(tmp_path, "default")
     temp_home, _ = _make_home(tmp_path, "temp")
     repo = _make_repo(tmp_path)
     local = repo / ".hermes" / "bin"

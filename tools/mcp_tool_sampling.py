@@ -12,8 +12,6 @@ from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
-if TYPE_CHECKING:  # annotations only; mcp_tool imports this module, so a real import is circular
-    pass
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -50,7 +48,7 @@ def _tool_call_dict(tu, index: int) -> dict:
         "name": tu.name, "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
 
 
-def _convert_sampling_message(msg) -> List[dict]:
+def _convert_sampling_message(msg) -> list[dict]:
     """One MCP SamplingMessage -> OpenAI messages: tool results first, then either an assistant
     tool_calls message or plain content."""
     blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
@@ -108,7 +106,7 @@ class SamplingHandler:
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
         self.audit_level = self._LOG_LEVELS.get(str(config.get("log_level", "info")).lower(), logging.INFO)
-        self._rate_timestamps: List[float] = []
+        self._rate_timestamps: list[float] = []
         self._tool_loop_count = 0
         self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
 
@@ -128,7 +126,7 @@ class SamplingHandler:
         hints = getattr(preferences, "hints", None) or []
         return next((hint.name for hint in hints if getattr(hint, "name", None)), None)
 
-    def _convert_messages(self, params) -> List[dict]:
+    def _convert_messages(self, params) -> list[dict]:
         """MCP SamplingMessages -> OpenAI format (per-block duck-typed dispatch)."""
         return [m for msg in params.messages for m in _convert_sampling_message(msg)]
 

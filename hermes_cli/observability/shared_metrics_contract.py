@@ -678,12 +678,10 @@ DESKTOP_FRICTION_DETAILS: dict[str, frozenset[str]] = {
 DESKTOP_FRICTION_KINDS = frozenset(DESKTOP_FRICTION_DETAILS)
 DESKTOP_FRICTION_DETAIL_VALUES = frozenset().union(*DESKTOP_FRICTION_DETAILS.values())
 # The Desktop first-run flows: the classic provider overlay (store/onboarding.ts), the guided flow
-# (store/onboarding-gate.ts phases + committed guide cards), free-tier sign-in, then the consent
-# answer and the first message.
+# (store/onboarding-gate.ts phases), free-tier sign-in, then the consent answer and the first message.
 DESKTOP_ONBOARDING_STEPS = frozenset({
-    "choose_later", "consent", "first_message", "free_tier_ready", "guide", "guide_connectors",
-    "guide_first_build", "guide_layout", "guide_look", "guide_skip", "model_pick", "provider_api_key",
-    "provider_local", "provider_oauth", "provider_setup", "sign_in",
+    "choose_later", "consent", "first_message", "free_tier_ready", "guide", "guide_skip", "model_pick",
+    "provider_api_key", "provider_local", "provider_oauth", "provider_setup", "sign_in",
 })
 DESKTOP_ONBOARDING_EVENTS = frozenset({"abandoned", "completed", "reached"})
 # Bot Mode (a bot's canonical chat or a bot side-chat in front) vs regular Sessions mode, per day.

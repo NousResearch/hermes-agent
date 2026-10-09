@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "正在規劃：{task}"
     ack_conversation: "正在根據此對話的上下文進行規劃…"
+  initiate_setup:
+    ack: "正在開始設定…"
   init:
     start_failed: "無法啟動 /init — 請再試一次。"
     ack_update: "正在依專案掃描結果更新 AGENTS.md…"
@@ -1556,6 +1558,8 @@ slash:
     description: "在此工作階段以固定間隔重複執行提示"
   plan:
     description: "將 markdown 實作計畫寫入 .hermes/plans/，不執行任何動作"
+  initiate-setup:
+    description: "執行首次設定：了解你，並依你的需求設定 Hermes"
   moa:
     description: "以預設的 Mixture of Agents 預設組執行一次提示，然後還原你的模型"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 規劃中：{task}"
       from_conversation: "📋 正在根據這段對話的上下文進行規劃…"
+    initiate_setup:
+      starting: "🧭 正在開始設定..."
     init:
       updating: "⚡ 正在根據專案掃描更新 AGENTS.md…"
       generating: "⚡ 正在根據專案掃描產生 AGENTS.md…"

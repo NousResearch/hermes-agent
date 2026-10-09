@@ -37,7 +37,7 @@ def served_root(tmp_path, monkeypatch):
     (tmp_path / "locks").mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
-    import gateway.status as status
+    from gateway import status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     # Liveness is a VERIFIED identity: this pytest process stands in for the default gateway only
     # because its command line reads as one; any other PID keeps its real command line.
@@ -132,7 +132,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
     line is not a gateway's) must not make its ``served_profiles`` authoritative: bare PID existence
     once did, so `hermes -p coder gateway start` exited 78 for a multiplexer that was long gone."""
     import subprocess
-    import gateway.status as status
+    from gateway import status
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
     child = subprocess.Popen(["sleep", "60"])

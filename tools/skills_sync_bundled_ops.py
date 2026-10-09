@@ -107,14 +107,14 @@ def ensure_bundled_skill(name: str) -> dict:
     return {"ok": True, "action": "restored", "path": dest, "message": ""}
 
 
-def list_user_modified_bundled_skills() -> List[dict]:
+def list_user_modified_bundled_skills() -> list[dict]:
     """Bundled skills ``hermes update`` keeps because the user edited them (same test the sync
     loop uses). Name-sorted ``{"name", "dest", "bundled_src"}`` dicts."""
     ss = _ss()
     if not (manifest := ss._read_manifest()):
         return []
     bundled_dir = ss._get_bundled_dir()
-    modified: List[dict] = []
+    modified: list[dict] = []
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
         dest = ss._compute_relative_dest(skill_dir, bundled_dir)
@@ -123,7 +123,7 @@ def list_user_modified_bundled_skills() -> List[dict]:
     return sorted(modified, key=lambda e: e["name"])
 
 
-def _read_for_diff(path: Path) -> Tuple[Optional[bytes], Optional[str]]:
+def _read_for_diff(path: Path) -> tuple[Optional[bytes], Optional[str]]:
     """``(raw_bytes, text)`` for diffing; ``text=None`` for binary, ``(None, None)`` if unreadable."""
     try:
         data = path.read_bytes()
@@ -153,7 +153,7 @@ def diff_bundled_skill(name: str) -> dict:
         return _fail(True, f"No local copy of '{name}' found at {dest}.")
     user_files = set(_skill_file_list(dest))
     stock_files = set(_skill_file_list(bundled_src))
-    diffs: List[dict] = []
+    diffs: list[dict] = []
     for rel in sorted(user_files | stock_files):
         if rel not in stock_files:
             diffs.append({"path": rel, "status": "added", "diff": f"+ only in your copy: {rel}"})
@@ -211,8 +211,8 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     their manifest entry so a later opt-in re-seed treats them as new.
     Returns ``{ok, removed, skipped: [{name, reason}], dry_run, message}``."""
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
-    removed: List[str] = []
-    skipped: List[dict] = []
+    removed: list[str] = []
+    skipped: list[dict] = []
     for name, origin_hash in sorted(manifest.items()):
         src = bundled_by_name.get(name)
         if src is None:

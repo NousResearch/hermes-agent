@@ -354,7 +354,7 @@ class Spawned:
         return leaked
 
 
-_SID_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.M)
+_SID_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.MULTILINE)
 
 
 def run_oneshot(env: dict[str, str], cwd: Path, prompt: str, spawned: Spawned, *,

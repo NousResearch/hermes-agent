@@ -13,6 +13,9 @@ export const presentationEn = {
     agentRunning: (value: unknown) => `Agent Running: ${value}`
   },
   compression: {
+    refused: (before: unknown) =>
+      `Compression refused (summary would grow the conversation): ${before} messages preserved`,
+    refusedNote: 'The generated summary was larger than what it would replace; no messages were removed.',
     aborted: (before: unknown) => `Compression aborted: ${before} messages preserved`,
     fallback: (before: unknown, after: unknown) => `Compressed with fallback: ${before} → ${after} messages`,
     noop: (before: unknown) => `No changes from compression: ${before} messages`,

@@ -1,5 +1,6 @@
 import type { UsageModelData } from '@hermes/shared/billing'
 import type {
+  CompressionSummary,
   ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventName,
@@ -297,20 +298,7 @@ export interface SessionCompressResponse {
   info?: SessionInfo
   messages?: TranscriptMessage[]
   removed?: number
-  summary?: {
-    aborted?: boolean
-    after_count?: number
-    after_tokens?: number
-    before_count?: number
-    before_tokens?: number
-    dropped_count?: number
-    failure_reason?: null | string
-    fallback_used?: boolean
-    headline?: string
-    noop?: boolean
-    note?: null | string
-    token_line?: string
-  }
+  summary?: Partial<CompressionSummary>
   usage?: Usage
 }
 
@@ -321,6 +309,8 @@ export interface SessionBranchResponse {
 
 export interface SessionCloseResponse {
   closed?: boolean
+  /** Plugin `on_session_finalize` text for the user (shown as system lines, never a model turn). */
+  messages?: string[]
   ok?: boolean
 }
 

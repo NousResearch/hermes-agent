@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from tests.hermes_cli.test_update_pause_record import _child, _reap_children  # noqa: F401 - autouse reaper
+from tests.hermes_cli.test_update_pause_record import _child, _reap_children
 
 _UNIT = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.service", "pid": 4242}
 
@@ -139,8 +139,8 @@ def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     entry = {"pid": gateway.pid, "argv": ["hermes", "gateway", "run"], "home": str(home)}
-    monkeypatch.setattr(m, "_discover_systemd", lambda: [])
-    monkeypatch.setattr(m, "_discover_launchd", lambda: [])
+    monkeypatch.setattr(m, "_discover_systemd", list)
+    monkeypatch.setattr(m, "_discover_launchd", list)
     monkeypatch.setattr(m, "_discover_bare", lambda service_pids: ([dict(entry)], []))
     monkeypatch.setattr(m, "_stop_gateways", lambda *a: pytest.fail("a gateway was stopped without a record"))
     token = {**m._empty_token(), **prior}

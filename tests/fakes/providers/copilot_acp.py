@@ -153,7 +153,7 @@ class Agent:
     """One spawned agent process (one Hermes model call)."""
 
     def __init__(self, state_dir: Path):
-        import acp.schema as schema  # validation/building uses the published ACP models
+        from acp import schema  # validation/building uses the published ACP models
 
         self.s = schema
         self.state_dir = state_dir

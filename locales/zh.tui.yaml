@@ -1382,6 +1382,8 @@ compression.done: 已压缩：{0} → {1} 条消息
 compression.tokensUnchanged: 预计请求大小：约 {0} 个 token（未变化）
 compression.tokensChanged: 预计请求大小：约 {0} → 约 {1} 个 token
 compression.abortedNote: 摘要生成失败，未移除任何消息。
+compression.refused: 已拒绝压缩（摘要会使对话变大）：保留了 {0} 条消息
+compression.refusedNote: 生成的摘要比待替换内容更大，未移除任何消息。
 compression.fallbackNote: 摘要生成失败；Hermes 使用有限的降级上下文并移除了 {0} 条消息。
 compression.denseNote: 注意：压缩会把记录改写成更密集的摘要，因此消息变少后估算值仍可能升高。
 compression.reason: 原因：{0}

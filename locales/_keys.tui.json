@@ -194,6 +194,8 @@
   "compression.fallbackNote",
   "compression.noop",
   "compression.reason",
+  "compression.refused",
+  "compression.refusedNote",
   "compression.tokensChanged",
   "compression.tokensUnchanged",
   "connection.authorized.continue",

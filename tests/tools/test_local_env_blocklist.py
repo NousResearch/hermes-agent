@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal  # noqa: F401
+from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -787,7 +787,7 @@ class TestNativeEnvironmentContracts:
         runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
         identifies ``<repo>/venv`` as the Hermes runtime producer contract.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         repo_root = tmp_path / "hermes-agent"
@@ -817,7 +817,7 @@ class TestNativeEnvironmentContracts:
 
     def test_unrelated_virtual_env_is_not_runtime_provenance(self, tmp_path, monkeypatch):
         """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         repo_root = tmp_path / "hermes-agent"
@@ -1033,7 +1033,7 @@ class TestNativeEnvironmentContracts:
 
     def test_configured_home_alias_matches_launcher_output(self, tmp_path, monkeypatch):
         """The real producer spelling is derived and consumed end to end."""
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
         from hermes_cli.gateway_windows import _preserve_hermes_home_path
 
@@ -1082,7 +1082,7 @@ class TestNativeEnvironmentContracts:
         builder must still recover the lexical root so the inherited lexical
         repo-root entry is stripped.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
         from hermes_cli.profiles import resolve_profile_env
 
@@ -1127,7 +1127,7 @@ class TestNativeEnvironmentContracts:
         alias builder must recover the lexical spelling via exact-identity
         proof (strict resolve), not a name-based guess.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
@@ -1158,7 +1158,7 @@ class TestNativeEnvironmentContracts:
         is never aliased or stripped.  Exact filesystem identity decides,
         not the name; no ownership provenance means no strip.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
@@ -1187,7 +1187,7 @@ class TestNativeEnvironmentContracts:
         The root spelling must be derived (profiles -> grandparent) and then
         the lexical repo alias recovered from it.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
@@ -1219,7 +1219,7 @@ class TestNativeEnvironmentContracts:
         VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is
         stripped together with the repo root, while user entries survive.
         """
-        import tools.environments.local as local
+        from tools.environments import local
         from tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
@@ -1530,7 +1530,7 @@ class TestSanePathIncludesHomebrew:
         """
         from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
-        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", list)
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
@@ -1576,7 +1576,7 @@ class TestSanePathIncludesHomebrew:
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin",
                        **{k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HERMES_HOME")
                           if k in os.environ}}
-        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", list)
         with patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]

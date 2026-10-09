@@ -26,13 +26,10 @@
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
 import { ApiError } from "@/lib/api-error";
+import { shouldHideAuthWidget } from "./auth-widget-visibility";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 import { useI18n } from "@/i18n";
-
-/** Shown when /api/auth/me fails for a reason other than "not gated". */
-export const AUTH_STATUS_UNAVAILABLE_MESSAGE =
-  "Could not check who is signed in. Reload the page; if it persists, sign in again.";
 
 interface AuthWidgetProps {
   className?: string;
@@ -52,26 +49,25 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState(false);
 
-  // Loopback / --insecure mode: the auth gate is off, so /api/auth/me is a
-  // guaranteed 401. Don't fire the request at all — it only produces console
-  // noise ("Failed to load resource: 401") on every dashboard load.
-  const gated = typeof window !== "undefined" && !!window.__HERMES_AUTH_REQUIRED__;
-
   useEffect(() => {
-    if (!gated) return;
     let cancelled = false;
     api
       .getAuthMe()
       .then((data) => {
         if (cancelled) return;
+        if (shouldHideAuthWidget(data)) {
+          setHidden(true);
+          return;
+        }
         setMe(data);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         // 401/403 from /api/auth/me means the gate isn't engaged in this
-        // process (loopback mode) — render nothing. The global 401 handler
-        // only redirects on the structured envelope, so a plain 401 from
-        // /api/auth/me with no envelope bubbles up here as an ApiError.
+        // process (loopback mode) or the session is gone — render nothing.
+        // fetchJSON throws an ApiError whose humanized message no longer
+        // carries the status prefix, so read the status off the error
+        // object itself.
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           setHidden(true);
           return;
@@ -81,10 +77,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return () => {
       cancelled = true;
     };
-  }, [gated]);
-
-  // Nothing to show in ungated mode — there is no logged-in identity.
-  if (!gated) return null;
+  }, []);
 
   if (hidden) return null;
 

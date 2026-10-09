@@ -444,8 +444,10 @@ class Venv(StatePackage):
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check()
             if repair:
+                from pm.environments import venv_command
                 from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+                validate_environment(venv_command(project, candidate, ("-I",)),
+                                     env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise

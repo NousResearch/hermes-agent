@@ -189,7 +189,7 @@ _NOUS_EXTRA_STATE_KEYS = (
 )
 
 # ``replace(entry, **_CLEAR_STATUS)`` returns an entry with no error state.
-_CLEAR_STATUS: Dict[str, Any] = {
+_CLEAR_STATUS: dict[str, Any] = {
     "last_status": None,
     "last_status_at": None,
     "last_error_code": None,
@@ -197,7 +197,7 @@ _CLEAR_STATUS: Dict[str, Any] = {
     "last_error_message": None,
     "last_error_reset_at": None,
 }
-_MARK_OK: Dict[str, Any] = {**_CLEAR_STATUS, "last_status": STATUS_OK}
+_MARK_OK: dict[str, Any] = {**_CLEAR_STATUS, "last_status": STATUS_OK}
 
 
 def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
@@ -237,8 +237,8 @@ class PooledCredential:
     # A provider may rate-limit one model while the same credential remains
     # usable for its sibling models.  Keep that observation separate from the
     # credential-wide status used for auth and billing failures.
-    model_cooldowns: Optional[Dict[str, float]] = None
-    extra: Dict[str, Any] = None  # type: ignore[assignment]
+    model_cooldowns: Optional[dict[str, float]] = None
+    extra: dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.extra is None:
@@ -251,7 +251,7 @@ class PooledCredential:
         raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
 
     @classmethod
-    def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
+    def from_dict(cls, provider: str, payload: dict[str, Any]) -> "PooledCredential":
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
@@ -273,8 +273,8 @@ class PooledCredential:
         data.setdefault("access_token", "")
         return cls(provider=provider, **data)
 
-    def to_dict(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         for field_def in fields(self):
             if field_def.name in {"provider", "extra"}:
                 continue
@@ -327,7 +327,7 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
-def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
+def _codex_principal_identity(access_token: Any) -> Optional[tuple[str, str]]:
     """``(chatgpt_account_id, sub)`` of a Codex access token, or None when either claim is missing.
 
     Decoded without signature verification: this only decides whether two credentials Hermes
@@ -344,7 +344,7 @@ def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
     return account_id.strip(), subject.strip()
 
 
-def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: Dict[str, Any]) -> bool:
+def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: dict[str, Any]) -> bool:
     """Whether a Codex pool entry may adopt the auth.json singleton's token pair.
 
     ``device_code`` IS the singleton. ``manual:device_code`` is ambiguous: a legacy alias of the
@@ -361,7 +361,7 @@ def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: Dic
     return entry_identity is not None and entry_identity == _codex_principal_identity(singleton_tokens.get("access_token"))
 
 
-def _next_priority(entries: List[PooledCredential]) -> int:
+def _next_priority(entries: list[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
 
@@ -442,10 +442,10 @@ def _singleton_predates_entry(state: Any, entry: "PooledCredential") -> bool:
     return state_ts < entry_ts
 
 
-def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(error_context, dict):
         return {}
-    normalized: Dict[str, Any] = {}
+    normalized: dict[str, Any] = {}
     for key in ("reason", "message"):
         value = error_context.get(key)
         if isinstance(value, str) and value.strip():
@@ -510,7 +510,7 @@ def _iter_custom_providers(config: Optional[dict] = None):
             yield _normalize_custom_pool_name(entry["name"]), entry
 
 
-def _custom_entry_name_aliases(norm_name: str, entry: Dict[str, Any]) -> set:
+def _custom_entry_name_aliases(norm_name: str, entry: dict[str, Any]) -> set:
     aliases = {norm_name}
     provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
     if provider_key:
@@ -528,9 +528,9 @@ def _requested_custom_name_aliases(provider_name: str) -> set:
     return aliases
 
 
-def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[str]:
+def _pool_keys_for_custom_entry(norm_name: str, entry: dict[str, Any]) -> list[str]:
     """Durable ``providers.<key>`` slug first, then legacy ``custom:<name>``."""
-    keys: List[str] = []
+    keys: list[str] = []
     provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
     for key in (provider_key, f"{CUSTOM_POOL_PREFIX}{norm_name}" if norm_name else ""):
         normalized = key.strip().lower()
@@ -542,7 +542,7 @@ def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[s
 def custom_provider_pool_key_candidates(
     base_url: Optional[str],
     provider_name: Optional[str] = None,
-) -> List[str]:
+) -> list[str]:
     """Return pool keys to try for a custom endpoint.
 
     ``hermes auth add <key>`` stores ``providers.<key>`` credentials under the
@@ -578,7 +578,7 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
     return candidates[0] if candidates else None
 
 
-def list_custom_pool_providers() -> List[str]:
+def list_custom_pool_providers() -> list[str]:
     """Return all 'custom:*' pool keys that have entries in auth.json."""
     pool_data = read_credential_pool(None)
     return sorted(
@@ -589,7 +589,7 @@ def list_custom_pool_providers() -> List[str]:
     )
 
 
-def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
+def _get_custom_provider_config(pool_key: str) -> Optional[dict[str, Any]]:
     """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):
         return None
@@ -788,7 +788,7 @@ def _guarded_global_root(global_path: Optional[Path]) -> Optional[Path]:
 
 
 def _write_through_provider_state_to_global_root(
-    provider_id: str, state: Dict[str, Any]
+    provider_id: str, state: dict[str, Any]
 ) -> None:
     """Persist a rotated OAuth ``state`` into the global-root auth.json.
 
@@ -830,7 +830,7 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
         return None
 
 
-def _store_owns_pool_provider(auth_store: Dict[str, Any], provider: str) -> bool:
+def _store_owns_pool_provider(auth_store: dict[str, Any], provider: str) -> bool:
     """True when an already-loaded *auth_store* has its own rows for *provider*."""
     pool = auth_store.get("credential_pool")
     entries = pool.get(provider) if isinstance(pool, dict) else None
@@ -867,10 +867,10 @@ def _borrowed_single_use_pool_root() -> Optional[Path]:
 
 
 def _update_root_pool_rows(
-    provider: str, payloads: List[Dict[str, Any]], global_path: Path,
+    provider: str, payloads: list[dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
-    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
-) -> List[Dict[str, Any]]:
+    token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+) -> list[dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
     A borrower may refresh the root's rows (rotation, cooldown state) but
@@ -889,7 +889,7 @@ def _update_root_pool_rows(
         incoming_by_id = auth_mod._entry_ids(payloads)
         cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         bases = token_bases or {}
-        merged: List[Dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
             did = disk_entry.get("id") if isinstance(disk_entry, dict) else None
@@ -912,12 +912,12 @@ def _update_root_pool_rows(
 
 def persist_pool_entries(
     provider: str,
-    payloads: List[Dict[str, Any]],
+    payloads: list[dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
-    token_bases: Optional[Dict[str, Tuple[Any, Any]]] = None,
-) -> Optional[List[Dict[str, Any]]]:
+    token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+) -> Optional[list[dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
     A named profile that sees a single-use-refresh provider (see
@@ -958,7 +958,7 @@ def persist_pool_entries(
 # (Codex, xAI): log names (sync-message form, "<name> OAuth" form),
 # ``hermes_cli.auth`` refresh function and terminal-error predicate (looked
 # up at call time so tests can patch them).
-_TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
+_TOKENS_SINGLETON_PROVIDERS: dict[str, tuple[str, str, str, str]] = {
     "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
@@ -1005,21 +1005,21 @@ class _RefreshDone(Exception):
 
 
 class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         # Ids of rows read via the global-root fallback (single-use OAuth
         # providers only); set by load_pool(), consumed by add_entry().
-        self._borrowed_root_ids: Set[str] = set()
-        self._persisted_token_pairs: Dict[str, Tuple[Any, Any]] = {}
+        self._borrowed_root_ids: set[str] = set()
+        self._persisted_token_pairs: dict[str, tuple[Any, Any]] = {}
         self._strategy = get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
         # design) still serializes its pool mutations; in-lock callers
         # re-acquire reentrantly.
         self._lock = threading.RLock()
-        self._active_leases: Dict[str, int] = {}
+        self._active_leases: dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
         # Monotonic timestamp of the last "no available entries" log (see
         # NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS). Re-armed to None on every
@@ -1093,7 +1093,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             )
             return min(candidates) if candidates else None
 
-    def entries(self) -> List[PooledCredential]:
+    def entries(self) -> list[PooledCredential]:
         with self._lock:
             return list(self._entries)
 
@@ -1146,8 +1146,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _persist(
         self,
         *,
-        removed_ids: Optional[List[str]] = None,
-        status_cleared_ids: Optional[List[str]] = None,
+        removed_ids: Optional[list[str]] = None,
+        status_cleared_ids: Optional[list[str]] = None,
     ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
@@ -1186,7 +1186,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return self._find(lambda e: e.id == updated.id) or updated
         return updated
 
-    def _quarantine_sources(self, entry: PooledCredential, sources: Set[str]) -> None:
+    def _quarantine_sources(self, entry: PooledCredential, sources: set[str]) -> None:
         """Drop every entry seeded from *sources* and persist the removal.
 
         Atomic read-modify-write of ``self._entries``: this runs on the
@@ -1205,7 +1205,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _is_terminal_auth_failure(
         self,
         status_code: Optional[int],
-        normalized_error: Dict[str, Any],
+        normalized_error: dict[str, Any],
     ) -> bool:
         """Detect upstream-permanent OAuth failures that won't recover on TTL.
 
@@ -1225,7 +1225,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self,
         entry: PooledCredential,
         status_code: Optional[int],
-        error_context: Optional[Dict[str, Any]] = None,
+        error_context: Optional[dict[str, Any]] = None,
         *,
         persist: bool = True,
         failure_reason: Optional[str] = None,
@@ -1412,7 +1412,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "Pool entry %s: syncing %s tokens from auth.json (refreshed by another process)",
                     entry.id, display,
                 )
-                field_updates: Dict[str, Any] = {
+                field_updates: dict[str, Any] = {
                     "access_token": store_access or entry.access_token,
                     "refresh_token": store_refresh or entry.refresh_token,
                     **_CLEAR_STATUS,
@@ -1448,7 +1448,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if not any(v not in (None, "") and getattr(entry, k, None) != v for k, v in comparable.items()):
                 return entry
             logger.debug("Pool entry %s: syncing Nous state from auth.json", entry.id)
-            field_updates: Dict[str, Any] = dict(_CLEAR_STATUS)
+            field_updates: dict[str, Any] = dict(_CLEAR_STATUS)
             field_updates.update({k: v for k, v in comparable.items() if v})
             extra_updates = dict(entry.extra)
             extra_updates.update(
@@ -1502,7 +1502,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
-    def _apply_entry_to_singleton_state(self, entry: PooledCredential, state: Dict[str, Any]) -> bool:
+    def _apply_entry_to_singleton_state(self, entry: PooledCredential, state: dict[str, Any]) -> bool:
         """Copy *entry*'s tokens into the provider's auth.json ``state`` in place."""
         if self.provider == "nous":
             state["access_token"] = entry.access_token
@@ -1635,7 +1635,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 "message": f"rotated credential was not durably written to {store}: {exc}",
             },
         )
-        return None
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Configured refresh POST timeout plus margin, so a slow token endpoint cannot starve the flock."""
@@ -1644,7 +1643,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return max(float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
 
     def _commit_anthropic_rotation(
-        self, entry: PooledCredential, refreshed: Dict[str, Any]
+        self, entry: PooledCredential, refreshed: dict[str, Any]
     ) -> None:
         """Write a rotated Anthropic pair to its authoritative singleton, or fail closed.
 
@@ -2010,11 +2009,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self, *, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    def _select_under_lock(self, *, model: Optional[str] = None) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         with self._lock:
             return self._select_unlocked(model=model)
 
-    def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
+    def _refresh_pending_entries(self, pending: list[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
 
         Each refresh takes the cross-process ``_auth_store_lock`` (20+ s
@@ -2071,7 +2070,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
-    ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
+    ) -> tuple[list[PooledCredential], list[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
         *clear_expired* resets elapsed cooldowns to STATUS_OK and persists.
@@ -2083,9 +2082,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         now = time.time()
         cleared_any = False
-        entries_to_prune: List[str] = []
-        available: List[PooledCredential] = []
-        pending_refresh: List[PooledCredential] = []
+        entries_to_prune: list[str] = []
+        available: list[PooledCredential] = []
+        pending_refresh: list[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
@@ -2166,7 +2165,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
-    ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
@@ -2298,7 +2297,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self,
         *,
         status_code: Optional[int],
-        error_context: Optional[Dict[str, Any]] = None,
+        error_context: Optional[dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
@@ -2394,7 +2393,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _acquire_lease_under_lock(
         self, credential_id: Optional[str],
-    ) -> Tuple[Optional[str], List[PooledCredential]]:
+    ) -> tuple[Optional[str], list[PooledCredential]]:
         with self._lock:
             if credential_id:
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
@@ -2466,7 +2465,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 # --- Seeding --------------------------------------------------------------
 
 
-def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
+def _upsert_entry(entries: list[PooledCredential], provider: str, source: str, payload: dict[str, Any]) -> bool:
     matching_indices = [idx for idx, entry in enumerate(entries) if entry.source == source]
     existing_idx = matching_indices[0] if matching_indices else None
     duplicate_indices = set(matching_indices[1:])
@@ -2481,8 +2480,8 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         return True
 
     existing = entries[existing_idx]
-    field_updates: Dict[str, Any] = {}
-    extra_updates: Dict[str, Any] = {}
+    field_updates: dict[str, Any] = {}
+    extra_updates: dict[str, Any] = {}
     _field_names = {f.name for f in fields(existing)}
     incoming_token = payload.get("access_token")
     token_changed = incoming_token is not None and incoming_token != existing.access_token
@@ -2527,7 +2526,7 @@ _ANTHROPIC_SOURCE_RANK = {
 }
 
 
-def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -> bool:
+def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -> bool:
     if provider != "anthropic":
         return False
     manual_entries = sorted(
@@ -2551,7 +2550,7 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
-def _retain_sources_not_in(entries: List[PooledCredential], drop: Set[str]) -> bool:
+def _retain_sources_not_in(entries: list[PooledCredential], drop: set[str]) -> bool:
     """Remove entries whose source is in *drop*; True if anything was removed."""
     retained = [entry for entry in entries if entry.source not in drop]
     if len(retained) == len(entries):
@@ -2563,14 +2562,14 @@ def _retain_sources_not_in(entries: List[PooledCredential], drop: Set[str]) -> b
 class _Seeder:
     """Accumulates ``_upsert_entry`` results for one ``load_pool`` seeding pass."""
 
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self.entries = entries
         self.changed = False
-        self.active_sources: Set[str] = set()
+        self.active_sources: set[str] = set()
         self.is_suppressed = _is_source_suppressed_fn()
 
-    def upsert(self, source: str, payload: Dict[str, Any]) -> bool:
+    def upsert(self, source: str, payload: dict[str, Any]) -> bool:
         """Upsert unless suppressed (``hermes auth remove`` must stay stable across loads)."""
         if self.is_suppressed(self.provider, source):
             return False
@@ -2580,7 +2579,7 @@ class _Seeder:
         return ingested
 
     @property
-    def result(self) -> Tuple[bool, Set[str]]:
+    def result(self) -> tuple[bool, set[str]]:
         return self.changed, self.active_sources
 
 
@@ -2638,7 +2637,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
             })
 
 
-def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
+def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     state, source_path = _load_provider_state_with_source(auth_store, "nous")
     if owned_profile_reads_root_state(auth_store, "nous", source_path):
         # e.g. an agent_key-only row surviving a fork strip/heal
@@ -2676,7 +2675,7 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
 
 
 # Warn once per token per process when Copilot exchange degrades to raw token (#114740).
-_COPILOT_RAW_DEGRADATION_WARNED: Set[str] = set()
+_COPILOT_RAW_DEGRADATION_WARNED: set[str] = set()
 
 
 def _warn_copilot_raw_degradation_once(token: str) -> None:
@@ -2795,7 +2794,7 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
         logger.debug("MiniMax OAuth token seed failed: %s", exc)
 
 
-def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
+def _seed_tokens_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     """Codex / xAI: surface the auth.json ``providers.<id>.tokens`` singleton as ``device_code``.
 
     Hermes owns its own Codex auth state and does NOT auto-import
@@ -2825,7 +2824,7 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
-def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     seed = _Seeder(provider, entries)
     auth_store = _load_auth_store()
     if provider == "anthropic":
@@ -2867,7 +2866,7 @@ def get_env_prefer_dotenv(key: str) -> str:
 
 # Providers already warned about env-key -> pool ingestion, once per process
 # (#81952 expected-behavior #3).
-_ENV_INGESTION_WARNED: Set[str] = set()
+_ENV_INGESTION_WARNED: set[str] = set()
 
 
 def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
@@ -2892,8 +2891,8 @@ def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
     )
 
 
-def _env_payload(*, env_var: str, token: str, base_url: str) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+def _env_payload(*, env_var: str, token: str, base_url: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "auth_type": AUTH_TYPE_API_KEY,
         "access_token": token,
         "base_url": base_url,
@@ -2917,7 +2916,7 @@ _ENV_BASE_URL_RESOLVERS = {
 }
 
 
-def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
+def _env_key_var_candidates(env_vars: list[str], entries: list[PooledCredential]) -> list[str]:
     """*env_vars*, their numbered siblings, and the ``env:VAR`` names already persisted.
 
     ``VAR_2``, ``VAR_3``, ... are tried for every declared VAR until the first
@@ -2944,7 +2943,7 @@ def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]
     return names
 
 
-def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_from_env(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     seed = _Seeder(provider, entries)
     # Copilot's singleton branch exchanges the raw ghu_ OAuth token for the
     # api token via `get_copilot_api_token`; the generic loop would re-read
@@ -2989,8 +2988,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
 
 def _prune_stale_seeded_entries(
-    entries: List[PooledCredential],
-    active_sources: Set[str],
+    entries: list[PooledCredential],
+    active_sources: set[str],
     *,
     prune_env_sources: bool = True,
 ) -> bool:
@@ -3015,7 +3014,7 @@ def _prune_stale_seeded_entries(
     return True
 
 
-def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     """Seed a custom endpoint pool from custom_providers config and model config."""
     seed = _Seeder(pool_key, entries)
 

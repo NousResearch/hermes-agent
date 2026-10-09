@@ -23,7 +23,7 @@ from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
-from tests.pm._fixtures import isolated_python  # noqa: F401
+from tests.pm._fixtures import isolated_python
 
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home
@@ -537,7 +537,7 @@ def test_reexec_activates_generation_before_the_callers_own_imports(
 def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path, isolated_python, argv):
     """An update whose dependency sync cannot finish (offline, bad lock) must leave a usable
     CLI on the previous generation with a warning — and a metadata query must not even try."""
-    root, store_python, worker_command = source_launch
+    root, _store_python, worker_command = source_launch
     repository = Path(__file__).resolve().parents[2]
     shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
     (root / "launch_test_tools.py").write_text(
@@ -625,7 +625,7 @@ def test_capped_completion_attempts_leave_marker_for_explicit_update(source_laun
     """Past the retry cap a launch must NOT re-run the tail; it keeps the pending marker
     and points the operator at `hermes update` instead of burning another doomed attempt."""
     root, store_python, _ = source_launch
-    from hermes_cli.venv_sync import (  # noqa: F401 — import for the paths under test
+    from hermes_cli.venv_sync import (
         _completion_attempts_path,
         arm_completion,
         completion_pending_path,

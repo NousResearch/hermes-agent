@@ -219,10 +219,10 @@ class CompressionFacadeMixin:
     """``_compress_context`` (see module docstring)."""
 
     def _compress_context(
-        self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default",
-        focus_topic: str = None, force: bool = False, bypass_cooldown: bool = False,
-        defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list = None,
-        trigger: str = None, snapshot_is_current=None,
+        self, messages: list, system_message: str, *, approx_tokens: int | None = None, task_id: str = "default",
+        focus_topic: str | None = None, force: bool = False, bypass_cooldown: bool = False,
+        defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list | None = None,
+        trigger: str | None = None, snapshot_is_current=None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``

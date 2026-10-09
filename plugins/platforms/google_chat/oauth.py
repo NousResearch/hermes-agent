@@ -37,7 +37,7 @@ _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
 # Least privilege: chat.messages.create covers BOTH media.upload and the
 # subsequent messages.create; no drive.file or other scopes.
-SCOPES: List[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
+SCOPES: list[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
 
 # Declared extras (pyproject) and the exact pins they carry; the pins double as the
 # staleness probe so a half-synced interpreter is repaired instead of trusted.
@@ -160,7 +160,7 @@ def build_user_chat_service(creds: Any) -> Any:
     return build_service("chat", "v1", credentials=creds, cache_discovery=False)
 
 
-def list_authorized_emails() -> List[str]:
+def list_authorized_emails() -> list[str]:
     """Sanitized emails with stored per-user tokens (admin display only, not trust;
     excludes the legacy single-user token whose owner is unknown)."""
     d = _user_tokens_dir()
@@ -218,7 +218,7 @@ def _ensure_deps() -> None:
         sys.exit(1)
 
 
-def _missing_required_packages() -> List[str]:
+def _missing_required_packages() -> list[str]:
     """Return exact requirements absent or stale in this interpreter."""
     missing = []
     for spec in _REQUIRED_PACKAGES:
@@ -313,7 +313,7 @@ def _callback_params(code_or_url: str) -> Optional[dict]:
     return parse_qs(urlparse(code_or_url).query)
 
 
-def _extract_code_and_state(code_or_url: str) -> Tuple[str, Optional[str]]:
+def _extract_code_and_state(code_or_url: str) -> tuple[str, Optional[str]]:
     """Accept a raw auth code OR the full failed-redirect URL the user pastes."""
     params = _callback_params(code_or_url)
     if params is None:

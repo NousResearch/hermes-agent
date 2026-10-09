@@ -63,12 +63,17 @@ def _session_mutation_context(request, profile):
 
     native = getattr(request.state, 'native_http_principal', None)
     session = getattr(request.state, 'session', None)
+    token = getattr(request.state, 'token_principal', None)
     if native is not None:
         subject = native['subject']
     elif session is not None:
         from gateway.owner_identity import principal_subject
         subject = principal_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
+    elif token is not None and 'dashboard:admin' in (getattr(token, 'scopes', ()) or ()):
+        # A verified admin-tier dashboard token (e.g. the Telegram Mini App); other tokens never mutate.
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({"user_id": token.principal, "provider": token.provider})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
         from gateway.owner_identity import host_owner_subject
         subject = host_owner_subject()
@@ -410,13 +415,14 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
 
 def _listing_filters(*, source=None, sources=None, exclude_sources=None, cwd_prefix=None, min_message_count: int = 0,
                      include_archived: bool = False, archived_only: bool = False,
-                     include_subagents: bool = False) -> dict:
+                     include_subagents: bool = False, own_dm_of: str | None = None) -> dict:
     """The filter fields ``SessionQuery`` and ``SessionCountQuery`` share for the dashboard's listing filters;
     ``source`` wins over ``sources``."""
     return dict(
         sources=(source,) if source else (tuple(sources) if sources else None),
         exclude_sources=tuple(exclude_sources or ()), cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-        include_archived=include_archived, archived_only=archived_only, include_subagents=include_subagents)
+        include_archived=include_archived, archived_only=archived_only, include_subagents=include_subagents,
+        own_dm_of=own_dm_of)
 
 
 def _session_rows(store, *, limit: int, offset: int = 0, order_by_last_active: bool = False,

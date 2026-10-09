@@ -865,7 +865,7 @@ def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path
         response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
         assert response.status_code == 403, repr(target)
 
-    async def detail(session_id, profile=None):  # ... or, with a session, against its cwd
+    async def detail(request, session_id, profile=None):  # ... or, with a session, against its cwd
         return {"id": session_id, "cwd": str(tmp_path)}
 
     monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
@@ -1308,7 +1308,7 @@ def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
 
 
 def _session_detail(cwds: dict):
-    async def fake_detail(session_id, profile=None):
+    async def fake_detail(request, session_id, profile=None):
         return {"cwd": cwds[session_id], "id": session_id}
 
     return fake_detail

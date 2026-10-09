@@ -15,13 +15,19 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from persistence.core.errors import CorruptStoreError, PermanentStoreError
 
 from hermes_cli import web_server
 import hermes_cli.web_server_sessions as _web_server_sessions
 from hermes_cli.web_routers import sessions as sessions_router
+
+# get_session_detail/delete_session_endpoint/rename_session_endpoint are admin-gated
+# (_require_dashboard_admin) since the Mini App tiered access control landed; a bare Request with
+# no request.state.token_principal set resolves to the cookie/session caller's unrestricted scope,
+# same as these direct calls always got before that gate existed.
+_FAKE_REQUEST = Request(scope={"type": "http", "headers": []})
 
 
 class _Store:
@@ -52,7 +58,7 @@ def malformed_db(monkeypatch):
 @pytest.mark.asyncio
 async def test_corrupt_db_is_not_reported_as_missing_session(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     assert excinfo.value.status_code != 404, (
         "corruption reported as 'Session not found' - this is the bug"
@@ -63,7 +69,7 @@ async def test_corrupt_db_is_not_reported_as_missing_session(malformed_db):
 @pytest.mark.asyncio
 async def test_corrupt_db_detail_names_the_real_cause(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     detail = str(excinfo.value.detail).lower()
     assert "corrupt" in detail or "malformed" in detail
@@ -72,7 +78,7 @@ async def test_corrupt_db_detail_names_the_real_cause(malformed_db):
 @pytest.mark.asyncio
 async def test_db_is_closed_even_when_corruption_raises(malformed_db):
     with pytest.raises(HTTPException):
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
 
     assert malformed_db.closed, "connection leaked on the corruption path"
 
@@ -89,7 +95,7 @@ async def test_db_is_closed_even_when_corruption_raises(malformed_db):
 async def test_messages_endpoint_reports_corruption(malformed_db):
     with pytest.raises(HTTPException) as excinfo:
         await sessions_router.get_session_messages(
-            "20260830_180820_744f05", None, None, 0, None, False
+            _FAKE_REQUEST, "20260830_180820_744f05", None, None, 0, None, False
         )
     assert excinfo.value.status_code == 503
 
@@ -159,7 +165,7 @@ async def test_absent_session_is_still_404(monkeypatch):
         lambda profile, *, read_only: _Store(lambda sid: None),
     )
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("does_not_exist")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "does_not_exist")
     assert excinfo.value.status_code == 404
 
 
@@ -178,7 +184,7 @@ async def test_non_corruption_database_error_is_not_swallowed(monkeypatch):
         lambda profile, *, read_only: _Store(_other_error_lookup),
     )
     with pytest.raises(PermanentStoreError) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
     assert not isinstance(excinfo.value, CorruptStoreError)
 
 
@@ -208,7 +214,7 @@ def real_store_whose_lookup_raises(monkeypatch, tmp_path):
 async def test_malformed_file_error_from_the_backend_is_503(real_store_whose_lookup_raises):
     real_store_whose_lookup_raises("database disk image is malformed")
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
     assert excinfo.value.status_code == 503
     assert "malformed" in str(excinfo.value.detail).lower()
 
@@ -217,6 +223,6 @@ async def test_malformed_file_error_from_the_backend_is_503(real_store_whose_loo
 async def test_unrelated_database_error_from_the_backend_is_not_relabelled(real_store_whose_lookup_raises):
     real_store_whose_lookup_raises("some unrelated database failure")
     with pytest.raises(PermanentStoreError) as excinfo:
-        await sessions_router.get_session_detail("20260830_180820_744f05")
+        await sessions_router.get_session_detail(_FAKE_REQUEST, "20260830_180820_744f05")
     assert not isinstance(excinfo.value, CorruptStoreError)
     assert isinstance(excinfo.value.__cause__, sqlite3.DatabaseError)

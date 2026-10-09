@@ -866,6 +866,7 @@ class SQLiteSessionRepository:
                 compact_rows=compact_rows, include_pinned=query.include_pinned, session_key=query.session_key,
                 include_hidden=query.include_hidden, include_subagents=query.include_subagents,
                 local_created_sources=_optional_list(query.local_created_sources), workspace_key=query.workspace_key,
+                own_dm_of=query.own_dm_of,
             )
         return tuple(_list_entry(holder, row, compact=compact_rows) for row in rows)
 
@@ -930,6 +931,7 @@ class SQLiteSessionRepository:
                 include_archived=query.include_archived, archived_only=query.archived_only,
                 exclude_children=query.exclude_children, exclude_sources=_listed(query.exclude_sources),
                 include_subagents=query.include_subagents, local_created_sources=_optional_list(query.local_created_sources),
+                own_dm_of=query.own_dm_of,
             ))
 
     def count_at_least(self, minimum: int = 1) -> bool:

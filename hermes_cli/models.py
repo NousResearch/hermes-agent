@@ -2245,6 +2245,11 @@ def _fetch_anthropic_models(
 
     url = _anthropic_models_url(resolved_base_url)
     try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+
+        # Match inference's endpoint-scoped headers, using the pool endpoint if it won
+        # credential resolution. Reuse the same headers for retries and every page.
+        headers.update(get_custom_provider_extra_headers(resolved_base_url or "https://api.anthropic.com"))
         try:
             data = _get_json(url, timeout=timeout, headers=headers)
         except urllib.error.HTTPError as http_err:

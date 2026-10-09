@@ -116,10 +116,27 @@ class CredentialPoolSelectionMixin:
         ):
             raise RuntimeError("stale credential selection ticket")
 
+    def _validate_current_selection_candidate(
+        self,
+        ticket: CredentialSelectionTicket,
+    ) -> None:
+        """Revalidate the prepared identity after owner refresh work completes."""
+        from agent.credential_pool_reclaim import _eligible
+
+        current = next(
+            (entry for entry in self._entries if entry.id == ticket._candidate_id),
+            None,
+        )
+        if (
+            current is None
+            or not _eligible(self, current, ticket._model)
+            or self._entry_needs_refresh(current)
+        ):
+            raise RuntimeError("prepared credential is no longer selectable")
+
     def _commit_credential_selection_ticket(
         self, ticket: CredentialSelectionTicket,
     ) -> Any:
-        entry = None
         with self._lock:
             self._validate_selection_basis(ticket)
             available, pending_refresh = self._available_entries(
@@ -129,16 +146,14 @@ class CredentialPoolSelectionMixin:
             )
             available_ids = {candidate.id for candidate in available}
             pending_ids = {candidate.id for candidate in pending_refresh}
-            if ticket._candidate_id in available_ids:
-                entry, pending_refresh = self._select_ticket_candidate_locked(ticket)
-            elif ticket._candidate_id not in pending_ids:
+            if ticket._candidate_id not in available_ids | pending_ids:
                 raise RuntimeError("prepared credential is no longer selectable")
 
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
-        if entry is None:
-            with self._lock:
-                entry, _ = self._select_ticket_candidate_locked(ticket)
+        with self._lock:
+            self._validate_current_selection_candidate(ticket)
+            entry = self._select_ticket_candidate_locked(ticket)
         if entry is None or entry.id != ticket._candidate_id:
             raise RuntimeError("prepared credential is no longer selectable")
         ticket.candidate = entry
@@ -147,17 +162,20 @@ class CredentialPoolSelectionMixin:
     def _select_ticket_candidate_locked(
         self,
         ticket: CredentialSelectionTicket,
-    ) -> tuple[Any, list[Any]]:
+    ) -> Any:
         """Own one selection delta while validation/selection stay atomic."""
         ticket._owned_before_projection = _selection_projection(self)
         try:
             entry, pending_refresh = self._select_unlocked(
+                refresh=False,
                 model=ticket._model,
                 preferred_id=ticket._candidate_id,
             )
+            if pending_refresh:
+                raise RuntimeError("credential refresh remained pending after preflight")
             if entry is not None:
                 self._unmatched_rotation_streak = 0
-            return entry, pending_refresh
+            return entry
         finally:
             # Selection may raise after partially changing bookkeeping.  The
             # immediate before/after pair contains only this ticket's atomic

@@ -11,6 +11,7 @@ exhausting remaining entries and falling through to cross-provider fallback.
 import time
 from unittest.mock import MagicMock
 
+import pytest
 
 from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
@@ -218,6 +219,78 @@ class TestRestorePrimaryPoolReselect:
             (entry.id, entry.priority, entry.request_count)
             for entry in pool.entries()
         ] == interleaved_state["rows"]
+
+
+    def test_selection_abort_keeps_other_refresh_but_removes_owned_rotation(
+        self,
+        monkeypatch,
+    ):
+        """A downstream failure preserves refreshed tokens, not failed selection state."""
+        from agent.agent_runtime_helpers import _CredentialRevertTransitionTicket
+
+        pool = _build_mock_pool(
+            [
+                _make_entry("entry-1", "key-1", priority=0),
+                _make_entry("entry-2", "stale-key-2", priority=1),
+            ],
+            strategy="round_robin",
+        )
+        monkeypatch.setattr(pool, "_persist", MagicMock())
+        monkeypatch.setattr(
+            pool,
+            "_entry_needs_refresh",
+            lambda entry: (
+                entry.id == "entry-2"
+                and entry.access_token != "refreshed-key-2"
+            ),
+        )
+        refresh_calls = []
+
+        def refresh_other_entry(entry, *, force):
+            assert force is False
+            refresh_calls.append(entry.id)
+            return pool._adopt(
+                entry,
+                persist=False,
+                access_token="refreshed-key-2",
+                refresh_token="refreshed-rt-2",
+            )
+
+        monkeypatch.setattr(pool, "_refresh_entry", refresh_other_entry)
+        selection_ticket = pool.prepare_selection(model="gpt-5.5")
+        assert selection_ticket is not None
+        assert selection_ticket.candidate.id == "entry-1"
+
+        class FailingSwapTicket:
+            def __init__(self):
+                self.abort_calls = 0
+
+            def commit(self, _entry):
+                raise RuntimeError("downstream swap failed")
+
+            def abort(self):
+                self.abort_calls += 1
+
+        swap_ticket = FailingSwapTicket()
+        owner_ticket = _CredentialRevertTransitionTicket(
+            selection_ticket,
+            swap_ticket,
+        )
+
+        with pytest.raises(RuntimeError, match="downstream swap failed"):
+            owner_ticket.commit()
+        owner_ticket.abort()
+
+        rows = pool.entries()
+        assert refresh_calls == ["entry-2"]
+        assert swap_ticket.abort_calls == 1
+        assert pool.current() is None
+        assert [entry.id for entry in rows] == ["entry-1", "entry-2"]
+        assert [entry.request_count for entry in rows] == [0, 0]
+        assert [entry.priority for entry in rows] == [0, 1]
+        refreshed = next(entry for entry in rows if entry.id == "entry-2")
+        assert refreshed.access_token == "refreshed-key-2"
+        assert refreshed.refresh_token == "refreshed-rt-2"
 
 
 

@@ -30,6 +30,8 @@ class TurnContext:
     log_queue: Any = None
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
+    last_progress_call_id: list = field(default_factory=lambda: [None])
+    progress_replayed_call_ids: set[str] = field(default_factory=set)
     last_tool: list = field(default_factory=lambda: [None])
     last_was_terminal_block: list = field(default_factory=lambda: [False])
     repeat_count: list = field(default_factory=lambda: [0])

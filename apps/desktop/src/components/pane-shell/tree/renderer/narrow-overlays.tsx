@@ -40,7 +40,11 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
   }
 
   const zone = findGroupOfPane(tree, revealed.id)
-  const track = zone ? fixedTrackSize(zone, 'row', ctx) : null
+  // A minimized zone's docked track is the 28px rail (MINIMIZED_TRACK) — but
+  // the overlay is a REVEAL, not the rail: sizing it from the minimized track
+  // rendered an unreadable sliver. Resolve the zone as if open; the reveal is
+  // exactly the gesture that restores its real width.
+  const track = zone ? fixedTrackSize({ ...zone, minimized: false }, 'row', ctx) : null
 
   return track ?? paneChrome(revealed).width ?? '18rem'
 }
@@ -54,6 +58,15 @@ export function NarrowOverlays() {
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+  const revealRef = useRef(reveal)
+  revealRef.current = reveal
+
+  // Hover hysteresis. The overlay opens OVER the 6px intent strip, so every
+  // dismissal re-exposes the strip under the cursor and the next mouse move
+  // re-fires mouseenter — the sidebar popped back exactly where the user was
+  // trying to work ("overstays its welcome"). After a dismissal the edge
+  // stays closed until the pointer LEAVES the edge zone, which re-arms it.
+  const hoverArmed = useRef(true)
 
   // The revealed overlay spans the full viewport height (inset-y-0 below), so
   // its tab strip starts at the top edge — under the native window controls
@@ -72,12 +85,39 @@ export function NarrowOverlays() {
       return
     }
 
+    if (!revealRef.current?.pinned) {
+      hoverArmed.current = false
+    }
+
     setReveal(current => (current?.pinned ? current : null))
   }, [])
 
+  // Click-outside dismissal for hover reveals: a hover reveal is ambient, so
+  // working in the chat should close it. A pinned reveal (⌘B / titlebar
+  // 'open') is explicit intent and survives clicks elsewhere.
+  const revealActive = reveal !== null
+  useEffect(() => {
+    if (!revealActive) {
+      return
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target
+
+      if (target instanceof Element && target.closest('[data-narrow-overlay], [data-pane-overlay]')) {
+        return
+      }
+
+      setReveal(current => (current?.pinned ? current : null))
+    }
+
+    window.addEventListener('pointerdown', onPointerDown, true)
+
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [revealActive])
+
   // Own an Escape layer only while something is revealed, so Escape closes the
   // overlay only when it's the top layer (never under a dialog / edit mode).
-  const revealActive = reveal !== null
   useEffect(() => (revealActive ? pushEscapeLayer(ESCAPE_PRIORITY.narrowOverlay) : undefined), [revealActive])
 
   const inTree = useMemo(() => new Set(tree ? allPaneIds(tree) : []), [tree])
@@ -191,13 +231,22 @@ export function NarrowOverlays() {
       {sides.map(side => (
         <div
           className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
+          data-narrow-edge={side}
           key={side}
           onMouseEnter={() => {
+            if (!hoverArmed.current) {
+              return
+            }
+
             const first = collapsibles.find(p => sideOf(p) === side)
 
             if (first) {
               setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))
             }
+          }}
+          // Leaving the edge zone re-arms hover intent (see hoverArmed).
+          onMouseLeave={() => {
+            hoverArmed.current = true
           }}
         />
       ))}

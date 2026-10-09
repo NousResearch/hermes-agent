@@ -269,9 +269,10 @@ def publish_attempt(agent: Any, record: dict[str, Any]) -> None:
         ), turn_session_id=_turn_session_id(agent))
 
 
-def publish_micro(record: dict[str, Any]) -> None:
-    """Publish one micro-compaction pass record. The finalizer never runs micro-compaction for a fork."""
-    _publish(micro_payload, record)
+def publish_micro(record: dict[str, Any], *, turn_session_id: str | None = None) -> None:
+    """Publish one micro-compaction pass record. The finalizer never runs micro-compaction for a fork, and passes
+    the session its turn started in (``_turn_session_id``) because the pass may run in a rotated child."""
+    _publish(micro_payload, record, turn_session_id=turn_session_id)
 
 
 def publish_prune(agent: Any, messages: list, pruned: list, tool_results_pruned: int) -> None:

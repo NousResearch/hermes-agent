@@ -166,8 +166,9 @@ The mark is parented to the live `hermes.turn` of the same session, or to the
 With `compression.in_place: false`, a rotating commit moves the agent to a
 child session that has no Relay scope until a later Relay-managed LLM call or
 the next turn opens one. While it has none, a compaction in the child (a
-second preflight pass, for example) is parented to the live `hermes.turn` the
-agent started in, and `data.session_id` still names the child. No mark is
+second preflight pass, or the micro-compaction pass that runs before the turn
+ends) is parented to the live `hermes.turn` the agent started in, and
+`data.session_id` still names the child. No mark is
 emitted from a turn Relay does not instrument (a second concurrent turn on the
 same session) or from a persistence-detached fork such as background review:
 their compaction rewrites only their own transcript.

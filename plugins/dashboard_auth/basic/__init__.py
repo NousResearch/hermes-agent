@@ -59,7 +59,7 @@ def hash_password(password: str) -> str:
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt_b64}${dk_b64}"
 
 
-def _verify_password(password: str, encoded: str) -> bool:
+def verify_password(password: str, encoded: str) -> bool:
     """Constant-time scrypt verify. False on any malformed hash string."""
     try:
         scheme, n_s, r_s, p_s, salt_b64, dk_b64 = encoded.split("$")
@@ -141,7 +141,7 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         # and compare the username with compare_digest too, so neither the username nor
         # its length leaks via timing.
         username_ok = hmac.compare_digest(username.encode("utf-8"), self._username.encode("utf-8"))
-        password_ok = _verify_password(password, self._password_hash if username_ok else _DUMMY_HASH)
+        password_ok = verify_password(password, self._password_hash if username_ok else _DUMMY_HASH)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")
         return self._mint_session(self._username)

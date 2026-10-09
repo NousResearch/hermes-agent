@@ -9,6 +9,7 @@ the same way.
 """
 import logging
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -67,7 +68,7 @@ def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     # No plugin registers any platform here, so a None adapter is the "plugin never registered" case.
     monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
     runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
-    monkeypatch.setattr(runner, "_create_adapter", create_adapter)
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=create_adapter))
 
     async def _no_secondary_profiles():
         return 0
@@ -122,7 +123,7 @@ async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, 
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _HealthyAdapter())
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, platform_config: _HealthyAdapter()))
 
     async def _no_secondary_profiles():
         return 0

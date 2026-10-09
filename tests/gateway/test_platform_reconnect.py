@@ -112,7 +112,7 @@ class TestStartupPlatformIsolation:
             Platform.TELEGRAM: StubAdapter(platform=Platform.TELEGRAM),
             Platform.FEISHU: StubAdapter(platform=Platform.FEISHU),
         }
-        runner._create_adapter = MagicMock(
+        runner._create_adapter = AsyncMock(
             side_effect=lambda platform, _config: adapters[platform]
         )
         runner._connect_adapter_with_timeout = AsyncMock(
@@ -382,7 +382,7 @@ class TestPlatformReconnectWatcher:
             threading.current_thread() is threading.main_thread()) or True
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda p, c: adapter if rearmed and healed else None))
         monkeypatch.setattr("gateway.platform_registry.platform_registry.get",
                             lambda name: on_loop.append(threading.current_thread() is threading.main_thread()))
 
@@ -536,7 +536,7 @@ class TestReconnectKeepsInboundDedup:
             return failed, success
 
         runner._redeliver_failed_obligations_for_platform = AsyncMock(side_effect=asyncio.CancelledError)
-        runner._create_adapter = MagicMock(return_value=failed)
+        runner._create_adapter = AsyncMock(return_value=failed)
         runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a: setattr(runner, "_running", False))
         if mode != "connect-raises":  # stub the attempt; connect-raises runs the real one's own teardown
             runner._secondary_reconnect_attempt = attempt

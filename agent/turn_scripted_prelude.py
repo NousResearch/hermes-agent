@@ -21,7 +21,7 @@ from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
-Prelude = Generator[tuple[str, str, dict], Optional[str]]
+Prelude = Generator[tuple[str, str, dict], Optional[str], None]
 
 
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:

@@ -2099,6 +2099,13 @@ DEFAULT_CONFIG = {
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
 
+        # Set false when the Windows gateway Scheduled Task is deliberately registered in a custom
+        # shape (boot trigger, service-account principal, non-template launcher): start/update
+        # reconciliation then leaves the registration alone and status prints a neutral note
+        # instead of the repair hint. An explicit `hermes gateway install` still rewrites the
+        # task on demand. Unreadable config fails closed (no rewrite either).
+        "windows_task_reconcile": True,
+
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

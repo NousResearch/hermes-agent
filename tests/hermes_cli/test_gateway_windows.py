@@ -656,6 +656,9 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     """The Windows sibling of ``refresh_systemd_unit_if_needed`` (#113670): a pre-hardening
     registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the
     logon ``Delay`` reach existing installs), while an aligned one is left alone."""
+    from hermes_cli import config
+
+    monkeypatch.setattr(config, "load_config", lambda: {})  # policy default (True) keeps reconcile armed
     script_path = tmp_path / "gateway.cmd"
     launcher = script_path.with_suffix(".vbs")
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
@@ -684,6 +687,99 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     calls.clear()
     assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+
+
+def test_reconcile_opt_out_preserves_operator_registration(monkeypatch, capsys):
+    """#127977: with ``gateway.windows_task_reconcile: false`` a deliberately hardened registration
+    (boot trigger, service-account principal, cmd.exe front end — i.e. permanent drift) is left
+    exactly as registered: reconcile never reaches ``/Delete``/``/Create`` and status replaces the
+    destructive repair hint with the neutral opt-out note."""
+    from hermes_cli import config
+
+    launcher_cmd = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.cmd")
+    calls: list[list[str]] = []
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        return (0, _PRE_HARDENING_TASK_XML if "/XML" in args else "", "")
+
+    def fail_rewrite():
+        pytest.fail("must not rewrite the launcher script")
+
+    monkeypatch.setattr(
+        config, "load_config", lambda: {"gateway": {"windows_task_reconcile": False}}
+    )
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", fail_rewrite)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: launcher_cmd)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+    gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
+    assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+    out = capsys.readouterr().out
+    assert "gateway.windows_task_reconcile" in out
+    assert "Repair:" not in out
+
+
+@pytest.mark.parametrize(
+    "policy", [{}, {"gateway": {}}, {"gateway": {"windows_task_reconcile": True}}]
+)
+def test_reconcile_policy_default_and_true_still_repair(monkeypatch, tmp_path, policy):
+    """The opt-out is opt-in: with the key absent or true, pre-hardening drift is still repaired so
+    template hardening keeps reaching existing installs."""
+    from hermes_cli import config
+
+    script_path = tmp_path / "gateway.cmd"
+    calls: list[list[str]] = []
+    registered = {"xml": _PRE_HARDENING_TASK_XML}
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/XML" in args and "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(
+                encoding="utf-16"
+            )
+        return (0, "", "")
+
+    monkeypatch.setattr(config, "load_config", lambda: policy)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+
+
+def test_reconcile_policy_read_error_fails_closed(monkeypatch, capsys):
+    """An unreadable policy is not permission to replace the operator's task: reconcile is skipped
+    with a warning and the launcher script is never rewritten."""
+    from hermes_cli import config
+
+    launcher_cmd = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.cmd")
+
+    def broken_config():
+        raise OSError("fixture: config.yaml unreadable")
+
+    def fail_rewrite():
+        pytest.fail("must not rewrite the launcher script")
+
+    def fake_schtasks(args):
+        return (0, _PRE_HARDENING_TASK_XML if "/XML" in args else "", "")
+
+    monkeypatch.setattr(config, "load_config", broken_config)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", fail_rewrite)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: launcher_cmd)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+    out = capsys.readouterr().out
+    assert "unreadable" in out.lower()
 
 
 def _arrange_uninstalled_start(monkeypatch):

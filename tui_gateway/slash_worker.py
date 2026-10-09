@@ -59,14 +59,20 @@ def _watchdog_parent(parent_pid: int, *, is_windows: bool, getppid=os.getppid) -
 
 
 def _prepare_slash_worker_runtime() -> None:
-    """Start bounded MCP discovery before HermesCLI snapshots tools: each slash_worker child is its
-    own process — the parent ``hermes serve`` discovery thread does not populate this registry.
+    """Start MCP discovery and profile-scoped hook registration before HermesCLI snapshots tools.
 
-    See #61891.
+    Each slash-worker child is its own process, so its session profile needs
+    independent startup work; the parent process cannot populate its state.
     """
     from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
+    try:
+        from agent.hook_registration import ensure_hooks_registered
+
+        ensure_hooks_registered()
+    except Exception:
+        logger.debug("slash-worker hook registration failed at startup", exc_info=True)
 
 
 def _start_parent_death_watchdog(original_ppid) -> None:

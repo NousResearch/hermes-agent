@@ -5988,7 +5988,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # service message. That anchor has the same id as message_thread_id,
         # so it is not a user reply even when the bot created the topic.
         if (
-            getattr(message, "message_thread_id", None) is not None
+            getattr(reply_to_message, "forum_topic_created", None) is not None
+            and getattr(message, "message_thread_id", None) is not None
             and getattr(reply_to_message, "message_id", None)
             == getattr(message, "message_thread_id", None)
         ):

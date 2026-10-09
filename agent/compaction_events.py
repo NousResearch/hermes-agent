@@ -230,7 +230,7 @@ def provider_native_payload(*, session_id: str, compression_count: Any = None) -
     )
 
 
-def _publish(build: Any, *args: Any, **kwargs: Any) -> None:
+def _publish(build: Any, *args: Any, turn_session_id: str | None = None, **kwargs: Any) -> None:
     """Build one record and fan it out to the built-in Relay integration. Never raises into compaction: the
     first failure logs at WARNING with its traceback, later ones at DEBUG."""
     global _warned
@@ -238,7 +238,7 @@ def _publish(build: Any, *args: Any, **kwargs: Any) -> None:
         payload = build(*args, **kwargs)
         from agent.relay_compaction import emit_compaction_mark
 
-        emit_compaction_mark(payload["session_id"], event_name(payload), payload)
+        emit_compaction_mark(payload["session_id"], event_name(payload), payload, turn_session_id=turn_session_id)
     except Exception:
         with _warned_lock:
             first, _warned = not _warned, True
@@ -250,12 +250,19 @@ def _publishes_for(agent: Any) -> bool:
     return not getattr(agent, "_persist_disabled", False)
 
 
+def _turn_session_id(agent: Any) -> str | None:
+    """The session the agent's current turn started in; a rotating commit moves ``agent.session_id`` off it
+    mid-turn. ``None`` outside a turn."""
+    value = getattr(agent, "_inflight_turn_session_id", None)
+    return value if isinstance(value, str) and value else None
+
+
 def publish_attempt(agent: Any, record: dict[str, Any]) -> None:
     """Publish one ``compress_context`` attempt record (the attempt telemetry seam calls this)."""
     if _publishes_for(agent):
         _publish(lambda: attempt_payload(
             record, compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
-        ))
+        ), turn_session_id=_turn_session_id(agent))
 
 
 def publish_micro(record: dict[str, Any]) -> None:
@@ -271,7 +278,7 @@ def publish_prune(agent: Any, messages: list, pruned: list, tool_results_pruned:
             session_id=getattr(agent, "session_id", None) or "", tokens_before=estimate_messages_tokens_rough(messages),
             tokens_after=estimate_messages_tokens_rough(pruned), messages=len(pruned),
             tool_results_pruned=tool_results_pruned,
-        ))
+        ), turn_session_id=_turn_session_id(agent))
 
 
 def publish_provider_native(agent: Any) -> None:
@@ -280,4 +287,5 @@ def publish_provider_native(agent: Any) -> None:
         _publish(
             provider_native_payload, session_id=getattr(agent, "session_id", None) or "",
             compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
+            turn_session_id=_turn_session_id(agent),
         )

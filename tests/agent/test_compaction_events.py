@@ -38,7 +38,7 @@ def published(monkeypatch):
     marks = []
     monkeypatch.setattr(
         "agent.relay_compaction.emit_compaction_mark",
-        lambda session_id, name, data: marks.append((session_id, name, data)) or True,
+        lambda session_id, name, data, **_kwargs: marks.append((session_id, name, data)) or True,
     )
     return marks
 

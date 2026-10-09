@@ -1208,7 +1208,7 @@ def _plugin_skill_prompt_rows(
                 continue
             frontmatter = meta.get("frontmatter") or {}
             if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
-                    and skill_matches_apps(frontmatter)):
+                    and skill_matches_apps(frontmatter) and skill_model_invocable(frontmatter)):
                 continue
             if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
                                       available_toolsets, session_platform):

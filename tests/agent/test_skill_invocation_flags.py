@@ -96,6 +96,25 @@ def test_hidden_external_skill_is_not_indexed(tmp_path, prompt_builder):
     assert "ext-helper" not in index
 
 
+def test_hidden_plugin_skill_is_not_indexed(tmp_path, prompt_builder, monkeypatch):
+    """Plugin skills reach ``<available_skills>`` through their own registry path, not the disk scan."""
+    pb = prompt_builder
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    from hermes_cli import plugins
+
+    class _Manager:
+        def list_plugin_skill_metadata(self):
+            return [{"name": f"acme:{n}", "description": f"Description for {n}.", "category": "plugin",
+                     "frontmatter": fm} for n, fm in (("visible", {}), ("helper", {"disable-model-invocation": True}))]
+
+    monkeypatch.setattr(plugins, "discover_plugins", lambda *a, **k: None)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: _Manager())
+    index = pb._build_skills_system_prompt_inner(skills, [], None, None, None)
+    assert "acme:visible" in index
+    assert "acme:helper" not in index
+
+
 def test_hidden_skill_still_owns_its_name(tmp_path, prompt_builder):
     """Precedence is unchanged: a hidden local skill shadows a same-named external one."""
     pb = prompt_builder

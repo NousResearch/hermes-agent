@@ -3616,13 +3616,17 @@ class GatewayTurnMixin:
         return self._run_agent_timeout_result(worker, turn_ctx)
 
     def _run_agent_evict_on_fallback(self, turn_ctx: TurnContext) -> None:
-        """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
-        the active model and the next message retries the primary). Skip failed runs: evicting
-        would loop bad model → fallback → evict → recreate."""
+        """Keep managed fallback's primary snapshot and cooldown; evict unexplained drift.
+
+        Core turn admission owns reset/entitlement-aware primary restoration. Cache
+        signature changes still invalidate an agent after an explicit config change.
+        """
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
+            return
+        if getattr(_agent, "_fallback_activated", False) is True:
             return
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
         if getattr(_agent, "_provider_fallback_active", False) is True:

@@ -30,22 +30,19 @@ import {
 import { notifyError } from '@/store/notifications'
 import { $projectTree, setProjectParent } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, rollupDotState } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
-  EnteredProjectContent,
-  ProjectOverviewRow,
-  projectSubtreeSessionIds,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   SidebarWorkspaceGroup,
-  type SidebarWorkspaceTree,
-  visibleProjectRows
+  type SidebarWorkspaceTree
 } from './projects'
-import { NestedProjectRows } from './projects/nested-project-rows'
+import { EnteredProjectView } from './projects/entered-project-view'
+import { ProjectOverviewList } from './projects/overview-list'
 import { createProjectNestResolver } from './projects/project-drag'
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
@@ -265,9 +262,6 @@ export function SidebarSessionsSection({
       }),
     [t]
   )
-
-  const resolveProjectNest = projectNest.resolve
-  const resolveProjectSlot = projectNest.slot
 
   const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
@@ -516,97 +510,40 @@ export function SidebarSessionsSection({
   if (showProjectsSkeleton) {
     inner = <SidebarSessionSkeletons />
   } else if (projectContent) {
-    // Entered a project: the back row, then the projects nested under it (one row each, entering one
-    // drills a level further down), then the content or a clean empty state while lanes hydrate.
     inner = (
-      <>
-        {projectBackRow}
-        <NestedProjectRows
-          onEnter={onEnterProject}
-          onNewSession={onNewSessionInWorkspace}
-          onNewSessionSplit={onNewSessionSplit}
-          projects={projectOverview}
-        />
-        {hasProjectContent ? (
-          <EnteredProjectContent
-            liveSessions={liveSessions}
-            onNewSession={onNewSessionInWorkspace}
-            onNewSessionSplit={onNewSessionSplit}
-            project={projectContent}
-            removedSessionIds={removedSessionIds}
-            renderRows={renderRowsDated}
-            repoWorktrees={projectRepoWorktrees}
-          />
-        ) : (
-          emptyState
-        )}
-      </>
+      <EnteredProjectView
+        backRow={projectBackRow}
+        emptyState={emptyState}
+        hasContent={hasProjectContent}
+        liveSessions={liveSessions}
+        nestedProjects={projectOverview}
+        onEnterProject={onEnterProject}
+        onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
+        project={projectContent}
+        removedSessionIds={removedSessionIds}
+        renderRows={renderRowsDated}
+        repoWorktrees={projectRepoWorktrees}
+      />
     )
   } else if (showEmptyState) {
     inner = emptyState
   } else if (projectOverview?.length) {
-    // The model is already ordered (Home leads; then the default sort groups
-    // explicit-before-auto, with a manual drag-order winning when present).
-    // Render in that order and make rows drag-to-reorder when a handler is
-    // wired — Home stays outside the sortable list, it's a fixture.
-    const home = projectOverview[0]?.isNoProject ? projectOverview[0] : undefined
-    const sortableProjects = home ? projectOverview.slice(1) : projectOverview
-    // A collapsed project hides its subprojects along with its sessions — the nest is a display
-    // grouping, and a row nobody can see is not a row to render. Each project keeps its own open
-    // flag, so whatever a subproject was left in survives its parent folding away and coming back.
-    // The sortable ids stay whole: a drop resolves against the FULL order, so reordering while a
-    // parent is closed cannot renumber the rows it hides.
-    const visibleProjects = visibleProjectRows(sortableProjects, id => nodeOpen[id] ?? true)
-    // A parent that folds its subprojects away cannot lose the control that opens it again, so this
-    // reads the WHOLE list: `visibleProjects` no longer holds the rows a closed parent hides.
-    const nestedParentIds = new Set(sortableProjects.map(project => project.parentId).filter(Boolean))
-    const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
-    const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
-
-    const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
-      <Component
+    inner = (
+      <ProjectOverviewList
         activeProjectId={activeProjectId}
-        // The loudest status anywhere under this project, folded up from its own sessions and every
-        // nested project's — a collapsed row still reports work waiting inside it.
-        attentionState={rollupDotState(dotStates, projectSubtreeSessionIds(projectOverview, project.id))}
-        hasNestedProjects={nestedParentIds.has(project.id)}
-        hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
-        isSessionHidden={projectOverviewHidden?.isHidden}
-        key={project.id}
-        onEnter={onEnterProject}
+        dndSensors={dndSensors}
+        hidden={projectOverviewHidden}
+        nest={projectNest}
+        onEnterProject={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
         onNewSessionSplit={onNewSessionSplit}
-        // Keyed by project ID to match the producer: `overlayLivePreviews`
-        // writes `out[node.id]` (workspace-groups.ts). A path key made Home
-        // (path: null) and any id/path-divergent project fall back to stale
-        // preview rows instead of the live overlay.
-        previewSessions={projectOverviewPreviews?.[project.id]}
-        project={project}
-        renderRows={showAllSessions ? items => renderPreviewRows(items, project.id) : renderRows}
+        onReorderProjects={onReorderProjects}
+        previews={projectOverviewPreviews}
+        projects={projectOverview}
+        renderPreviewRows={renderPreviewRows}
+        renderRows={renderRows}
       />
-    )
-
-    const rows = visibleProjects.map(project => projectRow(project, Row))
-
-    inner = (
-      <>
-        {home && projectRow(home, ProjectOverviewRow)}
-        {projectsDraggable && onReorderProjects ? (
-          <ReorderableList
-            ids={sortableProjects.map(project => project.id)}
-            onReorder={onReorderProjects}
-            // The list's reflow follows the pointer's own crossings (see projects/project-drag.ts),
-            // so a row cannot slide out from under a nest before the drop.
-            resolveNest={resolveProjectNest}
-            resolveSlot={resolveProjectSlot}
-            sensors={dndSensors}
-          >
-            {rows}
-          </ReorderableList>
-        ) : (
-          rows
-        )}
-      </>
     )
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
     inner = (
@@ -713,8 +650,4 @@ interface SortableSessionRowProps {
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {
   return <SidebarSessionRow {...props} {...useSortableBindings(props.session.id)} />
-}
-
-function SortableProjectOverviewRow(props: React.ComponentProps<typeof ProjectOverviewRow>) {
-  return <ProjectOverviewRow {...props} {...useSortableBindings(props.project.id)} />
 }

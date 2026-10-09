@@ -28,7 +28,7 @@ _READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_LIMIT = 2000
 
-_servers: dict[str, "LightpandaServer"] = {}
+_servers: dict[str, LightpandaServer] = {}
 _servers_lock = threading.Lock()
 
 

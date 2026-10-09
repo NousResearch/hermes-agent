@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Iterable, Optional
 
 from agent.learning_graph import memory_node_id
@@ -48,7 +48,7 @@ def _node_id(node: dict[str, Any]) -> str:
 
 
 def _utc(ts: float) -> datetime:
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def _lead_in(ratio: float) -> float:

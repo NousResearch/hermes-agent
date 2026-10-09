@@ -1055,7 +1055,7 @@ Spend up to ~{_LEAN_SESSION_LOG_BUDGET_TOKENS} tokens here — this section is t
 # (SHAs, ids, error strings) cannot be paraphrased away; also a session_search map.
 _LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
-_ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
+_ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
     ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
@@ -1352,17 +1352,17 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     return tokens
 
 
-def _last_index_with_role(messages: "list[dict[str, Any]]", role: str) -> int:
+def _last_index_with_role(messages: list[dict[str, Any]], role: str) -> int:
     """Index of the newest dict message with ``role``, or -1."""
     return max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role), default=-1)
 
 
-def _last_assistant_index(messages: "list[dict[str, Any]]") -> int:
+def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
     """Newest assistant message index, or -1 (the one turn whose thinking may replay; see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``)."""
     return _last_index_with_role(messages, "assistant")
 
 
-def _pending_tool_round(messages: "list[dict[str, Any]]") -> range:
+def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
     the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
     after the newest tool result before the next API call, and two can land in one iteration (one when the tool
@@ -2011,7 +2011,7 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> "str | None":
+def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> str | None:
     """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
     ``blocked``/``pending_approval``), else None. The per-tool summarizers describe the call as done
     ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
@@ -2050,7 +2050,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
-def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
+def _model_threshold_key_rank(key: str, model: str, provider: str) -> tuple[int, int] | None:
     """Match rank for one ``model_thresholds`` key, or None when it does not apply.
     ``"<provider>:<substr>"`` keys apply only on that provider; bare keys apply on every route.
     The same slug means different windows on different routes (Codex caps Astra at 272K; OpenRouter
@@ -2934,7 +2934,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
-        self._last_reclaim_block_warn: "tuple[str, int] | None" = None
+        self._last_reclaim_block_warn: tuple[str, int] | None = None
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -3090,7 +3090,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
         return self.should_compress_info(prompt_tokens)[0]
 
-    def should_compress_info(self, prompt_tokens: int | None = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> tuple[bool, str | None]:
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
         ``"ineffective"``. Callers should surface a warning when it is non-None."""
@@ -3101,7 +3101,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
-    def _compression_block_reason(self) -> "str | None":
+    def _compression_block_reason(self) -> str | None:
         """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
         for label, until in (
             ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
@@ -3421,7 +3421,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         self._proactive_prune_rearm_tokens = 0
         self._last_reclaim_block_warn = None
 
-    def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
+    def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:
         """Whether a provider-billed reading says the session is over threshold.
 
         ``current_tokens`` is the provider's ``prompt_tokens`` (or the
@@ -3440,8 +3440,8 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
     def _warn_reclamation_no_op(
         self,
         reason: str,
-        current_tokens: "int | None",
-        before: "int | None" = None,
+        current_tokens: int | None,
+        before: int | None = None,
     ) -> None:
         """Warn when an over-threshold session's reclamation path no-ops.
 
@@ -5298,7 +5298,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _scan_window_handoffs(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int,
         turns_to_summarize: list[dict[str, Any]],
-    ) -> "_HandoffScan":
+    ) -> _HandoffScan:
         """Rehydrate ``_previous_summary`` / user-turn provenance from in-transcript handoffs.
         Handoff rows are removed from the summarizer window (merged handoffs unwrap to their prior-tail
         content) and ``tail_start`` advances past a handoff beyond the window. The pre-scan state is
@@ -5736,7 +5736,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
-        self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
+        self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,
     ) -> list[dict[str, Any]]:
         """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""

@@ -1442,7 +1442,7 @@ class _GatewayRestartOutcome:
 
     incomplete: bool
     phase_errors: list
-    pre_restart_gateway_pids: "list | None"
+    pre_restart_gateway_pids: list | None
     restarted_services: list
     failed_or_stale_units: list
     relaunched_profiles: list

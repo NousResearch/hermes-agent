@@ -259,7 +259,7 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(token.finditer(line))
 
-    def inert(h: "re.Match[str]") -> bool:
+    def inert(h: re.Match[str]) -> bool:
         if " " in h.group(0):
             return False
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
@@ -320,7 +320,7 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(_PIP_INSTALL_TOKEN.finditer(line))
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
         if span is None:
             return False
@@ -416,7 +416,7 @@ def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:
     if key is not None and not re.search(r"\s", key) and _JSON_COMMAND_KEY.search(key):
         return False
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         part = next((g for g in ("k", "v") if m.start(g) <= h.start() and h.end() <= m.end(g)), None)
         return part is not None and _COMMAND_POSITION.search(line[m.start(part):h.start()]) is None
 

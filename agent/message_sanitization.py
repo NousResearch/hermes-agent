@@ -665,7 +665,7 @@ def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_u
     )
 
 
-def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | None":
+def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> str | None:
     """``"kimi"`` / ``"deepseek"`` / ``"mimo"`` (first match in table order) when the
     endpoint enforces reasoning_content echo-back, else ``None`` (strip side)."""
     families = (rule[0] for rule in _REASONING_ECHO_RULES)

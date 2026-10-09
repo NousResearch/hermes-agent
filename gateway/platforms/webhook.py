@@ -80,7 +80,7 @@ class _WebhookDeliveryIdentity:
     delivery_id: str
 
     @classmethod
-    def from_parts(cls, profile: Optional[str], route: str, delivery_id: str) -> "_WebhookDeliveryIdentity":
+    def from_parts(cls, profile: Optional[str], route: str, delivery_id: str) -> _WebhookDeliveryIdentity:
         return cls(profile=profile or "default", route=route, delivery_id=delivery_id)
 
     @property
@@ -142,7 +142,7 @@ def _is_known_platform(name: str) -> bool:
     return False
 
 
-def _json_error(message: str, status: int) -> "web.Response":
+def _json_error(message: str, status: int) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
@@ -385,7 +385,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     # --- HTTP handlers ---
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
@@ -454,7 +454,7 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
-    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+    async def _handle_profile_ingress(self, request: web.Request) -> web.StreamResponse:
         profile = self._resolve_request_profile(request)
         if profile is _PROFILE_REJECTED or profile is None:
             return _json_error("Unknown or unconfigured profile", 404)
@@ -462,7 +462,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return await dispatch_profile_ingress(
             self.gateway_runner, profile, request.match_info.get("tail", ""), request)
 
-    def _resolve_request_profile(self, request: "web.Request"):
+    def _resolve_request_profile(self, request: web.Request):
         """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the
         prefix names this gateway's own profile), the profile name (served under multiplexing), or
         ``_PROFILE_REJECTED`` (unknown / not served → 404)."""
@@ -502,8 +502,8 @@ class WebhookAdapter(BasePlatformAdapter):
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
-    async def _read_authenticated_body(self, request: "web.Request", route_name: str,
-                                       route_config: dict) -> "tuple[Optional[bytes], Optional[web.Response]]":
+    async def _read_authenticated_body(self, request: web.Request, route_name: str,
+                                       route_config: dict) -> tuple[Optional[bytes], Optional[web.Response]]:
         """Auth-before-body: size-cap, read, then HMAC-validate. Returns ``(body, None)`` or ``(None, response)``."""
         if (request.content_length or 0) > self._max_body_bytes:
             return None, _json_error("Payload too large", 413)
@@ -541,7 +541,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 return _UNPARSEABLE
 
     async def _handle_deliver_only(self, prompt: str, payload: Any, route_config: dict, route_name: str,
-                                   event_type: str, delivery_id: str, profile: Optional[str] = None) -> "web.Response":
+                                   event_type: str, delivery_id: str, profile: Optional[str] = None) -> web.Response:
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
@@ -565,7 +565,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response(failed, status=502)
 
     def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
-                             delivery_id: str, profile: Optional[str] = None) -> "web.Response":
+                             delivery_id: str, profile: Optional[str] = None) -> web.Response:
         """cron_job: fire an EXISTING cron job on this event instead of starting a webhook agent session.
         The rendered prompt is transient per-run context (same rail as ``cronjob(action='run', prompt=...)``);
         the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script/idempotency
@@ -596,7 +596,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response({"status": "accepted", "route": route_name, "cron_job": job_ref, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
 
-    def _resolve_route(self, request: "web.Request") -> "tuple[str, Optional[dict], Any, Optional[web.Response]]":
+    def _resolve_route(self, request: web.Request) -> tuple[str, Optional[dict], Any, Optional[web.Response]]:
         """Route + profile lookup for a POST; ``(route_name, route_config, profile, error_response)``."""
         self._reload_dynamic_routes()  # hot-reload dynamic subscriptions (stat-gated, lock-free)
         route_name = request.match_info.get("route_name", "")
@@ -635,7 +635,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Skill loading failed: %s", e)
         return prompt
 
-    async def _handle_webhook(self, request: "web.Request") -> "web.Response":
+    async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
@@ -699,7 +699,7 @@ class WebhookAdapter(BasePlatformAdapter):
                                         delivery_id, now)
 
     def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
-                            event_type: str, delivery_id: str, now: float) -> "web.Response":
+                            event_type: str, delivery_id: str, now: float) -> web.Response:
         """Spawn the agent run for one POST and return 202 immediately."""
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
@@ -709,7 +709,7 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str) -> "asyncio.Task":
+                         route_name: str, profile, event_type: str) -> asyncio.Task:
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         session_chat_id = identity.session_chat_id
@@ -736,13 +736,13 @@ class WebhookAdapter(BasePlatformAdapter):
         task.add_done_callback(self._background_tasks.discard)
         return task
 
-    async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
         first-reason-wins."""
         await self._end_webhook_session(event, event.source.chat_id)
 
-    async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
+    async def _end_webhook_session(self, event: MessageEvent, session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),
         resolving session_id from the SAME source the run was keyed on."""
         runner = self.gateway_runner
@@ -766,7 +766,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     # --- Signature validation ---
 
-    def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
+    def _validate_signature(self, request: web.Request, body: bytes, secret: str) -> bool:
         """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
         headers = request.headers
 

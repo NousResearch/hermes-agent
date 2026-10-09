@@ -885,7 +885,7 @@ def _category_active_names() -> set:
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",
-                   dir_path=None, active: "frozenset | set" = frozenset()) -> str:
+                   dir_path=None, active: frozenset | set = frozenset()) -> str:
     """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
     disable wins, then the allow-list, then the activations that need no list entry — bundled
     backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers

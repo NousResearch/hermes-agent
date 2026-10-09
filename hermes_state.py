@@ -428,7 +428,7 @@ def _close_time_checkpoint_configurable() -> bool:
             and hasattr(sqlite3.Connection, "setconfig"))
 
 
-def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
+def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]:
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
     sid = str(session_id or "").strip()
@@ -597,7 +597,7 @@ class SessionDB(
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
         # per-thread connections pinned fds for the process lifetime and hit EMFILE.
-        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_READ_POOL_MAX)
+        self._read_pool: queue.LifoQueue[sqlite3.Connection] = queue.LifoQueue(maxsize=_READ_POOL_MAX)
         # Permits bound PEAK descriptors (the pool bounds only the idle set), shared per
         # DATABASE PATH; acquired non-blocking so a permitless reader degrades to the writer lock.
         # One permit per live read connection, held from before the open in _get_read_conn() until after the
@@ -1325,7 +1325,7 @@ class SessionDB(
             and classify_persistence_error(exc) == "corrupt"
         )
 
-    def _corrupt_error(self, prefix: str = "") -> "StateDbCorruptError":
+    def _corrupt_error(self, prefix: str = "") -> StateDbCorruptError:
         """Build the quarantine error for this handle (message assembled once)."""
         return StateDbCorruptError(f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})")
 
@@ -1488,7 +1488,7 @@ class SessionDB(
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
-    def __enter__(self) -> "SessionDB":
+    def __enter__(self) -> SessionDB:
         """``with SessionDB(path) as db:`` closes on exit; owners must release deterministically.
 
         Ownership of a SessionDB should be released explicitly. Historically an instance with a started
@@ -1707,7 +1707,7 @@ class AsyncSessionDB:
     """Async door onto SessionDB: every call runs via asyncio.to_thread so a blocking SQLite call
     never freezes the event loop (no method returns a live cursor)."""
 
-    def __init__(self, db: "SessionDB") -> None:
+    def __init__(self, db: SessionDB) -> None:
         self._db = db
 
     def __getattr__(self, name: str):

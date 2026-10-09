@@ -9,7 +9,7 @@ from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
 from hermes_cli.colors import Colors, color
 
 # Rich radiolist rows: (text, style). style is None | "yellow" | "dim". Plain ``str`` works too.
-RadioItem = Union[str, Sequence[tuple[str, Optional[str]]]]
+RadioItem = str | Sequence[tuple[str, str | None]]
 _NO_REPLAY = object()
 
 

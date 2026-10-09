@@ -26,7 +26,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
@@ -121,7 +121,7 @@ class _CronStorePaths:
     output_dir: Path
 
     @classmethod
-    def for_dir(cls, cron_dir: Path) -> "_CronStorePaths":
+    def for_dir(cls, cron_dir: Path) -> _CronStorePaths:
         return cls(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
@@ -183,7 +183,7 @@ def _current_cron_store() -> _CronStorePaths:
 
 
 @contextlib.contextmanager
-def use_cron_store(home: Union[str, Path]):
+def use_cron_store(home: str | Path):
     """Route cron storage to ``home`` without mutating process globals."""
     token = _cron_store_override.set(
         _CronStorePaths.for_dir(Path(home).expanduser().resolve() / "cron"))
@@ -816,7 +816,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
-            dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(schedule)
             # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):
             # the due-check compares against hermes_time.now().
             # Make naive timestamps timezone-aware at parse time so the stored value doesn't depend on the
@@ -845,7 +845,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
         now = _hermes_now()
         # Durations measure elapsed time, not wall-clock hours across a DST transition.
-        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
+        run_at = (now.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -872,28 +872,28 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 def _elapsed_seconds(later: datetime, earlier: datetime) -> float:
     """Return elapsed seconds between aware instants, independent of wall time."""
-    return (later.astimezone(timezone.utc) - earlier.astimezone(timezone.utc)).total_seconds()
+    return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
 
 
 def _instant_after(left: datetime, right: datetime) -> bool:
     """Whether *left* is a later absolute instant than *right*."""
-    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+    return left.astimezone(UTC) > right.astimezone(UTC)
 
 
 def _instant_at_or_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is at or before *right* as an absolute instant."""
-    return left.astimezone(timezone.utc) <= right.astimezone(timezone.utc)
+    return left.astimezone(UTC) <= right.astimezone(UTC)
 
 
 def _instant_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is an earlier absolute instant than *right*."""
-    return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
+    return left.astimezone(UTC) < right.astimezone(UTC)
 
 
 def _seconds_after(dt: datetime, seconds: float) -> datetime:
     """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
     that drops ``fold``, so inside a fall-back hour it lands an hour off."""
-    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+    return (dt.astimezone(UTC) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
 
 
 def _parse_aware(value: Any) -> Optional[datetime]:
@@ -1190,7 +1190,7 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         if minutes is None:
             return None
         # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
-        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        next_run = base_time.astimezone(UTC) + timedelta(minutes=minutes)
         return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
@@ -1387,15 +1387,12 @@ def load_jobs() -> list[dict[str, Any]]:
             # shape; the repair below rewrites it with replace=True.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
-                notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
-                    len(skipped), "y" if len(skipped) == 1 else "ies",
-                    ", ".join(map(repr, skipped))))
+                notes.append(f"Skipping {len(skipped):d} non-dict entr{('y' if len(skipped) == 1 else 'ies')} in id-keyed jobs map: {', '.join(map(repr, skipped))}")
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
             unmergeable = True
         elif not isinstance(jobs, list):
-            notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
-                         % type(jobs).__name__)
+            notes.append(f"Replacing invalid jobs.json 'jobs' field ({type(jobs).__name__}) with an empty list")
             jobs = []
             repair = "invalid jobs field replaced with list"
             unmergeable = True
@@ -1410,9 +1407,7 @@ def load_jobs() -> list[dict[str, Any]]:
         # Every reader and the due scan index records as dicts: one junk entry would crash the
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
         # Types only: the raw values are arbitrary file content and must not reach the logs.
-        notes.append("Skipping %d non-object entr%s in jobs.json (types: %s)" % (
-            len(junk), "y" if len(junk) == 1 else "ies",
-            ", ".join(sorted({type(j).__name__ for j in junk}))))
+        notes.append(f"Skipping {len(junk)} non-object entr{'y' if len(junk) == 1 else 'ies'} in jobs.json (types: {', '.join(sorted({type(j).__name__ for j in junk}))})")
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
@@ -1828,7 +1823,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
-    context_from: Optional[Union[str, list[str]]] = None,
+    context_from: Optional[str | list[str]] = None,
     enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
@@ -2741,7 +2736,7 @@ def _machine_id() -> str:
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
     manual: bool = False, return_job: bool = False,
-) -> Union[bool, dict[str, Any]]:
+) -> bool | dict[str, Any]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual

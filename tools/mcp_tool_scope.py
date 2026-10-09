@@ -20,7 +20,7 @@ from typing import Optional, Tuple, Union
 
 from tools.mcp_tool_common import _core
 
-ServerKey = Union[str, tuple[str, str]]
+ServerKey = str | tuple[str, str]
 
 
 def _server_key(name: str, scope: Optional[str] = None, *, current: bool = True) -> ServerKey:

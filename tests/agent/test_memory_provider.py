@@ -172,11 +172,16 @@ class TestMemoryManager:
 
     @staticmethod
     def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
-        monkeypatch.setattr(
-            "agent.memory_manager.get_spill_config",
-            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
-                     "preview_tail": 12, "directory": str(tmp_path)},
-        )
+        from hermes_cli.config import atomic_config_write
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True},
+            "hooks": {"output_spill": {
+                "enabled": True, "max_chars": max_chars, "preview_head": 12,
+                "preview_tail": 12, "directory": str(tmp_path),
+            }},
+        })
 
     def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
@@ -201,6 +206,137 @@ class TestMemoryManager:
 
         assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
         assert not list(tmp_path.rglob("*.txt"))
+
+    @pytest.mark.parametrize("memory, hooks_enabled", [
+        ({}, True),
+        ({"prefetch_spill_enabled": False}, True),
+        ({"prefetch_spill_enabled": True}, False),
+    ])
+    def test_prefetch_spill_requires_opt_in_without_changing_hooks(
+        self, tmp_path, monkeypatch, memory, hooks_enabled,
+    ):
+        """Provider-ranked recall stays intact unless both spill switches permit it (#130974)."""
+        from agent.turn_context import _collect_pre_llm_call_context
+        from hermes_cli.config import atomic_config_write
+        from tools.hook_output_spill import DEFAULT_MAX_CHARS
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": memory,
+            "hooks": {"output_spill": {} if hooks_enabled else {"enabled": False}},
+        })
+        text = "start\n" + "ranked middle\n" * (DEFAULT_MAX_CHARS // 2) + "end\n"  # over max_chars, under the ceiling
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = text
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        assert mgr.prefetch_all("recall", session_id="memory") == text
+        assert not (tmp_path / "hook_outputs").exists()
+
+        # Exercise the independent plugin-hook consumer, not just the spill helper.
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda *a, **kw: [{"context": text}])
+        result = _collect_pre_llm_call_context(
+            SimpleNamespace(session_id="hook", model="test"), effective_task_id="task",
+            turn_id="turn", original_user_message="recall", messages=[], conversation_history=[],
+        )
+        if hooks_enabled:
+            (saved,) = (tmp_path / "hook_outputs" / "hook").glob("*.txt")
+            assert saved.read_text(encoding="utf-8") == text
+            assert str(saved) in result and "plugin hook output truncated" in result
+        else:
+            assert result == text
+            assert not (tmp_path / "hook_outputs").exists()
+
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True},
+            "hooks": {"output_spill": {"enabled": True}},
+        })
+        assert mgr.prefetch_all("recall again", session_id="memory") == text
+        assert not (tmp_path / "hook_outputs" / "memory").exists()
+
+    def test_runaway_recall_still_spills_without_opt_in(self, tmp_path, monkeypatch):
+        """Opt-out keeps normal recall whole but still caps a runaway provider at the ceiling."""
+        from hermes_cli.config import atomic_config_write
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {"memory": {}})
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "x" * 100_001
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("recall", session_id="runaway")
+        assert len(result) < 100_000
+        (saved,) = (tmp_path / "hook_outputs" / "runaway").glob("*.txt")
+        assert saved.read_text(encoding="utf-8").rstrip("\n") == provider._prefetch_result
+
+    def test_prefetch_spill_profile_snapshot_preserves_opt_in(self, tmp_path, monkeypatch):
+        """A→B→A config reads are isolated; existing managers keep their registration policy."""
+        from agent.secret_scope import (
+            is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import atomic_config_write
+
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(a))  # Ambient launch home never follows B.
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        shared = {"max_chars": 40, "preview_head": 12, "preview_tail": 7,
+                  "directory": str(a / "recall")}
+        atomic_config_write(a / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True}, "hooks": {"output_spill": shared},
+        })
+        atomic_config_write(b / "config.yaml", {"memory": {"prefetch_spill_enabled": False}})
+        text = "HEAD-CONTEXT\n" + "ranked middle\n" * 2000 + "TAIL!!\n"
+        managers = {}
+        was_multiplex = is_multiplex_active()
+        set_multiplex_active(True)
+        try:
+            for home in (a, b, a):
+                home_token = set_hermes_home_override(home)
+                secret_token = set_secret_scope({}, profile_home=str(home))
+                try:
+                    if home not in managers:
+                        provider = FakeMemoryProvider("external")
+                        provider._prefetch_result = text
+                        mgr = MemoryManager()
+                        mgr.add_provider(provider)
+                        managers[home] = mgr
+                    mgr = managers[home]
+                    if home == b:
+                        assert mgr.prefetch_all("recall", session_id="s") == text
+                        assert not (b / "hook_outputs").exists()
+                        continue
+                    result = mgr.prefetch_all("recall", session_id="s")
+                    saved = list((a / "recall" / "s").glob("*.txt"))
+                    assert saved and all(p.read_text(encoding="utf-8") == text for p in saved)
+                    assert any(str(p) in result for p in saved)
+                    assert result.endswith(f"--- head ---\n{text[:12]}\n--- tail ---\n{text[-7:]}")
+                    assert "ranked middle" not in result
+                    # Subsequent config edits apply only to newly registered providers.
+                    atomic_config_write(a / "config.yaml", {
+                        "memory": {"prefetch_spill_enabled": False},
+                        "hooks": {"output_spill": {**shared, "enabled": False}},
+                    })
+                finally:
+                    reset_secret_scope(secret_token)
+                    reset_hermes_home_override(home_token)
+            home_token = set_hermes_home_override(a)
+            secret_token = set_secret_scope({}, profile_home=str(a))
+            try:
+                fresh = MemoryManager()
+                fresh.add_provider(provider := FakeMemoryProvider("external"))
+                provider._prefetch_result = text
+                assert fresh.prefetch_all("recall", session_id="fresh") == text
+                assert not (a / "recall" / "fresh").exists()
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+        finally:
+            set_multiplex_active(was_multiplex)
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()

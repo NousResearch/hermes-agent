@@ -53,7 +53,7 @@ def find_provider_dir(name: str) -> Optional[Path]:
     return next((path for found, path in _iter_provider_dirs() if found == name), None)
 
 
-def load_computer_use_provider(name: str) -> Optional["ComputerUseProvider"]:
+def load_computer_use_provider(name: str) -> Optional[ComputerUseProvider]:
     """Import the named provider and return its ComputerUseProvider; None if not found or it fails to load."""
     provider_dir = find_provider_dir(name)
     if provider_dir is None:
@@ -62,7 +62,7 @@ def load_computer_use_provider(name: str) -> Optional["ComputerUseProvider"]:
                               noun="provider", logger=logger)
 
 
-def _load_provider_from_dir(provider_dir: Path) -> Optional["ComputerUseProvider"]:
+def _load_provider_from_dir(provider_dir: Path) -> Optional[ComputerUseProvider]:
     # Providers hand back live driver sessions, so they load in-process only: load_plugin_module refuses user
     # code under ``plugins.isolation: host`` (warning + None), which surfaces as "could not be loaded".
     from tools.computer_use.backend import ComputerUseProvider
@@ -95,7 +95,7 @@ def configured_backend_name() -> str:
     return raw.strip() if isinstance(raw, str) and raw.strip() else DEFAULT_BACKEND
 
 
-def get_active_provider() -> "ComputerUseProvider":
+def get_active_provider() -> ComputerUseProvider:
     """The one provider ``computer_use.backend`` selects; ``LookupError`` naming the available ones otherwise."""
     name = configured_backend_name()
     provider = load_computer_use_provider(name)

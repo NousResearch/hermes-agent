@@ -107,19 +107,43 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
 
 def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+    blocked); falls back to a direct connection. Every branch carries the adapter's 20s
+    read timeout: PTB's 5s default reports media sends as Timed out after the upload
+    finishes even though Telegram delivered the message (#133164)."""
     from telegram import Bot
+
+    def _request(proxy=None):
+        # Imported lazily (as the proxy branch always did): a stubbed
+        # ``telegram`` module without the ``request`` submodule must keep
+        # working for plain direct sends.
+        try:
+            from telegram.request import HTTPXRequest
+        except ImportError:
+            # Stub environments (tests) that never wire telegram.request
+            # keep the old plain-Bot behaviour instead of failing the send.
+            return None
+
+        # read_timeout matches the gateway adapter's request default; media sends
+        # override it per call with the 60s media budget (see _telegram_send_media).
+        return HTTPXRequest(read_timeout=20.0, **({"proxy": proxy} if proxy else {}))
+
+    def _bot(proxy=None):
+        request = _request(proxy)
+        return Bot(token=token) if request is None else Bot(token=token, request=request)
+
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
+            return _bot()
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+        request = _request(proxy)
+        if request is None:
+            return Bot(token=token)
+        return Bot(token=token, request=request, get_updates_request=_request(proxy))
     except Exception as proxy_err:
         logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
-    return Bot(token=token)
+    return _bot()
 
 
 def _telegram_thread_kwargs(thread_id):
@@ -156,13 +180,19 @@ def _adapter_media_method(ext, voice, force_document=False):
     return ("send_voice", "audio") if voice else ("send_document", "document")
 
 
+# Media sends override the 20s request read timeout per call: sendVideo transcodes
+# before answering, outlasting the text budget (adapter parity, #133164).
+_MEDIA_SEND_READ_TIMEOUT = 60.0
+
+
 async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **kwargs):
     """Bot API media method by extension: photo (unless forced document), video, voice note,
     sendAudio (MP3/M4A only), else document."""
     kind = next((k for exts, k in ((() if force_document else _IMAGE_EXTS, "photo"), (_VIDEO_EXTS, "video"),
                                     (_VOICE_EXTS if is_voice else (), "voice"), (_TELEGRAM_SEND_AUDIO_EXTS, "audio"))
                  if ext in exts), "document")
-    return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
+    return await getattr(bot, f"send_{kind}")(
+        chat_id=chat_id, read_timeout=_MEDIA_SEND_READ_TIMEOUT, **{kind: f}, **kwargs)
 
 
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):

@@ -1,12 +1,12 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: b71228c730a9473410459a5fb3cbd2d881304706
-version: "0.1.6"
+sha: bc34c1ca8a34f3776373f83d1f0b82b2cc544b07
+version: "0.1.7"
 description: >-
   A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
   and temporary interests, prepares reminders, maintains memory and a quiet Feed,
-  and uses Hermes subagents for research. Selected reminders enter the current
-  profile's Bot Chat and run an assistant turn there. One Skill and six recurring
+  and uses Hermes subagents for research. Patrols deliver selected reminders
+  directly to the current profile's Bot Chat and run an assistant turn there. One Skill and six recurring
   Cron jobs, including weekly outcome/cost review and monthly workflow audit.
   These two scheduled reports propose changes and also go to Bot Chat.
   Disclosure: first load creates profile-local muse files/SQLite state and owned
@@ -19,7 +19,7 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/b71228c730a9473410459a5fb3cbd2d881304706/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/bc34c1ca8a34f3776373f83d1f0b82b2cc544b07/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]

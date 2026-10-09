@@ -13,7 +13,12 @@ from hermes_cli.kanban_db_connect import connect
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [],
+             "classic_required": True, "rules_403": None, "pr_state": "OPEN",
+             "merge_commit": None, "final_merge_commit": None, "compare_status": "ahead",
+             "merge_base": None, "base_sha": "d" * 40, "base_sha_after_compare": None,
+             "branch_reads": 0, "check_runs": None, "statuses": [], "merged_at": None,
+             "check_suites": []}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -21,29 +26,61 @@ def github(tmp_path, monkeypatch):
             sha = state["head"]
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
-                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "headRefOid": sha, "baseRefName": "main", "state": state["pr_state"],
+                    "mergedAt": state["merged_at"] if state["pr_state"] == "MERGED" else None,
+                    "mergeCommit": {"oid": state["merge_commit"]} if state["pr_state"] == "MERGED" and state["merge_commit"] else None,
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                        {"context": "required", "app": {"databaseId": 1}}
+                    ] if state["classic_required"] else []}}}}}}
             elif "/rules/branches/" in self.path:
+                if state["rules_403"]:
+                    body = {"message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+                            "documentation_url": "https://docs.github.com/rest/repos/rules",
+                            "status": "403"}
+                    if state["rules_403"] == "slurp":
+                        body = [body]
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(json.dumps(body).encode())
+                    return
                 value = [[]]
+            elif "/compare/" in self.path:
+                merge_commit = state["merge_commit"]
+                value = {"status": state["compare_status"],
+                         "base_commit": {"sha": merge_commit},
+                         "merge_base_commit": {"sha": state["merge_base"] or merge_commit}}
             elif "/check-runs" in self.path:
-                run = {"id": 42, "name": "required", "head_sha": sha,
-                       "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
-                       "html_url": "https://github.com/acme/repo/actions/runs/42"}
-                if state.get("stale"):
-                    run["head_sha"] = "b" * 40
-                runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 100 + len(runs), "check_runs": [
-                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
+                if state["check_runs"] is not None:
+                    runs = [dict(run) for run in state["check_runs"]]
+                    value = [{"total_count": len(runs), "check_runs": runs}]
+                else:
+                    run = {"id": 42, "name": "required", "head_sha": sha,
+                           "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
+                           "html_url": "https://github.com/acme/repo/actions/runs/42"}
+                    if state.get("stale"):
+                        run["head_sha"] = "b" * 40
+                    runs = [] if state.get("missing") else [run]
+                    value = [{"total_count": 100 + len(runs), "check_runs": [
+                        {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
+                        for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
                     state["head"] = "b" * 40
+            elif "/check-suites" in self.path:
+                value = [{"total_count": len(state["check_suites"]), "check_suites": state["check_suites"]}]
             elif "/statuses" in self.path:
-                value = [[]]
+                value = [state["statuses"]]
+            elif "/branches/" in self.path:
+                state["branch_reads"] += 1
+                base_sha = (state["base_sha_after_compare"] if state["branch_reads"] > 1
+                            and state["base_sha_after_compare"] else state["base_sha"])
+                value = {"commit": {"sha": base_sha}}
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": state.get("final_head", sha)}, "base": {"ref": "main"},
+                         "state": "closed" if state["pr_state"] == "MERGED" else "open",
+                         "merged": state["pr_state"] == "MERGED",
+                         "merge_commit_sha": state["final_merge_commit"] or state["merge_commit"]}
             else:
                 self.send_error(404)
                 return
@@ -60,9 +97,14 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
-                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.request,urllib.error\n"
+    f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+    "try:\n print(urllib.request.urlopen(u).read().decode())\n"
+    "except urllib.error.HTTPError as error:\n"
+    " body=error.read().decode()\n sys.stdout.write(body)\n"
+    " try:\n  payload=json.loads(body)\n  while isinstance(payload,list) and len(payload)==1: payload=payload[0]\n  message=payload.get('message','') if isinstance(payload,dict) else ''\n"
+    " except ValueError:\n  message=''\n"
+    " sys.stderr.write(f'gh: {message} (HTTP {error.code})\\n')\n sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -107,6 +149,180 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("body_shape", ["dict", "slurp"])
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_rules_feature_403_keeps_classic_required_evidence(github, body_shape, conclusion):
+    github.update(rules_403=body_shape, conclusion=conclusion)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        ok = kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        assert ok is (conclusion == "success")
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["required"] == [{"context": "required", "app_id": 1}]
+        assert receipts[-1]["classification"] == conclusion
+        assert "Upgrade to GitHub Pro" not in json.dumps(receipts[-1])
+
+
+@pytest.mark.platforms("posix")
+def test_rules_feature_403_does_not_make_empty_required_set_succeed(github):
+    github.update(rules_403="dict", classic_required=False)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["required"] == []
+        assert receipts[-1]["classification"] == "missing"
+        assert "No repository-required checks are configured" in receipts[-1]["detail"]
+
+
+def test_merged_pr_can_complete_from_landed_all_green_current_head_evidence(github):
+    """A landed merge uses exact-head check evidence, never vacuous empty-required success."""
+    merge_commit = "c" * 40
+    github.update(pr_state="MERGED", merge_commit=merge_commit, rules_403="dict",
+                  classic_required=False, check_runs=[
+                      {"id": i, "name": name, "head_sha": "a" * 40, "app": {"id": i},
+                       "status": "completed", "conclusion": "success"}
+                      for i, name in enumerate(("delete-head-branch", "preview", "schema-contract", "guard", "secret-scan"), 1)
+                  ], statuses=[
+                      {"id": 100, "context": "Vercel", "state": "pending", "target_url": "https://example.test/vercel"},
+                      {"id": 101, "context": "Devin Review", "state": "pending", "target_url": "https://example.test/devin"},
+                  ])
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Landed publish", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+    receipt = receipts[-1]
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "success"
+    assert receipt["merge_commit_sha"] == merge_commit
+    assert receipt["landing_verified"] is True
+    assert receipt["required"] == []
+    assert receipt["ruleset_evidence"] == "feature_unavailable"
+    assert receipt["checks_evidence"] == "all_current_head_check_runs_pass"
+    assert "was not treated as an empty required set" in receipt["detail"]
+    assert receipt["base_sha"] == github["base_sha"]
+    assert {check["name"] for check in receipt["checks"]} == {
+        "delete-head-branch", "preview", "schema-contract", "guard", "secret-scan"}
+    assert all(check["head_sha"] == "a" * 40 and check["classification"] == "success"
+               for check in receipt["checks"])
+    assert any("/compare/" in path for path in github["requests"])
+
+
+@pytest.mark.parametrize("change", [
+    "missing_merge_commit", "not_landed", "unrelated_merge_base", "failed_check", "required_failure",
+    "pending_check", "stale_check", "no_checks", "changed_head", "changed_merge_commit", "base_moved",
+    "missing_head",
+])
+def test_merged_pr_rejects_unknown_or_failed_landing_evidence(github, change):
+    merge_commit = "c" * 40
+    checks = [{"id": 1, "name": "guard", "head_sha": "a" * 40, "app": {"id": 1},
+               "status": "completed", "conclusion": "success"}]
+    github.update(pr_state="MERGED", merge_commit=merge_commit, rules_403="dict",
+                  classic_required=False, check_runs=checks)
+    if change == "missing_merge_commit":
+        github["merge_commit"] = None
+    elif change == "not_landed":
+        github["compare_status"] = "behind"
+    elif change == "unrelated_merge_base":
+        github["merge_base"] = "b" * 40
+    elif change == "failed_check":
+        github["check_runs"] = [{**checks[0], "conclusion": "failure"}]
+    elif change == "required_failure":
+        github.update(classic_required=True, rules_403=None, check_runs=[
+            {"id": 1, "name": "required", "head_sha": "a" * 40, "app": {"id": 1},
+             "status": "completed", "conclusion": "failure"}])
+    elif change == "pending_check":
+        github["check_runs"] = [{**checks[0], "conclusion": "pending"}]
+    elif change == "stale_check":
+        github["check_runs"] = [{**checks[0], "head_sha": "b" * 40}]
+    elif change == "no_checks":
+        github["check_runs"] = []
+    elif change == "changed_head":
+        github["final_head"] = "b" * 40
+    elif change == "changed_merge_commit":
+        github["final_merge_commit"] = "b" * 40
+    elif change == "base_moved":
+        github["base_sha_after_compare"] = "e" * 40
+    elif change == "missing_head":
+        github["head"] = None
+    with connect() as conn:
+        tid = kb.create_task(conn, title=f"Landed publish {change}", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        assert kb.get_task(conn, tid).status != "done"
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    if change == "missing_merge_commit":
+        assert "authoritative merge commit" in receipt["detail"]
+    elif change == "not_landed":
+        assert "ancestry" in receipt["detail"]
+    elif change == "unrelated_merge_base":
+        assert "ancestry" in receipt["detail"]
+    elif change in {"failed_check", "required_failure"}:
+        assert receipt["classification"] == "failure"
+    elif change == "pending_check":
+        assert receipt["classification"] == "pending"
+    elif change == "stale_check":
+        assert receipt["classification"] == "stale"
+    elif change == "no_checks":
+        assert "no current-head check" in receipt["detail"]
+    elif change in {"changed_head", "changed_merge_commit", "base_moved"}:
+        assert receipt["classification"] == "stale"
+    elif change == "missing_head":
+        assert receipt["classification"] == "infra"
+
+
+@pytest.mark.parametrize("case", [
+    "triggered_after_merge", "triggered_before_merge", "queued_past_merge", "unknown_trigger_time",
+    "only_post_merge_runs",
+])
+def test_merged_pr_fallback_ignores_only_check_runs_triggered_after_the_merge(github, case):
+    """With no required set, a check run its suite says the merge itself triggered (a
+    pull_request "closed" workflow such as delete-head-branch) is not this PR's CI evidence.
+    A run triggered before the merge still counts even if it started later, and an unknown
+    trigger time counts too, so a pending run keeps refusing completion."""
+    merged_at, before, after = "2026-10-05T11:42:25Z", "2026-10-05T11:38:41Z", "2026-10-05T11:42:28Z"
+    late_suite = {"triggered_after_merge": after, "only_post_merge_runs": after,
+                  "triggered_before_merge": before, "queued_past_merge": before}.get(case)
+    late_started = before if case == "triggered_before_merge" else "2026-10-05T11:42:31Z"
+    guard = {"id": 1, "name": "guard", "head_sha": "a" * 40, "app": {"id": 1}, "check_suite": {"id": 1},
+             "started_at": "2026-10-05T11:38:44Z", "status": "completed", "conclusion": "success"}
+    late = {"id": 2, "name": "delete-head-branch", "head_sha": "a" * 40, "app": {"id": 1},
+            "check_suite": {"id": 2}, "started_at": late_started, "status": "in_progress", "conclusion": None}
+    suites = [{"id": 1, "created_at": before}]
+    if late_suite:
+        suites.append({"id": 2, "created_at": late_suite})
+    github.update(pr_state="MERGED", merge_commit="c" * 40, merged_at=merged_at, rules_403="dict",
+                  classic_required=False, check_suites=suites,
+                  check_runs=[late] if case == "only_post_merge_runs" else [guard, late])
+    with connect() as conn:
+        tid = kb.create_task(conn, title=f"Landed {case}", completion_contract="acme/repo", body="## Allowed paths\nsrc/\n")
+        ok = kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert ok is (case == "triggered_after_merge")
+    assert receipt["ruleset_evidence"] == "feature_unavailable" and receipt["required"] == []
+    if case == "triggered_after_merge":
+        assert receipt["classification"] == "success"
+        assert receipt["checks_evidence"] == "all_current_head_check_runs_pass"
+        assert [check["name"] for check in receipt["checks"]] == ["guard"]
+        assert receipt["post_merge_check_runs"] == [{"name": "delete-head-branch", "id": 2}]
+    elif case == "only_post_merge_runs":
+        assert receipt["classification"] == "missing"
+        assert "no current-head check" in receipt["detail"]
+    else:
+        assert receipt["classification"] == "pending"
+        assert "delete-head-branch" in {check["name"] for check in receipt["checks"]}
 
 
 @pytest.mark.platforms("linux")

@@ -459,6 +459,12 @@ class EmailAdapter(BasePlatformAdapter):
     # first connect fails is brought up by the reconnect watcher (is_reconnect=True) and must still warn once.
     _missing_pin_warned: set = set()
 
+    # Email cannot edit sent messages — each send creates a new, immutable
+    # message.  Without this flag the gateway treats email as an editable
+    # platform and sends interim/streaming messages as separate emails that
+    # can never be folded into the final reply.
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
         # Env first, then PlatformConfig.extra (config.yaml-only setups). Host/address are stripped: a stray

@@ -209,9 +209,21 @@ class TimelinePayload(TypedDict, total=False):
     source_file: str
 
 
+class ProfileRecord(TypedDict):
+    id: str
+    name: str
+    last_active: str
+
+
+class ProfilesConfig(TypedDict):
+    updated_at: str
+    profiles: List[ProfileRecord]
+
+
 class DispatchThreadMeta(TypedDict, total=False):
     thread_id: str
     subject: str
+    target_profile: str
     status: str
     created_at: str
     updated_at: str
@@ -1304,10 +1316,84 @@ def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMess
     return sorted(messages, key=lambda m: str(m.get("timestamp", "")))
 
 
+def active_profile_name(cli_profile: Optional[str] = None) -> str:
+    if cli_profile and cli_profile.strip():
+        return cli_profile.strip()
+    env_prof = os.environ.get("HERMES_PROFILE", "").strip()
+    if env_prof:
+        return env_prof
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        path = Path(hermes_home)
+        if "profiles" in path.parts:
+            idx = path.parts.index("profiles")
+            if idx + 1 < len(path.parts):
+                return path.parts[idx + 1]
+    return "default"
+
+
+def register_active_profile(
+    profile_id: str,
+    icloud_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    directories = icloud_directories(icloud_dir)
+    if not directories:
+        return
+    primary = directories[0]
+    try:
+        primary.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    profiles_file = primary / "profiles.json"
+
+    moment = now or utcnow()
+    timestamp_str = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    records: List[ProfileRecord] = []
+    if profiles_file.is_file():
+        try:
+            data = json.loads(profiles_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "profiles" in data and isinstance(data["profiles"], list):
+                for item in data["profiles"]:
+                    if isinstance(item, dict) and "id" in item:
+                        records.append(cast(ProfileRecord, item))
+        except Exception:
+            records = []
+
+    display_name = "Default Agent" if profile_id == "default" else f"{profile_id.capitalize()} Agent"
+    found = False
+    for r in records:
+        if r.get("id") == profile_id:
+            r["last_active"] = timestamp_str
+            if not r.get("name"):
+                r["name"] = display_name
+            found = True
+            break
+    if not found:
+        records.append({
+            "id": profile_id,
+            "name": display_name,
+            "last_active": timestamp_str,
+        })
+
+    records = sorted(records, key=lambda p: str(p.get("last_active", "")), reverse=True)
+    payload: ProfilesConfig = {
+        "updated_at": timestamp_str,
+        "profiles": records,
+    }
+    try:
+        profiles_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        log("INFO", f"registered profile '{profile_id}' in {profiles_file}")
+    except Exception as exc:
+        log("WARN", f"could not write profiles.json: {exc}")
+
+
 def create_dispatch_thread(
     threads_dir: Path,
     subject: str,
     initial_body: str,
+    target_profile: str = "default",
     sender: str = "agent",
     now: Optional[datetime] = None,
 ) -> DispatchThreadMeta:
@@ -1324,6 +1410,7 @@ def create_dispatch_thread(
     meta: DispatchThreadMeta = {
         "thread_id": thread_id,
         "subject": subject,
+        "target_profile": target_profile,
         "status": "replied" if sender == "agent" else "pending_agent",
         "created_at": timestamp_str,
         "updated_at": timestamp_str,
@@ -1406,6 +1493,12 @@ def command_threads(args: argparse.Namespace) -> int:
     threads = list_dispatch_threads(threads_dir)
     if args.pending:
         threads = [t for t in threads if t.get("status") == "pending_agent"]
+    if args.profile:
+        target = args.profile.strip().lower()
+        threads = [
+            t for t in threads
+            if str(t.get("target_profile", "default")).lower() in (target, "all")
+        ]
 
     if args.json:
         print(json.dumps(threads, indent=2, ensure_ascii=False))
@@ -1422,7 +1515,8 @@ def command_threads(args: argparse.Namespace) -> int:
         status_label = "Awaiting Agent" if t.get("status") == "pending_agent" else str(t.get("status", "unknown"))
         count = t.get("message_count", 0)
         memo_str = "1 memo" if count == 1 else f"{count} memos"
-        print(f"• [{t.get('thread_id', '?')}] {t.get('subject', 'Untitled')} ({status_label}, {memo_str})")
+        target_prof = t.get("target_profile", "default")
+        print(f"• [{t.get('thread_id', '?')}] {t.get('subject', 'Untitled')} [to: {target_prof}] ({status_label}, {memo_str})")
         if t.get("last_snippet"):
             print(f"  snippet: {t['last_snippet']}")
         print(f"  updated_at: {t.get('updated_at', 'unknown')}")
@@ -1457,6 +1551,7 @@ def command_thread_detail(args: argparse.Namespace) -> int:
     print("facts_only: reply in the user's language; do not quote this block")
     print(f"thread_id: {meta.get('thread_id')}")
     print(f"subject: {meta.get('subject')}")
+    print(f"target_profile: {meta.get('target_profile', 'default')}")
     print(f"status: {meta.get('status')}")
     print(f"created_at: {meta.get('created_at')}")
     print(f"updated_at: {meta.get('updated_at')}")
@@ -1502,12 +1597,20 @@ def command_new_thread(args: argparse.Namespace, now: datetime) -> int:
         log("ERROR", "cannot resolve iCloud threads directory")
         return 1
 
-    thread = create_dispatch_thread(threads_dir, args.subject, args.message, sender="agent", now=now)
+    target_profile = (args.to_profile or args.profile or "default").strip()
+    thread = create_dispatch_thread(
+        threads_dir,
+        args.subject,
+        args.message,
+        target_profile=target_profile,
+        sender="agent",
+        now=now,
+    )
     if args.json:
         print(json.dumps(thread, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"Created thread [{thread['thread_id']}] '{thread['subject']}'")
+    print(f"Created thread [{thread['thread_id']}] '{thread['subject']}' [to: {target_profile}]")
     return 0
 
 
@@ -1530,6 +1633,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--new-thread", action="store_true", help="Create a new dispatch thread")
     parser.add_argument("--subject", help="Subject for new dispatch thread")
     parser.add_argument("--message", help="Message body for reply or new thread")
+    parser.add_argument("--profile", help="Active Hermes agent profile name (e.g. 'default', 'work', 'personal')")
+    parser.add_argument("--to-profile", help="Target agent profile for new dispatch thread (defaults to 'default')")
     parser.add_argument("--places", type=Path, help="Places JSON file")
     parser.add_argument("--icloud-dir", help="Directory that contains the latest_*.json files")
     parser.add_argument("--name")
@@ -1549,6 +1654,11 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
     else:
         args.places = expand(str(args.places))
     moment = now or utcnow()
+
+    # Automatically register active profile in iCloud profiles.json
+    active_profile = active_profile_name(args.profile)
+    register_active_profile(active_profile, args.icloud_dir, now=moment)
+
     if args.threads:
         return command_threads(args)
     if args.thread:

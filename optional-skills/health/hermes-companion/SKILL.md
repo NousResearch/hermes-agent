@@ -89,6 +89,18 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --reply <thread_id> --message "
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --subject "..." --message "..."
 ```
 
+### Multi-Profile Agent Registration
+
+When Hermes runs with multiple profiles (e.g., `work`, `personal`), each profile automatically registers into `Documents/profiles.json` upon running any companion command. The iOS client reads `profiles.json` so the user can select which profile to address before sending a dispatch.
+
+```bash
+# Run under a specific profile and filter threads for it
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads --profile work --pending
+
+# Create a thread addressed to a specific agent profile
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --to-profile work --subject "..." --message "..."
+```
+
 ## Quick Reference
 
 | Question | Command | Fields to trust |

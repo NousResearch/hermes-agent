@@ -1,6 +1,6 @@
 name: hermes-filebox
 repo: https://github.com/imzacksong/hermes-filebox
-sha: a245638b37f084e298e74e51c15b042f68531eae
+sha: 5b75f3cbdd3a5f30fafae998b9f118eef3cc34d
 description: 'Explorer-style file browser for Hermes Desktop: tabbed panes, multi-select
   batch ops, grid + details list views, reorderable sidebar, drag-and-drop, recycle bin
   with restore, full edit ops, right-click menu, video + 3D model thumbs,

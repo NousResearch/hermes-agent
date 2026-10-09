@@ -222,7 +222,7 @@ class CodexAppServerClient:
     def __enter__(self) -> "CodexAppServerClient":
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:

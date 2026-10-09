@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts" / "termux"
 sys.path.insert(0, str(SCRIPTS))
 
-import stage_apt_repo  # noqa: E402
+import stage_apt_repo
 
 GPG_PRESENT = shutil.which("gpg") is not None
 

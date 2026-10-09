@@ -1225,7 +1225,7 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
                 ws.receive_json()
             except WebSocketDisconnect:
                 recv["closed"] = True
-            except Exception as exc:  # noqa: BLE001 - reported via the dict
+            except Exception as exc:
                 recv["error"] = exc
 
         thread = threading.Thread(target=_recv, daemon=True)

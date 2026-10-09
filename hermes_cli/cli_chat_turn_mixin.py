@@ -338,96 +338,101 @@ class CLIChatTurnMixin:
 
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""
-        from cli import (
-            _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
-            set_sudo_password_callback,
-        )
-        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
-        # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
-        set_sudo_password_callback(self._sudo_password_callback)
-        set_approval_callback(self._approval_callback)
-        set_secret_capture_callback(self._secret_capture_callback)
-        set_unlock_prompt_callback(self._vault_unlock_callback)
-        set_save_login_prompt_callback(self._vault_save_login_callback)
-        set_code_prompt_callback(self._vault_code_callback)
-        # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
-        # against the same key ``/yolo`` toggles under (``enable_session_yolo(self.session_id)``).
+        preparation_agent = self.agent
         try:
-            from tools.approval_context import reset_current_session_key, set_current_session_key
-            _approval_session_token = set_current_session_key(self.session_id or "default")
-        except Exception:
-            reset_current_session_key = None  # type: ignore[assignment]
-            _approval_session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
-        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
-        # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
-        # multimodal content-part lists (string concat raised TypeError with an image).
-        for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
-            _note = getattr(self, _note_attr, None)
-            if _note:
-                agent_message = _prepend_note_to_message(agent_message, _note)
-                setattr(self, _note_attr, None)
-        # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
-        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
-        if take_speech_interrupted():
-            agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
-        _moa_cfg = getattr(self, "_pending_moa_config", None)
-        self._pending_moa_config = None
-        # Notes and voice prefix are API-local: the staged input stays the durable transcript
-        # value so a close-path marker follows the same dict instead of a second user row.
-        _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
-        _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
-        self._pending_one_turn_model_restore = None
-        try:
-            from agent.notification_presentation import notification_turn
-            muted = getattr(turn, "mute_notification_reply", False)
-            with notification_turn(self.agent, muted=muted, session_id=self.session_id):
-                turn.result = self.agent.run_conversation(
-                    user_message=agent_message,
-                    conversation_history=self.conversation_history[:-1],
-                    stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
-                    persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
-                )
-            if getattr(self, "_pending_moa_disable_after_turn", False):
-                _restore = getattr(self, "_pending_moa_restore_model", None) or {}
-                for _key, _value in _restore.items():
-                    if _value is not None:
-                        setattr(self, _key, _value)
-                _retire_agent(self)
-                self._pending_moa_restore_model = None
-                self._pending_moa_disable_after_turn = False
-        except Exception as exc:
-            logging.error("run_conversation raised: %s", exc, exc_info=True)
-            _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
-            from hermes_cli.cli_chat_error_copy import chat_error_response
-            turn.result = {
-                "final_response": chat_error_response(
-                    exc, provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
-                    model=str(getattr(self.agent, "model", "") or self.model or "")),
-                "messages": [], "api_calls": 0,
-                "completed": False, "failed": True, "error": _summary,
-            }
-        finally:
-            if _one_turn_model_restore:
-                self._restore_model_runtime_snapshot(_one_turn_model_restore)
-            # Credit notices paint cleanly above the prompt here, not behind streamed output.
-            self._flush_credit_notices()
-            # A reused thread must never hold stale references to a disposed CLI instance.
+            from cli import (
+                _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
+                set_sudo_password_callback,
+            )
+            from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+            # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            set_secret_capture_callback(self._secret_capture_callback)
+            set_unlock_prompt_callback(self._vault_unlock_callback)
+            set_save_login_prompt_callback(self._vault_save_login_callback)
+            set_code_prompt_callback(self._vault_code_callback)
+            # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
+            # against the same key ``/yolo`` toggles under (``enable_session_yolo(self.session_id)``).
             try:
-                set_sudo_password_callback(None)
-                set_approval_callback(None)
-                set_secret_capture_callback(None)
-                set_unlock_prompt_callback(None)
-                set_save_login_prompt_callback(None)
-                set_code_prompt_callback(None)
+                from tools.approval_context import reset_current_session_key, set_current_session_key
+                _approval_session_token = set_current_session_key(self.session_id or "default")
             except Exception:
-                pass
-            # Unbind the per-turn key; ``_session_yolo`` state itself persists across turns.
-            if _approval_session_token is not None and reset_current_session_key is not None:
+                reset_current_session_key = None  # type: ignore[assignment]
+                _approval_session_token = None
+            agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+            self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
+            # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
+            # multimodal content-part lists (string concat raised TypeError with an image).
+            for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
+                _note = getattr(self, _note_attr, None)
+                if _note:
+                    agent_message = _prepend_note_to_message(agent_message, _note)
+                    setattr(self, _note_attr, None)
+            # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
+            from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+            if take_speech_interrupted():
+                agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
+            _moa_cfg = getattr(self, "_pending_moa_config", None)
+            self._pending_moa_config = None
+            # Notes and voice prefix are API-local: the staged input stays the durable transcript
+            # value so a close-path marker follows the same dict instead of a second user row.
+            _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
+            _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
+            self._pending_one_turn_model_restore = None
+            try:
+                from agent.notification_presentation import notification_turn
+                muted = getattr(turn, "mute_notification_reply", False)
+                with notification_turn(self.agent, muted=muted, session_id=self.session_id):
+                    turn.result = self.agent.run_conversation(
+                        user_message=agent_message,
+                        conversation_history=self.conversation_history[:-1],
+                        stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
+                        persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                    )
+                if getattr(self, "_pending_moa_disable_after_turn", False):
+                    _restore = getattr(self, "_pending_moa_restore_model", None) or {}
+                    for _key, _value in _restore.items():
+                        if _value is not None:
+                            setattr(self, _key, _value)
+                    _retire_agent(self)
+                    self._pending_moa_restore_model = None
+                    self._pending_moa_disable_after_turn = False
+            except Exception as exc:
+                logging.error("run_conversation raised: %s", exc, exc_info=True)
+                _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
+                from hermes_cli.cli_chat_error_copy import chat_error_response
+                turn.result = {
+                    "final_response": chat_error_response(
+                        exc, provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                        model=str(getattr(self.agent, "model", "") or self.model or "")),
+                    "messages": [], "api_calls": 0,
+                    "completed": False, "failed": True, "error": _summary,
+                }
+            finally:
+                if _one_turn_model_restore:
+                    self._restore_model_runtime_snapshot(_one_turn_model_restore)
+                # Credit notices paint cleanly above the prompt here, not behind streamed output.
+                self._flush_credit_notices()
+                # A reused thread must never hold stale references to a disposed CLI instance.
                 try:
-                    reset_current_session_key(_approval_session_token)
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                    set_unlock_prompt_callback(None)
+                    set_save_login_prompt_callback(None)
+                    set_code_prompt_callback(None)
                 except Exception:
                     pass
+                # Unbind the per-turn key; ``_session_yolo`` state itself persists across turns.
+                if _approval_session_token is not None and reset_current_session_key is not None:
+                    try:
+                        reset_current_session_key(_approval_session_token)
+                    except Exception:
+                        pass
+        finally:
+            from agent.source_provenance import clear_pending_source_provenance
+            clear_pending_source_provenance(preparation_agent)
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""

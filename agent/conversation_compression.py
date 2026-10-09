@@ -1651,13 +1651,13 @@ def _adopt_live_compression_child(
     confirmed = resolver(session_db, parent_session_id)
     if not confirmed or str(confirmed) != child_session_id:
         return None
+    from agent.source_provenance import transfer_agent_context_source_session
+    transfer_agent_context_source_session(agent, child_session_id)
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
-    # The turn skips restore/rebuild while this slot is set, so it may hold only the child's own
-    # prompt, and only when that prompt matches the current runtime (otherwise None -> rebuild).
-    # Turn-start adoption runs before _restore_primary_runtime on purpose; a reject here is re-checked by the normal restore.
+    # Cache only the child's prompt that matches the current runtime.
     from agent.conversation_loop import _stored_prompt_matches_runtime
     child_prompt = child.get("system_prompt")
     agent._cached_system_prompt = (
@@ -3349,8 +3349,7 @@ def _publish_rotated_compaction(
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
         watermark_ceiling=_foreign_tail_ceiling,
     )
-    # `already_present` stamping is done by run_agent's _sync_persisted_markers;
-    # this branch covers inserted/merged only; direct callers must use that wrapper.
+    # The persistence wrapper stamps already-present rows; stamp new anchors here.
     if compressed_user_turn_outcome in {"inserted", "merged"}:
         # Stamp the anchor source row itself, not the (drifted, possibly out-of-range)
         # persist index; don't match the HANDOFF row — for `merged` it is a superset.
@@ -3359,13 +3358,13 @@ def _publish_rotated_compaction(
             _compressed_anchor_source[_DB_PERSISTED_MARKER] = True
             _session_messages = getattr(agent, "_session_messages", None)
             if isinstance(_session_messages, list) and _session_messages is not messages:
-                # Adoption may leave _session_messages on the pre-adoption list with an out-of-range idx; stamp every
-                # scoped twin against the ANCHOR SOURCE, as the wrapper. An already-stamped exact twin still
-                # suppresses the broad pass here, or a content-equal old duplicate would get stamped.
+                # Stamp scoped twins against the anchor source, excluding already-stamped duplicates.
                 _stamp_scoped_twins(_session_messages, _compressed_anchor_source, exact_counts_stamped=True)
     for _handoff_message in compressed:
         if isinstance(_handoff_message, dict):
             _handoff_message[_DB_PERSISTED_MARKER] = True
+    from agent.source_provenance import transfer_agent_context_source_session
+    transfer_agent_context_source_session(agent, new_session_id)
     agent.session_id = new_session_id
     agent._db_flush_scan_prefix = None
     _rebind_session_context(agent.session_id)

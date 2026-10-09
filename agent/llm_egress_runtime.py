@@ -216,12 +216,16 @@ def _exact_provider_secret_values() -> tuple[str, ...]:
     )
 
 
-def _read_grant_text(grant: SourceGrant) -> str | None:
-    try:
-        lines = Path(grant.canonical_path).read_bytes().splitlines(keepends=True)
-        return b"".join(lines[grant.line_start - 1 : grant.line_end]).decode("utf-8")
-    except (OSError, UnicodeDecodeError, ValueError, TypeError):
-        return None
+def _read_grant_text(grant: SourceGrant) -> str:
+    """Read only the granted LF-bounded bytes; never downgrade stale authority."""
+    from hmac import compare_digest
+    from agent.source_provenance import SourceProvenanceError, _read_bounded_slice
+    content = _read_bounded_slice(grant.canonical_path, grant.line_start, grant.line_end)
+    if len(content) != grant.byte_count or not compare_digest(
+        sha256(content).hexdigest(), grant.content_sha256,
+    ):
+        raise SourceProvenanceError("content_mismatch")
+    return content.decode("utf-8")
 
 
 def _grant_texts(grants: Sequence[SourceGrant]) -> tuple[tuple[str, SourceGrant], ...]:
@@ -540,8 +544,6 @@ def _segment_read_file_presentation(
                 if rebound is None:
                     continue
                 raw_text = _read_grant_text(rebound)
-                if raw_text is None:
-                    continue
                 expected = "\n".join(
                     f"{line_number}|{line}"
                     for line_number, line in enumerate(

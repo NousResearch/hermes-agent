@@ -688,6 +688,9 @@ def test_protected_kanban_splits_large_line_bounded_context_without_changing_wir
 ):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
+    # Exercise the route that owns protected cloud worker context.
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
     agent._llm_egress_max_sanitized_bytes = 128_000
     text = "\n".join(
         f"source=kanban-task-context line={index} ordinary repair evidence."
@@ -709,6 +712,9 @@ def test_protected_kanban_splits_single_oversized_line_without_relaxing_cap(
 ):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
+    # Exercise the route that owns protected cloud worker context.
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
     agent._llm_egress_max_sanitized_bytes = 128_000
     text = "ordinary bounded repair context " * 2_000
     assert "\n" not in text
@@ -788,6 +794,9 @@ def test_protected_kanban_admits_validated_application_identifiers(
 ):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
+    # Exercise the route that owns protected cloud worker context.
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
 
     authorized, _ = authorize_agent_sdk_kwargs(
         agent,
@@ -808,6 +817,9 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     monkeypatch.setenv("HERMES_CONTROL_HOME", "/Users/operator/.hermes")
     agent = _agent(tmp_path)
+    # Exercise the route that owns protected cloud worker context.
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
     lower_sha = "8ea9309f1c38ac8da8064e16acae05da86ba2df4"
     upper_sha = "D41A011C51B41FE599440426624C8EE49D256C14"
     receipt_sha = (
@@ -933,6 +945,9 @@ def test_protected_kanban_runtime_sanitizes_tool_paths_before_egress(
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     agent = _agent(tmp_path / "egress")
+    # Exercise the route that owns protected cloud worker context.
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
 
     authorized, _ = authorize_agent_sdk_kwargs(
         agent,

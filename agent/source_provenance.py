@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from hmac import compare_digest
 import os
@@ -101,6 +101,30 @@ class SourceProvenanceRegistry:
         request_id: str,
         policy_digest: str,
     ) -> SourceGrant:
+        """Verify a bounded slice, then store its exact request-bound authority."""
+        grant = self._validated_file_slice(
+            path=path, line_start=line_start, line_end=line_end, content=content,
+            session_id=session_id, turn_id=turn_id, request_id=request_id,
+            policy_digest=policy_digest,
+        )
+        with self._lock:
+            if len(self._grants.get(request_id, ())) >= MAX_GRANTS_PER_REQUEST:
+                raise SourceProvenanceError("grant_limit_exceeded")
+            self._grants.setdefault(request_id, []).append(grant)
+        return grant
+
+    def _validated_file_slice(
+        self,
+        *,
+        path: Path,
+        line_start: int,
+        line_end: int,
+        content: bytes,
+        session_id: str,
+        turn_id: str,
+        request_id: str,
+        policy_digest: str,
+    ) -> SourceGrant:
         """Grant exactly the current canonical bytes, or reject the producer.
 
         The caller supplies the bytes it just read, but they are never trusted
@@ -179,10 +203,6 @@ class SourceProvenanceRegistry:
             request_id=request_id,
             policy_digest=policy_digest,
         )
-        with self._lock:
-            if len(self._grants.get(request_id, ())) >= MAX_GRANTS_PER_REQUEST:
-                raise SourceProvenanceError("grant_limit_exceeded")
-            self._grants.setdefault(request_id, []).append(grant)
         return grant
 
     @contextmanager
@@ -368,11 +388,12 @@ def clear_pending_source_provenance(agent) -> None:
         agent._source_provenance_pending_turn_id = None
 
 
-def _renew_context_slice(registry, grant, *, session_id, request_id):
+def _renew_context_slice(registry, grant, *, session_id, request_id, verify_only=False):
     content = _read_bounded_slice(grant.canonical_path, grant.line_start, grant.line_end)
     if not compare_digest(sha256(content).hexdigest(), grant.content_sha256):
         raise SourceProvenanceError("content_mismatch")
-    return registry.issue_file_slice(
+    validate = registry._validated_file_slice if verify_only else registry.issue_file_slice
+    return validate(
         path=grant.canonical_path, line_start=grant.line_start, line_end=grant.line_end,
         content=content, session_id=session_id, turn_id=grant.turn_id,
         request_id=request_id, policy_digest=grant.policy_digest,
@@ -383,6 +404,7 @@ def admit_agent_context_sources(agent, *, turn_id, prepared_session_id):
     """Bind explicit pre-turn slices only after durable admission settles identity."""
     registry = getattr(agent, "_source_provenance_registry", None)
     agent._source_provenance_context_grants = ()
+    agent._source_provenance_context_error = None
     if not isinstance(registry, SourceProvenanceRegistry):
         return
     request_id = f"{turn_id}:api:1"
@@ -401,6 +423,9 @@ def admit_agent_context_sources(agent, *, turn_id, prepared_session_id):
 
 def renew_agent_context_sources(agent, *, session_id, turn_id, request_id, policy_digest):
     """Reverify the same admitted raw slices for each request in this turn."""
+    error = getattr(agent, "_source_provenance_context_error", None)
+    if error:
+        raise SourceProvenanceError(error)
     grants = getattr(agent, "_source_provenance_context_grants", ())
     if not grants:
         return
@@ -421,8 +446,39 @@ def renew_agent_context_sources(agent, *, session_id, turn_id, request_id, polic
                     grant.canonical_path, grant.line_start, grant.line_end,
                     grant.content_sha256, session_id, turn_id, policy_digest,
                 ) for current in existing):
+            _renew_context_slice(
+                registry, grant, session_id=session_id, request_id=request_id, verify_only=True,
+            )
             continue
         _renew_context_slice(registry, grant, session_id=session_id, request_id=request_id)
+
+
+
+def transfer_agent_context_source_session(agent, new_session_id):
+    """Carry raw binding records at trusted handoffs; grant only at verified SDK dispatch.
+
+    Publication is already durable: no source IO or fallible authority issuance
+    belongs here. Every retained byte digest is checked again before the next SDK call.
+    """
+    grants = getattr(agent, "_source_provenance_context_grants", ())
+    if not grants:
+        return
+    old_session_id = str(getattr(agent, "session_id", "") or "")
+    turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or
+                  getattr(agent, "_current_turn_id", "") or "")
+    registry = getattr(agent, "_source_provenance_registry", None)
+    if not isinstance(registry, SourceProvenanceRegistry) or not new_session_id:
+        agent._source_provenance_context_error = "missing_identity"
+        return
+    if any(grant.session_id != old_session_id or grant.turn_id != turn_id for grant in grants):
+        registry.clear_turn(turn_id)
+        agent._source_provenance_context_error = "grant_binding_mismatch"
+        return
+    registry.clear_turn(turn_id)
+    agent._source_provenance_context_grants = tuple(
+        replace(grant, session_id=new_session_id, request_id=f"{turn_id}:api:1")
+        for grant in grants
+    )
 
 
 def following_api_request_id(request_id: str, turn_id: str) -> str:

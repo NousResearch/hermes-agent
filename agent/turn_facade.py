@@ -212,6 +212,7 @@ class TurnFacadeMixin:
                     # that skip finalize_turn. Keep ts.
                     from agent.source_provenance import SourceProvenanceRegistry
                     self._source_provenance_context_grants = ()
+                    self._source_provenance_context_error = None
                     provenance_registry = getattr(self, "_source_provenance_registry", None)
                     if isinstance(provenance_registry, SourceProvenanceRegistry):
                         provenance_registry.clear_turn(relay_turn_id)

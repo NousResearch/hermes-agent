@@ -33,7 +33,7 @@ class AuxRouteAttributionMixin:
         self._last_aux_config_provider: str = ""
         self._last_aux_config_model: str = ""
         self._last_aux_config_base_url: str = ""
-        # Per-attempt failure classification ("auth" | "network" | "other" |
+        # Per-attempt failure classification ("auth" | "quota" | "network" | "other" |
         # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
         # which are intentionally sticky across compress() calls to preserve
         # the cooldown guard (see compress()), this field is reset at the top
@@ -136,6 +136,16 @@ class AuxRouteAttributionMixin:
             self._last_aux_call_model or self._last_aux_config_model or self.summary_model or "(main)",
             self._last_aux_call_base_url or self._last_aux_config_base_url or self.base_url or "default",
         )
+
+    def _record_summary_access_failure(self, error: Exception) -> None:
+        """Keep the legacy preservation flag while distinguishing billing from credentials."""
+        from agent.context_compressor import _exc_status_code, _SUMMARY_PERMANENT_QUOTA_MARKERS
+
+        self._last_summary_auth_failure = True
+        quota = _exc_status_code(error) == 402 or any(
+            marker in str(error).lower() for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS
+        )
+        self._last_attempt_failure_class = "quota" if quota else "auth"
 
     def _classify_attempt_failure(self, failure_class: str) -> None:
         """Record this attempt's failure class unless a more specific one is already set.

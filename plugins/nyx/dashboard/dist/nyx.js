@@ -15,6 +15,7 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 import { EffectComposer } from './vendor/EffectComposer.js';
 import { RenderPass } from './vendor/RenderPass.js';
 import { UnrealBloomPass } from './vendor/UnrealBloomPass.js';
+import { ShaderPass } from './vendor/ShaderPass.js';
 import { criarPreenchimento } from './preenchimento.js';
 
 /* ---------- silhueta ---------- */
@@ -721,6 +722,27 @@ function pontos(dados, material) {
   return p;
 }
 
+// Lente de câmera, por cima de tudo: aberração cromática que cresce pros cantos (~2 px no canto da tela cheia),
+// vinheta e grão de filme proporcional à luz (o fundo continua preto puro)
+const LENTE = {
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uTime;
+    varying vec2 vUv;
+    float grao(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+    void main() {
+      vec2 c = vUv - 0.5;
+      float r2 = dot(c, c);
+      vec2 ca = c * r2 * 0.006;
+      vec3 cor = vec3(texture2D(tDiffuse, vUv + ca).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ca).b);
+      cor *= 1.0 - 0.4 * smoothstep(0.12, 0.55, r2);
+      cor += cor * (grao(gl_FragCoord.xy + floor(fract(uTime * 12.0) * 997.0)) - 0.5) * 0.12;
+      gl_FragColor = vec4(cor, 1.0);
+    }`,
+};
+
 /* ---------- cena ---------- */
 // modo: 'particulas' (o busto de ~3 milhões de partículas) ou 'preenchimento' (pintado por shader, preenchimento.js)
 export function montar(el, { densidade = 1, modo = 'particulas' } = {}) {
@@ -787,6 +809,8 @@ export function montar(el, { densidade = 1, modo = 'particulas' } = {}) {
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.05, 0.45);
   composer.addPass(bloom);
+  const lente = new ShaderPass(LENTE);
+  composer.addPass(lente);
   const ajustar = () => {
     const w = Math.max(1, el.clientWidth), h = Math.max(1, el.clientHeight);
     renderer.setSize(w, h, false);
@@ -851,6 +875,7 @@ export function montar(el, { densidade = 1, modo = 'particulas' } = {}) {
     galaxia.uniforms.uGal.value = gal;
     satelite.uniforms.uGal.value = sat;
     uniforms.uTime.value = t;
+    lente.uniforms.uTime.value = t;
     uniforms.uPensa.value = pensa;
     uniforms.uFala.value = fala;
     group.rotation.y = 0.1 * Math.sin(t * 0.21);                 // respiração do corpo

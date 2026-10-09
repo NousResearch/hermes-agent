@@ -45,7 +45,7 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
   });
   return `
   uniform sampler2D tNormal, tDepth;
-  uniform mat4 uInvMVP, uInvProj;
+  uniform mat4 uInvMVP, uInvProj, uProj;
   uniform vec2 uRes;
   uniform float uTime, uC, uPensa, uFala;
   const float U = ${U.toFixed(4)}, Y0 = ${Y0.toFixed(1)}, AX = ${AX.toFixed(2)}, CEL = ${CEL.toFixed(3)}, BRILHO = 1.3;
@@ -57,6 +57,38 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     return fract((p4.xxyz + p4.yzzw) * p4.zywx);
   }
   float suave(float a, float b, float v) { float t = clamp((v - a) / (b - a), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
+
+  // --- foto-realismo: a luz e o material que uma foto teria, pintados com a mesma pele de pontos ---
+  // ponto (espaço da câmera) de outro px, pela profundidade
+  vec3 vistaEm(vec2 uv) {
+    vec4 v = uInvProj * vec4(uv * 2.0 - 1.0, min(texture2D(tDepth, uv).r, 0.999999) * 2.0 - 1.0, 1.0);
+    return v.xyz / v.w;
+  }
+  // oclusão de ambiente: quanto da meia-esfera acima da pele está tampada por pele vizinha (sob o queixo, a junção
+  // do pescoço, a concha da orelha, os vãos da clavícula). 12 amostras numa espiral de ~22 px de foto, girada por
+  // um sorteio preso à pele (o padrão gira junto com o busto e não chia)
+  float oclusao(vec2 uv, vec3 p, vec3 n, float giro) {
+    const float R = 0.22;
+    float rpx = R * uProj[1][1] * 0.5 * uRes.y / max(0.1, -p.z);
+    float ao = 0.0;
+    for (int i = 0; i < 12; i++) {
+      float f = (float(i) + 0.5) / 12.0, a = float(i) * 2.39996 + giro * 6.2832;
+      vec3 d = vistaEm(uv + vec2(cos(a), sin(a)) * rpx * sqrt(f) / uRes) - p;
+      float dist = length(d);
+      ao += max(0.0, dot(n, d) / max(dist, 1e-4) - 0.2) * (1.0 - smoothstep(0.5 * R, R, dist));
+    }
+    return clamp(1.0 - 1.3 * ao / 12.0, 0.0, 1.0);
+  }
+  // textura orgânica: ruído 3D suave em três escalas (~42, 17 e 6,5 px de pele), preso à pele: manchas e veios
+  // mais claros e mais escuros no lugar do ruído uniforme
+  float ruido(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash43(i).x, b = hash43(i + vec3(1.0, 0.0, 0.0)).x, c = hash43(i + vec3(0.0, 1.0, 0.0)).x, d = hash43(i + vec3(1.0, 1.0, 0.0)).x;
+    float e = hash43(i + vec3(0.0, 0.0, 1.0)).x, g = hash43(i + vec3(1.0, 0.0, 1.0)).x, h = hash43(i + vec3(0.0, 1.0, 1.0)).x, j = hash43(i + vec3(1.0)).x;
+    return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y), mix(mix(e, g, f.x), mix(h, j, f.x), f.y), f.z);
+  }
+  float textura(vec3 P) { return 0.5 * ruido(P / 42.0) + 0.3 * ruido(P / 17.0 + 7.1) + 0.2 * ruido(P / 6.5 + 3.3); }
 
   // y do contorno do queixo na meia-largura |x| (px)
   float queixoY(float ax) {
@@ -131,7 +163,15 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     if (!orelha) dens *= 1.0 + marcas(P, parte);
     if (P.y > 932.0) dens *= max(0.0, 1.0 - (P.y - 932.0) / 9.0);   // só a borda de baixo se desfaz
     float ouro = (cabeca && P.z > 40.0 && P.y > 400.0 && P.y < 700.0) ? exp(-((P.x / 46.0) * (P.x / 46.0) + ((P.y - 548.0) / 50.0) * ((P.y - 548.0) / 50.0))) : 0.0;
-    float vd = vis * dens;
+    // foto-realismo: a oclusão tira pontos e brilho das dobras; a textura varia a densidade em manchas; a luz
+    // principal (alto à esquerda, na frente) faz um brilho acetinado; a orelha, fina, deixa a luz atravessar
+    float ao = oclusao(uv, vp.xyz, n, hash43(floor(P / 3.0)).w);
+    float tex = textura(P);
+    float spec = pow(max(dot(n, normalize(normalize(vec3(-0.45, 0.7, 0.55)) + normalize(-vp.xyz))), 0.0), 36.0);
+    dens *= mix(0.5, 1.0, ao) * (0.6 + 0.8 * tex);
+    float vd = vis * dens + 0.06 * spec * ao;
+    float luzMat = mix(0.6, 1.0, ao) * (1.0 + 0.45 * spec) * (0.85 + 0.3 * tex) * (orelha ? 1.2 : 1.0);
+    float clareia = 0.3 * spec + 0.2 * suave(0.6, 0.85, tex) + (orelha ? 0.15 : 0.0);
 
     // os pontos: cada célula da grade tem um ponto sorteado no miolo dela ([0,25; 0,75] da célula, mais o tremor
     // de 0,1), então um ponto de uma célula a duas de distância fica a pelo menos 1,15 célula de P: tudo que um
@@ -159,11 +199,12 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
       if (cob <= 0.0) continue;
       float tc = fract(h.w * 13.7);
       vec3 cor = dourado ? GOLD : conta ? (tc < 0.5 ? WHITE : CYAN) : (tc < 0.12 ? DEEP : tc < 0.67 ? BLUE : tc < 0.95 ? CYAN : WHITE);
+      if (!dourado) cor = mix(cor, WHITE, clareia);
       float b = conta ? (0.9 + 0.3 * q.y) * ganho : (0.7 + 0.3 * q.y) * (dourado ? 0.8 : ganho);
       float rit = 0.8 + sd * 2.5 + uPensa * 1.5;         // pensando: cintila mais rápido
       float tw = 1.0 + (0.9 + uPensa * 0.6) * pow(0.5 + 0.5 * sin(uTime * rit + sd * 50.0), 12.0);
       float boca = dourado ? 1.0 + uFala * (0.7 + 0.6 * sin(uTime * 9.0 + sd * 3.0)) : 1.0;   // falando: o dourado pulsa
-      acc += cor * b * (0.7 + 0.5 * visP) * tw * boca * pulso * cob;
+      acc += cor * b * (0.7 + 0.5 * visP) * tw * boca * pulso * luzMat * cob;
     }
     // exposição fixa, calibrada na tela cheia pra dar o mesmo brilho do modo partículas. Lá a exposição muda com a
     // tela (compensa a sobreposição, que cresce quando a figura encolhe); aqui cada px amostra a pele e não muda
@@ -187,7 +228,7 @@ export function criarPreenchimento({ renderer, camera, malha, uniforms, forma })
     uniforms: {
       ...uniforms,
       tNormal: { value: gbuf.texture }, tDepth: { value: gbuf.depthTexture },
-      uInvMVP: { value: new THREE.Matrix4() }, uInvProj: { value: camera.projectionMatrixInverse },
+      uInvMVP: { value: new THREE.Matrix4() }, uInvProj: { value: camera.projectionMatrixInverse }, uProj: { value: camera.projectionMatrix },
       uRes: { value: new THREE.Vector2(1, 1) },
     },
   });

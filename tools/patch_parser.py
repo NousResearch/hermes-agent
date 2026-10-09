@@ -33,7 +33,7 @@ class HunkLine:
 @dataclass
 class Hunk:
     context_hint: Optional[str] = None
-    lines: List[HunkLine] = field(default_factory=list)
+    lines: list[HunkLine] = field(default_factory=list)
 
 
 @dataclass
@@ -41,14 +41,14 @@ class PatchOperation:
     operation: OperationType
     file_path: str
     new_path: Optional[str] = None  # MOVE only
-    hunks: List[Hunk] = field(default_factory=list)
+    hunks: list[Hunk] = field(default_factory=list)
 
 
 # Markers must occupy the whole line at column 0 so content lines that merely
 # mention the format ("+*** End Patch") can't truncate or reset the patch.
 _BEGIN_MARKER = re.compile(r'^\*\*\*\s*Begin\s+Patch\s*$')
 _END_MARKER = re.compile(r'^\*\*\*\s*End\s+Patch\s*$')
-_OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
+_OP_MARKERS: list[tuple[OperationType, re.Pattern]] = [
     (OperationType.UPDATE, re.compile(r'\*\*\*\s*Update\s+File:\s*(.+)')),
     (OperationType.ADD, re.compile(r'\*\*\*\s*Add\s+File:\s*(.+)')),
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
@@ -56,7 +56,7 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
 
 
-def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
+def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
     """-> ``(operations, None)`` (empty patch = ``[]``, no error) or ``([], "Parse error: …")``."""
     # Tolerate CRLF: a stray ``\r`` would land in every HunkLine.content and defeat the markers.
     lines = [ln[:-1] if ln.endswith('\r') else ln for ln in patch_content.split('\n')]
@@ -68,7 +68,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
         elif _END_MARKER.match(line):
             end_idx = i
             break
-    operations: List[PatchOperation] = []
+    operations: list[PatchOperation] = []
     current_op: Optional[PatchOperation] = None
     current_hunk: Optional[Hunk] = None
 
@@ -109,7 +109,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
             elif line[0] != '\\':  # "\ No newline at end of file" marker is skipped
                 current_hunk.lines.append(HunkLine(' ', line))  # implicit context line
     _flush()
-    parse_errors: List[str] = []
+    parse_errors: list[str] = []
     for op in operations:
         if not op.file_path:
             parse_errors.append("Operation with empty file path")
@@ -126,7 +126,7 @@ def _count_occurrences(text: str, pattern: str) -> int:
     return sum(1 for i in range(len(text) + 1) if text.startswith(pattern, i))
 
 
-def _split_hunk(hunk: Hunk) -> Tuple[List[str], List[str]]:
+def _split_hunk(hunk: Hunk) -> tuple[list[str], list[str]]:
     """``(search_lines, replace_lines)``: context+removed vs context+added."""
     return ([l.content for l in hunk.lines if l.prefix != '+'],
             [l.content for l in hunk.lines if l.prefix != '-'])
@@ -140,23 +140,23 @@ def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> s
     return ""
 
 
-def _hint_ambiguity(content: str, hint: str, tail: str = "") -> Tuple[int, str]:
+def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
     """(occurrences, error) for an addition-only hunk's context hint; error is '' when unique."""
     n = _count_occurrences(content, hint)
     return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
-def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> List[str]:
+def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
-    errors: List[str] = []
+    errors: list[str] = []
     real_change_count = 0
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets).
     pending_content: dict = {}
     removed_paths: set = set()
 
-    def _read(path: str) -> Tuple[Optional[str], Optional[str]]:
+    def _read(path: str) -> tuple[Optional[str], Optional[str]]:
         if path in pending_content:
             return pending_content[path], None
         if path in removed_paths:
@@ -268,7 +268,7 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
 
 # Every _apply_* returns (success, diff_or_error, lsp_diagnostics, lint_result, write): ``write``
 # is the PatchResult._writes entry of a file write, None for Delete/Move and failures.
-ApplyResult = Tuple[bool, str, Optional[str], Optional[dict], Optional[tuple]]
+ApplyResult = tuple[bool, str, Optional[str], Optional[dict], Optional[tuple]]
 
 
 def _fail(error: str) -> ApplyResult:
@@ -291,24 +291,24 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
         fromfile=f"a/{path}", tofile="/dev/null" if new is None else f"b/{path}"))
 
 
-def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> PatchResult:
+def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:
     """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
     failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
     ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
 
-    def _bullets(errs: List[str]) -> str:
+    def _bullets(errs: list[str]) -> str:
         return "\n".join(f"  • {e}" for e in errs)
 
     if errors := _validate_operations(operations, file_ops):
         return PatchResult(
             success=False,
             error="Patch validation failed (no files were modified):\n" + _bullets(errors))
-    files: Dict[str, List[str]] = {"created": [], "deleted": [], "modified": []}
-    all_diffs: List[str] = []
+    files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
+    all_diffs: list[str] = []
     # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
-    lsp_blocks: List[str] = []
-    lint_results: Dict[str, dict] = {}
-    writes: List[tuple] = []
+    lsp_blocks: list[str] = []
+    lint_results: dict[str, dict] = {}
+    writes: list[tuple] = []
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
         try:
@@ -390,7 +390,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
         True, f"# Moved: {op.file_path} -> {op.new_path}", None, None, None)
 
 
-def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tuple[Optional[str], Optional[str]]:
+def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tuple[Optional[str], Optional[str]]:
     """Place an addition-only hunk after its context hint (or at EOF). Returns (content, error)."""
     if hunk.context_hint:
         occurrences, ambiguous = _hint_ambiguity(
@@ -451,7 +451,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
 
 
 # operation -> (handler, verb for error text, files_* bucket)
-_APPLY_DISPATCH: Dict[OperationType, Tuple[Callable[[PatchOperation, Any], ApplyResult], str, str]] = {
+_APPLY_DISPATCH: dict[OperationType, tuple[Callable[[PatchOperation, Any], ApplyResult], str, str]] = {
     OperationType.ADD: (_apply_add, "add", "created"),
     OperationType.DELETE: (_apply_delete, "delete", "deleted"),
     OperationType.MOVE: (_apply_move, "move", "modified"),

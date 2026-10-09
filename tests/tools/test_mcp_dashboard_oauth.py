@@ -281,7 +281,7 @@ def test_server_task_does_not_park_on_an_ended_dashboard_flow(
         failure = None
         try:
             await task.start({"command": "x"})
-        except Exception as exc:  # noqa: BLE001 — the connect failure under test
+        except Exception as exc:
             failure = exc
         parked = task._was_parked
         await task.shutdown()

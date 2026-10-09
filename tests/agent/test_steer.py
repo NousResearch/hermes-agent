@@ -872,7 +872,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         assert "api_content" not in history[1]
 
     def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
-        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
+        from agent.conversation_loop import _clone_message_for_send
         from unittest.mock import patch
 
         from tests.agent.test_run_agent import _mock_response

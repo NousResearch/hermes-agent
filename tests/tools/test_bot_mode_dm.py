@@ -715,7 +715,6 @@ def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, 
         claimed = live.claim_pending_delivery(tmp_path, owner)
         assert claimed is not None
         live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
-        return None
 
     monkeypatch.setattr(live, "find_canonical_live_owner", settle_during_owner_check)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
@@ -738,7 +737,6 @@ def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch,
 
     def owner_gone_then_settle(_home):
         settling.start()
-        return None
 
     monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone_then_settle)
     try:

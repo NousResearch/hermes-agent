@@ -3179,7 +3179,7 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
 
 
 def _salvage_or_refuse_grown_transcript(
-    agent: Any, messages: list, compressed: list, *, system_message: str, attempt_started_at: float,
+    agent: Any, original_messages: list, compressed: list, *, system_message: str, attempt_started_at: float,
     attempt_snapshot: dict,
 ) -> tuple[Optional[list], Optional[str]]:
     """Anti-growth guard at the COMMIT SITE (in-place commits before the gateway can inspect).
@@ -3193,13 +3193,13 @@ def _salvage_or_refuse_grown_transcript(
     # (#83339), but in-place compaction commits inside this method via archive_and_compact — before the
     # gateway can inspect the result — so the guard must live here to protect both paths. On growth, treat
     # the attempt as a no-op: the original transcript stays untouched and durable.
-    _rough_in = estimate_messages_tokens_rough(messages)
+    _rough_in = estimate_messages_tokens_rough(original_messages)
     _rough_out = estimate_messages_tokens_rough(compressed)
     if _rough_out > _rough_in:
         # Todo refresh and user-turn anchoring run after the compressor's own size check
         # and can tip a break-even candidate; give it one mechanical salvage pass.
         from agent.context_compressor import salvage_grown_transcript
-        _salvaged = salvage_grown_transcript(messages, compressed, budget=_rough_in)
+        _salvaged = salvage_grown_transcript(original_messages, compressed, budget=_rough_in)
         if _salvaged is not None:
             _salv_est = estimate_messages_tokens_rough(_salvaged)
             if _salv_est < _rough_in:
@@ -3685,21 +3685,20 @@ def _commit_compaction(
     if agent._session_db:
         split_status = "pending"
         try:
-            # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
-            # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
-
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
             _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
+            original_messages = messages_before_compression if messages_before_compression is not None else messages
             compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
-                agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
-                attempt_snapshot=attempt.snapshot,
+                agent, original_messages, compressed, system_message=system_message,
+                attempt_started_at=attempt.started_at, attempt_snapshot=attempt.snapshot,
             )
             if compressed is None:
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
+            # Publish memory only after every refusal gate, from the immutable pre-compression snapshot.
+            agent.commit_memory_session(original_messages)
             from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
             from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
             if in_place:
@@ -3872,7 +3871,7 @@ def _run_summary_phase(
 ) -> _SummaryPhase:
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
-    still held, and aborts; any other failure releases the lease and re-raises."""
+    still held, and aborts; any other failure restores the live list, releases the lease and re-raises."""
     pre_msg_count = len(messages)
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     messages_before_compression = None
@@ -3940,7 +3939,7 @@ def _run_summary_phase(
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:
-        # Any failure after lock acquisition must release it or the session is permanently blocked from compression.
+        _restore_messages_snapshot(messages, messages_before_compression)
         _stop_heartbeat("context compression failed")
         lease.release()
         _emit_aborted_attempt_telemetry(agent, attempt.started_at, f"exception:{type(_compress_exc).__name__}")

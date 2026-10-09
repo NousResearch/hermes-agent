@@ -351,7 +351,7 @@ def sessions(monkeypatch):
 
     rows = {"ssh-sess": "remote-dev", "host-sess": "default"}
 
-    async def detail(session_id, profile=None):
+    async def detail(request, session_id, profile=None):
         if rows.get(session_id) != (profile or "default"):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"cwd": "/srv", "id": session_id}

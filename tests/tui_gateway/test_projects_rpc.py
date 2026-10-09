@@ -90,6 +90,19 @@ def test_create_list_roundtrip(tmp_path):
     assert listing["active_id"] == created["project"]["id"]
 
 
+def test_create_with_parent_id_nests_the_new_project(tmp_path):
+    """The handler half of the same contract: `parent_id` reaches `create_project` and sticks."""
+    parent = _call("projects.create", {"name": "Parent", "folders": [str(tmp_path / "parent")]})["project"]
+
+    child = _call(
+        "projects.create",
+        {"name": "Child", "folders": [str(tmp_path / "child")], "parent_id": parent["id"]},
+    )["project"]
+
+    assert child["parent_id"] == parent["id"]
+    assert parent["parent_id"] is None
+
+
 def test_add_folder_and_for_cwd(tmp_path):
     folder = tmp_path / "repo"
     folder.mkdir()
@@ -213,7 +226,7 @@ def test_scan_finds_a_repo_nested_inside_another(tmp_path):
     internal checkouts are noise for most people, and descending costs more than the flat walk.
     """
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     outer = tmp_path / "outer"
     (outer / "packages" / "inner").mkdir(parents=True)
@@ -241,7 +254,7 @@ def test_scan_finds_a_repo_nested_inside_another(tmp_path):
 def test_scan_does_not_descend_into_a_git_object_store(tmp_path):
     """Nested discovery must not turn `.git` internals into projects."""
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     outer = tmp_path / "outer"
     (outer / ".git" / "modules" / "shadow").mkdir(parents=True)

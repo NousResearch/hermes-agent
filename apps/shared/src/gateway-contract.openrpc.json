@@ -25959,7 +25959,7 @@
       },
       "ProjectsCreateParams": {
         "additionalProperties": false,
-        "description": "``use`` also activates the new project.",
+        "description": "``use`` also activates the new project. ``parent_id`` nests it from the start \u2014 ``''`` for an\nexplicit top level, an absent (or null) value leaves it to folder containment, and an unknown id\nfalls back the same way.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -26063,6 +26063,18 @@
             ],
             "default": null,
             "title": "Board Slug"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Id"
           },
           "use": {
             "default": false,

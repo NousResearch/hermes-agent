@@ -1139,7 +1139,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $node $driver $desktopExe $proof (Read-State).old 2>&1 |
+            & $node $driver $desktopExe $proof (Read-State).old $TargetSha 2>&1 |
                 ForEach-Object { Write-Host "  $_" }
             $driveExit = $LASTEXITCODE
         } finally {

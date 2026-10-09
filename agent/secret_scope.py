@@ -29,6 +29,14 @@ _MULTIPLEX_ACTIVE: bool = False
 # Launch home pinned by set_multiplex_active(True) itself (None: no auto-pin outstanding).
 _AUTO_PINNED_HOME = None
 
+# Context-local counterpart: a task serving a profile OTHER than the process's own, inside a
+# process that is not a multiplexer as a whole — the desktop backend's cron ticker firing a
+# sibling profile's job. Every isolation keyed on ``is_multiplex_active()`` (the routed-dotenv
+# guard, ``get_secret``'s fail-closed miss, subprocess scrubbing, passthrough) applies inside
+# it while the process's own turns keep single-profile semantics. A contextvar, so it reaches
+# the pool worker together with the home override via ``copy_context()``.
+_MULTIPLEX_CONTEXT: ContextVar[bool] = ContextVar("_MULTIPLEX_CONTEXT", default=False)
+
 
 def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed).
@@ -57,8 +65,19 @@ def set_multiplex_active(active: bool) -> None:
         _AUTO_PINNED_HOME = None
 
 
+def set_multiplex_context(active: bool) -> Token:
+    """Run the current task under multiplex semantics regardless of the process flag.
+    Returns a reset token; pair with :func:`reset_multiplex_context` in a ``finally``."""
+    return _MULTIPLEX_CONTEXT.set(bool(active))
+
+
+def reset_multiplex_context(token: Token) -> None:
+    _MULTIPLEX_CONTEXT.reset(token)
+
+
 def is_multiplex_active() -> bool:
-    return _MULTIPLEX_ACTIVE
+    """True in a multiplexing process, or for a task running under multiplex semantics."""
+    return _MULTIPLEX_ACTIVE or _MULTIPLEX_CONTEXT.get()
 
 
 class _BoundScope(NamedTuple):
@@ -214,8 +233,8 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = bound.mapping.get(name)
         if val is not None:
             return val
-        return default if (_MULTIPLEX_ACTIVE or serves_routed_profile()) else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if serves_routed_profile() else _environ_or(name, default)
+    if is_multiplex_active():
         raise UnscopedSecretError(
             name,
             f"get_secret({name!r}) called with no profile secret scope active "
@@ -288,7 +307,7 @@ def _parse_env_value(raw_value: str) -> str:
 # symlink repointed mid-read can't file one file's contents under another's identity.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE: "OrderedDict[str, tuple[tuple, dict[str, str]]]" = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
@@ -313,9 +332,9 @@ def _decode_env_bytes(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
-def _parse_env_text(text: str) -> Dict[str, str]:
+def _parse_env_text(text: str) -> dict[str, str]:
     """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
-    secrets: Dict[str, str] = {}
+    secrets: dict[str, str] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -329,7 +348,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -369,7 +388,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
+def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
@@ -387,6 +406,16 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     bridged = bridged_allow_all_users()
     if bridged is not None and _is_process_home(hermes_home):
         secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
+    # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
+    # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
+    # semantics ``get_secret`` never reads ``os.environ`` on a scope miss, so a scope built from
+    # the profile files alone would drop a managed-only credential and let the user's value win a
+    # managed-vs-user collision (#111187 review). Every multiplex-authoritative scope — gateway
+    # turn, routed cron fire, external worker — is built here, so managed authority is composed
+    # once, not restored by each consumer.
+    from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
+
+    secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
     return secrets
 
 
@@ -399,3 +428,26 @@ def _is_process_home(hermes_home: Path) -> bool:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:
         return False
+
+
+def refresh_installed_secret_scope(hermes_home: Path) -> bool:
+    """Fold a fresh build of *hermes_home*'s secrets into the INSTALLED scope, in place.
+
+    A scope is frozen when installed, but a fire can learn of new values afterwards: a routed cron
+    fire's first agent build discovers plugin secret sources, and under multiplex semantics the
+    reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
+    values into the scope this fire already holds. The caller names the home the installed scope
+    was built for. True when a scope was updated; False when none is installed."""
+    bound = _SECRET_SCOPE.get()
+    scope = bound.mapping if bound is not None else None
+    if not isinstance(scope, dict):
+        return False
+    # REPLACE, don't merge: the rebuild is the profile's current truth, so a name a source has
+    # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
+    # rather than survive as the stale value dict.update() would keep.
+    rebuilt = build_profile_secret_scope(hermes_home)
+    # Update first, then drop what is gone: a concurrent reader never sees an emptied scope.
+    scope.update(rebuilt)
+    for name in [n for n in scope if n not in rebuilt]:
+        scope.pop(name, None)
+    return True

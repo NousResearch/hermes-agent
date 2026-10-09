@@ -178,13 +178,14 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
                 process.wait(timeout=5)
 
 
-def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=None, download_progress=None) -> Runner:
+def ensure(name, *, base_env=None, explicit=False, verify=True, progress=None, pause_event=None,
+           download_progress=None) -> Runner:
     from pm.install import env_for
     from pm.registry import get_package
 
     if is_runtime():
         from pm.install import ensure as direct
-        return direct(name, base_env=base_env, explicit=explicit, progress=progress,
+        return direct(name, base_env=base_env, explicit=explicit, verify=verify, progress=progress,
                       pause_event=pause_event, download_progress=download_progress)
     if not explicit and not isinstance(get_package(name), StatePackage):
         if not _missing_or_refuse(name):
@@ -198,7 +199,9 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
     if download_progress is not None:
         callbacks["download_progress"] = lambda done, total, ranges: download_progress(
             done, total, {key: [tuple(row) for row in rows] for key, rows in ranges.items()})
-    _request("ensure", {"name": name, "explicit": explicit}, callbacks=callbacks, pause_event=pause_event)
+    # The worker's default is verify=True: only a lowered check travels in the request.
+    _request("ensure", {"name": name, "explicit": explicit, **({} if verify else {"verify": False})},
+             callbacks=callbacks, pause_event=pause_event)
     return Runner(name, env_for(name, base_env=base_env))
 
 
@@ -244,9 +247,11 @@ def ensure_tools_for_sync() -> None:
     gate it; a failed download fails the update.
     """
     from pm.install import activate
+    from pm.libatomic import install_before_lock
     from pm.lock import Lockfile
     from pm.registry import tool_roots
 
+    install_before_lock()
     for name in tool_roots(Lockfile(paths.lockfile_path()).names()):
         ensure(name, explicit=True)
     problems = activate(allow_incomplete=True)

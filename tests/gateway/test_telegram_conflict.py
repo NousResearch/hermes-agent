@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +83,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -239,6 +240,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -320,6 +322,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -388,6 +391,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -464,6 +468,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -526,6 +531,7 @@ def _build_polling_app(monkeypatch, adapter):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -567,7 +573,7 @@ async def test_disarm_sets_ptb_stop_event():
     stop_event = asyncio.Event()
     # PTB stores it name-mangled as _Updater__polling_task_stop_event.
     updater = SimpleNamespace(running=True)
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     adapter._app = SimpleNamespace(updater=updater)
 
     assert not stop_event.is_set()
@@ -610,7 +616,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
         stop=AsyncMock(),
         running=True,
     )
-    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    updater._Updater__polling_task_stop_event = stop_event
     bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
     app = SimpleNamespace(
         bot=bot,
@@ -623,6 +629,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",

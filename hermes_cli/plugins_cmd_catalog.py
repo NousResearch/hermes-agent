@@ -49,7 +49,7 @@ def raise_if_removed(*candidates: str) -> None:
                 detail += f" (removed {removed.date})"
             raise PluginOperationError(
                 f"Plugin '{removed.name}' was removed from the Hermes plugin catalog and is blocked from "
-                f"installation: {detail}")
+                f"installation: {detail}", failure_class="removed_from_catalog")
 
 
 def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
@@ -196,7 +196,7 @@ def catalog_annotation(dir_path) -> Optional[str]:
     return f"catalog:{sidecar.get('tier') or 'community'}@{str(sidecar.get('sha') or '')[:8]}"
 
 
-def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry]) -> Optional[str]:
+def removed_annotation(name: str, dir_path, removed_entries: list[RemovedEntry]) -> Optional[str]:
     """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``.
 
     ``removed_entries`` is required: callers annotating many rows (``plugins list``, the dashboard hub)
@@ -216,7 +216,7 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 _PLATFORM_ALIASES = {"windows": "win32", "macos": "darwin"}
 
 
-def normalized_platforms(platforms: List[str]) -> set[str]:
+def normalized_platforms(platforms: list[str]) -> set[str]:
     """Return catalog platform names in host OS-family vocabulary."""
     return {_PLATFORM_ALIASES.get(value.lower(), value.lower()) for value in platforms}
 
@@ -231,13 +231,13 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
     if current not in normalized_platforms(entry.platforms):
         raise PluginOperationError(
             f"Plugin '{entry.name}' is unavailable on {current}; supported platforms: "
-            f"{', '.join(entry.platforms)}."
+            f"{', '.join(entry.platforms)}.", failure_class="incompatible",
         )
 
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
-                          before_swap=None) -> tuple:
+                          assume_deps_consent: bool = False, before_swap=None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
@@ -247,7 +247,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     _refuse_unsupported_catalog_platform(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,
+        reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
+        allow_removed=allow_removed, before_swap=before_swap,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -483,7 +484,7 @@ _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks
                    "python_dependencies": "Python dependencies", "desktop": "Desktop UI half"}
 
 
-def plugin_surface(manifest: dict, tree: Path) -> Dict[str, set]:
+def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     """What an installed tree exposes: declared host capabilities, tools, hooks, Python deps, Desktop half."""
     from hermes_cli.plugins_cmd import _declared_capabilities_from_manifest
     manifest = manifest or {}
@@ -503,13 +504,13 @@ def plugin_surface(manifest: dict, tree: Path) -> Dict[str, set]:
     }
 
 
-def surface_delta(old: Dict[str, set], new: Dict[str, set]) -> Dict[str, List[str]]:
+def surface_delta(old: dict[str, set], new: dict[str, set]) -> dict[str, list[str]]:
     """``{surface: [added...]}`` for every surface the new tree widens; empty when nothing widened."""
     return {k: sorted(new.get(k, set()) - old.get(k, set())) for k in _SURFACE_LABELS
             if new.get(k, set()) - old.get(k, set())}
 
 
-def surface_delta_lines(delta: Dict[str, List[str]]) -> List[str]:
+def surface_delta_lines(delta: dict[str, list[str]]) -> list[str]:
     return [f"{_SURFACE_LABELS[k]}: {', '.join(v)}" for k, v in delta.items()]
 
 
@@ -517,7 +518,7 @@ class RepinConsentRequired(Exception):
     """The new pin widens the plugin's surface and no consent was given; nothing was changed on disk.
     ``delta`` is :func:`surface_delta`'s mapping — surfaces hand it to the user and retry with consent."""
 
-    def __init__(self, name: str, sha: str, delta: Dict[str, List[str]]):
+    def __init__(self, name: str, sha: str, delta: dict[str, list[str]]):
         self.name, self.sha, self.delta = name, sha, delta
         super().__init__(
             f"Updating '{name}' to {sha[:8]} adds {'; '.join(surface_delta_lines(delta))}. Confirm to continue.")
@@ -639,7 +640,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
         _run_capability_consent)
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
 
-    def _confirm_widening(delta: Dict[str, List[str]]) -> bool:
+    def _confirm_widening(delta: dict[str, list[str]]) -> bool:
         console.print(f"\n  [yellow]The new pin of [bold]{name}[/bold] adds:[/yellow]")
         for line in surface_delta_lines(delta):
             console.print(f"    {line}")
@@ -700,7 +701,7 @@ def pin_label(entry: PluginCatalogEntry) -> str:
     return f"{entry.version} @ {entry.sha[:8]}" if entry.version else entry.sha[:8]
 
 
-def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
+def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
                     ("Pinned", "dim"), ("Capabilities", "dim")), title="Hermes Plugin Catalog (curated)")
@@ -769,14 +770,22 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
     installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    probe = None
     if install_deps:
         import pm
+        from pm import paths
+        from pm.environments import activation_environment, project_python, selected_venv, venv_command
         from pm.plugin_inputs import Candidates
         try:
             pm.sync_venv(plugins=Candidates([Path(path)]))
+            # The sync commits a NEW environment that this running process never switches to,
+            # so the probe must import the plugin from that environment's interpreter.
+            root = paths.repo_root()
+            if project_python(root).is_file():  # a developer venv has no committed environment
+                probe = (venv_command(root, selected_venv(root)), activation_environment(root))
         except Exception as exc:  # validation still runs; the probe reports what is missing
             print(f"dependency preparation failed: {exc}", file=sys.stderr)
-    report = validate_plugin_dir(Path(path))
+    report = validate_plugin_dir(Path(path), probe)
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))
         sys.exit(report.exit_code)
@@ -787,6 +796,12 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
                       + (f" [dim]— {detail}[/dim]" if detail else ""))
     for warning in report.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if report.isolation:
+        from hermes_cli.plugin_isolation_audit import IsolationReport
+        iso = IsolationReport(report.isolation["verdict"], report.isolation["reasons"], report.isolation["notes"])
+        console.print(f"{'[green]◆[/green]' if iso.host_ready else '[dim]◇[/dim]'} Isolation [dim]— {iso.summary()}[/dim]")
+        for note in iso.notes:
+            console.print(f"  [dim]· {note}[/dim]")
     console.print()
     console.print("[green bold]Validation passed.[/green bold]" if report.ok else "[red bold]Validation failed.[/red bold]")
     sys.exit(report.exit_code)
@@ -794,12 +809,12 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
 
 # ── Dashboard / TUI payloads ─────────────────────────────────────────────────
 
-def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Catalog entries merged with local state for the dashboard. *installed* maps every alias (name
     and registry key) of a discovered plugin to ``{"dir", "runtime_status"}``. A catalog name rarely
     equals the manifest name (``hermes-plugin-x`` vs ``x``), so installs are matched through the
     sidecar's ``catalog_name`` first and by name only as a fallback."""
-    by_catalog_name: Dict[str, Dict[str, Any]] = {}
+    by_catalog_name: dict[str, dict[str, Any]] = {}
     for local in installed.values():
         sidecar = catalog_install_record(local["dir"])
         if sidecar:
@@ -823,7 +838,7 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
     *versions*) and ``update_available``."""
@@ -832,7 +847,7 @@ def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[s
     if not sidecar:
         return {}
     installed_sha = str(sidecar.get("sha") or "").lower()
-    row: Dict[str, Any] = {
+    row: dict[str, Any] = {
         "catalog_name": sidecar["catalog_name"], "catalog_tier": str(sidecar.get("tier") or "community"),
         "installed_sha": installed_sha}
     pin = pins.get(str(sidecar["catalog_name"]))
@@ -843,7 +858,7 @@ def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[s
     return row
 
 
-def catalog_pins() -> Dict[str, str]:
+def catalog_pins() -> dict[str, str]:
     """``{catalog_name: pinned_sha}`` from the live catalog; empty on failure (best effort)."""
     try:
         return {e.name: e.sha for e in load_catalog_live()}
@@ -851,7 +866,7 @@ def catalog_pins() -> Dict[str, str]:
         return {}
 
 
-def catalog_titles() -> Dict[str, str]:
+def catalog_titles() -> dict[str, str]:
     """``{catalog_name: title}`` for entries that carry one — the Plugins hub server-sentence display
     name. One resolution for a whole listing: callers that annotate every installed plugin must not
     pay a live-catalog fetch per candidate (see ``resolved_removed_entries``); empty on failure."""
@@ -861,9 +876,24 @@ def catalog_titles() -> Dict[str, str]:
         return {}
 
 
-def catalog_versions() -> Dict[str, str]:
+def catalog_versions() -> dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:
         return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}
+
+
+def catalog_rows_maps() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """The pins/versions/titles maps from ONE live-catalog resolution. Listing callers (``_plugin_rows``)
+    need all three; taking them via :func:`catalog_pins`/:func:`catalog_versions`/:func:`catalog_titles`
+    would pay the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). Best effort like the per-map helpers: an
+    empty triple on failure."""
+    try:
+        entries = load_catalog_live()
+    except Exception:
+        return {}, {}, {}
+    return ({e.name: e.sha for e in entries},
+            {e.name: e.version for e in entries if e.version},
+            {e.name: e.title for e in entries if e.title})

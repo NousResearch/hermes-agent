@@ -28,7 +28,7 @@ def _ww():
     return wake_word
 
 
-def _ensure_dep(feature: str, cfg: Dict[str, Any]) -> None:
+def _ensure_dep(feature: str, cfg: dict[str, Any]) -> None:
     import pm
 
     pm.ensure_import(feature)
@@ -49,11 +49,11 @@ class _Engine:
     #: (sherpa) set this for profile routing; single-phrase engines leave it None.
     last_match: Optional[tuple[str, str]] = None
 
-    def __init__(self, cfg: Dict[str, Any]):
+    def __init__(self, cfg: dict[str, Any]):
         _ensure_dep(self.feature, cfg)
         self._build(cfg, _sub(cfg, self.section), _ww())
 
-    def _build(self, cfg: Dict[str, Any], sub: Dict[str, Any], ww) -> None:
+    def _build(self, cfg: dict[str, Any], sub: dict[str, Any], ww) -> None:
         raise NotImplementedError
 
     def process(self, frame) -> bool:  # frame: 1-D int16 ndarray
@@ -70,7 +70,7 @@ def _looks_like_path(value: str) -> bool:
     return os.sep in value or value.endswith((".onnx", ".tflite", ".ppn")) or os.path.exists(value)
 
 
-def _sub(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _sub(cfg: dict[str, Any], key: str) -> dict[str, Any]:
     sub = cfg.get(key)
     return sub if isinstance(sub, dict) else {}
 
@@ -165,7 +165,7 @@ def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     archive = root / f"{_SHERPA_KWS_MODEL_DIR}.tar.bz2"
     logger.info("wake word: downloading sherpa KWS model (one-time, ~13 MB)")
-    urllib.request.urlretrieve(_SHERPA_KWS_MODEL_URL, archive)  # noqa: S310
+    urllib.request.urlretrieve(_SHERPA_KWS_MODEL_URL, archive)
     with tarfile.open(archive, "r:bz2") as tf:
         tf.extractall(root, filter="data")
     archive.unlink(missing_ok=True)
@@ -193,7 +193,7 @@ class _SherpaKwsEngine(_Engine):
         # Phrase set: this profile's phrase plus — with profile routing on — every other
         # wake-enabled profile's phrase, so ONE listener can wake any profile.
         phrase = str(ww._get(cfg, "phrase") or "hey hermes").strip()
-        phrase_map: Dict[str, str] = {phrase: ww._active_profile_name()}
+        phrase_map: dict[str, str] = {phrase: ww._active_profile_name()}
         if bool(cfg.get("profile_routing", True)):
             for prof, p in ww.enrolled_profile_phrases().items():
                 phrase_map.setdefault(p.strip(), prof)
@@ -202,7 +202,7 @@ class _SherpaKwsEngine(_Engine):
                             bpe_model=str(d / "bpe.model"))
         # sherpa keyword entries reject spaces in the @display-name; underscore them and
         # map display → profile for match routing.
-        self._display_to_profile: Dict[str, str] = {}
+        self._display_to_profile: dict[str, str] = {}
         kw = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="hermes-kws-", delete=False,
                                          encoding="utf-8")
         for p, toks in zip(phrases, tokens):
@@ -268,7 +268,7 @@ class _PorcupineEngine(_Engine):
         keyword = str(sub.get("keyword") or "jarvis").strip()
         # Porcupine's `sensitivities` runs the OPPOSITE way to our shared knob (higher =
         # looser); invert so "higher = stricter" holds for every engine.
-        kwargs: Dict[str, Any] = {"access_key": access_key, "sensitivities": [1.0 - ww._sensitivity(cfg)]}
+        kwargs: dict[str, Any] = {"access_key": access_key, "sensitivities": [1.0 - ww._sensitivity(cfg)]}
         kwargs["keyword_paths" if _looks_like_path(keyword) else "keywords"] = [keyword]
         self._porcupine = pvporcupine.create(**kwargs)
         self.frame_length = self._porcupine.frame_length

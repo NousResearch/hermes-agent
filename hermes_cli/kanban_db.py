@@ -3775,6 +3775,42 @@ def specify_triage_task(
     return True
 
 
+def _regate_children_after_parent_archive(conn: sqlite3.Connection, parent_id: str) -> list[tuple[str, object, object, object, Optional[int]]]:
+    """Atomically revoke runnable direct children after a parent loses success.
+
+    A child which became runnable while its parent was ``done`` must not remain
+    runnable after that parent is archived. Running children are fenced in this
+    transaction and returned for post-commit process termination.
+    """
+    terminations = []
+    rows = conn.execute(
+        "SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.worker_started_at "
+        "FROM tasks t JOIN task_links l ON l.child_id = t.id "
+        "WHERE l.parent_id = ? AND t.status IN ('ready', 'review', 'running')",
+        (parent_id,),
+    ).fetchall()
+    for row in rows:
+        child_id = row["id"]
+        source_status = row["status"]
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, worker_started_at = NULL WHERE id = ?",
+            (child_id,),
+        )
+        run_id = _end_run(
+            conn, child_id, outcome="reclaimed", status="reclaimed",
+            summary="dependency parent archived",
+        )
+        _append_event(
+            conn, child_id, "dependency_wait",
+            {"parent": parent_id, "parent_status": "archived", "source_status": source_status},
+            run_id=run_id,
+        )
+        if source_status == "running":
+            terminations.append((child_id, row["worker_pid"], row["claim_lock"], row["worker_started_at"], run_id))
+    return terminations
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
@@ -3811,10 +3847,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+        child_terminations = _regate_children_after_parent_archive(conn, task_id)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
+    for child_id, child_pid, child_lock, child_started, child_run_id in child_terminations:
+        termination = _terminate_reclaimed_worker(child_pid, child_lock, signal_fn=signal_fn, started_at=child_started)
+        with write_txn(conn):
+            _append_event(conn, child_id, "dependency_parent_archived_termination", termination, run_id=child_run_id)
     # Re-evaluate readiness without treating archival as successful completion.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).

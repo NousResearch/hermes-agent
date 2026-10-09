@@ -283,3 +283,23 @@ def test_archiving_completed_parent_does_not_release_new_child(board):
     kb.recompute_ready(board)
     assert status(board, child) == "todo"
     assert kb.claim_task(board, child) is None
+
+
+@pytest.mark.parametrize("phase", ["ready", "review", "running"])
+def test_archiving_completed_parent_regates_existing_runnable_child(board, phase):
+    parent, child = pair(board, "done")
+    if phase == "running":
+        assert kb.claim_task(board, child) is not None
+    else:
+        status(board, child, phase)
+
+    assert kb.archive_task(board, parent)
+    assert status(board, child) == "todo"
+    assert kb.claim_task(board, child) is None
+    waits = [event for event in kb.list_events(board, child) if event.kind == "dependency_wait"]
+    assert waits[-1].payload["parent"] == parent
+    assert waits[-1].payload["source_status"] == phase
+
+    status(board, parent, "done")
+    assert kb.recompute_ready(board) == 1
+    assert status(board, child) == ("review" if phase == "review" else "ready")

@@ -553,10 +553,8 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
 # Tests: Block-Kit-only mention detection (#52387)
 # ---------------------------------------------------------------------------
 
-from plugins.platforms.slack.adapter import (
-    _ThreadContextCache,
-    _slack_recovered_mentions,
-)
+from plugins.platforms.slack.adapter import _ThreadContextCache
+from plugins.platforms.slack.adapter_mentions import _slack_recovered_mentions
 
 
 def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):
@@ -746,6 +744,19 @@ def test_recovered_mentions_empty_without_a_recoverable_mention():
 def test_recovered_mentions_never_raise_on_malformed_payload(event):
     """Gating degrades to the flat text; a bad payload must never break it."""
     assert _slack_recovered_mentions(event) == []
+
+
+def test_recovered_mentions_keep_partial_result_on_pathological_nesting():
+    """A block tree deeper than the recursion limit keeps the mentions found before it."""
+    deep: dict = {"type": "rich_text_section", "elements": []}
+    for _ in range(sys.getrecursionlimit() + 50):
+        deep = {"type": "rich_text_section", "elements": [deep]}
+    blocks = [
+        {"type": "rich_text", "elements": [
+            {"type": "rich_text_section", "elements": [{"type": "user", "user_id": BOT_USER_ID}]}]},
+        {"type": "rich_text", "elements": [deep]},
+    ]
+    assert _slack_recovered_mentions({"text": "", "blocks": blocks}) == [f"<@{BOT_USER_ID}>"]
 
 
 def test_attachment_mentions_survive_a_malformed_sibling():

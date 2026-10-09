@@ -300,10 +300,11 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
     if params.get("is_xai_responses", False):
-        from agent.model_metadata import is_grok_46_family
+        from agent.model_metadata import is_grok_priority_family
 
-        # Grok 4.6 accepts xhigh; older Grok tops out at high.
-        supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
+        # Grok 4.6+ accepts xhigh; older Grok tops out at high. "none" is not in either
+        # ladder, so an explicit disable is omitted and xAI keeps its default (high).
+        supported = XAI_GROK46_EFFORTS if is_grok_priority_family(model) else XAI_LEGACY_EFFORTS
     else:
         base_url = params.get("base_url")
         is_codex_backend = params.get("is_codex_backend") is True
@@ -692,7 +693,10 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             current_issuer_model=self._last_issuer_model,
-            native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            native_compaction_eligible=(
+                kwargs.get("native_compaction_eligible") is True
+                or _native_compaction_active(kwargs.get("context_management"))
+            ),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
@@ -746,9 +750,11 @@ class ResponsesApiTransport(ProviderTransport):
         # multi-item rejection happens on resource-level hosts too.
         if replay_encrypted_reasoning and _is_azure_responses(params):
             payload_messages = _newest_reasoning_only(payload_messages)
-        # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
+        # ``context_management`` is the OpenAI server-side field. xAI grok-4.7 compacts through
+        # POST /v1/responses/compact instead, so a checkpoint can be replayed without that field.
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)
+        replay_native_checkpoint = native_compaction_active or params.get("native_compaction_eligible") is True
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(
@@ -767,7 +773,8 @@ class ResponsesApiTransport(ProviderTransport):
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
-                is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+                is_codex_backend=is_codex_backend, context_management=context_management,
+                native_compaction_eligible=replay_native_checkpoint, model=wire_model,
             ),
             "store": False,
         }
@@ -828,13 +835,14 @@ class ResponsesApiTransport(ProviderTransport):
 
         _bound_prompt_cache_key_field(kwargs)
 
-        # Older xAI models reject ``service_tier`` (HTTP 400); only Grok 4.6 accepts Priority Processing.
-        # Grok 4.6 accepts Priority Processing, but continue stripping stale or unsupported tier values on
-        # every other xAI path. See #28490 and #84799.
+        # Older xAI models reject ``service_tier`` (HTTP 400). Grok 4.6+ accepts
+        # Priority Processing (``service_tier: "priority"``, 2x token rates). Every other
+        # tier is still stripped. Grok 4.7 Fast is not this parameter and is not on the
+        # public API. See #28490 and #84799.
         if is_xai_responses:
-            from agent.model_metadata import is_grok_46_family
+            from agent.model_metadata import is_grok_priority_family
 
-            if not (is_grok_46_family(model) and kwargs.get("service_tier") == "priority"):
+            if not (is_grok_priority_family(model) and kwargs.get("service_tier") == "priority"):
                 kwargs.pop("service_tier", None)
 
         # Forward per-request timeout to the SDK (providers.<id>.request_timeout_seconds).

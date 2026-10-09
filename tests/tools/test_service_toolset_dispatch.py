@@ -1,6 +1,7 @@
 """Service policy is checked at registered effects, not only schema assembly."""
 
 import json
+import logging
 
 import pytest
 
@@ -92,3 +93,38 @@ def test_policy_lookup_error_cannot_execute_handler(dispatch_policy, monkeypatch
     result = json.loads(registry.dispatch("terminal", {}))
     assert "policy unavailable" in result["error"]
     assert effects == []
+
+
+@pytest.mark.parametrize("source", ["config", "environment"])
+@pytest.mark.parametrize("requested", [None, ["terminal"]])
+def test_unknown_service_toolsets_warn_without_widening(
+    dispatch_policy, monkeypatch, caplog, source, requested,
+):
+    from toolsets import get_allowed_toolsets, restrict_toolsets
+
+    registry, effects, config_path = dispatch_policy
+    config_path.write_text(json.dumps({"agent": {"allowed_toolsets": ["terminal", "terimnal"]}}))
+    if source == "environment":
+        monkeypatch.setenv("HERMES_ALLOWED_TOOLSETS", "terminal,terimnal")
+    with caplog.at_level(logging.WARNING, logger="toolsets"):
+        allowed = get_allowed_toolsets()
+        restricted = restrict_toolsets(requested, allowed)
+    assert "terimnal" in caplog.text
+    assert allowed == {"terminal", "terimnal"}
+    assert restricted == (sorted(allowed) if requested is None else ["terminal"])
+    assert json.loads(registry.dispatch("terminal", {})) == {"executed": "terminal"}
+    assert json.loads(registry.dispatch("forbidden_effect", {}))["error_type"] == "toolset_not_allowed"
+    assert effects == ["terminal"]
+
+
+@pytest.mark.parametrize("allowed", [
+    "terminal", "hermes-cli", "dispatch-test-plugin", "dispatch-test-alias", "all", "*",
+])
+def test_registered_service_toolsets_do_not_warn(dispatch_policy, caplog, allowed):
+    from toolsets import get_allowed_toolsets
+
+    _, _, config_path = dispatch_policy
+    config_path.write_text(json.dumps({"agent": {"allowed_toolsets": [allowed]}}))
+    with caplog.at_level(logging.WARNING, logger="toolsets"):
+        assert get_allowed_toolsets() == {allowed}
+    assert not [record for record in caplog.records if record.name == "toolsets"]

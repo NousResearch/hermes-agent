@@ -23,35 +23,39 @@ Usage:
     all_tools = resolve_toolset("full_stack")
 """
 
+import logging
 import os
 from typing import List, Dict, Any, Set, Optional
 
 
 def get_allowed_toolsets(config: Optional[Dict[str, Any]] = None) -> Optional[Set[str]]:
-    """Return the service/config toolset allowlist, or ``None`` if unrestricted."""
+    """Return the service ceiling and warn about currently unknown toolsets."""
     allowed_raw = os.getenv("HERMES_ALLOWED_TOOLSETS")
-    if allowed_raw is not None:
-        return {value.strip() for value in allowed_raw.split(",") if value.strip()}
+    if allowed_raw is None:
+        if config is None:
+            from hermes_cli.config import load_config_readonly
 
-    if config is None:
-        from hermes_cli.config import load_config_readonly
-
-        config = load_config_readonly()
-    agent_cfg = (config or {}).get("agent") or {}
-    configured = agent_cfg.get("allowed_toolsets")
-    if configured is None:
-        return None
-    if isinstance(configured, list):
-        return {
+            config = load_config_readonly()
+        agent_cfg = (config or {}).get("agent") or {}
+        allowed_raw = agent_cfg.get("allowed_toolsets")
+        if allowed_raw is None:
+            return None
+    if isinstance(allowed_raw, list):
+        allowed = {
             str(value).strip()
-            for value in configured
+            for value in allowed_raw
             if str(value).strip()
         }
-    return {
-        value.strip()
-        for value in str(configured).split(",")
-        if value.strip()
-    }
+    else:
+        allowed = {value.strip() for value in str(allowed_raw).split(",") if value.strip()}
+    unknown = sorted(name for name in allowed if not validate_toolset(name))
+    if unknown:
+        # ponytail: strict rejection needs a plugin-registration-complete boundary.
+        logging.getLogger(__name__).warning(
+            "Service toolset allowlist entries are not currently registered: %s",
+            ", ".join(unknown),
+        )
+    return allowed
 
 
 def restrict_toolsets(

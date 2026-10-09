@@ -71,8 +71,10 @@ def _make_fake_mautrix():
         def __init__(self, base_url="", token="", **kwargs):
             self.base_url = base_url
             self.token = token
-            self.session = MagicMock()
-            self.session.close = AsyncMock()
+            self.session = kwargs.get("client_session")
+            if self.session is None:
+                self.session = MagicMock()
+                self.session.close = AsyncMock()
 
     mautrix_api.HTTPAPI = HTTPAPI
     mautrix.api = mautrix_api
@@ -5794,7 +5796,7 @@ class TestMatrixReconnectDisconnect:
         adapter._client.api.session.close = AsyncMock()
         adapter._client.whoami = AsyncMock()
 
-        adapter.disconnect = AsyncMock()
+        adapter.disconnect = AsyncMock(wraps=adapter.disconnect)
 
         fake_mautrix_mods = _make_fake_mautrix()
 
@@ -5824,6 +5826,7 @@ class TestMatrixReconnectDisconnect:
                     await adapter.connect()
 
         adapter.disconnect.assert_awaited_once()
+        await adapter.disconnect()
 
 
 class TestDeviceIdRecoveryOnReconnect:

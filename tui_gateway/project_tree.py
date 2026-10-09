@@ -370,7 +370,8 @@ def effective_parent_map(rows: list[dict]) -> dict[str, Optional[str]]:
 
     DISPLAY GROUPING ONLY. Session ownership stays with ``_FolderIndex``, so a parent never also claims
     its child's sessions — the duplicate-listing class #109007 / #91932 / #70790 / #114638 were closed
-    against. An explicit parent outside this set (archived, deleted) falls back to the top level.
+    against. An explicit parent outside this set (archived, deleted) falls back to the top level, and a
+    chain that comes back to itself is broken (``_break_loops``) rather than rendered as a cycle.
     """
     present = {str(row.get("id") or "") for row in rows}
     keys = {
@@ -398,6 +399,28 @@ def effective_parent_map(rows: list[dict]) -> dict[str, Optional[str]]:
                        for own_key in own):
                     best_id, best_len = other_id, len(parent_key)
         resolved[row_id] = best_id
+    return _break_loops(resolved)
+
+
+def _break_loops(resolved: dict[str, Optional[str]]) -> dict[str, Optional[str]]:
+    """Send any row whose chain comes back to itself back to the top level.
+
+    The store refuses a looping move (``hermes_cli.projects_db._refuse_parent_loop``), but a
+    ``projects.db`` written before that guard can still hold one, and a loop renders every row of the
+    cycle nested inside the next one — in both directions, on every tree build, until some other move
+    happens to repair it.
+    """
+    for row_id in list(resolved):
+        seen = {row_id}
+        cursor = resolved.get(row_id)
+
+        while cursor:
+            if cursor in seen:
+                resolved[row_id] = None
+                break
+            seen.add(cursor)
+            cursor = resolved.get(cursor)
+
     return resolved
 
 
@@ -564,9 +587,14 @@ def build_tree(
             continue
         seen.add(root_key)
         label = repo.get("label") or base_name(root) or root
+        # A discovered repo inside a declared project's folder is a SUBPROJECT row: its sessions stay the
+        # declared project's (that is what `_project_for_session` decides, by folder depth), so the row
+        # carries no count of its own — a badge N with an empty drill-in talks past the parent's N.
+        owned = bool(folder_index.match(root)[0])
         result.append(_project_node(
-            root, label, root, [_repo_node(root, label)], int(repo.get("sessions") or 0),
-            float(repo.get("last_active") or 0), [], isAuto=True, discovered=True))
+            root, label, root, [_repo_node(root, label)],
+            0 if owned else int(repo.get("sessions") or 0),
+            0.0 if owned else float(repo.get("last_active") or 0), [], isAuto=True, discovered=True))
 
     # Auto-project basename labels can collide; explicit projects keep their user-chosen names.
     _disambiguate_labels([p for p in result if p.get("isAuto")])

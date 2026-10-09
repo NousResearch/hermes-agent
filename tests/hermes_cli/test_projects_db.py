@@ -238,3 +238,31 @@ def test_legacy_db_without_the_parent_column_upgrades_in_place(tmp_path):
         upgraded.close()
 
 
+def test_a_move_under_a_project_this_one_contains_is_refused(conn, tmp_path):
+    """Containment is a parent link too.
+
+    B's folder sits inside A's, so the sidebar already nests B under A by folder containment. Moving A
+    under B would leave each one nested under the other — a cycle every tree build then renders in both
+    directions — and a walk over the explicit links alone does not see it.
+    """
+    outer = tmp_path / "a"
+    (outer / "b").mkdir(parents=True)
+    a = pdb.create_project(conn, name="A", folders=[str(outer)])
+    b = pdb.create_project(conn, name="B", folders=[str(outer / "b")])
+
+    with pytest.raises(ValueError):
+        pdb.set_project_parent(conn, a, b)
+
+    assert _row(conn, a).parent_id is None
+
+
+def test_a_new_project_whose_folder_contains_its_parent_is_refused(conn, tmp_path):
+    """The same loop from the other end: a subproject created into a folder that holds its parent."""
+    outer = tmp_path / "a"
+    (outer / "child").mkdir(parents=True)
+    parent = pdb.create_project(conn, name="Child", folders=[str(outer / "child")])
+
+    with pytest.raises(ValueError):
+        pdb.create_project(conn, name="Outer", folders=[str(outer)], parent_id=parent)
+
+

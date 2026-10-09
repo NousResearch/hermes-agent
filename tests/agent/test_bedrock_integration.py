@@ -425,6 +425,40 @@ class TestAuxiliaryClientBedrockResolution:
         assert client.api_key == "aws-sdk"
         assert "us-west-2" in client.base_url
 
+    @pytest.mark.parametrize("model_id", ["global.anthropic.claude-opus-5-5",
+                                          "us.anthropic.claude-sonnet-4-6",
+                                          "anthropic.claude-haiku-4-5-20251001-v1:0"])
+    def test_bedrock_claude_with_bearer_token_uses_converse(self, monkeypatch, model_id):
+        """A bearer-token-only host must not get the SigV4-only AnthropicBedrock SDK for Claude:
+        it fails every aux call with 'could not resolve credentials from session' (#29309).
+        The main runtime already routes this case to Converse (runtime_provider_backends)."""
+        for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client") as mock_sdk:
+            from agent.auxiliary_client import resolve_provider_client, BedrockAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", model_id)
+
+        assert isinstance(client, BedrockAuxiliaryClient)
+        assert model == model_id
+        assert client.base_url == "https://bedrock-runtime.us-east-1.amazonaws.com"
+        mock_sdk.assert_not_called()
+
+    def test_bedrock_claude_with_iam_keys_keeps_anthropic_sdk(self, monkeypatch):
+        """IAM credentials keep the AnthropicBedrock SDK (prompt caching, thinking)."""
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client", return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+            client, _ = resolve_provider_client("bedrock", "global.anthropic.claude-opus-5-5")
+
+        assert isinstance(client, AnthropicAuxiliaryClient)
+
     def test_bedrock_returns_none_without_credentials(self, monkeypatch):
         """Without AWS credentials, Bedrock should return (None, None) gracefully."""
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):

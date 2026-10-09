@@ -51,13 +51,19 @@ def run_authorized_tool_execution_middleware(
     after successful execution preserve the actual result instead of inviting
     replay. Background processes require their own lifetime-aware consumer.
     """
-    from agent.tool_execution_context import current_tool_execution_context
     from hermes_cli.plugins import _delivery_manager
+    from hermes_cli.private_child_env import retained_middleware_callbacks
+
+    with retained_middleware_callbacks(_delivery_manager(), AUTHORIZED_TOOL_EXECUTION_MIDDLEWARE) as callbacks:
+        if not callbacks:
+            return next_call()
+        return _run_callbacks(callbacks, tool_name, args, next_call, env_type, clear_interrupt)
+
+
+def _run_callbacks(callbacks, tool_name, args, next_call, env_type, clear_interrupt):
+    from agent.tool_execution_context import current_tool_execution_context
     from tools.interrupt import clear_current_thread_interrupt, is_interrupted
 
-    callbacks = list(_delivery_manager()._middleware.get(AUTHORIZED_TOOL_EXECUTION_MIDDLEWARE, []))
-    if not callbacks:
-        return next_call()
     if clear_interrupt:
         clear_current_thread_interrupt()
     context = dict(current_tool_execution_context())

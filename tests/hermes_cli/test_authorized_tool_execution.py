@@ -12,16 +12,28 @@ from tools.interrupt import set_interrupt
 
 
 @pytest.fixture
-def callbacks(monkeypatch):
+def callbacks(monkeypatch, tmp_path):
     from hermes_cli import plugins
     values = []
-    manager = SimpleNamespace(_middleware={"authorized_tool_execution": values})
+    manager = SimpleNamespace(_middleware={"authorized_tool_execution": values},
+                              _discovery_lock=threading.RLock(), scope_key=str(tmp_path))
     monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
     return values
 
 
 def test_default_no_callbacks_preserves_path(callbacks):
     assert run("terminal", {}, lambda: (42, authorized_tool_execution_active())) == (42, False)
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_registration_worker_never_waits_for_its_own_discovery_lock(callbacks, monkeypatch, registered):
+    monkeypatch.setattr("hermes_cli.plugins_loader.in_plugin_load_worker", lambda: True)
+    if registered:
+        callbacks.append(lambda next_call, **kwargs: next_call())
+        with pytest.raises(RuntimeError, match="during plugin registration"):
+            run("terminal", {}, lambda: pytest.fail("dispatched during discovery"))
+    else:
+        assert run("terminal", {}, lambda: "ordinary path") == "ordinary path"
 
 
 def test_denial_never_falls_through(callbacks):

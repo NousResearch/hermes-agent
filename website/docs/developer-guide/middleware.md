@@ -165,6 +165,11 @@ with `ctx.register_private_env_keys(["EXAMPLE_CONTROL_TOKEN"])`. This registers
 **names only**; the plugin continues to read values through normal secret sources.
 The returned registration handle and the plugin unload ledger remove only that
 owner's declaration. Multiple plugins can protect the same name independently.
+An authorized middleware call captures its callbacks and profile's private names
+together. If a plugin unloads while that call is waiting for admission, the call
+retains those names through execution and cleanup, then releases its snapshot.
+Nested calls into another profile do not inherit the first profile's names.
+This retention stores no values and does not keep the plugin registered.
 
 Declarations are scoped to the active Hermes profile. The existing child-env
 builders strip declared names from inherited values, extras, credential-inheriting

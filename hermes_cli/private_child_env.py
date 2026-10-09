@@ -6,12 +6,17 @@ sandbox against a trusted local shell reading the user's files.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import re
 import threading
 from typing import Callable
 
 _LOCK = threading.RLock()
 _REGISTRATIONS: dict[object, tuple[str, frozenset[str]]] = {}
+_RETAINED: ContextVar[tuple[tuple[str, frozenset[str]], ...]] = ContextVar(
+    "hermes_retained_private_child_env", default=(),
+)
 
 
 def register_private_env_keys(scope: str, names: list[str]) -> Callable[[], None]:
@@ -33,10 +38,45 @@ def register_private_env_keys(scope: str, names: list[str]) -> Callable[[], None
 
 def private_env_keys() -> frozenset[str]:
     """Current profile's declared names, case-folded on every platform."""
+    retained = _RETAINED.get()
     with _LOCK:
-        if not _REGISTRATIONS:
+        if not _REGISTRATIONS and not retained:
             return frozenset()
     from hermes_constants import hermes_home_key
     scope = hermes_home_key()
     with _LOCK:
-        return frozenset(name for owner, names in _REGISTRATIONS.values() if owner == scope for name in names)
+        groups = tuple(_REGISTRATIONS.values()) + retained
+        return frozenset(name for owner, names in groups if owner == scope for name in names)
+
+
+@contextmanager
+def retained_middleware_callbacks(manager, kind: str):
+    """Capture callbacks and private names together, then run without registry locks.
+
+    Discovery/unload uses the manager lock; individual key-handle disposal uses
+    the registry lock. An in-flight callback keeps its profile's names even if
+    its plugin is unloaded before the approved child is actually dispatched.
+    This snapshot contains names only and never becomes middleware payload.
+    """
+    if not manager._middleware.get(kind):
+        yield ()
+        return
+    from hermes_cli.plugins_loader import in_plugin_load_worker
+    if in_plugin_load_worker():
+        # The discovery owner waits for this worker while holding its lock.
+        raise RuntimeError("Authorized tool middleware cannot execute during plugin registration")
+    from hermes_constants import hermes_home_key
+    with manager._discovery_lock, _LOCK:
+        callbacks = tuple(manager._middleware.get(kind, ()))
+        if callbacks:
+            scope = hermes_home_key(manager.scope_key)
+            names = frozenset(name for owner, keys in _REGISTRATIONS.values()
+                              if owner == scope for name in keys)
+            retained = ((scope, names),)
+        else:
+            retained = ()
+    token = _RETAINED.set(_RETAINED.get() + retained)
+    try:
+        yield callbacks
+    finally:
+        _RETAINED.reset(token)

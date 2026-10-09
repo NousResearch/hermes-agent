@@ -369,6 +369,31 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
+ASYNC_DELEGATIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS async_delegations (
+    delegation_id TEXT PRIMARY KEY,
+    origin_session TEXT NOT NULL,
+    origin_ui_session_id TEXT NOT NULL DEFAULT '',
+    parent_session_id TEXT,
+    state TEXT NOT NULL,
+    dispatched_at REAL NOT NULL,
+    completed_at REAL,
+    updated_at REAL NOT NULL,
+    event_json TEXT,
+    result_json TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at REAL,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    task_json TEXT,
+    delivery_claim TEXT,
+    delivery_claimed_at REAL,
+    origin_session_id TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -579,35 +604,7 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS async_delegations (
-    delegation_id TEXT PRIMARY KEY,
-    origin_session TEXT NOT NULL,
-    origin_ui_session_id TEXT NOT NULL DEFAULT '',
-    parent_session_id TEXT,
-    state TEXT NOT NULL,
-    dispatched_at REAL NOT NULL,
-    completed_at REAL,
-    updated_at REAL NOT NULL,
-    event_json TEXT,
-    result_json TEXT,
-    delivery_state TEXT NOT NULL DEFAULT 'pending',
-    delivery_attempts INTEGER NOT NULL DEFAULT 0,
-    delivered_at REAL,
-    owner_pid INTEGER,
-    owner_started_at INTEGER,
-    task_json TEXT,
-    delivery_claim TEXT,
-    delivery_claimed_at REAL,
-    -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
-    -- _initialize_schema). Keeping the canonical fresh-install shape identical
-    -- to the tool's avoids a silent schema drift: the tool's lazy
-    -- ALTER TABLE ADD COLUMN used to be the only source of this column, so two
-    -- databases at the same schema_version had different
-    -- async_delegations shapes depending on whether the delegation tool had
-    -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
-    -- from the canonical schema (#94691).
-    origin_session_id TEXT NOT NULL DEFAULT ''
-);
+""" + ASYNC_DELEGATIONS_TABLE_SQL + """
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);

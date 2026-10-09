@@ -304,12 +304,40 @@ _LAUNCHD_GATEWAY_PLIST_PATTERNS = (
 )
 
 
+def _launchd_plist_pins_another_install(plist_path: Path, root: Path) -> bool:
+    """True when the plist pins a HERMES_HOME that is not this install's root or one of its
+    ``profiles/<name>`` homes — the content rule ``legacy_launchd_labels_for_install`` credits by,
+    never label shape (#41403). A plist with no readable pin is swept as before (#62209), like the
+    systemd twin's unpinned unit."""
+    import plistlib
+
+    try:
+        pinned = plistlib.loads(plist_path.read_bytes())["EnvironmentVariables"]["HERMES_HOME"]
+    except Exception:
+        return False
+    try:
+        rel = Path(str(pinned)).expanduser().resolve().relative_to(root).parts
+    except ValueError:
+        return True
+    return not (not rel or (len(rel) == 2 and rel[0] == "profiles"))
+
+
 def _launchd_gateway_plists() -> "list[Path]":
-    """Every gateway LaunchAgent plist on disk, under the real account home."""
+    """This install's gateway LaunchAgent plists, under the real account home. The glob sees every
+    install's agents; one pinned to another install's HERMES_HOME (a side-by-side install, a test
+    harness) is left alone."""
     from hermes_cli.gateway import get_launchd_plist_path
+    from hermes_constants import get_default_hermes_root
 
     launch_agents = get_launchd_plist_path().parent
-    return sorted({p for pattern in _LAUNCHD_GATEWAY_PLIST_PATTERNS for p in launch_agents.glob(pattern)})
+    root = get_default_hermes_root().resolve()
+    plists = []
+    for plist_path in sorted({p for pattern in _LAUNCHD_GATEWAY_PLIST_PATTERNS for p in launch_agents.glob(pattern)}):
+        if _launchd_plist_pins_another_install(plist_path, root):
+            log_info(f"Kept {plist_path}: it runs another Hermes install's HERMES_HOME")
+        else:
+            plists.append(plist_path)
+    return plists
 
 
 def _remove_launchd_gateway() -> bool:

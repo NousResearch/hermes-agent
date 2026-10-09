@@ -117,7 +117,7 @@ def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home, monkeypa
     any profile runtime scope, straight off the adapter's event loop. The
     default profile's allowlist never leaks in, and the sync check never
     hydrates external secret sources on that loop (#99519 class)."""
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
 
     hydrated = []
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)

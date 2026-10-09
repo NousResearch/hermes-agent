@@ -7,7 +7,7 @@ from __future__ import annotations
 # Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
 # must not fire in a library importer.
 if __name__ == "__main__":
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 
 import argparse
 import concurrent.futures
@@ -66,7 +66,7 @@ class ComputeHost:
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
-        heartbeat_secs: int | float | None = None) -> None:
+        heartbeat_secs: float | None = None) -> None:
         self._stdout = stdout or sys.stdout
         self._write_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(

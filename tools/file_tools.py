@@ -376,7 +376,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str = None):
+def clear_file_ops_cache(task_id: str | None = None):
     """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
         if task_id:
@@ -956,8 +956,8 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
     return paths, content_paths, entry_paths
 
 
-def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
+def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
+               new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
                session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
@@ -1051,7 +1051,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
+                file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
                 task_id: str = "default") -> str:
@@ -1275,7 +1275,7 @@ def _is_openai_family_main() -> bool:
 
         provider = (_read_main_provider() or "").strip().lower()
         model = (_read_main_model() or "").strip().lower()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     if provider in {"openai", "openai-chat", "openai-codex", "azure-openai", "codex"}:
         return True
@@ -1388,7 +1388,7 @@ def _read_file_schema_overrides():
                     "PDF (text layer)", "PDF (scanned or text)"
                 )
             }
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return {}
 
@@ -1413,7 +1413,7 @@ def _patch_schema_overrides():
             "required": ["mode"],
         }
         return {"description": _PATCH_V4A_DESCRIPTION, "parameters": params}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
 
 

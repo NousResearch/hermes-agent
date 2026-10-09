@@ -430,7 +430,10 @@ class CLISessionMixin:
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
-                finalize_session(**context)
+                from cli import _cli_visible_print
+                from hermes_cli.lifecycle import session_end_messages
+                for message in session_end_messages(finalize_session(**context)):
+                    _cli_visible_print(message)
             else:
                 invoke_hook(event_type, **context)
 
@@ -1103,6 +1106,11 @@ class CLISessionMixin:
             # Honors NO_COLOR/dumb terminals by skipping silently when there's no real console.
             self._clear_terminal_on_exit()
         print()
+        import cli as _cli_module
+        # Plugin on_session_finalize messages from _run_cleanup: printed after the clear so they survive.
+        for message in _cli_module._session_end_messages:
+            print(message)
+        _cli_module._session_end_messages.clear()
         msg_count = len(self.conversation_history)
         if not msg_count:
             try:

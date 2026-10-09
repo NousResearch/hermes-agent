@@ -15,7 +15,7 @@ import tools.terminal_tool as terminal_module
 
 
 def test_wedged_lifecycle_probe_returns_bounded_error_without_running(monkeypatch):
-    import tools.process_registry as process_registry
+    from tools import process_registry
 
     monkeypatch.setattr(cet, "SANDBOX_AVAILABLE", True)
     monkeypatch.setattr(cet, "_load_config", lambda: {"timeout": 0.05})
@@ -36,7 +36,7 @@ def test_wedged_lifecycle_probe_returns_bounded_error_without_running(monkeypatc
 def test_interpreter_kill_in_execute_code_names_the_owned_process_route(monkeypatch):
     """Sibling surface of the terminal guard (#113667): an image-name kill inside a cell gets the same
     proc_* / explicit-PID rejection, not the generic lifecycle text."""
-    import tools.process_registry as process_registry
+    from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     result = json.loads(cet.execute_code('import subprocess; subprocess.run(["pkill", "-9", "python3"])'))

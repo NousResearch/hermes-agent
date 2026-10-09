@@ -1200,7 +1200,7 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     system = scope == "system"
     unit_path = (_SYSTEM_UNIT_DIR if system else user_systemd_unit_dir()) / f"{svc_name}.service"
     try:
-        parked = re.search(rf"^RestartPreventExitStatus=.*\b{GATEWAY_FATAL_CONFIG_EXIT_CODE}\b", unit_path.read_text(encoding="utf-8-sig"), re.M)
+        parked = re.search(rf"^RestartPreventExitStatus=.*\b{GATEWAY_FATAL_CONFIG_EXIT_CODE}\b", unit_path.read_text(encoding="utf-8-sig"), re.MULTILINE)
     except OSError:
         return
     if parked:
@@ -1702,7 +1702,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.
-        from hermes_cli.gateway import (  # noqa: F401
+        from hermes_cli.gateway import (
             is_macos,
             find_gateway_pids,
             find_profile_gateway_processes,

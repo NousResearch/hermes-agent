@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.observability as observability
+from hermes_cli import observability
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_fields as fields
 from hermes_cli.observability import shared_metrics_update as update_metrics

@@ -75,7 +75,7 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
     env["HERMES_SECRET_KEY"] = secret_key
 
     try:
-        proc = subprocess.Popen(  # noqa: S602 — command is the user's own config
+        proc = subprocess.Popen(
             ["/bin/sh", "-c", command], env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,  # stderr captured and DISCARDED — never inherited
             start_new_session=True,  # so the hard timeout can kill the whole group
@@ -118,9 +118,9 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
     return stdout_bytes.decode("utf-8", errors="replace")
 
 
-def _parse_dotenv_map(stdout: str) -> Dict[str, str]:
+def _parse_dotenv_map(stdout: str) -> dict[str, str]:
     """Parse a KEY=VALUE blob; comments and non-env-shaped lines are skipped."""
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for raw in stdout.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):

@@ -347,7 +347,7 @@ class GatewayNotificationsMixin:
         return switched
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None
+        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
@@ -410,7 +410,7 @@ class GatewayNotificationsMixin:
 
     async def _deliver_queued_first_response(
         self, response: str, source: SessionSource, adapter,
-        metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
     ) -> bool:
@@ -484,7 +484,7 @@ class GatewayNotificationsMixin:
         return True
 
     async def _send_queued_final_text(
-        self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
+        self, adapter, source: SessionSource, text_content: str, metadata: Optional[dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
     ):
@@ -1192,7 +1192,7 @@ class GatewayNotificationsMixin:
         if evt.get("type") == "async_delegation":
             info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
             fail = "Async delegation delivery persist failed for session %s: %s"
-            deliver = lambda: persist_delegation_delivery(adapter, text=synth_text, session_id=raw_sid, evt=evt)  # noqa: E731
+            deliver = lambda: persist_delegation_delivery(adapter, text=synth_text, session_id=raw_sid, evt=evt)
         else:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
@@ -1209,7 +1209,7 @@ class GatewayNotificationsMixin:
                 source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
                 scope = _async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
             deliver = lambda: deliver_wake(adapter, text=_mark_internal_notification(synth_text), session_id=raw_sid, profile=served,
-                notification_category="diagnostic" if diagnostic_process_event(evt) else "result")  # noqa: E731
+                notification_category="diagnostic" if diagnostic_process_event(evt) else "result")
         try:
             logger.info(info, raw_sid)
             async with scope:
@@ -1849,7 +1849,7 @@ class GatewayNotificationsMixin:
         owners that were already gone when the gateway started."""
         from tools.async_delegation import sweep_orphaned_completions
         from tools.process_registry import process_registry as _pr
-        sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)  # noqa: E731
+        sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)
         with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
             if count := sweep():
                 logger.info("Re-offered %d orphaned async completion(s)", count)

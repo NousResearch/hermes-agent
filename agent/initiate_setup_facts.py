@@ -24,7 +24,7 @@ _NON_NAMES = frozenset({
     "admin", "administrator", "default", "guest", "me", "owner", "root", "test", "user",
 })
 _HANDLE_CHARS = re.compile(r"[\d_@/\\]")
-_SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.I)
+_SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.IGNORECASE)
 
 FORK_QUESTION = "Know what you'd like it to make?"
 # Reading the Blender plugin's app declaration takes the network.
@@ -294,7 +294,7 @@ def _handoff(kind: str, description: str) -> dict:
     """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan naming this
     computer, so the model reads them only when it reaches the handoff."""
     text = (skill_dir() / "templates" / "handoff.md").read_text(encoding="utf-8-sig")
-    sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.M | re.S))
+    sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.MULTILINE | re.DOTALL))
     machine = sections["machine"].replace("<machine_kind>", kind).replace("<description>", description)
     return {"message": sections["message"], "build": sections["build"], "machine": machine}
 

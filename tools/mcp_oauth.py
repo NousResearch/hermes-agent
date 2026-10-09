@@ -128,7 +128,7 @@ async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 else:  # pragma: no cover - no advisory locking primitive
                     raise RefreshFenceTimeout(
                         "refresh fence unsupported: no flock/msvcrt on this platform"
@@ -158,7 +158,7 @@ def release_refresh_fence(fd: int) -> None:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_UN)
         elif msvcrt is not None:
-            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
     except OSError:
         pass
     finally:
@@ -676,7 +676,7 @@ def _make_callback_handler() -> tuple[type, dict]:
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None, "iss": None}
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             status = 200
             if not parsed["code"] and not parsed["error"]:
@@ -695,7 +695,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.end_headers()
             self.wfile.write(f"<html><body>{body}</body></html>".encode())
 
-        def log_request(self, code: str = "-", size: str = "-") -> None:  # noqa: N802
+        def log_request(self, code: str = "-", size: str = "-") -> None:
             logger.debug("OAuth callback: %s %s", self.command, urlparse(self.path).path)  # never the query (carries the code)
 
         def log_message(self, fmt: str, *args: Any) -> None:

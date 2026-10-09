@@ -225,7 +225,7 @@ class _CliSurface:
 
 # Memoized: the surface is process-static, but the dashboard opens a fresh engine per
 # /api/console connection and would otherwise re-import + re-parse it on every reconnect.
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _surface_summaries(surface: _CliSurface, root: str) -> dict[tuple[str, ...], str]:
     try:
         return _summaries_from_parser(surface.build(root, live=False))
@@ -292,8 +292,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "memory": (_sub("memory", "build_memory_parser", "cmd_memory"), "status, *off, *reset"),
     "auth": (
         _sub("auth", "build_auth_parser", "cmd_auth"),
-        "list, status, *reset, *priority, *refresh, *add, *remove, *logout, spotify status, *spotify login, "
-        "*spotify logout"),
+        "list, status, *reset, *priority, *refresh, *add, *remove, *logout"),
     "pairing": (
         _sub("pairing", "build_pairing_parser", "cmd_pairing"),
         "list, *approve, *revoke, *clear-pending"),

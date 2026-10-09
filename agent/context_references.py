@@ -33,7 +33,7 @@ _context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
 class ContextCompletionItem:
     """A single autocomplete result from a context reference provider."""
 
-    __slots__ = ("text", "display", "meta")
+    __slots__ = ("display", "meta", "text")
 
     def __init__(self, text: str, display: str = "", meta: str = "") -> None:
         self.text = text

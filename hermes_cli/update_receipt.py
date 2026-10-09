@@ -582,7 +582,9 @@ def _started_by_handoff_partner() -> str | None:
     if marker.started_at is None:
         return None
     pid = os.getpid()
-    if marker.delegate_pid == pid:
+    # Our parent too: on Windows the hand-off names the exact process it created (suspended), and
+    # hermes_bootstrap's relaunch (or the legacy .cmd's cmd.exe) makes the updater its child.
+    if marker.delegate_pid in (pid, os.getppid()):
         return "delegate"
     partners = {_handoff_pid(), os.getppid()} - {None, 0, 1, pid}
     return "partner" if partners & {marker.pid, marker.delegate_pid} else None

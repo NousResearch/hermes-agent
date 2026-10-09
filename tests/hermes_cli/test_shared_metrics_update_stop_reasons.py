@@ -155,7 +155,7 @@ def test_an_exit_before_the_receipt_reads_desktop_only_under_its_own_hand_off(ro
 def test_a_lock_refusal_of_the_hand_offs_own_update_child_is_a_failed_run(rows, monkeypatch):
     """Invariant: when the lock refuses the claim whose delegate line names this very process, the
     Desktop quit to run this update and reports the refusal as a failed update, so the row reads
-    ``failed``; a refusal under someone else's claim (Tauri partner, a CLI run) stays ``refused``."""
+    ``failed`` (also for its child: Windows relaunches the updater under the named process); a refusal under someone else's claim (Tauri partner, a CLI run) stays ``refused``."""
     import os
 
     from hermes_cli.update_cmd_common import _record_stop
@@ -164,6 +164,8 @@ def test_a_lock_refusal_of_the_hand_offs_own_update_child_is_a_failed_run(rows, 
     pid, other = os.getpid(), 999_999
     _marker(rows.home, other, 1, "ct:1.000", f"delegate:{pid} ct:2.000")  # our own hand-off's claim
     _record_stop("lock_held", without_receipt="refused")
+    _marker(rows.home, other, 1, "ct:1.000", f"delegate:{os.getppid()} ct:2.000")  # Windows: relaunched child
+    _record_stop("lock_held", without_receipt="refused")
     monkeypatch.setenv("HERMES_UPDATE_HANDOFF_PID", str(other))
     _marker(rows.home, other, 1, "ct:1.000")
     _record_stop("lock_held", without_receipt="refused")
@@ -171,7 +173,8 @@ def test_a_lock_refusal_of_the_hand_offs_own_update_child_is_a_failed_run(rows, 
     _record_stop("lock_held", without_receipt="refused")
 
     assert [(r["outcome"], r["kind"], r["failure_class"]) for r in rows.runs()] == [
-        ("failed", "desktop", "lock_held"), ("refused", "desktop", "lock_held"), ("refused", "cli", "lock_held")]
+        ("failed", "desktop", "lock_held"), ("failed", "desktop", "lock_held"), ("refused", "desktop", "lock_held"),
+        ("refused", "cli", "lock_held")]
     assert all(contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, r) for r in rows.runs())
 
 

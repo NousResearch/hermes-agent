@@ -35,7 +35,9 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    with io.open(path, encoding="utf-8"):
+    # io.open is a separate guarded entry point from builtins.open (HomeIOGuard wraps both);
+    # bare `open` would only re-exercise the builtin-open case above.
+    with io.open(path, encoding="utf-8"):  # noqa: UP020 — exercise io.open separately
         pass
 
 
@@ -82,6 +84,30 @@ def test_rename_cannot_overwrite_a_protected_destination(protected_home, tmp_pat
     assert source.read_text(encoding="utf-8") == "external"
 
 
+def test_installed_desktop_app_can_be_read_but_never_changed(tmp_path, monkeypatch):
+    from tests import conftest
+
+    app = tmp_path / "Applications" / "Hermes.app"
+    (app / "Contents").mkdir(parents=True)
+    plist = app / "Contents" / "Info.plist"
+    plist.write_text("unchanged", encoding="utf-8")
+    replacement = tmp_path / "Hermes.app.new"
+    replacement.mkdir()
+    changes = [lambda: shutil.rmtree(app), plist.unlink, lambda: replacement.replace(app),
+               lambda: plist.write_text("clobbered", encoding="utf-8")]
+    try:  # Windows without Developer Mode cannot create symlinks
+        (tmp_path / "linked").symlink_to(app.parent, target_is_directory=True)
+        changes.append(lambda: shutil.rmtree(tmp_path / "linked" / "Hermes.app"))
+    except OSError:
+        pass
+    monkeypatch.setattr(conftest, "_REAL_INSTALLED_GUI_APPS", [os.path.normcase(os.path.realpath(app))])
+    assert plist.read_text(encoding="utf-8") == "unchanged"
+    for change in changes:
+        with pytest.raises(pytest.fail.Exception, match="REAL installed Hermes desktop app"):
+            change()
+    assert plist.read_text(encoding="utf-8") == "unchanged"
+
+
 def test_unprotected_paths_and_open_descriptors_still_work(protected_home, tmp_path):
     target = tmp_path / "allowed" / "file.txt"
     target.parent.mkdir()
@@ -118,7 +144,7 @@ def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
         original_close(fd)
         reopened.append(os.open(second, os.O_RDONLY))
 
-    guard = HomeIOGuard(lambda: [])
+    guard = HomeIOGuard(list)
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(os, "close", close_and_reopen)

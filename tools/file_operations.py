@@ -168,6 +168,40 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
     return output.split(sentinel + "\n")
 
 
+def _json_nonstandard_constant(text: str) -> Optional[str]:
+    """First NaN/Infinity/-Infinity in ``text`` when it is otherwise valid JSON,
+    else None. ``json.loads`` accepts these JavaScript extensions by default."""
+    if "NaN" not in text and "Infinity" not in text:
+        return None
+    found: list[str] = []
+
+    def note_constant(value: str) -> float:
+        found.append(value)
+        return float("nan")
+
+    try:
+        json.loads(_strip_bom(text)[0], parse_constant=note_constant)
+    except (ValueError, RecursionError):  # unparseable text has no constant to report
+        return None
+    return found[0] if found else None
+
+
+def _refuse_introduced_json_constant(path: str, content: str,
+                                     pre_content: Optional[str]) -> Optional[WriteResult]:
+    """Refuse a JSON write that INTRODUCES a nonstandard constant (strict JSON
+    consumers reject them). A file that already holds one keeps accepting
+    unrelated edits, which is why the lenient syntax gate can't do this check."""
+    constant = _json_nonstandard_constant(content)
+    if constant is None:
+        return None
+    if pre_content is not None and _json_nonstandard_constant(pre_content) is not None:
+        return None
+    return WriteResult(error=(
+        f"Refusing to write '{path}': candidate content uses {constant}, which is "
+        "not valid JSON. The file was NOT created or modified. Use null or a "
+        "string instead and retry."))
+
+
 class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     """File operations over any terminal backend exposing ``execute(command, cwd)``
     returning ``{"output": str, "returncode": int}``.
@@ -178,7 +212,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     patches "succeed" with a plausible diff while landing in the wrong directory).
     """
 
-    def __init__(self, terminal_env, cwd: str = None):
+    def __init__(self, terminal_env, cwd: str | None = None):
         self.env = terminal_env
         # Never os.getcwd(): that is the HOST path, absent inside container backends.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
@@ -186,12 +220,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Ordinary executables: bool cache (hits AND misses). rg is special — it has
         # an off-PATH resolver and may be installed mid-session — so only successful
         # rg resolutions are cached (see SearchMixin._resolve_command).
-        self._command_cache: Dict[str, bool] = {}
-        self._rg_resolution_cache: Dict[str, str] = {}
-        self._rg_modified_capability: Dict[str, Optional[str]] = {}
+        self._command_cache: dict[str, bool] = {}
+        self._rg_resolution_cache: dict[str, str] = {}
+        self._rg_modified_capability: dict[str, Optional[str]] = {}
 
-    def _exec(self, command: str, cwd: str = None, timeout: int = None,
-              stdin_data: str = None) -> ExecuteResult:
+    def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
+              stdin_data: str | None = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
         init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX)."""
         kwargs = {}
@@ -433,7 +467,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     pass
             return True
 
-    def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
+    def _is_likely_binary(self, path: str, content_sample: str | None = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
         if has_binary_extension(path):
             return True
@@ -680,7 +714,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._escape_shell_arg(sys.executable)
         return "python3"
 
-    def _exec_python_snippet(self, snippet: str, py: str = None) -> ExecuteResult:
+    def _exec_python_snippet(self, snippet: str, py: str | None = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
         Base64-encodes the snippet so it survives every shell/quoting layer
@@ -1229,7 +1263,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
         raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
-        return ReadResult(content=raw_content, file_size=file_size)
+        return ReadResult(content=raw_content, file_size=file_size,
+                          _content_sha256=hashlib.sha256(data).hexdigest())
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
         """Read binary-safe bytes (as base64) from any shell-backed environment."""
@@ -1463,7 +1498,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
         CANDIDATE content (JSON/YAML/TOML) → one compound on-disk probe
         (pre-content when wanted, CRLF, BOM; see ``_probe_write_target``) →
-        CRLF/BOM preservation → LSP baseline snapshot → atomic write (content rides
+        JSON NaN/Infinity refusal when the write introduces one → CRLF/BOM
+        preservation → LSP baseline snapshot → atomic write (content rides
         stdin: no ARG_MAX limit) → sha256 verification → lint delta → LSP
         diagnostics when syntax is clean. ``pre_content``: pre-edit content the
         caller already has (skips the read); BOM detection always probes disk.
@@ -1484,6 +1520,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # LSP coverage (keeps the hot path fast for binaries).
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
+        if ext == ".json":
+            refused = _refuse_introduced_json_constant(path, content, pre_content)
+            if refused is not None:
+                return refused
         # read_file strips the BOM and models send bare-LF text, so a round-trip would
         # otherwise normalize CRLF files and drop the BOM (prepend only when absent).
         if original_ending == "\r\n":
@@ -1600,7 +1640,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
             # From the internal write_file call, whose baseline was the pre-patch content.
-            lsp_diagnostics=write_result.lsp_diagnostics)
+            lsp_diagnostics=write_result.lsp_diagnostics,
+            _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /
@@ -1651,53 +1692,3 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
         return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import ClassVar  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from agent.file_safety import build_write_denied_paths  # noqa: F401,E402
-from agent.file_safety import build_write_denied_prefixes  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-MAX_LINES = 2000
-
-MAX_LINE_LENGTH = 2000
-
-WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
-
-WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_READ_LIMIT': ('tools.file_operations_common', 'DEFAULT_READ_LIMIT'),
-    'DEFAULT_READ_OFFSET': ('tools.file_operations_common', 'DEFAULT_READ_OFFSET'),
-    'DEFAULT_SEARCH_LIMIT': ('tools.file_operations_common', 'DEFAULT_SEARCH_LIMIT'),
-    'DEFAULT_SEARCH_OFFSET': ('tools.file_operations_common', 'DEFAULT_SEARCH_OFFSET'),
-    'LINTERS': ('tools.file_operations_lint', 'LINTERS'),
-    'LintResult': ('tools.file_operations_common', 'LintResult'),
-    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
-    'SEARCH_PRUNE_DIR_NAMES': ('agent.search_policy', 'SEARCH_PRUNE_DIR_NAMES'),
-    'SearchMatch': ('tools.file_operations_common', 'SearchMatch'),
-    'build_write_denied_paths': ('agent.file_safety', 'build_write_denied_paths'),
-    'build_write_denied_prefixes': ('agent.file_safety', 'build_write_denied_prefixes'),
-    'tool_interrupt': ('tools', 'interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

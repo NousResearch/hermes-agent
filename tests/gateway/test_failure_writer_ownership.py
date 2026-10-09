@@ -26,6 +26,9 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     assert receipt.exists(), result.stdout + result.stderr
     data = json.loads(receipt.read_text())
     assert all(row["reached"] for row in data["observations"]), data
+    # A startup lazy install would download over the real network on a
+    # background thread and pollute the archive case's process-wide tracemalloc window.
+    assert data["blocked_external_attempts"] == [], data["blocked_external_attempts"]
     assert data["passed"] == data["total"], data["observations"]
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -187,8 +190,8 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    from gateway.run import _CONTEXT_OVERFLOW_REPLY
-    assert reply == _CONTEXT_OVERFLOW_REPLY
+    from gateway.run import _context_overflow_reply
+    assert reply == _context_overflow_reply()
     assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
 

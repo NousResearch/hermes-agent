@@ -86,13 +86,13 @@ def _flatten_blocks(content: Any) -> str:
     return "\n\n".join(p for p in (_block_text(b).strip() for b in content) if p)
 
 
-def _merge_turns(raw_turns: List[Tuple[str, str]]) -> List[Dict[str, str]]:
+def _merge_turns(raw_turns: list[tuple[str, str]]) -> list[dict[str, str]]:
     """Merge consecutive same-role turns; guarantee strict alternation.
 
     A leading assistant turn (session began before the log window) gets a minimal user stub so the
     first message is always ``user``; this is the only place a stub is ever inserted.
     """
-    merged: List[Dict[str, str]] = []
+    merged: list[dict[str, str]] = []
     for role, text in raw_turns:
         if not (text := text.strip()):
             continue
@@ -105,7 +105,7 @@ def _merge_turns(raw_turns: List[Tuple[str, str]]) -> List[Dict[str, str]]:
     return merged
 
 
-def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
+def _message_turn(message: Any) -> Optional[tuple[str, str]]:
     """Normalize one message dict into a ``(role, text)`` turn, or None when it is not importable."""
     role = message.get("role") if isinstance(message, dict) else None
     if role not in ("user", "assistant"):
@@ -114,22 +114,22 @@ def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
     return None if not text or (role == "user" and _WRAPPER_TAG_RE.match(text.lstrip())) else (role, text)
 
 
-def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
+def _first_user_line(turns: list[tuple[str, str]]) -> Optional[str]:
     for role, text in turns:
         if role == "user" and (line := text.strip().partition("\n")[0].strip()):
             return line[:_TITLE_MAX * 2]
     return None
 
 
-def _parsed(turns: List[Tuple[str, str]], cwd: Optional[str], session_id: Optional[str],
-            title: Optional[str] = None) -> Dict[str, Any]:
+def _parsed(turns: list[tuple[str, str]], cwd: Optional[str], session_id: Optional[str],
+            title: Optional[str] = None) -> dict[str, Any]:
     return {"turns": _merge_turns(turns), "cwd": cwd, "title_guess": title or _first_user_line(turns),
             "session_id": session_id}
 
 
-def parse_claude_session(path: Path) -> Dict[str, Any]:
+def parse_claude_session(path: Path) -> dict[str, Any]:
     """Parse one Claude Code session JSONL into normalized turns + meta."""
-    turns: List[Tuple[str, str]] = []
+    turns: list[tuple[str, str]] = []
     cwd = summary = session_id = None
     for obj in _read_json_lines(path):
         otype = obj.get("type")
@@ -146,9 +146,9 @@ def parse_claude_session(path: Path) -> Dict[str, Any]:
     return _parsed(turns, cwd, session_id, summary)
 
 
-def parse_codex_session(path: Path) -> Dict[str, Any]:
+def parse_codex_session(path: Path) -> dict[str, Any]:
     """Parse one Codex CLI rollout JSONL into normalized turns + meta."""
-    turns: List[Tuple[str, str]] = []
+    turns: list[tuple[str, str]] = []
     cwd = session_id = None
     for obj in _read_json_lines(path):
         otype, payload = obj.get("type"), obj.get("payload")
@@ -197,14 +197,14 @@ def _default_root(source: str) -> Path:
     return Path.home().joinpath(*default_parts)
 
 
-def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_result]]:
+def _walk(source: str, root: Optional[Path] = None) -> list[tuple[Path, os.stat_result]]:
     """Regular log files of *source* under *root* (default: the tool's env-aware store, see
     ``_default_root``) as ``(path, stat)``, newest first. Symlinks escaping the root and
     unreadable/rotated entries are skipped, so one bad file never hides the rest. Shared by the
     CLI picker and the desktop browser."""
     pattern, recursive = _SOURCES[source][3], _SOURCES[source][4]
     root = (Path(root) if root else _default_root(source)).resolve()
-    found: List[Tuple[Path, os.stat_result]] = []
+    found: list[tuple[Path, os.stat_result]] = []
     for path in (root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ():
         try:
             resolved = path.resolve()
@@ -217,9 +217,9 @@ def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_
     return found
 
 
-def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
+def _list_sessions(source: str, root: Optional[Path]) -> list[ForeignSession]:
     parse = _parser(source)
-    results: List[ForeignSession] = []
+    results: list[ForeignSession] = []
     for path, st in _walk(source, root):
         parsed = parse(path)
         if parsed["turns"]:
@@ -266,7 +266,7 @@ def import_foreign_session(source: str, path, db=None) -> str:
 
 
 def gather_foreign_sessions(source: Optional[str] = None, *, claude_root: Optional[Path] = None,
-                            codex_root: Optional[Path] = None, limit: int = 25) -> List[ForeignSession]:
+                            codex_root: Optional[Path] = None, limit: int = 25) -> list[ForeignSession]:
     """List foreign sessions across sources, newest first."""
     sessions = [s for name, root in (("claude", claude_root), ("codex", codex_root)) if source in (None, name)
                 for s in _list_sessions(name, root)]
@@ -335,66 +335,3 @@ def run_sessions_import(args, db=None) -> Optional[str]:
     print(f"✓ Imported {_SOURCE_LABELS.get(source, source)} session as {session_id}")
     print(f"  Continue it with:  hermes --resume {session_id}")
     return session_id
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def list_claude_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
-    """Discover Claude Code sessions under ``~/.claude/projects``."""
-    root = Path(root) if root else Path.home() / ".claude" / "projects"
-    results: List[ForeignSession] = []
-    if not root.is_dir():
-        return results
-    for jsonl in sorted(root.glob("*/*.jsonl")):
-        try:
-            mtime = jsonl.stat().st_mtime
-        except OSError:
-            continue
-        parsed = parse_claude_session(jsonl)
-        if not parsed["turns"]:
-            continue
-        results.append(
-            ForeignSession(
-                source="claude",
-                path=jsonl,
-                mtime=mtime,
-                cwd=parsed["cwd"],
-                title_guess=parsed["title_guess"],
-                turn_count=len(parsed["turns"]),
-                session_id=parsed["session_id"],
-            )
-        )
-    results.sort(key=lambda s: s.mtime, reverse=True)
-    return results
-
-def list_codex_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
-    """Discover Codex CLI rollouts under ``~/.codex/sessions``."""
-    root = Path(root) if root else Path.home() / ".codex" / "sessions"
-    results: List[ForeignSession] = []
-    if not root.is_dir():
-        return results
-    for jsonl in sorted(root.rglob("rollout-*.jsonl")):
-        try:
-            mtime = jsonl.stat().st_mtime
-        except OSError:
-            continue
-        parsed = parse_codex_session(jsonl)
-        if not parsed["turns"]:
-            continue
-        results.append(
-            ForeignSession(
-                source="codex",
-                path=jsonl,
-                mtime=mtime,
-                cwd=parsed["cwd"],
-                title_guess=parsed["title_guess"],
-                turn_count=len(parsed["turns"]),
-                session_id=parsed["session_id"],
-            )
-        )
-    results.sort(key=lambda s: s.mtime, reverse=True)
-    return results
-# ---- END PLUGIN-COMPAT ----

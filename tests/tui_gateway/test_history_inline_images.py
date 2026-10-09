@@ -15,7 +15,7 @@ when asked; non-image content is byte-identical either way.
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session
 
 DATA_URI = "data:image/png;base64," + "a" * 128
 IMAGE_TURN = [
@@ -102,7 +102,7 @@ def test_resume_live_reattach_carries_the_switch(tmp_path, monkeypatch, inline_i
     monkeypatch.setattr(srv, "_profile_home", lambda _p: None)
     monkeypatch.setattr(srv, "_reattach_refusal", lambda *_a: None)
     monkeypatch.setattr(srv, "_cancel_ws_orphan_reap", lambda *_a: None)
-    monkeypatch.setattr(srv, "_child_run_active", lambda _key: False)
+    monkeypatch.setattr(srv, "_child_run_active", lambda *_a: False)
     known = set(srv._sessions)
     srv._sessions["live-sid"] = record
     try:

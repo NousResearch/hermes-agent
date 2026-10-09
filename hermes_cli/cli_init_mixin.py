@@ -230,7 +230,8 @@ class CLIInitMixin:
             invalid = [t for t in toolsets
                        if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
             if invalid:
-                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+                from agent.i18n import t as _t
+                self._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=', '.join(invalid))}[/]")
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG
@@ -300,10 +301,10 @@ class CLIInitMixin:
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
-        self._tool_callbacks_installed = self._tirith_security_checked = False
+        self._tool_callbacks_installed = False
         self._app = None  # prompt_toolkit Application (set in run())
 
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history: list[dict[str, Any]] = []
         self.session_start = datetime.now()
         # Per-prompt elapsed timer shown in the status bar.
         self._prompt_start_time: Optional[float] = None
@@ -341,22 +342,15 @@ class CLIInitMixin:
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            from agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
                 try:
-                    Console(stderr=True).print(
-                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                        "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
-                        "Searching past sessions is also disabled.\n"
-                        f"  Reason: {failure.gloss}.\n"
-                        f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
-                    )
+                    Console(stderr=True).print(t(
+                        "cli.session_store.unavailable_rich",
+                        reason=failure.gloss, action=failure.action, details=storage_failure_details(e)))
                 except Exception:
-                    print(
-                        "WARNING: Session store unavailable — this conversation will NOT be "
-                        f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
-                    )
+                    print(t("cli.session_store.unavailable_plain", reason=failure.gloss, action=failure.action))
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
             from gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")
@@ -436,6 +430,7 @@ class CLIInitMixin:
         self._voice_mode = self._voice_tts = self._voice_recording = False
         self._voice_processing = self._voice_continuous = False
         self._voice_recorder = self._voice_tts_stop = None
+        self._voice_live_text = ""  # live STT partial (stt.streaming) shown in the placeholder
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
@@ -454,7 +449,7 @@ class CLIInitMixin:
         self._resize_recovery_timer = self._status_bar_unsuppress_timer = None  # latter: debounced un-suppress
         self._last_resize_width = None  # width change (reflow, needs viewport clear) vs rows-only
 
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_tasks: dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
         # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.

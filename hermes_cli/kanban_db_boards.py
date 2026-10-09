@@ -43,9 +43,15 @@ def _backfill_legacy_board_metadata(d: Path) -> None:
     """Write a minimal ``board.json`` for a schema-holding legacy board dir.
 
     Runs once per legacy board: after the first discovery the metadata file
-    exists and the normal identity path takes over. Never raises — a failed
-    backfill only leaves the board undiscovered, exactly as before.
+    exists and the normal identity path takes over. Best-effort by design —
+    a fenced delegated-child context (dashboard/poller read paths call
+    ``list_boards``) must not crash or mutate: the board stays visible and
+    the write lands on the next unfenced discovery.
     """
+    try:
+        _kb._assert_not_delegated_child_mutation(d)
+    except PermissionError:
+        return
     try:
         slug = d.name
         meta = {

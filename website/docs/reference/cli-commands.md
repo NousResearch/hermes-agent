@@ -202,9 +202,29 @@ same `exit_code`.
 
 #### Delegation in finite chat runs
 
-When chat answers and exits, `delegate_task` waits for its children and returns their
-results in the same turn instead of running them in the background. Details and limits:
-[Delegation: finite chat runs](../user-guide/features/delegation.md#finite-chat-runs).
+When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
+stdio), `delegate_task` waits for its children and returns their results to the
+parent in the same turn. Batch children still run in parallel, subject to
+`delegation.max_concurrent_children`. The parent can use those results in its
+final response before the CLI exits.
+
+- **Automatic joining:** no opt-in or background-mode override is needed.
+  Interactive TTY chat and messaging sessions keep background delegation.
+- **Per-input policy:** the CLI records finite consumption with the admitted prompt,
+  including when resuming an interactive session. It does not change that session's
+  creation policy, sibling viewers, or the daemon environment.
+- **Existing safeguards:** delegation limits, timeouts, cancellation, and
+  `approvals.single_query_mode` (`-q` turns; `hermes -z` turns are unattended) still apply.
+  Joining does not auto-approve commands or guarantee successful child outcomes.
+  Inspect results and verify artifacts. Managed/safe workers still reject child
+  delegation until their child-registration contract is available.
+- **Separate limits:** `--run-budget` remains unsupported by gateway chat; it is not
+  required for joining. `terminal.oneshot_completion_wait_seconds` is not a
+  delegation timeout. Canonical terminal notifications remain gateway-owned.
+
+Closing the CLI detaches rather than terminating its gateway-owned turn. Child
+execution is still process-local to that owner: use a durable scheduler for work
+that must survive an owner restart.
 
 ### `hermes -z <prompt>` — scripted one-shot
 
@@ -353,14 +373,73 @@ Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd sup
 
 ### Local runtime discovery and startup
 
-`hermes gateway ensure [--json] [--timeout 60]` discovers or starts the active profile's
-session runtime and prints one JSON object (`state`, `reason_code`, and an `endpoint` only
-once authenticated discovery reports compatible readiness; never tickets or credentials).
-It waits for an existing or starting owner instead of replacing it and never installs a
-service. Exit `0` means ready; any other code is a refusal or a deadline, never permission
-to start a replacement. Service identity checks, the home-permission policy behind
-`unsafe_control_permissions`, and every exit code:
-[Gateway internals: `hermes gateway ensure`](../developer-guide/gateway-internals.md#hermes-gateway-ensure).
+```bash
+hermes gateway ensure --json --timeout 60
+```
+
+`ensure` targets the active profile and emits one JSON object with `state`,
+`reason_code`, and `endpoint`. The endpoint is present only when authenticated
+local discovery reports compatible session readiness. Output contains no bootstrap
+tickets or bearer credentials. JSON is also the default without `--json`.
+
+The timeout is a finite, positive total deadline in seconds (default `60`, enough for a
+cold daemon boot on a loaded host). An
+existing reservation or starting owner is waited for, not replaced. When absence
+is established, an existing service takes precedence; an unmanaged process is
+requested only when no service is found. This command never installs or rewrites
+service definitions, enables linger, elevates privileges, or clears update fences.
+Ambiguous or inaccessible ownership fails closed.
+
+Before requesting a service start, `ensure` checks its canonical profile directory
+and execution account, not just its unit/task name. Linux uses the manager's
+loaded command and environment (including effective drop-ins), macOS checks the
+loaded launchd job rather than assuming the on-disk plist is current, and Windows
+queries the actual task XML, principal, and installed launcher.
+
+- `profile_mismatch`: the installed service selects a different home or profile.
+  Inspect the selected service's `HERMES_HOME` and command-line profile selector;
+  use the matching profile or explicitly repair the service configuration.
+- `service_account_mismatch`: the service belongs to another account. Run the
+  client as that account, or explicitly configure a service for the intended user.
+- `service_identity_unverified`: the manager did not expose enough identity data,
+  or the definition uses unsupported dynamic configuration. Inspect it with
+  `systemctl [--user] show <unit> --all`, `launchctl print <domain>/<label>`, or
+  `schtasks /Query /TN <task> /XML`. Linux environment files, PAM/dynamic users,
+  start-time hooks and alternate root filesystems require operator review;
+  arbitrary shell launchers and modified Windows launcher scripts are not
+  interpreted by `ensure`. Restore an explicit supported definition through an
+  intentional service-management operation before retrying.
+
+These refusals do not start a service, rewrite configuration, or launch an
+unmanaged replacement. Standard explicitly bound default and custom-root installs
+remain eligible; a successful start request still must pass live readiness checks.
+
+On POSIX, local bootstrap requires an owner-only profile directory. Newly reserved
+homes are created with mode `0700`; existing permissions are never changed by
+`ensure`. An existing home readable by other users returns
+`inaccessible / unsafe_control_permissions`. Review the directory's intended
+sharing policy and explicitly make it private before retrying local attachment.
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Compatible session runtime ready. |
+| `2` | Invalid invocation, including invalid timeout or unknown arguments. |
+| `3` | Incompatible runtime protocol or capabilities. |
+| `4` | Authorization or profile mismatch. |
+| `5` | Deadline reached; startup may still be pending. |
+| `6` | Runtime draining or update in progress. |
+| `7` | Inaccessible runtime, conflicting supervisor, or startup failure. |
+
+A service start command or process creation is not a readiness acknowledgement.
+A gateway that has not exposed the session-authority capability can remain
+`starting` until the deadline even while its messaging adapters work. Do not treat
+exit `5` as permission to replace that owner. On Windows, a Startup-folder-only
+installation requires login rather than an unmanaged fallback; failure to detach
+from a parent job is reported instead of retried with weaker process isolation.
+
+Service persistence is separately opt-in during setup. Imports and noninteractive
+setup do not install a missing service based on an imported preference. See
+[optional service installation](../developer-guide/gateway-internals.md#optional-service-installation).
 
 ## `hermes lsp`
 
@@ -690,9 +769,10 @@ hermes auth reset openrouter 2                           # Clear the cooldown on
 hermes auth refresh openai-codex work                    # Refresh one OAuth credential and clear its cooldown
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
+hermes auth spotify                                      # Authenticate Hermes with Spotify via PKCE
 ```
 
-Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`. Spotify login moved to the `spotify` catalog plugin's `hermes spotify login`. When called with no subcommand, launches the interactive management wizard.
+Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes usage`
 

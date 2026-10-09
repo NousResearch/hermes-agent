@@ -80,19 +80,14 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
     loop = asyncio.get_running_loop()
     deadline = None if timeout is None else loop.time() + timeout
     while True:
-        live, interim = await asyncio.to_thread(peer_wait_admission, authority, record)
+        live, interim = peer_wait_admission(authority, record)
         # Register the waiter BEFORE re-reading: a settle between the two either shows in the read
         # or resolves this future; a settle before both would otherwise leave a future nobody pops.
         waiter = None if live is None or interim else authority.waiters.setdefault(live, loop.create_future())
         current = _receipt(authority, record)
-        if live is None and current['status'] in _PENDING:
-            continue  # The derived retry committed while the receipt was being read.
         if interim:
             current['status'] = 'claimed'  # the retry is being admitted
-        if live is None or current['status'] not in _PENDING:
-            await _owner_published(authority, record, deadline)
-            return current
-        if should_stop is not None and should_stop():
+        if live is None or current['status'] not in _PENDING or (should_stop is not None and should_stop()):
             return current
         remaining = None if deadline is None else deadline - loop.time()
         if remaining is not None and remaining <= 0:
@@ -102,16 +97,6 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
             await asyncio.sleep(tick if remaining is None else min(tick, remaining))
         else:
             await asyncio.wait([waiter], timeout=tick if remaining is None else min(tick, remaining))
-
-
-async def _owner_published(authority, record, deadline):
-    """Answer only once the owner's reply watcher published the outcome this waiter read from the
-    FIFO: its receipt write runs off-loop, and a re-read of the delivery must not say ``queued``
-    after the sender already holds the reply."""
-    watcher = getattr(authority, '_bot_reply_watchers', {}).get(record['delivery_id'])
-    if watcher is not None and not watcher[1].done():
-        remaining = None if deadline is None else max(0.0, deadline - asyncio.get_running_loop().time())
-        await asyncio.wait([watcher[1]], timeout=remaining)
 
 
 def _receipt(authority, record):

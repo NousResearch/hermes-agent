@@ -30,10 +30,10 @@ class _ThreadingServer(socketserver.ThreadingTCPServer):
 
 def _make_handler():
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
+        def log_message(self, format, *args):  # noqa: A002 - http.server API
             pass
 
-        def do_POST(self):
+        def do_POST(self):  # noqa: N802 - http.server API
             if self.path == "/oversize":
                 # ~128 MiB if read unbounded; no Content-Length.
                 self.send_response(500)

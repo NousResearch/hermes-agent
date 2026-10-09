@@ -36,7 +36,7 @@ def aws_env(monkeypatch):
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
+@patch("models.metadata.context.get_model_context_length", return_value=272_000)
 def test_switch_to_bedrock_mantle_installs_sigv4_http_client(_ctx, aws_env):
     agent = _agent()
 
@@ -52,7 +52,7 @@ def test_switch_to_bedrock_mantle_installs_sigv4_http_client(_ctx, aws_env):
     [("us.anthropic.claude-opus-4-6-v1", "anthropic_messages", "AnthropicBedrock"),
      ("us.amazon.nova-pro-v1:0", "bedrock_converse", "NoneType")],
 )
-@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
+@patch("models.metadata.context.get_model_context_length", return_value=200_000)
 def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, model, api_mode, anthropic_client_type):
     agent = _agent()
 

@@ -775,38 +775,6 @@ describe('secondary stalled-dial budget', () => {
     expect(getConnectionFor.mock.calls.length).toBe(dialsAfterParking + 1)
   })
 
-  it('parks a scope at once when its local gateway ensure fails permanently, and an explicit open re-arms it', async () => {
-    vi.useFakeTimers()
-
-    // What main's ensureLocalGateway / parseGatewayEnsureOutput / assertLocalGatewayEndpoint throw,
-    // as they cross the IPC boundary. Each re-dial spawns another `hermes gateway ensure`.
-    for (const permanent of [
-      "Error invoking remote method 'hermes:connection:get-for': Error: Gateway incompatible (runtime_protocol). Use hermes gateway status for recovery.",
-      'hermes gateway ensure produced no result (exit 2): invalid choice. Update Hermes or check the profile, then retry.',
-      'Invalid local gateway endpoint'
-    ]) {
-      closeSecondaryGateways()
-      gatewayMocks.instances.length = 0
-      const getConnectionFor = vi.fn().mockResolvedValueOnce(descriptorFor('homelab', 'bot-a')).mockRejectedValue(new Error(permanent))
-      installDesktop({ getConnectionFor })
-
-      await ensureGatewayForAgent('homelab', 'bot-a')
-      const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
-      socket.connectionState = 'closed'
-      reconnectSecondaryGateways()
-
-      for (let index = 0; index < 20; index += 1) {
-        await vi.advanceTimersByTimeAsync(20_000)
-      }
-
-      expect(getConnectionFor.mock.calls.length, permanent).toBe(2)
-
-      getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
-      await ensureGatewayForAgent('homelab', 'bot-a')
-      expect(getConnectionFor.mock.calls.length, permanent).toBe(3)
-    }
-  })
-
   it('does not let an interleaved fast failure refill the stall budget', async () => {
     vi.useFakeTimers()
 

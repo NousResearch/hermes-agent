@@ -23,7 +23,7 @@ import json
 
 import pytest
 
-from gateway import relay
+import gateway.relay as relay
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def _clean_env(monkeypatch):
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk by default.
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
 
 
 def test_client_credentials_via_env(monkeypatch):

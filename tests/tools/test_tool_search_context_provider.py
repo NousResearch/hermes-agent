@@ -41,7 +41,7 @@ class TestResolveActiveContextLengthProviderAware:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"base_url": "https://chatgpt.com/backend-api/codex",
                                  "api_key": "tok-live"}) as mock_rt, \
-             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+             patch("models.metadata.context.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
 
         assert ctx == 272_000
@@ -68,7 +68,7 @@ class TestResolveActiveContextLengthProviderAware:
                    return_value=_model_cfg(base_url="https://chatgpt.com/backend-api/codex")), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=RuntimeError("no credentials")), \
-             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+             patch("models.metadata.context.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
 
         assert ctx == 272_000
@@ -90,7 +90,7 @@ class TestResolveActiveContextLengthProviderAware:
         with patch("hermes_cli.config.load_config",
                    return_value={"model": {"model": "some-model"}}), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_rt, \
-             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+             patch("models.metadata.context.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
 
         assert ctx == 200_000
@@ -112,7 +112,7 @@ class TestResolveActiveContextLengthProviderAware:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"base_url": "https://chatgpt.com/backend-api/codex",
                                  "api_key": "tok"}), \
-             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+             patch("models.metadata.context.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
 
         assert ctx == 150_000

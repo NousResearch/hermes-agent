@@ -5,6 +5,7 @@ from typing import Any
 from agent.reasoning_effort import NEBIUS_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 
 # Conservative allowlist of model families that expose reasoning effort.
 _REASONING_MARKERS = (
@@ -12,7 +13,7 @@ _REASONING_MARKERS = (
 )
 
 
-class NebiusTokenFactoryProfile(ProviderProfile):
+class NebiusTokenFactoryProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Nebius Token Factory - top-level reasoning_effort."""
 
     def build_api_kwargs_extras(
@@ -36,8 +37,8 @@ nebius_token_factory = NebiusTokenFactoryProfile(
     aliases=("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
     display_name="Nebius Token Factory", description="Nebius Token Factory — OpenAI-compatible inference",
     signup_url="https://tokenfactory.nebius.com/",
-    env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY", "NEBIUS_BASE_URL"),
-    base_url="https://api.tokenfactory.nebius.com/v1",
+    env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
+    base_url="https://api.tokenfactory.nebius.com/v1", base_url_env_var="NEBIUS_BASE_URL",
     models_url="https://api.tokenfactory.nebius.com/v1/models?verbose=true", auth_type="api_key",
     default_aux_model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
     fallback_models=(

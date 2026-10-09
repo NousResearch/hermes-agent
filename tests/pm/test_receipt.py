@@ -10,12 +10,12 @@ import json
 
 import pytest
 
-from pm import receipt
+import pm.receipt as receipt
 
 
 @pytest.fixture(autouse=True)
 def _isolated_receipt_context():
-    from hermes_cli import update_receipt
+    import hermes_cli.update_receipt as update_receipt
     variables = (receipt._current, receipt._completed_by_update, update_receipt._current)
     tokens = [variable.set(None) for variable in variables]
     yield

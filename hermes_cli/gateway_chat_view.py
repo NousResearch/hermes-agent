@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
-    "session.info",
 })
 
 
@@ -31,23 +30,14 @@ class GatewayChatView:
         self.quiet = quiet or emitter is not None
         self.finite = False
         self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
-        self.resume_footer = False  # `chat -q` without -Q: main's "Resume this session with:" block
         self.finite_admission = None
         self._finite_events = []
         self.streams = {}
         self.completions = {}
         self.changed = asyncio.Event()
         self.failure = None
-        # Set once with ``failure``: the interactive composer races its line read against it so a
-        # dead owner ends the REPL immediately instead of on the next keypress.
-        self.failed = asyncio.Event()
         from hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
-        # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
-        # guarded model switch stays a refusal instead of a prompt.
-        self._composer = None
-        # `/undo` puts the removed message back in the composer for the next prompt.
-        self.prefill = ""
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -76,7 +66,8 @@ class GatewayChatView:
         while True:
             event = await self.client.events.get()
             if isinstance(event, Exception):
-                self._fail(event)
+                self.failure = event
+                self.changed.set()
                 return
             params = event.get("params", {})
             if params.get("session_id") != self.session_id:
@@ -84,11 +75,12 @@ class GatewayChatView:
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
             if kind == "session.replay_gap":
-                self._fail(GatewayClientError("session_replay_gap"))
+                self.failure = GatewayClientError("session_replay_gap")
+                self.changed.set()
                 return
             admission = params.get("admission_id") or payload.get("admission_id")
             if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
-                # Gates and unknown executions block the session FIFO, not merely one
+                # Approval/clarification gates block the session FIFO, not merely one
                 # admission's output. Track them even when another admission owns the
                 # event so a queued one-shot can detach instead of waiting forever.
                 self._dispatch_event(kind, admission, payload)
@@ -105,43 +97,15 @@ class GatewayChatView:
             self._dispatch_event(kind, admission, payload)
             self.changed.set()
 
-    def _fail(self, error):
-        self.failure = error
-        self.failed.set()
-        self.changed.set()
-
-    async def _read_line(self, prompt, symbol):
-        """The next composer line, or ``""`` once the event stream failed first (``self.failure``
-        is then set). The pending read is cancelled (prompt_toolkit restores the terminal) so the
-        caller reports the unknown outcome without waiting for a keypress."""
-        default, self.prefill = self.prefill, ""
-        reader = asyncio.ensure_future(prompt.prompt_async(symbol, **({"default": default} if default else {})))
-        failed = asyncio.ensure_future(self.failed.wait())
-        try:
-            await asyncio.wait({reader, failed}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            failed.cancel()
-        if reader.done():
-            return reader.result()
-        reader.cancel()
-        with suppress(asyncio.CancelledError):
-            await reader
-        return ""
-
     def _dispatch_event(self, kind, admission, payload):
         handler = {
             "message.delta": self._delta, "message.complete": self._complete,
             "tool.start": self._tool_start, "tool.complete": self._tool_complete,
             "approval.request": self._request, "clarify.request": self._request,
             "approval.settled": self._settled, "clarify.settled": self._settled,
-            "session.info": self._session_info,
         }.get(kind)
         if handler:
             handler(admission, payload)
-
-    def _session_info(self, admission, payload):
-        self.pending = payload.get("pending", self.pending)
-        self.generation = payload.get("execution_generation", self.generation)
 
     def _tool_start(self, admission, payload):
         # Deltas before a tool call are interim commentary the final reply does not repeat;
@@ -243,19 +207,17 @@ class GatewayChatView:
             from hermes_cli.gateway_mutations import slash_mutation
             operation, payload = slash_mutation(command, rest.strip())
             original = self.session_id
-            confirm = self._confirm_model_switch if operation == 'model' and self._composer is not None else None
-            result = await self.mutations.apply(self.client, original, operation, payload, confirm=confirm)
-            if result.get('status') == 'cancelled':
-                return True
+            result = await self.mutations.apply(self.client, original, operation, payload)
             if result.get('status') == 'preview':
                 self.mutations.acknowledge(original, operation, payload)
                 print('\n'.join(result['lines']))
                 return True
             target = result.get('branched_session_id', original)
-            await self.adopt(await self.client.rpc('session.resume', session_id=target))
+            snapshot = await self.client.rpc('session.resume', session_id=target)
+            self.session_id = target
+            self.generation = snapshot['execution_generation']
+            self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
             self.mutations.acknowledge(original, operation, payload)
-            if operation == 'model' and result.get('model'):
-                self.model = str(result['model']).split('/')[-1]
             print(f"{operation}: {target}")
             return True
         if command == "/yolo":
@@ -267,39 +229,10 @@ class GatewayChatView:
                                            **({"value": "1" if word == "on" else "0"} if word else {}))
             print(f"YOLO {'on' if result.get('value') == '1' else 'off'} for this session")
             return True
-        from hermes_cli import gateway_chat_commands
         if command == "/help":
-            print(gateway_chat_commands.help_text())
+            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
             return True
-        return await gateway_chat_commands.run_command(self, command, rest)
-
-    async def adopt(self, snapshot):
-        """Attach this view to another session's snapshot (a branch, /new)."""
-        self.session_id = snapshot['stored_session_id']
-        self.generation = snapshot['execution_generation']
-        self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
-        self.pending = snapshot.get('pending', [])
-        self.model = str((snapshot.get('info') or {}).get('model') or self.model).split('/')[-1]
-
-    async def _confirm_model_switch(self, refusal):
-        """The owner refused a guarded model target (cost / data policy / large context): ask as
-        the in-process CLI does (``_confirm_expensive_model_switch``: switch anyway once, or cancel)
-        on this composer. Only an explicit yes applies; anything else keeps the current model."""
-        from agent.i18n import t
-        from hermes_cli.gateway_mutations import confirm_choice, confirmation_title
-        choices = [("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
-                   ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
-        print(f"\n!!! {confirmation_title(refusal)} !!!\n{refusal['confirm_message']}\n")
-        for index, (_, label, detail) in enumerate(choices, 1):
-            print(f"  {index}. {label} \u2014 {detail}")
-        try:
-            raw = await self._read_line(self._composer, t("cli.model.confirm_choice_prompt"))
-        except (KeyboardInterrupt, EOFError):
-            raw = ""
-        if not self.failure and confirm_choice(raw, choices) == "once":
-            return True
-        print(t("cli.model.switch_cancelled"))
-        return False
+        raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
 
     def _detach(self, message):
         """One-shot cannot go on without a human: say why on stderr, exit 3, and in stream-json
@@ -310,49 +243,22 @@ class GatewayChatView:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
 
-    def _finite_block(self, admission):
-        """Why a finite viewer cannot keep waiting for *admission*, or None. Its own lost turn
-        settles as the unknown completion would, so the exit code never depends on frame order;
-        only a still-queued input behind someone else's unknown turn is retained and detached."""
-        own = next((row["status"] for row in self.pending if row["admission_id"] == admission), None)
-        if own == "unknown":
-            self.completions[admission] = {"outcome": "unknown", "text": (
-                "Execution outcome is unknown. Resume this session to inspect the lost turn "
-                "and /discard it; do not resend the input.")}
-            return None
-        if own == "queued" and self.unknown_admissions():
-            return ("Unknown execution blocks this session; your accepted input is retained. "
-                    "Resume interactively to resolve the lost turn; do not resend the input.")
-        if self.prompts:
-            return "Input required; detached without cancelling. Resume this session interactively."
-        return None
-
-    async def _settled_result(self, admission):
-        """The structured result the owner committed with this admission's settlement — the same
-        dict the in-process one-shot got from ``run_conversation`` (best-effort, never raises)."""
+    async def _write_usage_file(self, admission, outcome):
+        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
+        result the owner committed with this admission's settlement (best-effort, never raises)."""
         from websockets.exceptions import WebSocketException
+        from hermes_cli.oneshot import _write_usage_file
+        result = {}
         try:
             receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
                                             admission_id=admission, include_result=True)
-            return dict(receipt.get("result") or {})
+            result = dict(receipt.get("result") or {})
         # Transport loss / refusal, or a receipt whose ``result`` is not a mapping.
         except (GatewayClientError, OSError, TimeoutError, WebSocketException,
                 AttributeError, TypeError, ValueError) as exc:
-            # The exit code and ledger still follow the settled outcome; a missing receipt is not fatal.
-            logger.debug("settled result for %s unavailable: %s", admission, exc)
-            return {}
-
-    def _print_exit_ids(self):
-        """The finite run's durable id on stderr (automation wrappers parse it; it names the
-        physical row a compaction may have advanced) and, for `chat -q`, main's resume block."""
-        print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
-        if self.resume_footer:
-            print(resume_footer(self.session_id), flush=True)
-
-    def _write_usage_file(self, result, outcome):
-        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
-        from hermes_cli.oneshot import _write_usage_file
-        result = {**result, "session_id": result.get("session_id") or self.session_id}
+            # The ledger is still written from the outcome alone; a missing receipt is not fatal.
+            logger.debug("usage-file receipt for %s unavailable: %s", admission, exc)
+        result.setdefault("session_id", self.session_id)
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
 
@@ -367,8 +273,7 @@ class GatewayChatView:
             # submitting so nothing is left queued for the next interactive resume to find.
             lost = " ".join(self.unknown_admissions())
             return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
-                                f"with `hermes sessions discard {self.session_id} --yes` (or /discard {lost} "
-                                "interactively; both are prompt.resolve_unknown), then retry.")
+                                f"interactively with /discard {lost} (prompt.resolve_unknown), then retry.")
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None
@@ -386,35 +291,24 @@ class GatewayChatView:
                     self.changed.clear()
                     if self.failure:
                         raise self.failure
-                    blocked = self._finite_block(admission)
-                    if blocked:
-                        return self._detach(blocked)
-                    if admission not in self.completions:
-                        await self.changed.wait()
+                    if self.prompts:
+                        return self._detach("Input required; detached without cancelling. Resume this session interactively.")
+                    await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
-                text = terminal.get("text") or terminal.get("content") or ""
-                # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
-                # 'completed' with ``completed: False`` in its committed result. Judge both with the
-                # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
-                from hermes_cli.oneshot import _oneshot_exit_code
-                from hermes_cli.turn_exit import turn_exit_code
-                result = await self._settled_result(admission)
-                result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
-                              interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
-                exit_code = (_oneshot_exit_code(text, result) if self.unattended
-                             else turn_exit_code(result, kanban_worker=False))
                 if self.usage_file:
-                    self._write_usage_file(result, outcome)
+                    await self._write_usage_file(admission, outcome)
                 if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text},
-                                                    session_id=self.session_id, exit_code=exit_code)
-                print(text, flush=True)
+                    return self.emitter.emit_result(
+                        {"final_response": terminal.get("text") or terminal.get("content") or "",
+                         "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
+                        session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
+                print(terminal.get("text") or terminal.get("content") or "", flush=True)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
-                self._print_exit_ids()
-                return exit_code
+                print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
+                return 0 if outcome == "completed" else 1
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
@@ -424,12 +318,10 @@ class GatewayChatView:
             prompt = PromptSession(erase_when_done=True,
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
-            self._composer = prompt if sys.stdin.isatty() else None
             with patch_stdout():
                 while not self.failure:
                     try:
-                        # Empty when the stream failed first: the loop guard then raises it.
-                        text = (await self._read_line(prompt, prompt_symbol)).strip()
+                        text = (await prompt.prompt_async(prompt_symbol)).strip()
                         if not text:
                             continue
                         if text.startswith("/"):
@@ -451,13 +343,3 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
-
-
-def resume_footer(session_id):
-    """The classic single-query exit block (``_print_exit_summary``): how to continue this session.
-    A non-default profile needs ``-p`` because session ids are profile-scoped."""
-    from agent.i18n import t
-    from hermes_cli.profiles import get_active_profile_name
-    profile = get_active_profile_name()
-    flag = "" if profile in ("default", "custom") else f" -p {profile}"
-    return f"\n{t('cli.session.exit_resume_hint')}\n  hermes --resume {session_id}{flag}"

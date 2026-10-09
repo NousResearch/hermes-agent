@@ -77,3 +77,4 @@ async def test_inbound_event_reaches_adapter(wired, monkeypatch):
 
 async def _async_capture(sink, event):
     sink.append(event)
+    return None

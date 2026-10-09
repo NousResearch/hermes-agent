@@ -210,7 +210,7 @@ def _ssh_remote_home(task_id: str) -> str | None:
             return None
         try:
             env = _get_file_ops(task_id).env
-        except Exception:
+        except Exception:  # noqa: BLE001 — connect failure
             _ssh_home_failed_at[key] = time.monotonic()
             return None
     _ssh_home_failed_at.pop(key, None)

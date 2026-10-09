@@ -12,7 +12,7 @@ import pytest
 from pm.lock import Lockfile
 from pm.paths import lockfile_path
 from pm.store import current_target
-from tests.pm._fixtures import build_worker, client, isolated_python
+from tests.pm._fixtures import build_worker, client, isolated_python  # noqa: F401
 
 
 @pytest.mark.parametrize("test_environment", [False, True], ids=["runtime", "tests"])

@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-_BLOCK = re.compile(r"<!-- admission-rules:start[^>]*-->(.*?)<!-- admission-rules:end -->", re.DOTALL)
+_BLOCK = re.compile(r"<!-- admission-rules:start[^>]*-->(.*?)<!-- admission-rules:end -->", re.S)
 
 
 def _rules(path: Path) -> str:

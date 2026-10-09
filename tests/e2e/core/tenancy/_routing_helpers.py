@@ -11,6 +11,7 @@ every credential/endpoint env var stripped, and only these fake hosts configured
 """
 
 from __future__ import annotations
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import json
 import os
@@ -223,7 +224,7 @@ class EgressTrap:
                 self.end_headers()
                 self.close_connection = True
 
-            do_CONNECT = do_GET = do_POST = do_PUT = do_HEAD = _refuse
+            do_CONNECT = do_GET = do_POST = do_PUT = do_HEAD = _refuse  # noqa: N815
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
@@ -246,10 +247,10 @@ def inference_hosts() -> frozenset[str]:
     """
     from urllib.parse import urlparse
 
-    from hermes_cli.auth import PROVIDER_REGISTRY
+
     from hermes_constants import OPENROUTER_BASE_URL
 
-    urls = [getattr(p, "inference_base_url", "") or "" for p in PROVIDER_REGISTRY.values()] + [OPENROUTER_BASE_URL]
+    urls = [getattr(p, "inference_base_url", "") or "" for p in iter_provider_configs()] + [OPENROUTER_BASE_URL]
     return frozenset(h for h in (urlparse(u).hostname for u in urls) if h and h not in {"127.0.0.1", "localhost"})
 
 
@@ -317,7 +318,7 @@ class TuiGateway:
 
     def __init__(self, home: Path, proxy: str | None = None) -> None:
         self.home = home
-        self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")
+        self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")  # noqa: SIM115
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, text=True, bufsize=1,

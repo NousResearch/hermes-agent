@@ -150,11 +150,7 @@ async def probe(root, base, mode):
                     await wait_for(lambda: any(r['request_id'] == 'human-follower' for r in rows()))
                     model.gate.touch()
                     # Real cadence: process polls every five seconds; heartbeat interval is one minute.
-                    # Poll for the producer's commit instead of sleeping out the whole bound.
-                    deadline = time.monotonic() + (8 if mode == 'terminal' else 70)
-                    while (time.monotonic() < deadline
-                           and not any(r['principal_id'].startswith('automation:') for r in rows())):
-                        await asyncio.sleep(.1)
+                    await asyncio.sleep(8 if mode == 'terminal' else 70)
                     ledger = rows()
                     automatic = [r for r in ledger if r['principal_id'].startswith('automation:')]
                     assert automatic, {'failure': 'producer ACK bypassed canonical durable FIFO', 'ledger': ledger,

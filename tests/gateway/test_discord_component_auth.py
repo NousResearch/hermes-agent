@@ -21,7 +21,7 @@ from gateway.config import PlatformConfig
 
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
-from plugins.platforms.discord.adapter import (
+from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
     ExecApprovalView,
@@ -30,7 +30,7 @@ from plugins.platforms.discord.adapter import (
     UpdatePromptView,
     _resolve_exec_approval_admin_gate,
 )
-from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+from plugins.platforms.discord.adapter_component_auth import _component_check_auth  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

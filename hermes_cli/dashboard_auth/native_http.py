@@ -23,15 +23,17 @@ def native_profile_scope(request):
     ``get_hermes_home()`` / ``_default_db_path()``, which is the launch home unless the
     task-local override says otherwise. A secondary-profile ticket must read and write its
     own profile, never the launch profile's dashboard state. The launch profile's own ticket
-    binds its home override too, so it never inherits a foreign override that happens to be
-    ambient in the request context.
+    already resolves there, so it keeps the ambient (single-profile) behaviour byte-for-byte.
     """
     grant = getattr(request.state, 'native_http_principal', None)
     if grant is None:
         yield
         return
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
     home = Path(grant['profile_id'])
+    if home.resolve() == get_process_hermes_home().resolve():
+        yield
+        return
     token = set_hermes_home_override(str(home))
     try:
         yield

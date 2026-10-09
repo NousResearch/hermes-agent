@@ -134,11 +134,6 @@ from pathlib import Path
 root, base = Path(sys.argv[1]), sys.argv[2]
 cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
 tops = [p for p in cfg["tool"]["setuptools"]["packages"]["find"]["include"] if "*" not in p]
-# Import name -> the optional extra that ships it. Only these may be absent from a HEAD-added
-# module's imports; any other missing module (a core dependency, a typo) is a real failure.
-OPTIONAL_SDKS = {"acp": "acp"}
-extras = cfg["project"].get("optional-dependencies", {})
-assert set(OPTIONAL_SDKS.values()) <= set(extras), f"stale OPTIONAL_SDKS extras: {OPTIONAL_SDKS}"
 added = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "--diff-filter=A", base, "HEAD", "--",
                         *[f"{t}/*.py" for t in tops]], capture_output=True, text=True).stdout.split()
 added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")][:3]
@@ -148,8 +143,8 @@ for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
         mod = importlib.import_module(name)
     except BaseException as exc:
         missing = (getattr(exc, "name", None) or "").split(".")[0]
-        if name in added and isinstance(exc, ModuleNotFoundError) and missing in OPTIONAL_SDKS:
-            continue  # an optional extra's SDK; a stale finder misses the module itself, not an SDK
+        if name in added and isinstance(exc, ModuleNotFoundError) and missing and missing not in tops:
+            continue  # an optional extra's SDK (e.g. acp); a stale finder misses the module itself
         bad.append(f"{name}: {type(exc).__name__}: {exc}")
         continue
     where = Path(getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])).resolve()
@@ -289,7 +284,7 @@ class Leg:
                      writable=[self.root], timeout=timeout)
 
     def popen(self, *args: str) -> subprocess.Popen:
-        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")
+        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")  # noqa: SIM115
         return subprocess.Popen(
             H.sandbox_argv([*_KILLED_RUN_PREFIX, self.hermes, *args], writable=[self.root]),
             env=self.env, cwd=str(self.install), stdin=subprocess.DEVNULL,

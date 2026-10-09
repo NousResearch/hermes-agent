@@ -5,7 +5,8 @@ import pytest
 
 @pytest.fixture
 def metadata_transport(monkeypatch):
-    from agent import model_metadata
+    from agent import model_metadata as _runtime_hooks  # installs transport hooks
+    from models.metadata import context as model_metadata
 
     responses, requests = [], []
     real_client = httpx.Client

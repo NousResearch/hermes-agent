@@ -797,39 +797,3 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 })
-
-describe('JsonRpcGatewayClient per-session replay epochs', () => {
-  beforeEach(() => {
-    FakeWebSocket.instances = []
-    sockets = FakeWebSocket.instances as unknown as FakeWebSocket[]
-  })
-
-  it('forgets a session epoch together with the cursor it numbers', async () => {
-    const client = makeClient()
-    const first = client.connect('ws://x')
-    let sock = sockets[sockets.length - 1]
-    sock.open()
-    await first
-
-    for (let index = 0; index < 50; index += 1) {
-      sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: `s${index}`, seq: 1, replay_epoch: `e${index}` } })
-    }
-
-    // Every replay window is gone (restarted authority): each cursor is dropped for a snapshot.
-    client.invalidate('drop')
-    const second = client.connect('ws://x')
-    sock = sockets[sockets.length - 1]
-    sock.open()
-    await second
-    await vi.waitFor(() => expect(sock.sent.length).toBe(50))
-
-    for (const raw of sock.sent) {
-      const req = JSON.parse(raw) as ReturnType<FakeWebSocket['lastRequest']>
-      sock.serverFrame({ jsonrpc: '2.0', id: req.id, result: { events: [], latest_seq: 9, epoch: 'new', replay_epoch: 'new', truncated: true, snapshot_required: true } })
-    }
-
-    await vi.waitFor(() => expect(client.getSeqWatermarks()).toEqual({}))
-    expect((client as unknown as { replayEpochBySession: Map<string, string> }).replayEpochBySession.size).toBe(0)
-    client.close()
-  })
-})

@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isServerQueued } from '../app/pendingBubbles.js'
 import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
 import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
-import { t } from '../i18n/runtime.js'
 import {
   loadPendingInputs,
   pendingDestinationKey,
@@ -186,8 +185,8 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
 
   const queuedDisplay = [
-    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
-    ...serverRows.map(row => t('canonical.queue.serverRow', String(row.status), String(row.user)))
+    ...queueRef.current.map(item => `${item.failed ? '[unconfirmed · Alt+K retry] ' : ''}${item.display}`),
+    ...serverRows.map(row => `[${row.status}] ${row.user}`)
   ]
 
   // Indexes past the local items address server rows (read live, not from
@@ -218,7 +217,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         session_id, admission_id: row.admission_id,
         ...(unknown ? { execution_generation: row.execution_generation } : {})
       }) ?? Promise.resolve()).catch((error: Error) => {
-        if (getUiState().sid === session_id) { patchUiState({ status: t('canonical.queue.discardFailed', error.message) }) }
+        if (getUiState().sid === session_id) { patchUiState({ status: `discard failed: ${error.message}` }) }
 
         throw error
       })
@@ -237,34 +236,25 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     [queueEditRef, syncQueue]
   )
 
-  const draft = useCallback(
-    (text: string, display: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
+  const enqueue = useCallback(
+    (text: string, display = text, destination?: SubmissionDestination) => {
       const owner = pendingInputOwner(destination ?? captureDestination())
       const queue = getQueue(owner)
 
-      const item: QueueItem = {
+      const item = {
         ...queueItem(text, display),
-        ...(attachments?.length ? { attachments } : {}),
         submissionId: randomUUID(),
         destination: owner,
         createdAt: Math.max(Date.now(), (queue.items.at(-1)?.createdAt ?? 0) + 1)
       }
 
-      return { queue, item }
-    },
-    [getQueue]
-  )
-
-  const enqueue = useCallback(
-    (text: string, display = text, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
-      const { queue, item } = draft(text, display, destination, attachments)
       savePendingInput(item)
       queue.items.push(item)
       syncQueue()
 
       return item
     },
-    [draft, syncQueue]
+    [getQueue, syncQueue]
   )
 
   const prependQ = useCallback(
@@ -288,11 +278,9 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     (queue: PendingQueue, item: QueueItem) => {
       item.submissionId ??= randomUUID()
       item.destination ??= captureDestination()
-      // Journal the attempt first: a failed write must leave the row claimable,
-      // not marked in flight with no settle to ever clear it.
-      savePendingInput({ ...item, inFlight: true, failed: false })
       item.inFlight = true
       item.failed = false
+      savePendingInput(item)
       let confirmed = false
 
       item.settle = accepted => {
@@ -307,9 +295,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         item.failed = !accepted
 
         if (accepted) {
-          try { removePendingInput(item) } catch (error) {
-            patchUiState({ status: t('canonical.queue.journalCleanupFailed', (error as Error).message) })
-          }
+          removePendingInput(item)
 
           for (const pending of queues.current.values()) {
             removeAtInPlace(pending.items, pending.items.indexOf(item))
@@ -356,19 +342,14 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     }
   }, [ui.info, getQueue, syncQueue])
 
-  // One durable write: the row joins the queue only once its attempt is journaled,
-  // so a failed write leaves the composer as the draft's only copy.
   const stage = useCallback(
-    (text: string, display = text, destination = captureDestination(), attachments?: QueueItem['attachments']) => {
-      const { queue, item } = draft(text, display, destination, attachments)
+    (text: string, display = text, destination = captureDestination()) => {
+      const item = enqueue(text, display, destination)
       item.queued = false
-      claim(queue, item)
-      queue.items.push(item)
-      syncQueue()
 
-      return item
+      return claim(getQueue(destination), item)
     },
-    [draft, claim, syncQueue]
+    [enqueue, claim, getQueue]
   )
 
   const dequeue = useCallback(
@@ -381,13 +362,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         return undefined
       }
 
-      try {
-        return claim(queue, item)
-      } catch (error) {
-        patchUiState({ status: t('canonical.queue.notSavedQueueKept', (error as Error).message) })
-
-        return undefined
-      }
+      return claim(queue, item)
     },
     [getQueue, claim]
   )
@@ -403,17 +378,15 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       // draft (Alt+K) instead of admitting a second copy behind the original.
       if (server) {
         if (server.status === 'unknown') {
-          patchUiState({ status: t('canonical.queue.unknownExecution') })
+          patchUiState({ status: 'unknown execution — Ctrl+X to discard before retrying' })
 
           return undefined
         }
 
         const text = editedDisplay ?? server.user
-        const { item } = draft(text, text, queue.destination)
-        savePendingInput({ ...item, inFlight: true })
+        const item = enqueue(text, text, queue.destination)
         item.inFlight = true
-        queue.items.push(item)
-        syncQueue()
+        savePendingInput(item)
 
         return cancelServerRow(server).then(
           () => claim(queue, item),
@@ -446,7 +419,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
       return claim(queue, item)
     },
-    [getQueue, claim, cancelServerRow, draft, serverRowAt, syncQueue]
+    [getQueue, claim, cancelServerRow, enqueue, serverRowAt, syncQueue]
   )
 
   const removeQ = useCallback(

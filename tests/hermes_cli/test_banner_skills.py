@@ -14,7 +14,7 @@ def _reset_skills_cache():
     """get_available_skills is memoized per-process (startup perf) — reset
     the cache around each test so patched _find_all_skills results are
     actually observed."""
-    from hermes_cli import banner
+    import hermes_cli.banner as banner
     banner._available_skills_cache = None
     yield
     banner._available_skills_cache = None

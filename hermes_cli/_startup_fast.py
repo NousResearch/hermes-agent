@@ -28,18 +28,17 @@ import os
 import sys
 
 __all__ = [
+    "project_root_str", "normalize_hermes_home_env",
+    "ensure_project_root_on_path",
+    "is_global_fast_version_argv",
+    "is_container_startup_environment",
     "active_profile_may_override_home",
     "container_mode_may_be_active",
-    "ensure_project_root_on_path",
-    "is_container_startup_environment",
-    "is_desktop_ssh_backend_argv",
-    "is_global_fast_version_argv",
-    "normalize_hermes_home_env",
-    "print_fast_version_info",
-    "project_root_str",
-    "read_install_method",
     "read_openai_version",
+    "read_install_method",
+    "print_fast_version_info",
     "try_fast_version",
+    "is_desktop_ssh_backend_argv",
 ]
 
 

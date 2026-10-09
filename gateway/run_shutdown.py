@@ -28,8 +28,6 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
-from gateway.run_runtime import managed_turn_count, stop_managed_turns
-from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -170,7 +168,7 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
-class GatewayShutdownMixin(GatewaySessionEndMixin):
+class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -194,7 +192,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """All agent work the gateway must expose and drain as one total."""
         return (
             self._running_agent_count()
-            + managed_turn_count(self)
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
@@ -351,7 +348,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             user_cfg = _load_gateway_config()
             gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
             section = gw.get(name) if isinstance(gw, dict) else None
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return section if isinstance(section, dict) else None
 
@@ -414,7 +411,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             for profile_pending in (getattr(self, "_profile_failed_platforms", {}) or {}).values():
                 for platform in profile_pending or {}:
                     add_platform(platform)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
             logger.debug(
                 "scale-to-zero: active messaging platforms unreadable — staying awake",
                 exc_info=True,
@@ -427,7 +424,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         from gateway.relay import relay_wake_url
         try:
             return relay_wake_url()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
     def _scale_to_zero_should_arm(self) -> bool:
@@ -452,7 +449,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 messaging_is_relay_only_or_absent(active), active or "none",
                 "set" if self._relay_wake_url_or_none() else "MISSING",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - diagnostics must never block startup
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
     def _scale_to_zero_is_idle(self) -> bool:
@@ -463,7 +460,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         def _read_or_awake(label: str, fn: Callable[[], Any], busy_sentinel: Any) -> Any:
             try:
                 return fn()
-            except Exception:
+            except Exception:  # noqa: BLE001 - unreadable source => assume busy
                 logger.debug("scale-to-zero: %s unreadable — staying awake", label, exc_info=True)
                 return busy_sentinel
 
@@ -498,7 +495,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """Best-effort runtime status write; failures are debug-logged with ``fail_msg``."""
         try:
             self._update_runtime_status(state)
-        except Exception:
+        except Exception:  # noqa: BLE001 - status is best-effort
             logger.debug(fail_msg, exc_info=True)
 
     def _relay_adapter_for_dormancy(self):
@@ -582,7 +579,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                             "scale-to-zero: connector did not ack going_idle — staying awake "
                             "rather than freezing a live destination"
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001 - dormancy is best-effort
                     dormant_ok = False
                     logger.debug("scale-to-zero: go_dormant failed", exc_info=True)
                 # After a wake the drained inbound updates _last_inbound_at; give it a window so we
@@ -600,7 +597,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 await self._scale_to_zero_self_suspend()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - the watcher must never crash the gateway
                 logger.debug("scale-to-zero watcher iteration error", exc_info=True)
 
     async def _scale_to_zero_self_suspend(self) -> None:
@@ -644,7 +641,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "scale-to-zero: %s not accepted — machine stays awake (fail-awake); will "
                     "retry on the next idle window", lever,
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
             logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
             self._scale_to_zero_abandon_suspend()
 
@@ -697,7 +694,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             # Trust the adapter's answer rather than the absence of an exception: it deliberately
             # never raises, so "did not throw" proves nothing.
             return method() is True
-        except Exception:
+        except Exception:  # noqa: BLE001 - never blocks the suspend it precedes
             logger.debug("scale-to-zero: redial hold toggle failed", exc_info=True)
             return False
 
@@ -758,7 +755,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         needs_attention: Optional[bool] = None, retrying_since: Any = _UNSET,
     ) -> None:
         from gateway.run import _write_runtime_status_quiet
-        extra: dict[str, Any] = {}
+        extra: Dict[str, Any] = {}
         if needs_attention is not None:
             extra["needs_attention"] = needs_attention
         if retrying_since is not _UNSET:
@@ -802,15 +799,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
+        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
         return (
-            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
+            self._running_agent_count(), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
         )
 
     async def _drain_active_agents(
         self, timeout: float, cron_timeout: Optional[float] = None
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
         loop = asyncio.get_running_loop()
         last_counts = self._drain_work_counts()
@@ -825,8 +822,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 last_counts, last_status_at = counts, now
 
         # Cron/API/deferred work lives outside ``_running_agents``; fold it in or it is killed unwarned.
+        _cron0, _api0, _deferred0 = last_counts[1:]
         _maybe_update_status(force=True)
-        if not self._running_agents and not any(last_counts):
+        if not self._running_agents and not (_cron0 or _api0 or _deferred0):
             return snapshot, False
         # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
         # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
@@ -856,11 +854,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
                 request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
-        # API-server / desk / managed-worker turns never enter _running_agents: the drain waited on them.
+        # API-server / desk turns are adapter-owned and never enter _running_agents, so the loop above
+        # cannot see them even though _drain_active_agents() waited for them.
         for count, what in (
             (self._interrupt_api_server_runs(reason), "api_server run(s)"),
             (self._interrupt_deferred_agent_workers(reason), "deferred agent worker(s)"),
-            (stop_managed_turns(self), "managed-worker turn(s)"),
         ):
             if count:
                 logger.debug("Interrupted %d %s during shutdown", count, what)
@@ -1170,19 +1168,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 from gateway.shutdown_flush import flush_agent_history_to_file
                 flush_agent_history_to_file(getattr(agent, "session_id", None), _session_messages)
 
-    async def _finalize_shutdown_agents(self, active_agents: dict[str, Any]) -> None:
+    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for session_key, agent in active_agents.items():
             self._flush_agent_transcript_at_shutdown(agent)
             # Off-loop + bounded: plugin on_session_finalize hooks can do arbitrary synchronous work
             # (e.g. a full-session trace export) — same hang class as the memory provider below.
-            messages = await self._finalize_session_off_loop(
+            await self._finalize_session_off_loop(
                 session_id=getattr(agent, "session_id", None), platform="gateway", reason="shutdown",
                 session_key=session_key,
             )
-            try:  # adapters are still connected here (teardown runs after this loop)
-                await self._deliver_session_end_messages(messages, session_key=session_key)
-            except Exception:
-                logger.debug("Session-end plugin message delivery failed for %s", session_key, exc_info=True)
             # Off-loop + bounded: a wedged memory provider here used to hang the whole shutdown so
             # SIGTERM never completed.
             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize", session_key=session_key)
@@ -1229,6 +1223,31 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if tasks is None:
             tasks = self._deferred_agent_cleanup_tasks = set()
         self._track_task_in(tasks, asyncio.create_task(_cleanup_when_done()))
+
+    async def _finalize_session_off_loop(
+        self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
+    ) -> None:
+        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
+        ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
+        ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
+        profile state at call time."""
+
+        def _call() -> None:
+            from hermes_cli.lifecycle import finalize_session
+            finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
+
+        try:
+            await asyncio.wait_for(
+                self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
+                timeout=self._FINALIZE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
+                "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,
+            )
+        except Exception as finalize_exc:
+            logger.debug("Session finalize hooks (%s, reason=%s) failed: %s", session_id, reason, finalize_exc)
 
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = "", session_key: Optional[str] = None,
@@ -1571,7 +1590,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """
         non_cron = (
             self._running_agent_count()
-            + managed_turn_count(self)
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
         )
@@ -1585,7 +1603,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``managed`` / ``api`` / ``deferred`` (count only — those sources expose
+        handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
         no identity). Best-effort: a source that can't be read is omitted, never raises.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1615,8 +1633,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("managed", managed_turn_count(self)), ("api", self._active_api_run_count()),
-                            ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
@@ -1935,7 +1952,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         logger.info("Shutdown phase: allowing %.1fs for interrupted agents to unwind", interrupt_grace_timeout)
 
         def _work_live() -> bool:
-            return bool(self._running_agents or managed_turn_count(self) or self._active_api_run_count() or ctx.deferred_count())
+            return bool(self._running_agents or self._active_api_run_count() or ctx.deferred_count())
 
         # Wait on API-server work too, or an API turn's tool subprocesses are killed before it unwinds.
         while _work_live() and loop.time() < interrupt_deadline:

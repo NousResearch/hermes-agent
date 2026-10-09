@@ -62,8 +62,7 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
     try:
         db.create_session('owned', 'cli')
         epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
-                                    wake_after_worker=lambda session_id: None)
+        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
         admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
         claim_session_input(db, epoch=epoch, session_id='owned')
         scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process, principal_id='human', hello=hello(process))
@@ -79,62 +78,6 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
         assert result['status'] == 'terminal'
         with pytest.raises(Exception, match='stale_generation'):
             await worker_request(connection, None, params | {'sequence': 2}, operation='persist')
-    finally:
-        process.stdin.close()
-        process.wait(timeout=5)
-        db.close()
-
-
-@pytest.mark.asyncio
-async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_finishes(tmp_path, monkeypatch):
-    """A FIFO blocked by a live worker is not an empty FIFO: the messaging waiter is released
-    with a pause (never parked on a turn that cannot run yet), and the worker's durable finish
-    restarts the drain so the queued input runs without an unrelated submit."""
-    import asyncio
-    from gateway.config import Platform
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
-    from gateway.session_ingress import admit_message
-    from gateway.session_worker import worker_request
-    from gateway import session_finite
-    from hermes_state_runtime import get_session_admission
-
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('owned', 'telegram')
-    runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
-                             _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='owner'))
-    authority.sessions['owned'] = LiveSession(SimpleNamespace(platform=Platform.TELEGRAM, user_id='human'), 'route')
-    ran = []
-
-    async def execute(authority, ref, row):
-        ran.append(row['admission_id'])
-        return 'answered'
-    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    actor = Principal('human', 'p', frozenset({'session:submit', 'session:control', 'worker:adopt'}), 't')
-    connection = SimpleNamespace(authority=authority, actor=actor)
-    ref = SessionRef('p', 'owned')
-    scope = {'profile_id': 'p', 'session_id': 'owned', 'execution_id': 'compute', 'generation': 0,
-             'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'secret': 'w' * 32}
-    try:
-        registered = await worker_request(connection, ref, scope | {'kind': 'compute'}, operation='register')
-        # Native ingress waits on the admission it committed; a blocked FIFO must answer it.
-        event = SimpleNamespace()
-        async def admit_native(_event):
-            return await authority.submit(actor, Submission('behind', ref, {'text': 'hi'}, 'queue'))
-        authority.admit_native = admit_native
-        reply = await asyncio.wait_for(admit_message(authority, event), 5)
-        assert reply is not None and reply.startswith('⏳'), reply
-        assert ran == []
-        await worker_request(connection, ref, scope | {'epoch': registered['owner_epoch'], 'sequence': 1,
-                                                       'operation': 'execution.finish', 'payload': {}}, operation='persist')
-        await asyncio.wait_for(authority.sessions['owned'].task, 5)
-        assert len(ran) == 1
-        assert get_session_admission(db, admission_id=ran[0])['outcome'] == 'completed'
     finally:
         process.stdin.close()
         process.wait(timeout=5)

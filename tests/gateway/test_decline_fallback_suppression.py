@@ -22,7 +22,7 @@ import pytest
 from gateway.platforms.base import SendResult
 from gateway.relay.egress import EGRESS_DECLINE_CODE
 
-CODE_ONLY_DECLINE: dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
+CODE_ONLY_DECLINE: Dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
 
 
 # ── exec approval ───────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ class _Adapter:
 
     def __init__(self, approval_result: SendResult) -> None:
         self._approval_result = approval_result
-        self.text_sends: list[str] = []
+        self.text_sends: List[str] = []
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
@@ -179,7 +179,7 @@ def test_slash_confirm_ORDINARY_failure_returns_the_text_fallback():
 class _CardAdapter:
     def __init__(self, progress_result: SendResult) -> None:
         self._progress_result = progress_result
-        self.fallbacks: list[str] = []
+        self.fallbacks: List[str] = []
 
     async def send_native_task_card_progress(self, **k: Any) -> SendResult:
         return self._progress_result
@@ -278,7 +278,7 @@ class _EditAdapter:
     """Records every op; the edit is refused with a code-only decline."""
 
     def __init__(self) -> None:
-        self.ops: list[str] = []
+        self.ops: List[str] = []
 
     @staticmethod
     def extract_media(text):

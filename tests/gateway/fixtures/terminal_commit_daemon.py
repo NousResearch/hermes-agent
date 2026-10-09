@@ -7,8 +7,8 @@ from gateway import session_results
 finish = session_results.finish_result
 
 
-def stop_after_commit(db, *, row, **kwargs):
-    receipt = finish(db, row=row, **kwargs)
+def stop_after_commit(db, *, epoch, row, response, outcome, result=None):
+    receipt = finish(db, epoch=epoch, row=row, response=response, outcome=outcome, result=result)
     if row['payload'].get('text') == 'BLOCK_STARTED':
         os.kill(os.getpid(), signal.SIGSTOP)
     return receipt

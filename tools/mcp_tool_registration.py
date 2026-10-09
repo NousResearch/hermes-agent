@@ -58,7 +58,7 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
-def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key=None) -> None:
+def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any], key=None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
     registering profile's own); the ``trust`` policy is recorded under it for the profile that owns it — an
@@ -153,7 +153,7 @@ def _remove_server_scope(key, scope: str) -> None:
     _restore_server_toolset_alias(key)
 
 
-def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: dict) -> list[dict]:
+def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: dict) -> List[dict]:
     """Utility schemas allowed by config (``tools.resources``/``tools.prompts``) and advertised
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
     family is served); without it fall back to the legacy session-method check, which never
@@ -172,7 +172,7 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
             return None
         # Legacy gate (no initialize_result): the ClientSession method shares the handler key.
         return None if hasattr(server.session, handler_key) else f"session lacks {handler_key}"
-    selected: list[dict] = []
+    selected: List[dict] = []
     for entry in _build_utility_schemas(server_name):
         reason = _skip_reason(entry["handler_key"])
         if reason:
@@ -182,7 +182,7 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
     return selected
 
 
-def _existing_tool_names() -> list[str]:
+def _existing_tool_names() -> List[str]:
     """Tool names for all connected servers plus lazy (cache-registered) servers, whose tools live only in the registry."""
     scope = _core._mcp_registry_scope()
     if scope is not None:
@@ -203,7 +203,7 @@ def _existing_tool_names() -> list[str]:
             for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}")
         })
 
-    names: list[str] = []
+    names: List[str] = []
     for server in _core._servers.values():
         names.extend(server._registered_tool_names if hasattr(server, "_registered_tool_names")
                      else (_schema._convert_mcp_schema(server.name, t)["name"] for t in server._tools))
@@ -231,7 +231,7 @@ def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     return lambda tool_name: not (exclude_set and matches_name_filter(tool_name, exclude_set))
 
 
-def _cached_tools(raws: Iterable[Any]) -> list[SimpleNamespace]:
+def _cached_tools(raws: Iterable[Any]) -> List[SimpleNamespace]:
     """Schema-cache rows -> stand-ins for MCP Tool objects; rows that are not dicts or lack a name
     are dropped. Missing or non-dict ``annotations`` (older cache files) fail closed to write-capable."""
     return [SimpleNamespace(name=raw["name"], description=raw.get("description") or "",
@@ -255,10 +255,10 @@ class _Candidate:
 
 
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
-                     tool_timeout) -> list[_Candidate]:
+                     tool_timeout) -> List[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
     BOTH paths: the cache file is user-writable JSON."""
-    out: list[_Candidate] = []
+    out: List[_Candidate] = []
     for t in tools:
         if not should_register(t.name):
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
@@ -270,9 +270,9 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
     return out
 
 
-def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> list[_Candidate]:
+def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> List[_Candidate]:
     """``{schema, handler_key}`` rows (live selection or cache) -> candidates; malformed rows dropped."""
-    out: list[_Candidate] = []
+    out: List[_Candidate] = []
     for raw in entries:
         schema, key = (raw.get("schema"), raw.get("handler_key")) if isinstance(raw, dict) else (None, None)
         if isinstance(schema, dict) and key in _UTILITY_HANDLER_FACTORIES and schema.get("name"):
@@ -281,12 +281,12 @@ def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> list
     return out
 
 
-def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_Candidate]:
+def _resolve_name_collisions(name: str, candidates: List[_Candidate]) -> List[_Candidate]:
     """Preflight name collisions: exact duplicates dropped silently; a utility normalizing onto
     a native tool's name is shadowed (native wins); any other multi-origin collision skips every
     colliding entry (fail closed). Returns survivors in order."""
-    unique: list[_Candidate] = []
-    origins_by_name: dict[str, set[str]] = {}
+    unique: List[_Candidate] = []
+    origins_by_name: Dict[str, set[str]] = {}
     for c in candidates:
         origins = origins_by_name.setdefault(c.registry_name, set())
         if c.origin in origins:
@@ -295,7 +295,7 @@ def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_C
             continue
         origins.add(c.origin)
         unique.append(c)
-    ambiguous: dict[str, list[str]] = {}
+    ambiguous: Dict[str, List[str]] = {}
     shadowed: set[tuple[str, str]] = set()
     # A generated resource/prompt utility that normalizes onto a server-native tool's name must not knock
     # that native tool out of the registry: the native tool is the capability the user connected the server
@@ -324,15 +324,15 @@ def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_C
     return [c for c in unique if c.registry_name not in ambiguous and (c.registry_name, c.origin) not in shadowed]
 
 
-def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: Callable,
-                         scope: Callable[[], Optional[str]], lazy: bool, key=None) -> list[str]:
+def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: Callable,
+                         scope: Callable[[], Optional[str]], lazy: bool, key=None) -> List[str]:
     """Register candidates under toolset ``mcp-{name}``; returns the names that landed. The
     ownership pre-check is advisory (servers connect in parallel): ``registry.register()`` is
     the atomic gate and its verdict is re-read after every call. *key* is the connection whose
     ``_server_tool_scopes`` records the registering scope (default: this scope's own)."""
     from tools.registry import registry
     toolset_name = f"mcp-{name}"
-    registered: list[str] = []
+    registered: List[str] = []
     scope_value = scope()
     if key is None:
         key = _server_key(name, scope_value, current=False)
@@ -397,7 +397,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
         logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
 
 
-def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> list[str]:
+def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> List[str]:
     """Register a connected server's tools plus utilities (initial discovery and list_changed
     refresh); returns the names. Toolset aliases derive from the live registry, not
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
@@ -406,9 +406,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     _record_tool_trust_metadata(name, config, server._tools, key)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
-    # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below
-    # publishes into), never by the bare name resolved in the caller's context.
-    if (_core._server_registry_scope(key) or '').startswith('editor-session:'):
+    if (_core._server_registry_scope(name) or '').startswith('editor-session:'):
         import json
         from hermes_state_runtime import RuntimeStoreError
         manifest = json.dumps({c.registry_name: c.schema for c in candidates}, sort_keys=True)
@@ -592,7 +590,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     return registered_servers
 
 
-def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]:
+def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
     """Lazy startup: register from a cached manifest with no child process (first real call goes
     through ``_ensure_lazy_server_connected``). Trust metadata is recorded first so the
     call-time gate is identical for live and cached registrations.

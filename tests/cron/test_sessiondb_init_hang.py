@@ -109,7 +109,7 @@ def test_owner_store_failure_never_runs_unpersisted_agent(owner_run, failure):
 
 
 def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monkeypatch):
-    owner, _job, _, agent_cls = owner_run
+    owner, job, _, agent_cls = owner_run
     monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.02")
     from cron import jobs
 

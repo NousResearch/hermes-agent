@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli import mem_trim
+import hermes_cli.mem_trim as mem_trim
 
 
 @pytest.fixture(autouse=True)

@@ -19,10 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _clear_provider_caches():
-    providers._REGISTRY.clear()
-    providers._ALIASES.clear()
-    providers._PROVIDER_LIST_CACHE = None
-    providers._discovered = False
+    providers.registry._REGISTRY.clear()
+    providers.registry._ALIASES.clear()
+    providers.registry._PROVIDER_LIST_CACHE = None
+    providers.discovery._discovered = False
     for mod in list(sys.modules.keys()):
         if mod.startswith("plugins.model_providers") or mod.startswith(
             "_hermes_user_provider"
@@ -46,7 +46,7 @@ def _restore_real_discovery():
     """
     yield
     _clear_provider_caches()
-    providers._discover_providers()
+    providers.discovery.ensure_process_discovered()
 
 
 
@@ -168,7 +168,7 @@ def test_general_plugin_register_ctx_not_invoked(monkeypatch):
     _enable(monkeypatch, "general-plugin")
     _clear_provider_caches()
     try:
-        providers._discover_providers()
+        providers.discovery.ensure_process_discovered()
         assert calls == []  # never invoked (would have been a TypeError anyway)
     finally:
         _clear_provider_caches()

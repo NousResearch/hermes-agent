@@ -16,36 +16,6 @@ export interface PreparedSubmission {
   legacyAttempted?: boolean
 }
 
-// Admitted entries whose durable removal failed (ENOSPC/EIO): journal key -> spent submission id.
-// Their identity is spent: no window adopts, lists or slots them again, so a later send is never
-// deduplicated into an earlier admission. The tombstone is written BEFORE the journal removal to a
-// separate store and read on every journal access, so a reload (fresh module memory) still honors
-// it; module memory only covers a tombstone write that itself failed. A tombstone hides only the
-// entry carrying that exact id, never a newer send that reused the journal key.
-const SPENT_KEY = 'hermes.desktop.preparedSubmissions.spent.v1'
-const retired = new Map<string, string>()
-
-function readSpent(): Record<string, string> {
-  const raw = window.localStorage.getItem(SPENT_KEY)
-  const parsed: unknown = raw ? JSON.parse(raw) : {}
-
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? { ...(parsed as Record<string, string>), ...Object.fromEntries(retired) }
-    : Object.fromEntries(retired)
-}
-
-function writeSpent(key: string, id: string | undefined): void {
-  const raw = window.localStorage.getItem(SPENT_KEY)
-  const spent: Record<string, string> = raw ? JSON.parse(raw) : {}
-
-  if (id === undefined && !(key in spent)) { return }
-
-  if (id === undefined) { delete spent[key] } else { spent[key] = id }
-
-  if (Object.keys(spent).length) { window.localStorage.setItem(SPENT_KEY, JSON.stringify(spent)) }
-  else { window.localStorage.removeItem(SPENT_KEY) }
-}
-
 // A journal, not an automatic outbox. Only an explicit retry may reuse an
 // uncertain admission. Read storage each time so a remount cannot lose it.
 async function readJournal(): Promise<Record<string, PreparedSubmission>> {
@@ -59,39 +29,7 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
     throw new Error('Invalid prepared submission journal')
   }
 
-  const journal = parsed as Record<string, PreparedSubmission>
-
-  for (const [key, id] of Object.entries(readSpent())) {
-    if (journal[key]?.id === id) {
-      delete journal[key]
-      // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
-      await retireJournalEntry(key).then(() => clearSpent(key), error => console.warn('[prepared-submission-retire]', error))
-    } else {
-      // Gone, or replaced by a newer send under the same key: the spent entry no longer exists.
-      clearSpent(key)
-    }
-  }
-
-  return journal
-}
-
-function clearSpent(key: string): void {
-  retired.delete(key)
-  writeSpent(key, undefined)
-}
-
-async function retireJournalEntry(key: string): Promise<void> {
-  const native = window.hermesDesktop?.preparedSubmissions
-
-  if (native) {
-    await native.update(key, null)
-
-    return
-  }
-
-  const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
-  delete journal[key]
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  return parsed as Record<string, PreparedSubmission>
 }
 
 export function preparedSubmissionKey(
@@ -133,69 +71,11 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
   return (await readJournal())[key]
 }
 
-// Uncertain sends this window journaled or adopted: journal key -> release of its Web Lock.
-// The journal is shared by every window of the origin; a held lock marks an entry whose
-// window is alive, and only that window may retry it. A closed window's lock is freed, so its
-// entry stays adoptable after a reload. Without Web Locks there is no other window to exclude.
-const owned = new Map<string, () => void>()
-
-function holdPreparedSubmission(key: string): Promise<boolean> {
-  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
-
-  if (owned.has(key)) { return Promise.resolve(true) }
-
-  if (!locks) {
-    owned.set(key, () => undefined)
-
-    return Promise.resolve(true)
-  }
-
-  return new Promise<boolean>(acquired => {
-    void locks.request(`${STORAGE_KEY}.${key}`, { ifAvailable: true }, lock => {
-      if (!lock) {
-        acquired(false)
-
-        return null
-      }
-
-      return new Promise<void>(release => {
-        owned.set(key, release)
-        acquired(true)
-      })
-    })
-  })
-}
-
-const intentVariant = (intent: string, key: string) => key === intent || key.startsWith(`${intent.slice(0, -1)},`)
-
-/** The retained entry an explicit retry of `intent` may reuse: this window's own, or one a
- *  closed window left. A live other window's uncertain send is never adopted. */
-export async function adoptPreparedSubmission(intent: string): Promise<{ key: string; entry: PreparedSubmission } | undefined> {
-  const journal = await readJournal()
-
-  for (const key of Object.keys(journal).filter(key => intentVariant(intent, key)).sort()) {
-    if (await holdPreparedSubmission(key)) { return { key, entry: journal[key] } }
-  }
-
-  return undefined
-}
-
-/** A journal key for a NEW send of `intent`, held by this window. Never another live window's
- *  entry, so a separate send from another window cannot overwrite or share its identity. */
-export async function preparedSubmissionSlot(intent: string): Promise<string> {
-  if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) { return intent }
-  const key = JSON.stringify([...JSON.parse(intent), crypto.randomUUID()])
-  await holdPreparedSubmission(key)
-
-  return key
-}
-
 export async function writePreparedSubmission(key: string, entry: PreparedSubmission): Promise<void> {
   const native = window.hermesDesktop?.preparedSubmissions
 
   if (native) {
     await native.update(key, JSON.stringify(entry))
-    clearSpent(key)
 
     return
   }
@@ -205,19 +85,18 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
-  clearSpent(key)
 }
 
-/** Retire an admitted entry. Its identity is spent — durably, in a separate store — before the
- *  journal removal is attempted, so a failed removal can only leave a stale file entry that every
- *  later read (this window, a reload, another window) hides and retries, never a reusable one. */
-export async function removePreparedSubmission(key: string, id: string): Promise<void> {
-  retired.set(key, id)
+export async function removePreparedSubmission(key: string): Promise<void> {
+  const native = window.hermesDesktop?.preparedSubmissions
 
-  // The tombstone store failing too (quota) leaves the in-memory mark; the removal still runs.
-  try { writeSpent(key, id) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }
-  await retireJournalEntry(key)
-  clearSpent(key)
-  owned.get(key)?.()
-  owned.delete(key)
+  if (native) {
+    await native.update(key, null)
+
+    return
+  }
+
+  const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
+  delete journal[key]
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
 }

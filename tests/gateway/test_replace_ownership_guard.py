@@ -371,7 +371,7 @@ class TestSignalBoundary:
             )
             stack.enter_context(patch("gateway.run.time.sleep"))
 
-        _result, calls = self._run_replace(configure)
+        result, calls = self._run_replace(configure)
 
         assert calls["terminate"] == 1, (
             "a provably same-home target must still be replaceable"

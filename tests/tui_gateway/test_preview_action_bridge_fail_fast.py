@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from tui_gateway import server
+import tui_gateway.server as server
 
 
 @pytest.fixture

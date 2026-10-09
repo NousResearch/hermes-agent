@@ -17,11 +17,11 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
-from tests.agent.test_run_agent import (
+from tests.agent.test_run_agent import (  # noqa: F401  (_make_tool_defs used by the agent fixture)
     _make_tool_defs,
     _mock_response,
 )
-from tests.agent.test_first_chunk_at_hook import (
+from tests.agent.test_first_chunk_at_hook import (  # noqa: F401  (shared fixture + harness)
     _make_stream_chunk,
     _run_with_hooks,
     agent,

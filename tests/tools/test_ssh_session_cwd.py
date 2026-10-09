@@ -8,7 +8,7 @@ the raw session record, neither of which creates a new environment.
 import pytest
 
 import hermes_constants
-from tools import terminal_tool
+import tools.terminal_tool as terminal_tool
 from tools.file_operations import ShellFileOperations
 
 

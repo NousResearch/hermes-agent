@@ -1,5 +1,4 @@
-"""Private bootstrap policy for admission-owned workers: the frozen session config every
-config reader returns, plus (troubleshooting workers only) the safe/ignore-user-config bypass.
+"""Private bootstrap policy for admission-owned troubleshooting workers.
 
 Stdlib-only: hermes_cli's config/env layer imports it, so it ships in the installer's
 hermes_cli + i18n-kernel tail and must never import beyond the standard library.
@@ -35,22 +34,11 @@ _RUNTIME_IMPORTS = frozenset({
 def _bind_safe_worker_policy(*, safe_mode: bool, ignore_user_config: bool,
                              config: dict) -> _SafeWorkerPolicy:
     """Called by the private worker bootstrap, never by the owner or public CLI."""
+    global _policy
     if type(safe_mode) is not bool or type(ignore_user_config) is not bool:
         raise TypeError("worker bypass policy fields must be booleans")
     if not (safe_mode or ignore_user_config):
-        raise ValueError("ordinary execution binds its config with _bind_worker_config")
-    return _bind(safe_mode, True, config)
-
-
-def _bind_worker_config(config: dict) -> _SafeWorkerPolicy:
-    """An ordinary managed worker's frozen session config: every config reader returns it (the
-    session never follows later profile edits), while plugins, MCP, hooks and providers load as
-    usual — ``safe_worker_enabled()`` stays False. Same one-shot, pre-import rules as bypass."""
-    return _bind(False, False, config)
-
-
-def _bind(safe_mode: bool, ignore_user_config: bool, config: dict) -> _SafeWorkerPolicy:
-    global _policy
+        raise ValueError("ordinary execution does not bind a bypass policy")
     if type(config) is not dict:
         raise TypeError("worker config must be a JSON object")
     serialized = json.dumps(config, allow_nan=False)
@@ -59,7 +47,8 @@ def _bind(safe_mode: bool, ignore_user_config: bool, config: dict) -> _SafeWorke
             raise RuntimeError("worker policy is already bound")
         if _RUNTIME_IMPORTS.intersection(sys.modules):
             raise RuntimeError("worker policy must bind before runtime imports")
-        _policy = _SafeWorkerPolicy(os.getpid(), safe_mode, ignore_user_config, serialized)
+        _policy = _SafeWorkerPolicy(os.getpid(), safe_mode,
+                                    safe_mode or ignore_user_config, serialized)
         return _policy
 
 

@@ -47,9 +47,6 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
     class Peer:
         events = asyncio.Queue()
         async def rpc(self, method, **params):
-            if method == "prompt.receipt":
-                assert params["admission_id"] == "mine"
-                return {"status": "terminal"}
             assert method == "prompt.submit"
             for admission, outcome in (("neighbor", "completed"), ("mine", "failed")):
                 self.events.put_nowait({"method": "event", "params": {
@@ -73,8 +70,6 @@ async def test_stream_json_oneshot_filters_neighbor_events_that_arrive_before_su
         events = asyncio.Queue()
 
         async def rpc(self, method, **params):
-            if method == "prompt.receipt":
-                return {"status": "terminal", "result": {"completed": True, "final_response": "right"}}
             assert method == "prompt.submit"
             for admission, text in (("neighbor", "wrong"), ("mine", "right")):
                 self.events.put_nowait({"method": "event", "params": {
@@ -103,62 +98,6 @@ async def test_stream_json_oneshot_filters_neighbor_events_that_arrive_before_su
     tool_ids = [row.get("tool_call_id") for row in records if row["type"] in {"tool_use", "tool_result"}]
     assert tool_ids == ["mine-tool", "mine-tool"]
     assert all("wrong" not in json.dumps(row) and "neighbor-tool" not in json.dumps(row) for row in records)
-
-
-class _SettledPeer:
-    """Owner fake: the turn settles with ``outcome`` while its committed result says ``result``."""
-
-    def __init__(self, outcome, result):
-        self.events, self.outcome, self.result = asyncio.Queue(), outcome, result
-
-    async def rpc(self, method, **params):
-        if method == "prompt.receipt":
-            assert params == {"session_id": "stored", "admission_id": "mine", "include_result": True}
-            return {"status": "terminal", "outcome": self.outcome, "result": self.result}
-        assert method == "prompt.submit"
-        self.events.put_nowait({"method": "event", "params": {
-            "type": "message.complete", "session_id": "stored", "admission_id": "mine",
-            "payload": {"text": self.result.get("final_response", ""), "outcome": self.outcome}}})
-        return {"admission_id": "mine"}
-
-
-_BUDGET = {"completed": False, "failed": False, "interrupted": False, "partial": False,
-           "turn_exit_reason": "max_iterations_reached(1/1)",
-           "final_response": "I reached the iteration limit and couldn't generate a summary."}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome,result,chat_code,z_code", [
-    ("completed", _BUDGET, 1, 2),  # --max-turns: settled 'completed' but the work did not finish
-    ("completed", {"completed": True, "final_response": "done"}, 0, 0),
-    ("cancelled", {"interrupted": True, "final_response": ""}, 130, 130),
-])
-async def test_finite_exit_code_follows_the_committed_result_not_the_outcome(outcome, result, chat_code, z_code, capsys):
-    """A finite attached turn exits with the in-process contract judged from the settled result:
-    `chat -q`/`-Q` 0/1/130 (``turn_exit_code``) and `-z` 0/2/130 (``_oneshot_exit_code``)."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
-
-    for unattended, expected in ((False, chat_code), (True, z_code)):
-        view = GatewayChatView(_SettledPeer(outcome, result), {"stored_session_id": "stored"}, quiet=True)
-        view.unattended = unattended
-        assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == expected, (unattended, outcome)
-    assert capsys.readouterr().out == (result["final_response"] + "\n") * 2
-
-
-@pytest.mark.asyncio
-async def test_stream_json_result_record_reports_an_unfinished_turn(capsys):
-    """The terminal JSONL ``result`` carries the same non-zero exit for a --max-turns stop, plus the
-    committed token counts, and the process exit code matches it."""
-    import json
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.stream_json import StreamJsonEmitter
-
-    peer = _SettledPeer("completed", {**_BUDGET, "input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
-    view = GatewayChatView(peer, {"stored_session_id": "stored"}, emitter=StreamJsonEmitter(model="m", session_id="stored"))
-    assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == 1
-    record = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()][-1]
-    assert record["type"] == "result" and record["exit_code"] == 1, record
-    assert record["tokens"]["total"] == 15 and record["text"] == _BUDGET["final_response"]
 
 
 @pytest.mark.asyncio

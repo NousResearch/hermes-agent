@@ -32,7 +32,7 @@ import subprocess
 import sys
 
 SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
-_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
 
 
 def _git(*args: str) -> str:

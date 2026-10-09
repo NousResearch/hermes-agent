@@ -6,11 +6,6 @@ from hermes_state import SessionDB
 import hermes_state_runtime as rt
 
 
-def append(db, *, epoch, sequence, content, **assignment):
-    return rt.mutate_worker_execution(db, epoch=epoch, **assignment, sequence=sequence,
-        operation='transcript.append', payload={'messages': [{'role': 'assistant', 'content': content}]})
-
-
 @pytest.mark.parametrize('recover_first', [False, True])
 def test_explicit_worker_adoption_preserves_claim_without_reexecution(tmp_path, recover_first):
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -30,15 +25,15 @@ def test_explicit_worker_adoption_preserves_claim_without_reexecution(tmp_path, 
         assert restored['status'] == 'started' and restored['owner_epoch'] == new_epoch
         assert restored['generation'] == claim['generation']
         assert rt.claim_session_input(db, epoch=new_epoch, session_id='s') is None
-        message_args = dict(epoch=new_epoch, **assignment, sequence=1, content='committed')
-        receipt = append(db, **message_args)
+        message_args = dict(epoch=new_epoch, **assignment, sequence=1, role='assistant', content='committed')
+        receipt = rt.persist_worker_message(db, **message_args)
         result = rt.settle_session_input(db, epoch=new_epoch, admission_id=accepted['admission_id'], generation=claim['generation'], outcome='completed')
         assert result['status'] == 'terminal'
         before = db._conn.total_changes
-        assert append(db, **message_args) == receipt
+        assert rt.persist_worker_message(db, **message_args) == receipt
         assert db._conn.total_changes == before
         with pytest.raises(rt.RuntimeStoreError, match='stale_generation'):
-            append(db, epoch=new_epoch, **assignment, sequence=2, content='late')
+            rt.persist_worker_message(db, epoch=new_epoch, **assignment, sequence=2, role='assistant', content='late')
     finally:
         db.close()
 
@@ -72,7 +67,7 @@ def test_unknown_resolution_atomically_revokes_worker_before_unblocking(tmp_path
         with pytest.raises(rt.RuntimeStoreError, match='stale_generation'):
             rt.adopt_worker_execution(db, epoch=epoch, **assignment, adoption_secret='private')
         with pytest.raises(rt.RuntimeStoreError, match='stale_epoch'):
-            append(db, epoch=epoch, **assignment, sequence=1, content='late')
+            rt.persist_worker_message(db, epoch=epoch, **assignment, sequence=1, role='assistant', content='late')
         assert db.get_messages('s') == []
         assert rt.claim_session_input(db, epoch=epoch, session_id='s')['admission_id'] == follower['admission_id']
     finally:

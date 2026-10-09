@@ -16,21 +16,15 @@ from providers.base import ProviderProfile
 
 @pytest.fixture
 def plugin(monkeypatch):
-    """Register *profile* the way plugin discovery does (providers registry + auth mirror), no leaks."""
+    """Register *profile* in an isolated canonical provider registry."""
     import providers
-    from hermes_cli import auth
-    from hermes_cli.auth_plugin_providers import PLUGIN_MIRRORED_PROVIDERS, register_plugin_provider
 
-    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
-    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
-    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None, raising=False)
-    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
-    mirrored = set(PLUGIN_MIRRORED_PROVIDERS)
-    monkeypatch.setattr("hermes_cli.auth_plugin_providers.PLUGIN_MIRRORED_PROVIDERS", mirrored)
+    monkeypatch.setattr(providers.registry, "_REGISTRY", dict(providers.registry._REGISTRY))
+    monkeypatch.setattr(providers.registry, "_ALIASES", dict(providers.registry._ALIASES))
+    monkeypatch.setattr(providers.registry, "_PROVIDER_LIST_CACHE", None, raising=False)
 
     def _register(profile: ProviderProfile) -> ProviderProfile:
         providers.register_provider(profile)
-        register_plugin_provider(profile)
         return profile
 
     return _register
@@ -56,7 +50,7 @@ def _pool_entry(provider: str, **fields):
 def test_hermes_model_routes_registered_plugin_profiles_to_the_generic_flow(plugin, monkeypatch, tmp_path):
     """Selecting an admitted external-process or OAuth plugin in `hermes model` persists config.model;
     an api_key profile still takes the api-key flow and an unknown slug stays a no-op."""
-    from hermes_cli import main
+    import hermes_cli.main as main
     from hermes_cli import auth
     from hermes_cli.config import load_config
 

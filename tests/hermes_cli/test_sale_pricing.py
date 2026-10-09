@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import application_model_pricing
+
 import json
 from unittest.mock import MagicMock
 
 import hermes_cli.models as models_mod
-from hermes_cli import models_pricing
-from hermes_cli.models_pricing import compute_sale_discount, fetch_models_with_pricing
+import application_model_pricing as models_pricing
+from models.metadata.pricing import compute_sale_discount
+from application_model_pricing import fetch_models_with_pricing
 
 
 def test_free_model_gets_flat_100_percent_discount():
@@ -29,7 +32,7 @@ def test_paid_model_without_original_shows_no_sale():
 
 
 def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
-    models_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache.clear()
     payload = {
         "data": [
             {
@@ -110,7 +113,7 @@ def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
         "https://stg-inference-api.nousresearch.com/v1/",
     ):
         monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
-        assert models_pricing._resolve_nous_pricing_credentials()[1] == (
+        assert application_model_pricing._resolve_nous_pricing_credentials()[1] == (
             "https://stg-inference-api.nousresearch.com"
         )
 
@@ -122,8 +125,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     call, but it expires — the processes that read this run for weeks, and
     every caller silently falls back to a curated list meanwhile.
     """
-    models_pricing._pricing_cache.clear()
-    models_pricing._pricing_cache_retry_after.clear()
+    application_model_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache_retry_after.clear()
 
     calls = []
 
@@ -142,7 +145,7 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + application_model_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert fetch_models_with_pricing(base_url="https://example.test") == {}
     assert len(calls) == 2
@@ -150,8 +153,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
 
 def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     """Only the failures expire; a real catalog is still fetched once."""
-    models_pricing._pricing_cache.clear()
-    models_pricing._pricing_cache_retry_after.clear()
+    application_model_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache_retry_after.clear()
 
     calls = []
     body = json.dumps(
@@ -173,7 +176,7 @@ def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + application_model_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert "a/b" in fetch_models_with_pricing(base_url="https://example.test")
     assert len(calls) == 1

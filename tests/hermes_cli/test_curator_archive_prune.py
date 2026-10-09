@@ -14,7 +14,7 @@ def _ns(**kwargs):
 
 def test_archive_refuses_pinned(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
-    from tools import skill_usage
+    import tools.skill_usage as skill_usage
 
     monkeypatch.setattr(skill_usage, "get_record", lambda name: {"pinned": True})
     called = []

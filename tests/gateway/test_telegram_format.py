@@ -17,7 +17,7 @@ from gateway.config import PlatformConfig
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import (
+from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,

@@ -40,14 +40,14 @@ class _ExplodingProfile(ProviderProfile):
 @pytest.fixture
 def registered():
     """Register profiles for one test and restore the registry afterwards."""
-    _providers._discover_providers()
-    snapshot = (dict(_providers._REGISTRY), dict(_providers._ALIASES), _providers._PROVIDER_LIST_CACHE)
+    _providers.discovery.ensure_process_discovered()
+    snapshot = (dict(_providers.registry._REGISTRY), dict(_providers.registry._ALIASES), _providers.registry._PROVIDER_LIST_CACHE)
     yield _providers.register_provider
-    _providers._REGISTRY.clear()
-    _providers._REGISTRY.update(snapshot[0])
-    _providers._ALIASES.clear()
-    _providers._ALIASES.update(snapshot[1])
-    _providers._PROVIDER_LIST_CACHE = snapshot[2]
+    _providers.registry._REGISTRY.clear()
+    _providers.registry._REGISTRY.update(snapshot[0])
+    _providers.registry._ALIASES.clear()
+    _providers.registry._ALIASES.update(snapshot[1])
+    _providers.registry._PROVIDER_LIST_CACHE = snapshot[2]
 
 
 def _agent(provider: str = ""):

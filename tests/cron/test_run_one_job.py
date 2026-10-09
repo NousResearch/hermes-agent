@@ -217,7 +217,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
     # Deterministic threshold: default 3, independent of the host config.
-    monkeypatch.setattr(s, "load_config", dict)
+    monkeypatch.setattr(s, "load_config", lambda: {})
 
 
 def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):

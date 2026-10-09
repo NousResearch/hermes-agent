@@ -46,7 +46,7 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -160,7 +160,7 @@ class CLIChatTurnMixin:
             return message, None
         try:
             from agent.context_references import preprocess_context_references
-            from agent.model_metadata import get_model_context_length
+            from models.metadata.context import get_model_context_length
             _ctx_len = get_model_context_length(
                 self.model, base_url=self.base_url or "", api_key=self.api_key or "",
                 provider=self.provider or "",
@@ -461,7 +461,8 @@ class CLIChatTurnMixin:
                     _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
                              f"children={len(self.agent._active_children)}, "
                              f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
+                    for _ci, _ch in enumerate(self.agent._active_children):
+                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
             except Exception:
                 pass
             break
@@ -518,8 +519,7 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            from tools.approval_yolo import transfer_session_yolo
-            transfer_session_yolo(self.session_id, self.agent.session_id)
+            self._transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None

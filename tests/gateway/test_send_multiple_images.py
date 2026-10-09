@@ -89,7 +89,7 @@ class TestBaseDefaultLoop:
         assert a.sent_files[0][1] == str(local)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramMultiImage:
@@ -146,7 +146,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class TestDiscordMultiImage:
@@ -294,7 +294,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackMultiImage:
@@ -331,7 +331,7 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.mattermost.adapter import MattermostAdapter
+from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
 
 
 class TestMattermostMultiImage:
@@ -371,7 +371,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.email.adapter import EmailAdapter
+from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
 
 
 class TestEmailMultiImage:

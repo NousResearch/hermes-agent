@@ -69,7 +69,7 @@ def _cmd_show(args) -> None:
 def _cmd_create(args) -> None:
     c = _console()
     name = args.name
-    skills: list[str] = list(args.skill or [])
+    skills: List[str] = list(args.skill or [])
     if not skills:
         # Interactive prompt for skills if none were passed on the CLI.
         c.print(

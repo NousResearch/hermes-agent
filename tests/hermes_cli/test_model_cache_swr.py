@@ -221,39 +221,43 @@ class TestProviderModelsSWR:
 
 class TestCatalogSWR:
     def test_stale_disk_catalog_served_with_background_refresh(self, tmp_path, monkeypatch):
-        import hermes_cli.model_catalog as mc
+        from models import catalog_runtime
+        from models.catalog_manifest import catalog_settings
 
+        path = tmp_path / "model_catalog.json"
         manifest = {"version": 1, "providers": {"nous": {"models": [{"id": "hermes-4"}]}}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
-        with patch.object(mc, "_load_catalog_config", return_value={
-                 "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
-                 "providers": {}}), \
-             patch.object(mc, "_read_disk_cache", return_value=(manifest, time.time() - 7200)), \
-             patch.object(mc, "_spawn_catalog_swr_refresh") as spawn, \
-             patch.object(mc, "_fetch_manifest_with_fallback") as fetch:
-            out = mc.get_catalog()
-        assert out == manifest  # stale copy served without blocking
-        spawn.assert_called_once()
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(path, (old, old))
+        scheduled = []
+        monkeypatch.setattr(
+            catalog_runtime,
+            "_spawn_refresh",
+            lambda settings, cache_path, user_agent: scheduled.append(cache_path),
+        )
+        with patch.object(catalog_runtime, "_fetch_with_fallback") as fetch:
+            out = catalog_runtime.get_catalog(
+                catalog_settings({"ttl_minutes": 60}),
+                path,
+            )
+        assert out == manifest
+        assert scheduled == [path]
         fetch.assert_not_called()
 
-    def test_cold_cache_still_blocks_on_fetch(self, monkeypatch):
-        import hermes_cli.model_catalog as mc
+    def test_cold_cache_still_blocks_on_fetch(self, tmp_path, monkeypatch):
+        from models import catalog_runtime
+        from models.catalog_manifest import catalog_settings
 
+        path = tmp_path / "model_catalog.json"
         manifest = {"version": 1, "providers": {}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
-        with patch.object(mc, "_load_catalog_config", return_value={
-                 "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
-                 "providers": {}}), \
-             patch.object(mc, "_read_disk_cache", return_value=(None, 0.0)), \
-             patch.object(mc, "_spawn_catalog_swr_refresh") as spawn, \
-             patch.object(mc, "_write_disk_cache"), \
-             patch.object(mc, "_fetch_manifest_with_fallback", return_value=manifest) as fetch:
-            out = mc.get_catalog()
+        with patch.object(
+            catalog_runtime,
+            "_fetch_with_fallback",
+            return_value=manifest,
+        ) as fetch:
+            out = catalog_runtime.get_catalog(catalog_settings({}), path)
         assert out == manifest
         fetch.assert_called_once()
-        spawn.assert_not_called()
 
 
 class TestCorruptCacheRowDegradation:

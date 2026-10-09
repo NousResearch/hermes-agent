@@ -34,10 +34,10 @@ class FalImageGenProvider(StaticImageGenProvider):
 
         try:
             return bool(_it.check_fal_api_key())
-        except Exception:
+        except Exception:  # noqa: BLE001 — never break the picker
             return False
 
-    def list_models(self) -> list[dict[str, Any]]:
+    def list_models(self) -> List[Dict[str, Any]]:
         from tools.image_generation_catalog import FAL_MODELS
         return catalog_rows(FAL_MODELS)
 
@@ -45,13 +45,13 @@ class FalImageGenProvider(StaticImageGenProvider):
         from tools.image_generation_catalog import DEFAULT_MODEL
         return DEFAULT_MODEL
 
-    def capabilities(self) -> dict[str, Any]:
+    def capabilities(self) -> Dict[str, Any]:
         # Image-to-image depends on the selected model (``edit_endpoint``); upscale works for any.
         import tools.image_generation_tool as _it
 
         try:
             _model_id, meta = _it._resolve_fal_model()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return {"modalities": ["text"], "max_reference_images": 0}
         if meta.get("edit_endpoint"):
             return {
@@ -63,9 +63,9 @@ class FalImageGenProvider(StaticImageGenProvider):
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Forward to ``image_generate_tool`` and reshape its JSON-string response into the ABC dict."""
         import tools.image_generation_tool as _it
 
@@ -79,7 +79,7 @@ class FalImageGenProvider(StaticImageGenProvider):
 
         try:
             raw = _it.image_generate_tool(prompt=prompt, aspect_ratio=aspect, **passthrough)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — never raise out of generate
             logger.warning("FAL image_generate_tool raised: %s", exc, exc_info=True)
             return {
                 "success": False, "image": None, "error": f"FAL image generation failed: {exc}",
@@ -88,7 +88,7 @@ class FalImageGenProvider(StaticImageGenProvider):
 
         try:
             response = json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:
+        except Exception:  # noqa: BLE001
             response = {"success": False, "image": None, "error": "Invalid JSON from FAL pipeline"}
 
         if not isinstance(response, dict):
@@ -103,7 +103,7 @@ class FalImageGenProvider(StaticImageGenProvider):
         if "model" not in response:
             try:
                 response["model"] = _it._resolve_fal_model()[0]
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         return response
 

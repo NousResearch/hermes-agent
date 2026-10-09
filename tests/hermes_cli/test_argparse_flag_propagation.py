@@ -44,9 +44,9 @@ class TestChatVerboseArg:
             captured.update(vars(args))
             return 0
         fake_banner = types.ModuleType("hermes_cli.banner")
-        fake_banner.prefetch_update_check = lambda: None
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
         fake_skills_sync = types.ModuleType("tools.skills_sync")
-        fake_skills_sync.sync_skills = lambda quiet=True: None
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
 
         monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", launch)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
@@ -205,12 +205,3 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
-
-
-@pytest.mark.parametrize("argv", [
-    ["--tui", "--checkpoints"], ["--checkpoints", "chat"], ["chat", "--tui", "--checkpoints"]])
-def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
-    """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
-    declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
-    from hermes_cli._parser import build_top_level_parser
-    assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

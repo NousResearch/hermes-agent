@@ -185,12 +185,12 @@ def find_font(size: int) -> ImageFont.FreeTypeFont:
         if os.path.exists(path):
             try:
                 return ImageFont.truetype(path, size)
-            except OSError:
+            except (OSError, IOError):
                 continue
     # Last resort: Pillow default
     try:
         return ImageFont.truetype("DejaVuSans-Bold", size)
-    except OSError:
+    except (OSError, IOError):
         return ImageFont.load_default()
 
 

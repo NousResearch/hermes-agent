@@ -97,15 +97,9 @@ def _session_mutation_context(request, profile):
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
     authority = getattr(request.app.state, 'session_authority', None)
-    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
-    capabilities = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
     if authority is None:
-        if getattr(request.app.state, 'gateway_runner', None) is not None:
-            raise HTTPException(status_code=503, detail='session_authority_unavailable')
-        # Standalone ``serve``/``dashboard`` (no composed gateway; its owner cutover is a
-        # follow-up): the store is the owner. Same principal id form as a gateway authority's
-        # (``str(home)``), so import bindings written offline stay valid once one starts.
-        return None, Principal(subject, str(home.resolve()), capabilities, 'http')
+        raise HTTPException(status_code=503, detail='session_authority_unavailable')
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
     # ``?profile=`` selects a served home; its own authority (not the launch one) owns the mutation.
     from gateway.session_authorities import authority_for_home
     runner = getattr(request.app.state, 'gateway_runner', None)
@@ -117,41 +111,8 @@ def _session_mutation_context(request, profile):
     authority = owner
     if native is not None and native['profile_id'] != authority.profile_id:
         raise HTTPException(status_code=403, detail='profile_mismatch')
-    return authority, Principal(subject, authority.profile_id, capabilities, 'http')
-
-
-def _mutate_offline_store(profile, actor, params):
-    """Standalone edit: the receipt transaction on this process's single shared writer.
-
-    Runs under the exact owner lock (409 while any gateway owns the store, never a
-    second writer beside it); revision/generation/idle guards are the gateway's own.
-    """
-    from fastapi import HTTPException
-    from hermes_state_runtime import begin_runtime_epoch, mutate_runtime_session
-
-    def run():
-        db = _open_session_db_for_profile(profile, read_only=False)
-        try:
-            write_guard = None
-            if params['operation'] == 'import':
-                normalized, errors = db._validate_import_payload(params['payload']['sessions'])
-                if errors:
-                    raise HTTPException(status_code=400, detail={'errors': errors})
-                from functools import partial
-                from hermes_state_mutation_binding import import_history_control
-                write_guard = partial(import_history_control, actor=actor,
-                                      session_ids=tuple(item['session']['id'] for item in normalized))
-            with db._read_ctx() as conn:
-                row = conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()
-            # The reservation held here is the ownership lock begin_runtime_epoch requires.
-            epoch = row[0] if row else begin_runtime_epoch(db, instance_id='dashboard-offline')
-            return mutate_runtime_session(db, epoch=epoch, principal_id=actor.subject,
-                expected_generation=params.get('expected_generation'), _authorize_write=write_guard,
-                **{key: params[key] for key in ('session_id', 'request_id', 'expected_revision',
-                                                'operation', 'payload')})
-        finally:
-            db.close()
-    return _with_session_maintenance(profile, run)
+    return authority, Principal(subject, authority.profile_id,
+        frozenset({'session:read', 'session:control', 'session:create', 'session:operator'}), 'http')
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,
@@ -165,7 +126,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     from hermes_state_runtime import RuntimeStoreError
 
     authority, actor = _session_mutation_context(request, profile)
-    if operation == 'import' and authority is not None:
+    if operation == 'import':
         _, errors = authority.db._validate_import_payload(payload['sessions'])
         if errors:
             raise HTTPException(status_code=400, detail={'errors': errors})
@@ -176,10 +137,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     if expected_generation is not None:
         params['expected_generation'] = expected_generation
     try:
-        if authority is None:
-            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
-        else:
-            result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+        result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
         status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
@@ -291,7 +249,7 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
 # profile: bounds the config.yaml read to once per window; the sweep itself is
 # throttled far more coarsely by state_meta (sessions.min_interval_hours).
 _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
-_last_auto_archive_check: dict[str, float] = {}
+_last_auto_archive_check: Dict[str, float] = {}
 
 
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:

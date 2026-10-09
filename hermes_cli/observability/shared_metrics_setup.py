@@ -270,7 +270,7 @@ def provider_for_api_key_env(env_var: Any, *, connecting: bool = False) -> str |
     key save cannot tell connecting a provider from configuring a tool, so unless the caller says it is
     ``connecting`` one, ecosystem tokens and keys a tool's settings panel (TTS, STT, image...) also asks
     for are None too."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.provider_auth import iter_provider_configs
     from hermes_cli.tools_config import TOOL_CATEGORIES
 
     if env_var == "OPENROUTER_API_KEY":  # the aggregator is not a registry entry
@@ -280,7 +280,7 @@ def provider_for_api_key_env(env_var: Any, *, connecting: bool = False) -> str |
         for row in category.get("providers", ()) for entry in row.get("env_vars") or ()
     )):
         return None
-    return next((slug for slug, pconfig in PROVIDER_REGISTRY.items()
+    return next((pconfig.id for pconfig in iter_provider_configs()
                  if env_var in (getattr(pconfig, "api_key_env_vars", None) or ())), None)
 
 

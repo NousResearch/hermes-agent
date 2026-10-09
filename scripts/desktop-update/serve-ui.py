@@ -53,7 +53,7 @@ def progress_body():
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
+    def log_message(self, format, *args):  # noqa: A002 - base class signature
         pass
 
     def do_GET(self):

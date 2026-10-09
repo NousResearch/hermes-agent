@@ -21,7 +21,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json
+from _http import get_json  # noqa: E402
 
 PARTIES_URL = "https://data.cityofnewyork.us/resource/636b-3b5g.json"
 MASTER_URL = "https://data.cityofnewyork.us/resource/bnx9-e6tj.json"
@@ -115,7 +115,7 @@ def fetch(
             url = f"{MASTER_URL}?{urllib.parse.urlencode(master_params)}"
             try:
                 rows = get_json(url)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"ACRIS master lookup failed for chunk: {e}", file=sys.stderr)
                 continue
             if isinstance(rows, list):

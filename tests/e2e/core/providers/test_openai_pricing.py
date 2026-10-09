@@ -116,10 +116,10 @@ class FakeCatalog:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a: object) -> None:
+            def log_message(self, *_a: object) -> None:  # noqa: D401 - silence per-request logging
                 pass
 
-            def do_GET(self) -> None:
+            def do_GET(self) -> None:  # noqa: N802
                 server.requests.append((self.path, self.headers.get("Authorization", "")))
                 path = self.path.split("?")[0].rstrip("/")
                 if path == "/relay/v1/models":  # the decoy relay: plain OpenAI model list, no prices

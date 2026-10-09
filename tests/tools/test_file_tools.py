@@ -961,7 +961,7 @@ class TestSecretFileReadRedaction:
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
         """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
-        from agent import file_safety
+        import agent.file_safety as file_safety
 
         home = tmp_path / "hermes"
         home.mkdir()

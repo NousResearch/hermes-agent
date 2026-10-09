@@ -66,14 +66,14 @@ def normalize_whatsapp_mention_jid(value: str) -> str:
     )
 
 
-def expand_whatsapp_aliases(identifier: str) -> set[str]:
+def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """All identifiers transitively reachable via the bridge's ``lid-mapping-*.json`` files;
     always includes the normalized input itself (empty set if it normalizes to empty)."""
     normalized = normalize_whatsapp_identifier(identifier)
     if not normalized:
         return set()
     session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
-    resolved: set[str] = set()
+    resolved: Set[str] = set()
     queue = [normalized]
     while queue:
         current = queue.pop(0)

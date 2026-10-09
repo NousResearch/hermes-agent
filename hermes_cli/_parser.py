@@ -197,8 +197,6 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
-    inherited(parser, "--checkpoints", action="store_true", default=False,
-              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
@@ -293,8 +291,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Auto-approve any unseen shell hooks declared in config.yaml "
         "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
         "hooks_auto_accept: in config.yaml)."))
-    inherited(chat_parser, "--checkpoints", action="store_true", default=SUPPRESS,
-              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
+    add("--checkpoints", action="store_true", default=False,
+        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     add("--max-turns", type=int, default=None, metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)")
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
@@ -342,12 +340,6 @@ def _plugin_command_install_hint(prog: str, value: str):
         return None
 
 
-def _moved_command_hint(prog: str, value: str) -> str:
-    """``hermes auth spotify`` / ``hermes spotify`` after Spotify left core: where the command went."""
-    from hermes_cli.left_core_migration import moved_command_hint
-    return moved_command_hint(prog, value)
-
-
 class HermesArgumentParser(argparse.ArgumentParser):
     """argparse parser whose unknown-subcommand error is three short lines, not a 70-name dump.
 
@@ -364,12 +356,9 @@ class HermesArgumentParser(argparse.ArgumentParser):
             lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
             close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
             install = _plugin_command_install_hint(self.prog, str(value))
-            moved = "" if install else _moved_command_hint(self.prog, str(value))
             if install:
                 # A provider that left core (``hermes honcho``) registers its command only once installed.
                 lines.append(f"The '{value}' memory plugin is not installed. Install it with: {install}")
-            elif moved:
-                lines.append(moved)
             elif close:
                 lines.append(f"Did you mean: {', '.join(close)}?")
             lines.append(f"Run `{self.prog} --help` to see all commands.")

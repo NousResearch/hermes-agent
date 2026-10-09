@@ -14,9 +14,6 @@ from hermes_state_runtime import RuntimeStoreError, admit_session_input, _epoch,
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
-# Request-owned sinks an API observer may register for its admission's execution.
-_OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
-                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
@@ -40,11 +37,10 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope'}
                 or not {'history', 'settings'} <= set(data)
                 or (data['history'] is not None and not isinstance(data['history'], list))
-                or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))
-                or ('browser_control' in data and not _valid_browser_control(data['browser_control']))):
+                or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
             raise RuntimeStoreError('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
@@ -55,52 +51,6 @@ def check_api_turn(authority, ref, payload):
 
 def _valid_owner_scope(value):
     return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
-
-
-def _valid_browser_control(value):
-    return (isinstance(value, dict) and set(value) == {'principal', 'transport_family'}
-            and isinstance(value['principal'], str) and value['principal'].startswith('principal:')
-            and value['transport_family'] in ('local-api', 'remote-api'))
-
-
-def _request_browser_control():
-    """The authenticated request's browser-controller identity, as the profile-prefix
-    middleware derived it from the served profile and its API key; never client JSON."""
-    from gateway.platforms.api_server import (
-        _api_request_browser_control_principal, _api_request_browser_control_transport_family)
-    bound = {'principal': _api_request_browser_control_principal.get(),
-             'transport_family': _api_request_browser_control_transport_family.get()}
-    return bound if _valid_browser_control(bound) else None
-
-
-def _rebind_browser_control(adapter, data):
-    """Re-derive the admitted principal from the profile's current API key before it is bound
-    for execution (also after recovery). A rotated key no longer authorizes the old principal,
-    so that turn runs unbound, like a request the middleware stamped nothing for."""
-    bound = (data or {}).get('browser_control')
-    if bound is None:
-        return None
-    from gateway.platforms.api_server import _api_request_profile
-    profile = bound['principal'][len('principal:'):].rpartition(':')[0]
-    token = _api_request_profile.set(None if profile == 'default' else profile)
-    try:
-        expected = adapter._derive_browser_control_principal(profile)
-    finally:
-        _api_request_profile.reset(token)
-    return bound if hmac.compare_digest(bound['principal'], expected) else None
-
-
-def api_session_vars():
-    """Session-context fields an executing API admission binds beyond the shared source:
-    #98619 history-delivery provenance and the rebound browser-controller identity. ``{}``
-    when no API admission is executing."""
-    current = api_execution.get()
-    if current is None:
-        return {}
-    bound = current.get('browser_control') or {}
-    return {'session_history_delivery': current['settings'].get('session_history_delivery') or '',
-            'browser_control_principal': bound.get('principal', ''),
-            'browser_control_transport_family': bound.get('transport_family', '')}
 
 
 def check_api_settings(adapter, settings):
@@ -166,16 +116,14 @@ def admit_api_turn(adapter, **kwargs):
         # This opaque namespace is persisted in the same row/transaction as
         # admission. It is never a bearer credential or execution input.
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
-    browser_control = _request_browser_control()
-    if browser_control is not None:
-        # Server-derived like the owner scope: the admission keeps the identity the legacy
-        # path bound for its executor, so execution and recovery can rebind it.
-        payload['api_turn_v1']['browser_control'] = browser_control
     # Refuse a foreign-surface target before committing any media for it (a refused
     # admission otherwise retains its image bytes under native-inputs/ forever).
     existing = authority.db.get_session(sid)
     if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
         raise RuntimeStoreError('permission_denied')
+    if isinstance(kwargs['user_message'], list):
+        from gateway.session_api_media import commit_api_images
+        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         author = parse_turn_author(kwargs['turn_author'])
@@ -183,21 +131,6 @@ def admit_api_turn(adapter, **kwargs):
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
-    if not isinstance(kwargs['user_message'], list):
-        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
-    from gateway.session_api_media import commit_api_images
-    from gateway.session_ingress_media import release_unheld_media
-    payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
-    try:
-        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
-    finally:
-        # Retained bytes belong to an accepted admission. A refused request (or an exact retry of
-        # a retired one, whose references were erased) owns nothing, so its bytes are collected
-        # unless another admission holds them. Capture, admission and release share this loop.
-        release_unheld_media(authority.db, payload['api_turn_v1']['media'])
-
-
-def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
@@ -240,9 +173,7 @@ def recover_api_turns(adapter):
 
 def _recover_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
-    from gateway.session_ingress_media import collect_unheld_api_images
     import logging
-    collect_unheld_api_images(authority.db)
     with authority.db._read_ctx() as conn:
         targets = [row[0] for row in conn.execute(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE principal_id='api' AND status='queued'")]
@@ -260,51 +191,29 @@ def _recover_api_turns(adapter, authority):
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
 
 
-async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):
+async def run_api_turn(adapter, **kwargs):
     admitted = admit_api_turn(adapter, **kwargs)
-    if approval_notify_callback is None or not approval_session_key:
-        return await observe_api_turn(admitted, **kwargs)
-    # A streaming surface advertises its own run id (``chatcmpl-*`` / ``run_*``): bind it to this
-    # exact admission so ``/v1/runs/{id}/approval`` answers the shared, generation-fenced prompt,
-    # and hand that prompt to the stream's notifier in the event shape it already emits.
-    aliases = adapter._run_admission_aliases
-    aliases[approval_session_key] = admitted[2]['admission_id']
-
-    def sink(event_type, prompt):
-        if event_type == 'approval.request':
-            choices = prompt.get('choices') or ()
-            approval_notify_callback({
-                **{k: v for k, v in prompt.items() if k not in ('kind', 'prompt_id', 'choices')},
-                'request_id': prompt['prompt_id'], 'allow_session': 'session' in choices,
-                'allow_permanent': 'always' in choices})
-    try:
-        with observe_api_controls(admitted, sink):
-            return await observe_api_turn(admitted, **kwargs)
-    finally:
-        if aliases.get(approval_session_key) == admitted[2]['admission_id']:
-            aliases.pop(approval_session_key)
+    return await observe_api_turn(admitted, **kwargs)
 
 
 async def observe_api_turn(admitted, **kwargs):
     authority, ref, row = admitted
-    from hermes_state_runtime import get_session_admission
-    # The admission-time snapshot is stale once a drain already running ahead claims and settles
-    # (or a stop cancels) the row; a waiter registered after that is never resolved. The current
-    # row decides, read with no suspension before the waiter is registered.
-    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)['status']
-    if status == 'unknown':
+    if row['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
-    if status == 'terminal':
-        result, usage = _settled_api_result(authority, row['admission_id'])
+    if row['status'] == 'terminal':
+        result = admission_result(authority.db, row['admission_id'])
+        if result is None:
+            raise RuntimeStoreError('unknown_execution')
         callback = kwargs.get('stream_delta_callback')
         if callback:
-            callback(result.get('final_response') or '')
-        return result, usage
+            callback(result['result'].get('final_response') or '')
+        return result['result'], result['usage']
     waiter = authority.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future())
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
         observers = authority.api_observers = {}
-    observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
+    observer = {key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
+                if kwargs.get(key) is not None}
     registered = observers.setdefault(row['admission_id'], [])
     registered.append(observer)
     try:
@@ -317,14 +226,10 @@ async def observe_api_turn(admitted, **kwargs):
         registered.remove(observer)
         if not registered:
             observers.pop(row['admission_id'], None)
-    return _settled_api_result(authority, row['admission_id'])
-
-
-def _settled_api_result(authority, admission_id):
-    saved = admission_result(authority.db, admission_id)
+    saved = admission_result(authority.db, row['admission_id'])
     if saved is None:
         from hermes_state_runtime import get_session_admission
-        current = get_session_admission(authority.db, admission_id=admission_id)
+        current = get_session_admission(authority.db, admission_id=row['admission_id'])
         if current['outcome'] == 'cancelled':
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
         raise RuntimeStoreError('unknown_execution')
@@ -337,17 +242,9 @@ _CONTROL_EVENTS = frozenset({'approval.request', 'approval.settled', 'clarify.re
 @contextmanager
 def observe_api_controls(admitted, sink):
     """Project the same approval/clarify prompts WS viewers receive to ``sink(type, payload)``
-    for the admission's lifetime; ``sink`` runs under the stream lock.
-
-    An exact retry joins an admission whose prompt may already be pending: it was published
-    before this observer existed, so it is replayed from the shared pending controls (the
-    source ``GET /v1/runs/{id}`` reports). Subscribing and snapshotting in ONE stream-lock hold
-    is the consistent cut: prompts are registered and answered under that lock, so each one is
-    either in the snapshot or arrives live (never both), and one already answered is absent."""
-    from hermes_state_runtime import get_session_admission
+    for the admission's lifetime; ``sink`` runs on the publishing thread under the stream lock."""
     authority, ref, row = admitted
-    live = authority.sessions[ref.session_id]
-    events = live.event_stream
+    events = authority.sessions[ref.session_id].event_stream
 
     def observer(frame):
         params = frame['params']
@@ -355,10 +252,6 @@ def observe_api_controls(admitted, sink):
             sink(params['type'], params.get('payload') or {})
     with events.lock:
         events.observers.add(observer)
-        current = get_session_admission(authority.db, admission_id=row['admission_id']) or row
-        if current['status'] == 'started':
-            for prompt in live.controls.snapshot(ref.session_id, current['generation']):
-                sink(prompt['kind'] + '.request', prompt)
     try:
         yield
     finally:
@@ -382,8 +275,7 @@ def prepare_api_execution(authority, ref, payload):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': content, 'turn_author': data.get('turn_author') if data else None,
-            'browser_control': _rebind_browser_control(adapter, data)}
+            'content': content, 'turn_author': data.get('turn_author') if data else None}
 
 
 def _api_observers(authority, session_id):
@@ -392,7 +284,7 @@ def _api_observers(authority, session_id):
     return tuple(getattr(authority, 'api_observers', {}).get(admission_id, ()))
 
 
-def _notify_observers(authority, session_id, key, *args, **kwargs):
+def _notify_observers(authority, session_id, key, *args):
     """Observer callbacks are request-owned sinks; one that raises (closed socket, torn-down
     loop) must not abort canonical execution or starve the other observers. Returns whether
     any observer accepted the event."""
@@ -402,43 +294,11 @@ def _notify_observers(authority, session_id, key, *args, **kwargs):
         callback = observer.get(key)
         if callback:
             try:
-                callback(*args, **kwargs)
+                callback(*args)
                 accepted = True
             except Exception:
                 logging.getLogger(__name__).warning('API observer %s failed for %s', key, session_id, exc_info=True)
     return accepted
-
-
-def wire_api_observers(agent, owner, want_interim):
-    """Hand this admission's API observers (Chat/Responses SSE, runs) the agent's reasoning,
-    status and commentary callbacks, the ones the direct API path gave the agent itself. Each
-    event is fenced to the exact running claim, so a settled worker's late callback is inert;
-    the turn's own status/commentary sinks keep running after the observers."""
-    authority, session_id, generation = owner
-
-    def publish(key, *args, **kwargs):
-        with authority.sessions[session_id].event_stream.lock:
-            try:
-                authority.check_approval_generation(session_id, generation)
-            except RuntimeStoreError:
-                return False
-            return _notify_observers(authority, session_id, key, *args, **kwargs)
-
-    status, interim = agent.status_callback, agent.interim_assistant_callback
-
-    def status_callback(kind, message=None):
-        publish('status_callback', kind, message)
-        if status is not None:
-            status(kind, message)
-
-    def interim_assistant_callback(text, *, already_streamed=False):
-        publish('interim_assistant_callback', text, already_streamed=already_streamed)
-        if interim is not None:
-            interim(text, already_streamed=already_streamed)
-    agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
-    agent.status_callback = status_callback
-    if want_interim:
-        agent.interim_assistant_callback = interim_assistant_callback
 
 
 def publish_api_event(authority, session_id, event_type, payload):

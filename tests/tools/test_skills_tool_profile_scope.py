@@ -22,7 +22,7 @@ def _write_skill(root: Path, category: str, name: str, description: str) -> Path
 
 def _reload_skills_tool(import_home: Path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(import_home))
-    from tools import skills_tool
+    import tools.skills_tool as skills_tool
 
     return importlib.reload(skills_tool)
 

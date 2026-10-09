@@ -393,7 +393,7 @@ class TestDelegationCleanup:
                 child_started.wait(timeout=5)
                 return super().wait(timeout)
 
-        from tools import delegate_tool
+        import tools.delegate_tool as delegate_tool
 
         real_start_heartbeat = delegate_tool._start_heartbeat
 

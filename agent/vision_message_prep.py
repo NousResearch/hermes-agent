@@ -32,10 +32,10 @@ def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
 
 
-def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
+def _salvage_text_parts(content: list, *, any_dict_text: bool) -> List[str]:
     """Stripped, non-empty text from string parts and text-typed dict parts (or any dict's
     ``text`` when ``any_dict_text``), in order."""
-    texts: list[str] = []
+    texts: List[str] = []
     for part in content:
         if isinstance(part, str):
             text = part.strip()
@@ -131,14 +131,47 @@ class VisionMessagePrepMixin:
         return note
 
     def _model_supports_vision(self) -> bool:
-        """True if the active provider+model reports native vision (config override
-        > models.dev; see ``image_routing._supports_vision_override``)."""
+        """True only when canonical model metadata resolves native image input support."""
+        provider = (getattr(self, "provider", "") or "").strip()
+        model = (getattr(self, "model", "") or "").strip()
+        if not provider or not model:
+            return False
         try:
+            from agent.image_routing import (
+                _resolve_inference_api_key,
+                _resolve_inference_base_url,
+                _vision_override_patches,
+            )
+            from agent.model_capability_sources import default_capability_sources
             from hermes_cli.config import load_config
-            from agent.image_routing import _lookup_supports_vision
-            provider = (getattr(self, "provider", "") or "").strip()
-            model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, load_config()) is True
+            from models import ModelRef
+            from models.metadata import ModelMetadataContext, resolve_supports_vision
+
+            cfg = load_config()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            explicit_fact, configured_fact = _vision_override_patches(
+                cfg, provider, model, requested_provider=requested_provider,
+            )
+            base_url = (getattr(self, "base_url", "") or "").strip() or _resolve_inference_base_url(
+                cfg, provider,
+            )
+            api_key = getattr(self, "api_key", "") or ""
+            if not isinstance(api_key, str):
+                api_key = ""
+            if not api_key:
+                api_key = _resolve_inference_api_key(cfg, provider)
+            return resolve_supports_vision(
+                ModelRef(provider, model),
+                context=ModelMetadataContext(
+                    base_url=base_url,
+                    api_key=api_key,
+                    route_provider=provider,
+                    allow_network=True,
+                    explicit=explicit_fact,
+                    configured=configured_fact,
+                ),
+                sources=default_capability_sources(),
+            ) is True
         except Exception:
             return False
 
@@ -159,7 +192,7 @@ class VisionMessagePrepMixin:
         if not self._content_has_image_parts(content):
             return content
 
-        image_notes: list[str] = []
+        image_notes: List[str] = []
         for part in filter(_is_image_part, content):
             image_data = part.get("image_url", {})
             image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
@@ -174,7 +207,7 @@ class VisionMessagePrepMixin:
             return f"{prefix}\n\n{suffix}"
         return prefix or suffix or "[A multimodal message was converted to text for Anthropic compatibility.]"
 
-    def _get_transport(self, api_mode: str | None = None):
+    def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode (lazy; None if unregistered)."""
         mode = api_mode or self.api_mode
         cache = getattr(self, "_transport_cache", None)

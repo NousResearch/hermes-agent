@@ -1,5 +1,7 @@
 """Regression tests for startup model/provider routing (#87189)."""
 
+from models import ModelRef
+
 import pytest
 
 from hermes_cli import model_switch
@@ -67,8 +69,7 @@ def test_startup_route_resolves_dict_alias_and_preserves_endpoint(monkeypatch):
         model_switch,
         "DIRECT_ALIASES",
         {
-            "localqwen": model_switch.DirectAlias(
-                "qwen3.5:4b", "custom", "http://localhost:11434/v1"
+            "localqwen": model_switch.DirectAlias(ModelRef("custom", "qwen3.5:4b"), "http://localhost:11434/v1"
             )
         },
     )
@@ -89,8 +90,7 @@ def test_startup_route_url_alias_never_keeps_foreign_provider_label(monkeypatch)
         model_switch,
         "DIRECT_ALIASES",
         {
-            "urlalias": model_switch.DirectAlias(
-                "qwen3.5:4b", "anthropic", "http://localhost:11434/v1"
+            "urlalias": model_switch.DirectAlias(ModelRef("anthropic", "qwen3.5:4b"), "http://localhost:11434/v1"
             )
         },
     )
@@ -105,9 +105,7 @@ def test_startup_route_alias_carries_own_api_key(monkeypatch):
         model_switch,
         "DIRECT_ALIASES",
         {
-            "keyed": model_switch.DirectAlias(
-                "some-model",
-                "custom",
+            "keyed": model_switch.DirectAlias(ModelRef("custom", "some-model"),
                 "https://proxy.example/v1",
                 api_key="sk-alias-key",
             )
@@ -122,7 +120,7 @@ def test_startup_route_explicit_provider_wins_over_alias_label(monkeypatch):
     monkeypatch.setattr(
         model_switch,
         "DIRECT_ALIASES",
-        {"ds": model_switch.DirectAlias("deepseek-chat", "deepseek", "")},
+        {"ds": model_switch.DirectAlias(ModelRef("deepseek", "deepseek-chat"), "")},
     )
     route = model_switch.resolve_startup_model_route(
         "ds", explicit_provider="openrouter"
@@ -148,8 +146,7 @@ def test_model_aliases_dict_entries_are_loaded(monkeypatch):
         },
     )
     aliases = model_switch._load_direct_aliases()
-    assert aliases["localqwen"] == model_switch.DirectAlias(
-        "qwen3.5:4b", "custom", "http://localhost:11434/v1"
+    assert aliases["localqwen"] == model_switch.DirectAlias(ModelRef("custom", "qwen3.5:4b"), "http://localhost:11434/v1"
     )
 
 
@@ -198,9 +195,6 @@ def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.setattr(
         "hermes_cli.models.detect_provider_for_model",
-        lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
-    monkeypatch.setattr(
-        "hermes_cli.models.detect_static_provider_for_model",
         lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "custom:jetson-vllm:nemotron-nano-30b")
     choice = _resolve_model_and_provider(cfg, None, None)

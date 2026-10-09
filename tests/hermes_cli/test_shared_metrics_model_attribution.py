@@ -12,7 +12,7 @@ import pytest
 from agent.portal_tags import reset_conversation_context, set_conversation_context
 from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
     _stored_values,
     direct_runtime,
 )
@@ -115,13 +115,11 @@ def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_pat
     """A ``$HERMES_HOME/plugins/model-providers`` profile joins PROVIDER_REGISTRY under a name (and
     aliases) the user chose: every metric, the provider-setup marker and the snapshot read
     ``custom``/``custom``. An in-tree provider plugin (``deepinfra``) keeps its public name."""
-    from hermes_cli import auth, auth_plugin_providers, models_catalog_static as mcs
+    from hermes_cli import auth, auth_plugin_providers
+    from models import catalog_static as mcs
     from hermes_cli.observability import shared_metrics_catalog as catalog, shared_metrics_setup as setup
     from providers import get_provider_profile
 
-    for mod, attr in ((auth, "PROVIDER_REGISTRY"), (auth_plugin_providers, "PLUGIN_MIRRORED_PROVIDERS"),
-                      (mcs, "CANONICAL_PROVIDERS"), (mcs, "_canonical_slugs"), (mcs, "_PROVIDER_LABELS")):
-        monkeypatch.setattr(mod, attr, type(getattr(mod, attr))(getattr(mod, attr)))  # no registry leak
     home = tmp_path / "hermes-home"
     plugin = home / "plugins" / "model-providers" / "acmecorp-internal"
     plugin.mkdir(parents=True)
@@ -131,7 +129,8 @@ def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_pat
         "register_provider(ProviderProfile(name='acmecorp-internal', aliases=('acme-llm',),\n"
         "    env_vars=('ACMECORP_LLM_API_KEY',), base_url='https://llm.acmecorp.internal/v1'))\n")
     assert get_provider_profile("acmecorp-internal") is not None
-    assert "acmecorp-internal" in auth.PROVIDER_REGISTRY
+    from hermes_cli.provider_auth import get_provider_config
+    assert get_provider_config("acmecorp-internal") is not None
     catalog.provider_names.cache_clear()
 
     snapshot = _emit_every_model_metric("acmecorp-internal", SECRET)
@@ -202,14 +201,14 @@ def test_tui_switch_before_first_prompt_blames_the_configured_route(
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         f"model:\n  provider: {provider}\n  default: {model}\n" + (f"  base_url: {base_url}\n" if base_url else ""))
-    from tui_gateway import server
+    import tui_gateway.server as server
 
     monkeypatch.setattr(server, "_hermes_home", home)  # captured at first import
     result = SimpleNamespace(
-        success=True, new_model="gpt-5", target_provider="openai", base_url="https://api.openai.com/v1",
+        success=True, new_model="gpt-5.4", target_provider="openai", base_url="https://api.openai.com/v1",
         api_key="k", api_mode="chat_completions", warning_message="", error_message="")
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
-    server._apply_model_switch("", {"agent": None}, "gpt-5 --provider openai", confirm_expensive_model=True)
+    monkeypatch.setattr("tui_gateway.model_switch_resolution.resolve_tui_model_switch", lambda **kw: result)
+    server._apply_model_switch("", {"agent": None}, "gpt-5.4 --provider openai", confirm_expensive_model=True)
     _flush()
 
     assert _stored_values(tmp_path, "hermes.model_friction.count") == [

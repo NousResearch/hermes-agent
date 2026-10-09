@@ -432,9 +432,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   preparedSubmissions: {
     read: () => ipcRenderer.invoke('hermes:prepared-submissions:read'),
-    update: (key, entry) => ipcRenderer.invoke('hermes:prepared-submissions:update', key, entry),
-    compareAndSet: (key, expected, entry) =>
-      ipcRenderer.invoke('hermes:prepared-submissions:compare-and-set', key, expected, entry)
+    update: (key, entry) => ipcRenderer.invoke('hermes:prepared-submissions:update', key, entry)
   },
   zoom: {
     // Current zoom of this window, as { level, percent }.

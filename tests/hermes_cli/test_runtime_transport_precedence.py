@@ -47,7 +47,7 @@ class TestFallbackApiMode:
     @pytest.fixture
     def catalog_defaults(self, monkeypatch):
         """Pin the models.dev default endpoints the predicate compares against, so the contract
-        holds without the network (a cold cache leaves ``ProviderDef.base_url`` empty)."""
+        holds without the network (a cold cache leaves the resolved provider base URL empty)."""
         import dataclasses
         from hermes_cli import runtime_provider
         defaults = {

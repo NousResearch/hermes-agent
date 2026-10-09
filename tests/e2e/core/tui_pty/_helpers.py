@@ -181,7 +181,7 @@ def run_cells(body: Callable[[Cells], None]) -> Cells:
     cells = Cells()
     try:
         body(cells)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - surfaced verbatim by Cells.check
         cells.error = f"PHASE={cells.phase}: {type(exc).__name__}: {exc}"
     return cells
 

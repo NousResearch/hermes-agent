@@ -9,10 +9,8 @@ in an endpoint URL or discovery receipt. Explicit remote URLs remain remote: a
 failed connection cannot fall back to a local daemon.
 
 Closing Ink detaches its socket without stopping the gateway. Reconnection gets
-a fresh single-use ticket using discovery; when discovery finds no owner but the
-owner's retained `gateway_state.json` still claims it live (a crash: SIGKILL, OOM),
-up to three reconnects per minute re-ensure it. It never resurrects an explicitly
-stopped gateway (`stopped` state or `desired_state: stopped`). An initial ensure failure is visible and does not create a rival
+a fresh single-use ticket using discovery only; it cannot resurrect an explicitly
+stopped gateway. An initial ensure failure is visible and does not create a rival
 owner. Local profile selection remains the launcher's exact effective HERMES_HOME.
 
 Ink requires `runtime.describe.session_create` to advertise the `tui` source and
@@ -36,7 +34,7 @@ snapshot restores its pending prompt cards. Stop includes the active generation.
 
 The disconnected view keeps its destination. Enter writes a private fsync/rename
 journal before clearing the composer; reconnect only resumes that destination.
-Discovery keeps retrying without starting a stopped daemon (a crashed one is re-ensured, bounded). Confirmed admissions
+Discovery keeps retrying without starting a stopped daemon. Confirmed admissions
 are retired from the journal; ambiguous prompt retries preserve their original ID
 and payload. Unknown executions stay paused: select the row with Up and use
 Ctrl+X to discard it through the generation-bound authority resolver. A refused

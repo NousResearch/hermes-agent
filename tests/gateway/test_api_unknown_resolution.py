@@ -180,15 +180,10 @@ async def test_http_resolve_unknown_releases_follower_once_without_replaying_hea
         assert statuses[unknown["admission_id"]] == ("terminal", "interrupted")
         assert statuses[follower["admission_id"]] == ("terminal", "completed")
 
-        # A lost-ack retry of the exact resolution replays its committed receipt; nothing runs twice.
         again = await client.post(path, json=body, headers=_AUTH_HEADERS)
-        assert again.status == 200, await again.text()
-        assert await again.json() == result
-        await owner.sessions["api-session"].task
+        assert again.status == 409
+        assert (await again.json())["error"]["code"] == "stale_generation"
         assert executed == ["FOLLOWER"]
-        stale = await client.post(path, json=body | {"execution_generation": unknown["generation"] + 1},
-                                  headers=_AUTH_HEADERS)
-        assert stale.status == 409 and (await stale.json())["error"]["code"] == "stale_generation"
     finally:
         await _close_fixture(client, adapters, store, tasks)
 

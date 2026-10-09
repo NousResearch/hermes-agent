@@ -9,11 +9,11 @@ import zipfile
 
 import pytest
 
-from pm import paths
+import pm.paths as paths
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.store import Store, current_target
-from tests.pm._range_server import RangeHandler, dl_server, url
+from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
 @pytest.mark.parametrize("failure_phase,install_path", [

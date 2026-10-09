@@ -157,8 +157,14 @@ MODEL = ARGS.model or ("claude-fable-5.1" if PROVIDER == "anthropic" else "anthr
 if ARGS.wire:
     API_MODE = "chat_completions" if ARGS.wire == "chat" else "anthropic_messages"
 elif PROVIDER == "nous":
-    from hermes_cli.providers import nous_api_mode
-    API_MODE = nous_api_mode(MODEL)
+    from providers.routing import InvocationRequest, resolve_invocation_route
+    from hermes_cli.config import load_config_readonly
+    _nous_cfg = (load_config_readonly().get("nous") or {})
+    API_MODE = resolve_invocation_route(InvocationRequest(
+        provider="nous",
+        model=MODEL,
+        route_options={"anthropic_wire": str(_nous_cfg.get("anthropic_wire") or "chat")},
+    )).api_mode
 else:
     API_MODE = "chat_completions" if PROVIDER == "openrouter" else "anthropic_messages"
 if API_MODE == "chat_completions": Completions.create = patched_create
@@ -166,7 +172,6 @@ if API_MODE == "chat_completions": Completions.create = patched_create
 import agent.prompt_caching as _pc
 _pc.effective_cache_ttl = lambda ttl, *, model="", provider="": ARGS.ttl  # the probe pins the TTL; user config must not leak in
 from run_agent import AIAgent
-import itertools
 def creds():
     if PROVIDER == "openrouter":
         key = ARGS.api_key or os.environ.get("OPENROUTER_API_KEY") or sys.exit("OPENROUTER_API_KEY or --api-key required")
@@ -216,7 +221,7 @@ for r in rows: byw[r["worker"]].append(r)
 for v in byw.values(): v.sort(key=lambda r: r["t_start"])
 cat = collections.Counter(); stuck_tok = 0; bad = []
 for w, cs in byw.items():
-    for p, c in itertools.pairwise(cs):
+    for p, c in zip(cs, cs[1:]):
         if c["system_sha"] != p["system_sha"]: cat["compaction"] += 1; continue
         if abs(c["cache_read"] - p["prompt_tokens"]) <= 0.01 * p["prompt_tokens"] + 50: cat["ideal"] += 1
         elif abs(c["cache_read"] - p["cache_read"]) <= 50: cat["stuck"] += 1; stuck_tok += p["prompt_tokens"] - p["cache_read"]; bad.append((w, p, c, "stuck"))

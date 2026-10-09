@@ -2,7 +2,7 @@ import { app } from 'electron'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import WebSocket from 'ws'
-import { configurePythonGatewayTicketClient, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, runGatewayEnsure } from '../../apps/desktop/electron/local-gateway'
+import { configureWindowsGatewayTicketClient, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, runGatewayEnsure } from '../../apps/desktop/electron/local-gateway'
 import { mintGatewayTicketWithPython } from '../../apps/desktop/electron/local-gateway-python'
 
 /**
@@ -56,7 +56,7 @@ async function sidebarPatch(connection: any, profile: string, sid: string, paylo
 async function main() {
   assert.ok(process.versions.electron, 'Must execute inside real Electron, not Node')
   assert.equal(process.type, 'browser', 'Must execute in Electron main')
-  configurePythonGatewayTicketClient((endpoint, purpose) => mintGatewayTicketWithPython({ command: input.python, env: { PYTHONPATH: input.repo } }, input.repo, endpoint, purpose))
+  configureWindowsGatewayTicketClient((endpoint, purpose) => mintGatewayTicketWithPython({ command: input.python, env: { PYTHONPATH: input.repo } }, input.repo, endpoint, purpose))
 
   // 1. Desktop-side discovery for every profile: same instance, secondaries via the root's control socket.
   const connections: Record<string, any> = {}

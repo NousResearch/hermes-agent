@@ -349,7 +349,7 @@ def _serve():
 
     # Warm the /model picker's provider-models cache in this idle window (fire-and-forget).
     try:
-        from hermes_cli.model_switch_providers import prewarm_picker_cache_async
+        from application_picker_prewarm import prewarm_picker_cache_async
         prewarm_picker_cache_async()
     except Exception:
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)

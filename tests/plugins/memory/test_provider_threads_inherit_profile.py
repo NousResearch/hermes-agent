@@ -22,7 +22,7 @@ def _probe_home(seen: dict, key: str = "home"):
 
 
 def _retaindb(seen, tmp_path):
-    from plugins.memory import retaindb
+    import plugins.memory.retaindb as retaindb
 
     p = retaindb.RetainDBMemoryProvider()
     p._client = MagicMock()
@@ -34,7 +34,7 @@ def _retaindb(seen, tmp_path):
 
 
 def _byterover(seen, tmp_path):
-    from plugins.memory import byterover
+    import plugins.memory.byterover as byterover
 
     p = byterover.ByteRoverMemoryProvider()
     p._curate = _probe_home(seen)

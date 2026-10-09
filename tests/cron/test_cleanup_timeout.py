@@ -44,6 +44,7 @@ class HangingSessionDB:
     def get_compression_tip(self, _session_id):
         self.entered.set()
         self.release.wait()
+        return None
 
     def end_session(self, *_args, **_kwargs):
         return None

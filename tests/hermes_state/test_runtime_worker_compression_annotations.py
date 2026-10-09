@@ -36,23 +36,3 @@ def test_compacted_messages_keep_current_row_ids_across_repeated_compaction(tmp_
         store.journal['pending'] = []
         store.close()
         db.close()
-
-
-def test_owner_minted_message_uid_round_trips_through_append_and_archive(worker):
-    """The owner mints ``message_uid`` at the first insert; the worker's live dict must carry it back
-    so every later archive copy re-issues the SAME logical identity (direct SessionDB stamps the caller's
-    dict in place). Without it each compaction generation mints a fresh uid (helix4u #4)."""
-    db, store = worker
-    messages = [{'role': 'user', 'content': 'kept'}, {'role': 'assistant', 'content': 'reply'}]
-    store.append_messages_batch('owned', messages)
-
-    def stored():
-        with db._read_ctx() as conn:
-            return [r[0] for r in conn.execute(
-                'SELECT message_uid FROM messages WHERE session_id=? AND active=1 ORDER BY id', ('owned',))]
-
-    first = stored()
-    assert [m.get('message_uid') for m in messages] == first and all(first)
-    for _ in range(2):
-        store.archive_and_compact('owned', messages, tail_count=0)
-        assert stored() == first == [m['message_uid'] for m in messages]

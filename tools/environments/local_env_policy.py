@@ -64,8 +64,8 @@ def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        for pconfig in PROVIDER_REGISTRY.values():
+        from hermes_cli.provider_auth import iter_provider_configs
+        for pconfig in iter_provider_configs():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.auth_type == "aws_sdk":
                 blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
@@ -316,7 +316,7 @@ def _static_gate_env_prefixes() -> frozenset:
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)
-    except Exception:
+    except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
         pass
     return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
@@ -329,7 +329,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     try:
         from gateway.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return frozenset(names)
 

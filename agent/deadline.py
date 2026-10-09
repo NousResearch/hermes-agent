@@ -30,14 +30,8 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "MAX_SAFE_TIMEOUT_S",
-    "BoundedResult",
-    "DeadlineExpired",
-    "clamp_timeout",
-    "kill_process_tree",
-    "resolve_timeout",
-    "run_bounded_async",
-    "run_bounded_sync",
+    "MAX_SAFE_TIMEOUT_S", "BoundedResult", "DeadlineExpired", "clamp_timeout", "resolve_timeout",
+    "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
 # Upper bound for any timeout handed to platform wait primitives.

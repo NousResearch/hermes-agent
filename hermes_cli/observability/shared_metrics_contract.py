@@ -495,7 +495,6 @@ UPDATE_STOP_CLASSES = frozenset({
     "commit_point_refused",   # the commit point could not be armed durably; nothing moved
     "detached_head",          # a detached checkout stayed put, or its commits could not be backed up
     "disk_full",              # (see above)
-    "downgrade_refused",      # the target predates the gateway runtime a state.db already uses
     "download_failed",        # the ZIP fallback download failed
     "fetch_failed",           # git fetch failed
     "git_in_progress",        # a merge/rebase/cherry-pick/... was already in progress

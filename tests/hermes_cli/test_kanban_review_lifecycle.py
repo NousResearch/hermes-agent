@@ -649,6 +649,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
+        return None
 
     with kbc.connect() as conn:
         task_id = kb.create_task(

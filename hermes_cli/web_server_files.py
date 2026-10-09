@@ -193,7 +193,7 @@ def _resolve_managed_path(
     return policy, resolved, str(resolved)
 
 
-def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
+def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     locked_root = str(policy.locked_root) if policy.locked_root is not None else None
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
@@ -220,7 +220,7 @@ def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Pa
 
 def _managed_file_entry(
     policy: ManagedFilesPolicy, target: Path, *, skip_missing: bool = False
-) -> dict[str, Any] | None:
+) -> Dict[str, Any] | None:
     """Describe an entry; listings may skip vanished files, while writes stay strict."""
     try:
         resolved = target.resolve()

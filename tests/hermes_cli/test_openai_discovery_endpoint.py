@@ -19,6 +19,8 @@ Contracts pinned here:
 
 from __future__ import annotations
 
+import models.catalog_static as models_catalog_static
+
 from unittest.mock import patch as mock_patch
 
 import pytest
@@ -134,7 +136,7 @@ class TestRegionalCatalogFiltering:
     def test_official_hosts_intersect_with_curated(self, monkeypatch, base):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("OPENAI_BASE_URL", base)
-        curated = models_mod._PROVIDER_MODELS["openai-api"][0]
+        curated = models_catalog_static._PROVIDER_MODELS["openai-api"][0]
         with mock_patch.object(
             models_mod, "fetch_api_models", return_value=[curated, *self._RAW_DUMP]
         ):

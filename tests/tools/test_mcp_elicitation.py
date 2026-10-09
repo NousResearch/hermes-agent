@@ -16,9 +16,9 @@ import pytest
 
 pytest.importorskip("mcp.types")
 
-from mcp.types import ElicitResult
+from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
-from tools.mcp_tool_sampling import ElicitationHandler
+from tools.mcp_tool_sampling import ElicitationHandler  # noqa: E402
 
 
 def _form_params(message="please confirm", schema=None):

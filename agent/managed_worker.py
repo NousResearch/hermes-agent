@@ -7,7 +7,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 # Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
 # until hermes_bootstrap selects the committed environment, so it must be the first import.
 try:
-    import hermes_bootstrap
+    import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise
@@ -25,40 +25,6 @@ logger = logging.getLogger(__name__)
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
                     'turn_author', 'safe_mode', 'ignore_user_config'}
-# The bounded run_conversation fields a turn receipt keeps (outcome, exit reason, tokens, cost,
-# model): what the in-process projection commits and ``-z --usage-file`` reads.
-RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partial', 'error', 'turn_exit_reason',
-                 'api_calls', 'model', 'provider', 'prompt_tokens', 'completion_tokens', 'total_tokens',
-                 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
-                 'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
-                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens')
-
-
-def result_frame(result):
-    """Worker side: the receipt fields of ``run_conversation``'s result, scalars only, text bounded."""
-    return {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
-            if k in RESULT_FIELDS and (v is None or type(v) in (bool, int, float, str))}
-
-
-def accept_result(result):
-    """Owner side of the worker's result frame: ``(result, usage)`` in the in-process turn's shape
-    (gateway projection: prompt/completion tokens as input/output), or ValueError."""
-    if (not isinstance(result, dict) or set(result) - set(RESULT_FIELDS) or not isinstance(result.get('final_response'), str)
-            or any(not (value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096))
-                   for key, value in result.items() if key != 'final_response')):
-        raise ValueError('invalid_worker_result')
-    accepted = dict(result)
-    turn_in, turn_out = accepted.pop('_turn_input_tokens', None), accepted.pop('_turn_output_tokens', None)
-    if any(value is not None and (type(value) is not int or value < 0) for value in (turn_in, turn_out)):
-        raise ValueError('invalid_worker_result')
-    incoming, outgoing = accepted.pop('prompt_tokens', None), accepted.pop('completion_tokens', None)
-    if incoming is None and outgoing is None:
-        return accepted, {}
-    usage = {'input_tokens': incoming or 0 if turn_in is None else turn_in,
-             'output_tokens': outgoing or 0 if turn_out is None else turn_out}
-    usage['total_tokens'] = usage['input_tokens'] + usage['output_tokens']
-    accepted.update(input_tokens=incoming or 0, output_tokens=outgoing or 0)
-    return accepted, usage
 
 
 def read_frame(stream):
@@ -100,21 +66,17 @@ def validate_bootstrap(frame):
     return frame
 
 
-def bind_worker_policy(frame):
-    """Freeze the owner's assignment process-wide before any config/provider/agent import.
+def bind_bypass_policy(frame):
+    """Freeze the owner's bypass assignment process-wide before any config/provider/agent import.
 
-    The session's frozen config (never the live profile file) is what every config reader in
-    this process returns afterwards, so a profile edit after creation cannot reshape it (MCP
-    server definitions included). Ordinary sessions keep plugins, MCP and hooks; bypass sessions
-    also bind the safe / ignore-user-config policy.
+    Ordinary assignments bind nothing; the frozen explicit config (never the profile) is what
+    every config reader in this process returns afterwards.
     """
-    config = json.loads(frame['policy']['config_json'])
     if not frame['ignore_user_config']:
-        from agent.safe_worker_policy import _bind_worker_config
-        _bind_worker_config(config)
         return
     from agent.safe_worker_policy import _bind_safe_worker_policy
-    _bind_safe_worker_policy(safe_mode=frame['safe_mode'], ignore_user_config=True, config=config)
+    _bind_safe_worker_policy(safe_mode=frame['safe_mode'], ignore_user_config=True,
+                             config=json.loads(frame['policy']['config_json']))
 
 
 class WorkerChannel:
@@ -261,25 +223,10 @@ def retire_agent(agent):
     agent.release_clients()
 
 
-def tool_frame(call_id, name, args, *result):
-    """The callback arguments an in-process turn publishes from (executor-redacted display args,
-    the result and its failure verdict); the owner builds the shared tool event from them."""
-    frame = {'tool_call_id': str(call_id or ''), 'name': str(name or 'tool'), 'args': args if isinstance(args, dict) else {}}
-    if result:
-        from agent.display import _detect_tool_failure
-        frame['result'] = result[0] if isinstance(result[0], str) else str(result[0])
-        frame['is_error'] = bool(_detect_tool_failure(frame['name'], result[0])[0])
-    from gateway.session_tool_events import bounded_args, bounded_result
-    frame['args'] = bounded_args(frame['args'])
-    if result:
-        frame['result'] = bounded_result(result[0], frame['is_error'])
-    return json.loads(json.dumps(frame, default=str))
-
-
 def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
-    bind_worker_policy(frame)
+    bind_bypass_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     rpc = WorkerRPC(frame['home'])
@@ -294,17 +241,14 @@ def execute(frame, channel):
     from tools.process_registry import process_registry
     process_registry.recover_from_checkpoint()
     # Store construction binds the delegation ledger before tool discovery.
-    from gateway.session_policy import restore_policy, policy_scope, register_worker_hooks
+    from gateway.session_policy import restore_policy, policy_scope
     policy = restore_policy(frame['policy'])
-    register_worker_hooks(policy)
     discover_profile_mcp(policy)
     from run_agent import AIAgent
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
-    from gateway.session_worker_construct import construct_kwargs
-    construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
@@ -313,19 +257,14 @@ def execute(frame, channel):
             agent = _construct_agent(frame, AIAgent, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
-                reasoning_config=policy.reasoning_config,
-                # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
-                platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,
+                reasoning_config=policy.reasoning_config, platform=policy.source,
                 gateway_session_key=frame['route'], user_id=frame['user_id'], chat_id=frame['chat_id'],
                 skip_context_files=policy.ignore_rules, load_soul_identity=not policy.ignore_rules,
                 skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,
-                pass_session_id=policy.pass_session_id,
-                checkpoints_enabled=policy.checkpoints_enabled, **construct,
                 stream_delta_callback=lambda text: channel.send('delta', text=text) if text else None,
                 clarify_callback=controls.clarify,
-                tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),
-                tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
-                                                                                         **tool_frame(call_id, name, args, result)))
+                tool_start_callback=lambda call_id, name, args: channel.send('tool.start', tool_call_id=call_id, name=name),
+                tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete', tool_call_id=call_id, name=name))
             controls.agent = agent
             if controls.stopped.is_set():
                 agent.interrupt()
@@ -340,11 +279,7 @@ def execute(frame, channel):
                 if skipped:
                     raise ValueError('managed_attachment_unavailable')
                 frame = {**frame, 'text': content}
-            before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
-                      getattr(agent, 'session_completion_tokens', 0) or 0)
             result = run_worker_turns(agent, frame, history)
-            result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
-            result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
             agent = None
             # The auto-title thread bills through this store from a daemon thread; a title landing
@@ -354,7 +289,8 @@ def execute(frame, channel):
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''
-            channel.send('result', result=result_frame(result))
+            channel.send('result', result={k: result[k] for k in
+                ('final_response', 'failed', 'interrupted') if k in result})
             if not controls.finish.wait(30):
                 raise ValueError('managed_finish_timeout')
             store.finish()
@@ -389,9 +325,8 @@ def hello():
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    # This process's own stderr only, never the channel. The owner drains it into the profile's
-    # private managed-worker.log, redacting each line (patterns plus this worker's launch key and
-    # assignment secret) before it reaches disk; this process never opens a profile log itself.
+    # This process's own stderr only (the owner discards it): never the channel, and never the
+    # profile's log files, which the module contract keeps free of assignment secrets.
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler(sys.stderr))
     logger.propagate = False

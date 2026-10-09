@@ -107,10 +107,10 @@ class FakeTokenServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a: object) -> None:
+            def log_message(self, *_a: object) -> None:  # noqa: D401 - silence per-request logging
                 pass
 
-            def do_POST(self) -> None:
+            def do_POST(self) -> None:  # noqa: N802
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
                 form = {k: v[0] for k, v in parse_qs(raw).items()}
                 server.posts.append(form)

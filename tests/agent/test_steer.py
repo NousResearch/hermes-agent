@@ -183,7 +183,8 @@ class TestActiveTurnRedirect:
     def test_codex_app_server_hard_stop_reaches_native_session(self):
         agent = _bare_agent()
         calls = []
-        agent.api_mode = "codex_app_server"
+        agent.api_mode = "codex_responses"
+        agent.runtime_kind = "app_server"
         agent._codex_session = type(
             "_CodexSession",
             (),
@@ -872,7 +873,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         assert "api_content" not in history[1]
 
     def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
-        from agent.conversation_loop import _clone_message_for_send
+        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
         from unittest.mock import patch
 
         from tests.agent.test_run_agent import _mock_response

@@ -52,9 +52,7 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
             with pytest.raises(RuntimeError, match="RuntimeError: boom"):
                 await execute(authority, ref, row, policy)
 
-            # The owner tuple carries the scheduler's execution id (the admission's request id), the
-            # id the cron/executions ledger knows; never the admission id (df12cce832c).
-            assert reached == [(authority, ref.session_id, job["id"], row["request_id"])]
+            assert reached == [(authority, ref.session_id, job["id"], row["admission_id"])]
             assert agent_class.call_args.kwargs["session_db"] is db
             end_session.assert_called_once_with(ref.session_id, "cron_incomplete_no_output")
             close.assert_called_once()

@@ -176,7 +176,7 @@ async def probe(peer):
                     peer.release.set()
                 async with asyncio.timeout(10):
                     while any(not task.done() for task in adapter._background_tasks) or any(r['status'] != 'terminal' for r in
-                            list_session_admissions(authority.db, session_id=sid, pending_only=False)) or authority.pending_deliveries:
+                            list_session_admissions(authority.db, session_id=sid, pending_only=False)):
                         await asyncio.sleep(.01)
                 rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
                 assert len(peer.requests) == 4, peer.requests

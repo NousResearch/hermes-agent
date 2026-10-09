@@ -45,15 +45,6 @@ def admit_surface(params):
     return {'surface_v1': committed} if committed else {}
 
 
-def restore_surface(committed):
-    """A committed ``surface_v1`` arriving across a process boundary (managed worker), re-checked by
-    the admission validator: only an object admission itself could have committed is accepted."""
-    if (not isinstance(committed, dict) or not committed or set(committed) - set(_SUBMIT_FIELDS)
-            or admit_surface(committed).get('surface_v1', {}) != committed):
-        raise RuntimeStoreError('invalid_params')
-    return committed
-
-
 def _hud_note(committed, valid_tool_names):
     from agent.prompt_builder import hud_surface_note
     return hud_surface_note(valid_tool_names)
@@ -100,13 +91,3 @@ def surface_turn_note(agent):
     if not committed:
         return ''
     return surface_note(committed, getattr(agent, 'valid_tool_names', None))
-
-
-def arm_surface_turn(agent, notes=(), voice_turn=False):
-    """Project the executing admission's surface onto the agent's one-turn inputs, the same way in
-    process and in a managed worker: the ``auxiliary.voice_chat`` marker and the must-deliver notes
-    that ride the current user message (never the system prompt). Assigned unconditionally so a
-    reused agent never replays a stale note or route."""
-    agent._voice_turn_pending = bool(voice_turn) or surface_voice_turn()
-    agent._gateway_turn_context_notes = '\n\n'.join(
-        note for note in (*notes, surface_turn_note(agent)) if note)

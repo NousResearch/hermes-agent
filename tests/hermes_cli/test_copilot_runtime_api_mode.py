@@ -7,18 +7,22 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_copilot_runtime_api_mode_still_uses_default_without_target(monkeypatch):
+def test_copilot_route_policy_uses_configured_model_when_runtime_has_no_target(monkeypatch):
     from hermes_cli import runtime_provider as rp
 
-    monkeypatch.setattr(
-        "hermes_cli.models.copilot_model_api_mode",
-        lambda model, api_key=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "copilot", "default": "gpt-5.5",
+    })
+
+    runtime = rp._runtime(
+        "copilot",
+        None,
+        "https://api.githubcopilot.com",
+        "token",
+        source="test",
     )
 
-    assert rp._copilot_runtime_api_mode(
-        {"provider": "copilot", "default": "gpt-5.5"},
-        "token",
-    ) == "codex_responses"
+    assert runtime["api_mode"] == "codex_responses"
 
 
 @pytest.mark.parametrize("credential_source", ["pool", "explicit", "env", "hermes-auth-store"])
@@ -38,16 +42,11 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     expected_mode,
 ):
     """The public resolver must propagate the target through every auth path."""
-    from hermes_cli import models
     from hermes_cli import runtime_provider as rp
 
     model_cfg = {"provider": "copilot", "default": configured_model}
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
     monkeypatch.setattr(rp, "resolve_provider", lambda *_args, **_kwargs: "copilot")
-    # Keep this a real copilot_model_api_mode decision without making a live
-    # catalog request. The API-mode contract is determined by the model family.
-    monkeypatch.setattr(models, "fetch_github_model_catalog", lambda **_kwargs: [])
-
     kwargs = {"requested": "copilot", "target_model": target_model}
     if credential_source == "pool":
         entry = SimpleNamespace(

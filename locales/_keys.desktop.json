@@ -934,7 +934,6 @@
     "composer.previewLabel",
     "composer.previewUnavailable",
     "composer.promptSnippets",
-    "composer.queueCancelFailed",
     "composer.queueCollapse",
     "composer.queueDelete",
     "composer.queueDroppedBody",

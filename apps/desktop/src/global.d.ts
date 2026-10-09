@@ -432,13 +432,6 @@ declare global {
       preparedSubmissions?: {
         read: () => Promise<string>
         update: (key: string, entry: string | null) => Promise<void>
-        /** Atomic in the main process: replace `key` only while it holds exactly `expected`
-         *  (null = absent). `current` is the record stored afterwards. Group Send requires it. */
-        compareAndSet?: (
-          key: string,
-          expected: string | null,
-          entry: string | null
-        ) => Promise<{ applied: boolean; current: string | null }>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>

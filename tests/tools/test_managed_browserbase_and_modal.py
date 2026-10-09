@@ -125,7 +125,7 @@ def _install_fake_tools_package():
     )
     sys.modules["agent.browser_registry"] = types.SimpleNamespace(
         get_provider=lambda name: None,
-        list_providers=list,
+        list_providers=lambda: [],
         register_provider=lambda provider: None,
         _resolve=lambda configured: None,
     )

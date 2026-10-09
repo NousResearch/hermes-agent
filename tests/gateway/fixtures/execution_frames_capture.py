@@ -1,8 +1,7 @@
 """Capture real ``SessionEvents.publish`` frames for the Desktop execution-authority fence tests.
 
 Two successive owners (runtime epochs 1 and 2) each run one turn on the same
-session, then the second owner applies an idle ``rename`` mutation and cancels
-the head of a paused queue. The Desktop
+session, then the second owner applies an idle ``rename`` mutation. The Desktop
 fixture ``apps/desktop/src/lib/execution-authority.frames.json`` is this
 module's output; regenerate it with::
 
@@ -73,12 +72,6 @@ async def capture(tmp):
                     'operation': 'rename', 'payload': {'title': 'Renamed while idle'}}})
                 assert 'result' in response, response
                 owners[label]['idle_mutation_frames'] = peer.drain('session.updated')
-                # A paused FIFO (no drain claims its head): the queued row's snapshot and its
-                # cancellation are owner/admission frames, not frames of the finished turn.
-                authority._schedule = lambda _ref: None
-                queued = await authority.submit(conn.actor, Submission('queued', ref, {'text': 'queued'}, 'queue'))
-                await authority.cancel_queued(conn.actor, ref, queued.admission_id)
-                owners[label]['paused_cancel_frames'] = peer.drain('session.info') + peer.drain('message.complete')
             await conn.close()
     finally:
         store.close_all_db_handles()

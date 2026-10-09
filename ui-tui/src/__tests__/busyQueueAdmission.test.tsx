@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -25,9 +25,7 @@ const row = (admission_id: string, input_id: string, text: string, status = 'que
 })
 
 function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })) {
-  // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
-  // HERMES_HOME, so receipts must carry the canonical home or target_profile_home never matches.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-busy-admit-')))
+  const home = mkdtempSync(join(tmpdir(), 'ink-busy-admit-'))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
 

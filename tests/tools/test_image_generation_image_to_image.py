@@ -174,13 +174,13 @@ class TestFalRouting:
 
 class _EditCapableProvider(ImageGenProvider):
     def __init__(self):
-        self.received: dict[str, Any] = {}
+        self.received: Dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return "editcap"
 
-    def capabilities(self) -> dict[str, Any]:
+    def capabilities(self) -> Dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": 4}
 
     def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,

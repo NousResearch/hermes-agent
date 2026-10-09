@@ -15,7 +15,7 @@ out, breaks, and both writers proceed one-after-the-other (green).
 from __future__ import annotations
 
 import threading
-from unittest import mock
+import unittest.mock as mock
 
 import pytest
 

@@ -181,7 +181,7 @@ class TestNoProgressFailFast:
                             messages=[{"role": "user", "content": "x"}],
                             timeout=300,
                         )
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         owner_result["exc"] = exc
 
                 t = threading.Thread(target=_run, daemon=True)

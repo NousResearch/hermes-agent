@@ -51,7 +51,7 @@ def test_blank_memory_provider_stays_opt_out():
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("models.metadata.context.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
@@ -94,7 +94,7 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("models.metadata.context.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
@@ -178,7 +178,7 @@ def test_aiagent_reuses_handed_in_memory_manager_without_reinitializing():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider) as load_memory_provider,
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("models.metadata.context.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),

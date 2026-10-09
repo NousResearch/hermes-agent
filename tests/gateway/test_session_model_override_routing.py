@@ -122,7 +122,7 @@ fallback_providers:
             "credential_pool": None,
         }
 
-    from hermes_cli import runtime_provider
+    import hermes_cli.runtime_provider as runtime_provider
 
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
 

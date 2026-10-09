@@ -433,18 +433,6 @@ def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
 
 
-class LiveTargetUnavailableError(RuntimeError):
-    """No canonical Bot Chat owner was found BEFORE any intent was pinned: nothing was admitted, so
-    this is a definite no-send the sender may retry, not the ambiguous post-admission state."""
-
-    reason = "runtime_unavailable"
-
-
-def _unavailable_payload(dm_file: str, exc: BaseException) -> str:
-    return json.dumps({"reason": LiveTargetUnavailableError.reason, "delivery_id": _dm_delivery_id(dm_file),
-                       "error": f"{exc} — the message was NOT sent; it is safe to resend once the target is up."})
-
-
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
@@ -456,13 +444,9 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
-        try:
-            owner = find_canonical_live_owner(profile_home)
-        except Exception as exc:
-            # Discovery runs before the intent exists and never admits: definite, not ambiguous.
-            raise LiveTargetUnavailableError(f"canonical Bot Chat target is unavailable ({exc})") from exc
+        owner = find_canonical_live_owner(profile_home)
         if owner is None:
-            raise LiveTargetUnavailableError("canonical Bot Chat target is unavailable")
+            raise ValueError("canonical Bot Chat target is unavailable; no local fallback")
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
                       delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
@@ -577,9 +561,6 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)
-            except LiveTargetUnavailableError as exc:
-                print(_unavailable_payload(dm_file, exc))
-                return 1
             except Exception as exc:
                 print(_live_outcome_unknown(dm_file, exc))
                 return 1
@@ -629,10 +610,6 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
     if profile_home is not None:
         try:
             record = _admit_live_dm(profile_home, dm_file, author)
-        except LiveTargetUnavailableError as exc:
-            payload = _unavailable_payload(dm_file, exc)
-            _unlink_dm_file(dm_file)  # no intent was pinned: nothing will ever replay this file
-            return payload
         except Exception as exc:
             return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                 "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
@@ -856,7 +833,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:
         try:
-            import hermes_bootstrap
+            import hermes_bootstrap  # noqa: F401
         except (Exception, SystemExit) as exc:
             # A pinned live intent means the sender may already have admitted this DM and was
             # told not to resend; a bare repair hint would read as "NOT delivered". Without an

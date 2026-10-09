@@ -20,6 +20,7 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
 
     async def block_forever(_event):
         await release.wait()
+        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -60,6 +61,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
     async def block_forever(_event):
         await release.wait()
+        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -234,7 +236,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     # Patch the module-level names the stop() helper imports lazily.
     import tools.process_registry as _pr
     import tools.terminal_tool as _tt
-    from tools import terminal_tool_lifecycle
+    import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(_tt, "cleanup_all_environments", _fake_cleanup_envs)
     monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", _fake_cleanup_envs)

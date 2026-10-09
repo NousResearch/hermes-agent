@@ -13,8 +13,6 @@ _PURPOSE_CAPABILITIES = {
     'exposure': frozenset({'transport:delegate'}),
     'worker-adoption': frozenset({'worker:adopt'}),
 }
-# A grant's profile reach: its own home, or (interactive only) every served sibling.
-_SCOPES = frozenset({'profile', 'host'})
 
 
 class TicketStore:
@@ -29,11 +27,8 @@ class TicketStore:
         self._entries: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
 
-    def mint(self, *, profile_id, subject, purpose, scope='profile') -> str:
-        """``scope='host'`` lets an interactive connection select every profile this process
-        serves (the Desktop's one shared socket); the default binds exactly ``profile_id``."""
-        if (profile_id not in self.profile_ids or purpose not in _PURPOSE_CAPABILITIES or not subject
-                or scope not in _SCOPES or (scope == 'host' and purpose != 'interactive')):
+    def mint(self, *, profile_id, subject, purpose) -> str:
+        if profile_id not in self.profile_ids or purpose not in _PURPOSE_CAPABILITIES or not subject:
             raise PermissionError('bootstrap binding rejected')
         with self._lock:
             now = time.monotonic()
@@ -44,7 +39,7 @@ class TicketStore:
             self._entries[hashlib.sha256(ticket.encode()).hexdigest()] = (
                 now + self.TTL_SECONDS,
                 {'instance_id': self.instance_id, 'profile_id': profile_id, 'subject': subject,
-                 'purpose': purpose, 'capabilities': _PURPOSE_CAPABILITIES[purpose], 'scope': scope})
+                 'purpose': purpose, 'capabilities': _PURPOSE_CAPABILITIES[purpose]})
             return ticket
 
     def redeem(self, ticket, *, profile_id, purpose) -> dict:
@@ -66,12 +61,6 @@ class TicketStore:
                 raise PermissionError('bootstrap binding rejected')
             del self._entries[key]
             return dict(grant)
-
-    def outstanding(self) -> bool:
-        """An unexpired ticket was minted and not yet redeemed: a client is attaching right now."""
-        with self._lock:
-            now = time.monotonic()
-            return any(expires > now for expires, _grant in self._entries.values())
 
     def revoke(self) -> None:
         with self._lock:

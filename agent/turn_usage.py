@@ -71,7 +71,7 @@ def _fold_moa_usage(agent, canonical_usage):
 
 
 def record_response_usage(
-    agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
+    agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
@@ -164,7 +164,7 @@ def record_response_usage(
     if getattr(compressor, "_context_probed", False):
         ctx = compressor.context_length
         if getattr(compressor, "_context_probe_persistable", False):
-            from agent.model_metadata import save_provider_context_length
+            from models.metadata.context import save_provider_context_length
 
             save_provider_context_length(agent.model, agent.base_url, ctx, agent.provider)
             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")

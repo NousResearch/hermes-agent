@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway
+import hermes_cli.gateway as gateway
 
 pytestmark = pytest.mark.platforms("linux")
 

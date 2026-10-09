@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms import base
+import gateway.platforms.base as base
 
 
 @pytest.mark.asyncio

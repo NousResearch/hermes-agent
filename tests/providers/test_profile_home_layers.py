@@ -42,10 +42,11 @@ def homes(tmp_path, monkeypatch):
     launch.mkdir()
     secondary.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(launch))
-    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
-    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
-    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
-    monkeypatch.setattr(providers, "_HOME_LAYERS", {}, raising=False)
+    providers.list_providers()  # keep registry state coherent across fixture restore
+    monkeypatch.setattr(providers.registry, "_REGISTRY", dict(providers.registry._REGISTRY))
+    monkeypatch.setattr(providers.registry, "_ALIASES", dict(providers.registry._ALIASES))
+    monkeypatch.setattr(providers.registry, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(providers.registry, "_HOME_LAYERS", {}, raising=False)
     yield launch, secondary
     for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
         del sys.modules[mod]
@@ -63,7 +64,7 @@ def test_secondary_profile_plugin_resolves_for_its_home_only(homes):
     import providers
     from hermes_cli.auth import resolve_provider
 
-    _launch, secondary = homes
+    launch, secondary = homes
     _install(secondary, "scaleup-only")
 
     assert providers.get_provider_profile("scaleup-only") is None  # launch home discovers first

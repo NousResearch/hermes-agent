@@ -14,7 +14,7 @@ from pathlib import Path
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
-import dotenv
+import dotenv  # noqa: F401
 from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
     try:
         cfg = _load_secrets_config(home)
-    except Exception:
+    except Exception:  # noqa: BLE001 — external sources must not block routing
         return {}
     if not cfg:
         return {}
@@ -211,7 +211,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
                 local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
         report = apply_all(cfg, home, environ=local_env)
-    except Exception:
+    except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
         return {}
 
     if not report.sources:
@@ -272,7 +272,7 @@ def format_secret_source_suffix(env_var: str) -> str:
         registered = get_source(source)
         if registered is not None and registered.label:
             return f" (from {registered.label})"
-    except Exception:
+    except Exception:  # noqa: BLE001 — label lookup must never raise
         pass
     return f" (from {source})"
 
@@ -579,7 +579,7 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         from hermes_cli.config import apply_terminal_config_to_env
 
         apply_terminal_config_to_env(env=None)
-    except Exception:
+    except Exception:  # noqa: BLE001 — early bootstrap / malformed config
         pass
 
 
@@ -590,7 +590,7 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
         from hermes_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
-    except Exception:
+    except Exception:  # noqa: BLE001 — managed scope must never block startup
         return
     if managed_dir is None:
         return
@@ -617,7 +617,7 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         from agent.secret_scope import load_env_file
 
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
-    except Exception:
+    except Exception:  # noqa: BLE001 — unreadable .env: treat nothing as dotenv-owned
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
@@ -654,7 +654,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # load (the signature-cached read is cheap).
     try:
         cfg = _load_secrets_config(home_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — config errors must not block startup
         # See #40597.
         return
     # No source configured / enabled any more: whatever one wrote earlier is no longer backed (#126982
@@ -680,7 +680,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # a still-enabled source that supplies the same name skip it as pre-existing (``skipped_existing``).
     try:
         active = enabled_source_names(cfg, home_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — cannot tell which sources remain: keep everything (fail-open)
         active = None
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
@@ -688,7 +688,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     try:
         report = apply_all(cfg, home_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
@@ -773,7 +773,7 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
         src_cfg = secrets_cfg.get(source_name)
         src_cfg = src_cfg if isinstance(src_cfg, dict) else {}
         return str(source.remediation(error_kind, src_cfg) or "").strip()
-    except Exception:
+    except Exception:  # noqa: BLE001 — hints must never block startup
         return ""
 
 
@@ -795,7 +795,7 @@ def _load_secrets_config(home_path: Path) -> dict:
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
         data = load_yaml_file_readonly(config_path) or {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}
 

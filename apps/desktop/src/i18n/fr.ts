@@ -1237,7 +1237,9 @@ export const frOverrides = {
         maxLines: 'Limite de pagination de fichier',
         maxLineLength: 'Limite de longueur de ligne'
       },
-      codeExecution: { mode: "Mode d'exécution du code" },
+      codeExecution: {
+        mode: "Mode d'exécution du code"
+      },
       approvals: {
         mode: "Mode d'approbation",
         timeout: "Délai d'expiration de l'approbation",
@@ -4019,7 +4021,6 @@ export const frOverrides = {
     queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
     queueLostNote: 'Tour perdu pendant le redémarrage',
     restoreImageDraft: "Restaurer le brouillon d'image",
-    queueCancelFailed: "Impossible de retirer le tour en file d'attente",
     queueLostDiscard: 'Ignorer',
     queueLostDiscardTip:
       "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",

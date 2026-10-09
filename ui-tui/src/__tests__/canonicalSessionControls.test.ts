@@ -1,7 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
-import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
@@ -145,37 +144,4 @@ it('busy mode is session scoped and steering includes the observed execution gen
     text: 'correction',
     execution_generation: 4
   })
-})
-
-it('a guarded canonical model switch asks; yes re-sends once with the owner token, no changes nothing', async () => {
-  for (const accept of [false, true]) {
-    resetUiState()
-    resetOverlayState()
-    patchUiState({ sid: 'owner', info })
-    const { request, slash } = harness()
-    request.mockImplementation(async (method: string, params: any) => {
-      if (method === 'session.resume') {
-        return { revision: 8, execution_generation: 4, info } as any
-      }
-
-      return params.payload.confirm === 'tok-1'
-        ? { model: 'pricey', execution_generation: 5 }
-        : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
-    })
-    slash('/model pricey')
-    await flush()
-    const ask = getOverlayState().confirm
-    expect(ask?.detail).toBe('pricey IS EXPENSIVE')
-    expect(getUiState().info?.model).toBe('old')
-
-    if (accept) {
-      ask!.onConfirm()
-      await flush()
-      await flush()
-    }
-
-    const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
-    expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
-    expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
-  }
 })

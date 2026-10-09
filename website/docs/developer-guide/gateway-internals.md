@@ -216,22 +216,8 @@ the original result without incrementing the revision again; reusing its ID with
 different contents returns `admission_conflict`. A competing edit with a stale
 revision returns `revision_conflict`. Draining rejects new mutations and fresh
 session registration before routing or transcript creation. These edits
-do not interrupt a running turn. Canonical reset, delete, rewind, model, branch,
-and compression operations use the same receipt boundary. `branch` accepts an optional
-`title` and `through_message_id` (the row id of the last message to keep; tool results
-answering an assistant boundary come with it); without it the whole active transcript is
-copied. A request disconnect
-does not cancel its owner-held mutation: the commit, live projection and queue
-wakeup finish together, and profile retirement joins that work before releasing
-the store. An exact old receipt cannot evict a newer running agent.
-
-Canonical wire models live in `tui_gateway/contracts/canonical*.py` and generate
-`CanonicalRpcMethods` plus the OpenRPC `x-canonical-methods` catalog, separately
-from the standalone protocol. Both parameters and successful results are checked.
-
-ACP and finite CLI viewers detach with an explicit recovery notice if an accepted
-input becomes blocked behind an unknown execution. The accepted input remains
-queued: resolve the lost turn before continuing, rather than resending it.
+do not interrupt a running turn. This RPC does not yet migrate legacy direct
+writers, expose arbitrary SQL, or implement reset, delete, or rewind.
 
 ## Private native HTTP authentication
 
@@ -339,77 +325,6 @@ reset the choice with `hermes config set gateway.service_install_choice null`.
 Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its
 `ensure_gateway_service` helper is not a general runtime discovery or auto-start API:
 ordinary calls never reinstall a missing service based only on stored preference.
-
-## `hermes gateway ensure`
-
-Clients (Desktop, `hermes chat`, the TUI) discover or start the profile's session
-runtime with `hermes gateway ensure --json --timeout 60`; the summary is in the
-[CLI reference](../reference/cli-commands.md#local-runtime-discovery-and-startup).
-
-The timeout is a finite, positive total deadline in seconds (default `60`, enough for a
-cold daemon boot on a loaded host). An
-existing reservation or starting owner is waited for, not replaced. When absence
-is established, an existing service takes precedence; an unmanaged process is
-requested only when no service is found. This command never installs or rewrites
-service definitions, enables linger, elevates privileges, or clears update fences.
-Ambiguous or inaccessible ownership fails closed.
-
-Before requesting a service start, `ensure` checks its canonical profile directory
-and execution account, not just its unit/task name. Linux uses the manager's
-loaded command and environment (including effective drop-ins), macOS checks the
-loaded launchd job rather than assuming the on-disk plist is current, and Windows
-queries the actual task XML, principal, and installed launcher.
-
-- `profile_mismatch`: the installed service selects a different home or profile.
-  Inspect the selected service's `HERMES_HOME` and command-line profile selector;
-  use the matching profile or explicitly repair the service configuration.
-- `service_account_mismatch`: the service belongs to another account. Run the
-  client as that account, or explicitly configure a service for the intended user.
-- `service_identity_unverified`: the manager did not expose enough identity data,
-  or the definition uses unsupported dynamic configuration. Inspect it with
-  `systemctl [--user] show <unit> --all`, `launchctl print <domain>/<label>`, or
-  `schtasks /Query /TN <task> /XML`. Linux environment files, PAM/dynamic users,
-  start-time hooks and alternate root filesystems require operator review;
-  arbitrary shell launchers and modified Windows launcher scripts are not
-  interpreted by `ensure`. Restore an explicit supported definition through an
-  intentional service-management operation before retrying.
-
-These refusals do not start a service, rewrite configuration, or launch an
-unmanaged replacement. Standard explicitly bound default and custom-root installs
-remain eligible; a successful start request still must pass live readiness checks.
-
-On POSIX, local bootstrap checks the profile directory before it trusts the
-control socket inside it. Newly reserved homes are created with mode `0700`;
-existing permissions are never changed by `ensure`. The home keeps the operator's
-mode (a symlinked `~/.hermes`, `HERMES_HOME_MODE` `0701`/`0750`, or a `0755`
-home all work): read and search bits grant nothing against the owner-only (`0600`)
-socket. Only write access another user could use to swap the socket is refused
-with `inaccessible / unsafe_control_permissions`: world-write always, and
-group-write unless the group is the owner's private group (the umask-`002`
-user-private-group default) with no other members and no access ACL. The socket,
-its pointer file and the fallback socket directory stay strictly owner-only.
-Remove the extra write bit (`chmod o-w,g-w`) before retrying local attachment.
-
-| Exit code | Meaning |
-|-----------|---------|
-| `0` | Compatible session runtime ready. |
-| `2` | Invalid invocation, including invalid timeout or unknown arguments. |
-| `3` | Incompatible runtime protocol or capabilities. |
-| `4` | Authorization or profile mismatch. |
-| `5` | Deadline reached; startup may still be pending. |
-| `6` | Runtime draining or update in progress. |
-| `7` | Inaccessible runtime, conflicting supervisor, or startup failure. |
-
-A service start command or process creation is not a readiness acknowledgement.
-A gateway that has not exposed the session-authority capability can remain
-`starting` until the deadline even while its messaging adapters work. Do not treat
-exit `5` as permission to replace that owner. On Windows, a Startup-folder-only
-installation requires login rather than an unmanaged fallback; failure to detach
-from a parent job is reported instead of retried with weaker process isolation.
-
-Service persistence is separately opt-in during setup. Imports and noninteractive
-setup do not install a missing service based on an imported preference. See
-[optional service installation](#optional-service-installation).
 
 ## Architecture Overview
 

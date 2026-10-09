@@ -94,10 +94,10 @@ class GatewaySessionWatchersMixin:
             return None
         return summary if isinstance(summary, dict) else None
 
-    def _stall_candidates(self) -> dict[str, tuple[Any, Any]]:
+    def _stall_candidates(self) -> Dict[str, tuple[Any, Any]]:
         """session_key -> (adapter, pending event) from every live adapter's pending slot (default
         + multiplex profiles, deduped by identity), then the overflow queues; first one wins."""
-        candidates: dict[str, tuple[Any, Any]] = {}
+        candidates: Dict[str, tuple[Any, Any]] = {}
         maps = (getattr(self, "adapters", {}), *getattr(self, "_profile_adapters", {}).values())
         adapters = {id(a): a for m in maps for a in list(m.values()) if a is not None}
         for adapter in adapters.values():
@@ -214,7 +214,10 @@ class GatewaySessionWatchersMixin:
     async def _model_catalog_refresh_watcher(self) -> None:
         """Refresh the /model picker's remote catalogs every TTL window. The picker itself only
         refreshes on a cold/stale open, so if nobody opens ``/model`` the cache never updates."""
-        from hermes_cli.model_catalog import refresh_catalogs, refresh_interval_seconds
+        from gateway.model_catalog_runtime import (
+            refresh_catalogs,
+            refresh_interval_seconds,
+        )
         await asyncio.sleep(30)  # let startup settle
         while self._running:
             try:

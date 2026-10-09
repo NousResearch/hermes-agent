@@ -370,7 +370,7 @@ class GatewayStatusCommandsMixin:
         # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
-            filled = round(pct / 100 * 24)
+            filled = int(round(pct / 100 * 24))
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
@@ -417,7 +417,7 @@ class GatewayStatusCommandsMixin:
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
         if not context_length and model_name:
-            from agent.model_metadata import get_model_context_length
+            from models.metadata.context import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )

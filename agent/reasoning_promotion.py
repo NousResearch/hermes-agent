@@ -51,7 +51,7 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
     # Several entries may share one endpoint (LiteLLM/vLLM router): only the live ``custom:<slug>``
     # entry counts; without one, every flagged sibling on the endpoint must opt in. Startup, gateway
     # and TUI keep ``provider="custom"`` and the named identity in ``requested_provider``.
-    from hermes_cli.providers import custom_provider_slug
+    from providers.identity import custom_provider_slug
 
     requested = str(getattr(agent, "requested_provider", "") or "").strip().lower()
     ids = {custom_provider_slug(p) for p in (provider, requested) if p.startswith("custom:")}

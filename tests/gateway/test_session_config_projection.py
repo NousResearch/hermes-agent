@@ -46,7 +46,7 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
                 for method, params, reason in [
                     ('config.get', {'key': 'full', 'profile': 'foreign'}, 'profile_mismatch'),
                     ('config.get', {'key': 'full', 'session_id': sid, 'source': 'gui'}, 'invalid_params'),
-                    ('config.set', {'key': 'model', 'session_id': sid, 'value': 'other'}, 'use_session_mutation_model'),
+                    ('config.set', {'key': 'model', 'session_id': sid, 'value': 'other'}, 'invalid_params'),
                 ]:
                     assert (await rpc(ws, method, **params))['error']['message'] == reason
                 other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'

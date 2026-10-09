@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from plugins.platforms.discord.adapter import (
+from plugins.platforms.discord.adapter import (  # noqa: E402
     ChoicePickerView,
     ClarifyChoiceView,
     ExecApprovalView,

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSessionBusyError, markNextSubmitVoice, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import { isSessionBusyError, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
 import { captureDestination } from '../app/submissionDestination.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -229,33 +229,5 @@ describe('submissionCore.isSessionBusyError', () => {
     expect(isSessionBusyError(new Error('waiting for model response'))).toBe(true)
     expect(isSessionBusyError(new Error('some other failure'))).toBe(false)
     expect(isSessionBusyError('not an error')).toBe(false)
-  })
-})
-
-describe('submissionCore.submitPrompt — voice marker ownership', () => {
-  beforeEach(() => {
-    resetUiState()
-    patchUiState({ sid: 'sess-1' })
-  })
-
-  it('a voice-origin busy correction consumes the marker; the same text typed later is not a voice turn', async () => {
-    const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({ status: 'accepted' }))
-    const gw = { isCanonical: true, request } as unknown as GatewayClient
-
-    markNextSubmitVoice('hello')
-    submitPrompt('hello', makeDeps(gw), true, undefined, {
-      behindTurn: true,
-      queueItem: { controlMethod: 'session.redirect', executionGeneration: 3, submissionId: 'c1', text: 'hello' } as never
-    })
-    submitPrompt('hello', makeDeps(gw))
-    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit']))
-
-    for (const [, params] of request.mock.calls) {
-      expect(params).not.toHaveProperty('voice_turn')
-    }
-
-    markNextSubmitVoice('spoken')
-    submitPrompt('spoken', makeDeps(gw))
-    await vi.waitFor(() => expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ voice_turn: true }))
   })
 })

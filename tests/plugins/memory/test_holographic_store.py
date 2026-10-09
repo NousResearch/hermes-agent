@@ -152,7 +152,7 @@ class TestConcurrency:
             try:
                 for i in range(n_facts):
                     store.add_fact(f"fact thread={idx} seq={i}", category="load")
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - recorded for assert
                 errors.append(exc)
             finally:
                 store.close()

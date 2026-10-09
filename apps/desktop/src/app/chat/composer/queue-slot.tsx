@@ -6,7 +6,7 @@ import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from 
 import { notifyError } from '@/store/notifications'
 
 import type { QueueEditState } from './composer-utils'
-import { cancelQueuedPrompt, discardLostPrompt } from './discard-lost-prompt'
+import { discardLostPrompt } from './discard-lost-prompt'
 import { QueuePanel } from './queue-panel'
 
 export interface ComposerQueueSlotInputs {
@@ -51,21 +51,6 @@ export function renderComposerQueueSlot({
       editingId={queueEdit?.entryId ?? null}
       entries={queuedPrompts}
       onDelete={id => {
-        const serverStatus = queuedPrompts.find(entry => entry.id === id)?.serverStatus
-
-        // A server-owned row is an admission in the authority's FIFO, not local state: Delete
-        // withdraws it there (a lost `unknown` turn is acknowledged, exactly like Discard). The
-        // pending fanout then retires the card; a local removal here would only hide live work.
-        if (serverStatus && gateway) {
-          const withdraw = serverStatus === 'unknown' ? discardLostPrompt : cancelQueuedPrompt
-
-          withdraw(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway)).catch((error: unknown) =>
-            notifyError(error, t.composer.queueCancelFailed)
-          )
-
-          return
-        }
-
         if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
           exitQueuedEdit('cancel')
         }

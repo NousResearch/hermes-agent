@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.skillevaluator_scan import (
+from tools.skillevaluator_scan import (  # noqa: E402
     Tier1Report,
     _parse_report,
     format_tier1_report,

@@ -22,7 +22,7 @@ _OPENROUTER_ENV_VARS = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
 
 def _model_section_has_credentials(config: dict) -> bool:
     """True when any known inference provider has usable credentials: ``active_provider`` in the
-    auth store (OAuth providers), ``PROVIDER_REGISTRY`` ``api_key_env_vars``, or the legacy
+    auth store (OAuth providers), live provider ``api_key_env_vars``, or the legacy
     OpenRouter aggregator env vars (``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY``)."""
     from hermes_cli.setup import get_env_value
     try:
@@ -32,9 +32,10 @@ def _model_section_has_credentials(config: dict) -> bool:
     except Exception:
         pass
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
     except Exception:
-        PROVIDER_REGISTRY = {}  # type: ignore[assignment]
+        get_provider_config = lambda _provider: None  # type: ignore[assignment]
+        iter_provider_configs = lambda: ()  # type: ignore[assignment]
 
     def _has_key(pconfig) -> bool:
         # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by the user —
@@ -48,7 +49,7 @@ def _model_section_has_credentials(config: dict) -> bool:
     model_cfg = config.get("model") if isinstance(config, dict) else None
     if isinstance(model_cfg, dict):
         provider_id = (model_cfg.get("provider") or "").strip().lower()
-        if provider_id in PROVIDER_REGISTRY and _has_key(PROVIDER_REGISTRY[provider_id]):
+        if (pconfig := get_provider_config(provider_id)) is not None and _has_key(pconfig):
             return True
         if provider_id == "openrouter" and any_openrouter_key:
             return True
@@ -58,7 +59,7 @@ def _model_section_has_credentials(config: dict) -> bool:
         return True
     # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are commonly set for git tooling.
     # Mirrors resolve_provider in auth.py.
-    return any(_has_key(pconfig) for pid, pconfig in PROVIDER_REGISTRY.items() if pid != "copilot")
+    return any(_has_key(pconfig) for pconfig in iter_provider_configs() if pconfig.id != "copilot")
 
 
 def _model_summary(config: dict) -> Optional[str]:

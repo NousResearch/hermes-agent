@@ -9,7 +9,7 @@ the count-based net); ``backup`` names are late-imported so its patch seams
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -48,7 +48,7 @@ def _cron_jobs_list(doc: Any) -> list[Any]:
     return []
 
 
-def _prompt_degraded(job: dict[str, Any]) -> bool:
+def _prompt_degraded(job: Dict[str, Any]) -> bool:
     """True when an agent job's prompt field is unusable: blank, missing, or
     collapsed to the job's own name (a name is not a prompt)."""
     if job.get("no_agent"):
@@ -59,60 +59,10 @@ def _prompt_degraded(job: dict[str, Any]) -> bool:
     return prompt.strip() == str(job.get("name", "")).strip()
 
 
-def _snapshot_prompts_by_id(snap_doc: Any) -> dict[str, str]:
-    """Usable (non-blank) snapshot prompts keyed by job id."""
-    prompts: dict[str, str] = {}
-    for job in _cron_jobs_list(snap_doc):
-        if not isinstance(job, dict):
-            continue
-        prompt = job.get("prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            prompts[str(job.get("id", ""))] = prompt
-    return prompts
-
-
-def _restore_degraded_prompts(
-    jobs: list[Any], snap_prompts: dict[str, str], *, apply: bool
-) -> list[str]:
-    """Ids of jobs whose prompt is degraded AND the snapshot has a usable prompt for;
-    with ``apply`` the prompt field (only) is restored in place."""
-    restored: list[str] = []
-    for job in jobs:
-        if not isinstance(job, dict) or not _prompt_degraded(job):
-            continue
-        job_id = str(job.get("id", ""))
-        snap_prompt = snap_prompts.get(job_id)
-        if snap_prompt is None:
-            continue
-        if apply:
-            job["prompt"] = snap_prompt
-        restored.append(job_id)
-    return restored
-
-
-def _restore_under_cron_lock(home: Path, snap_prompts: dict[str, str]) -> list[str]:
-    """Re-read ``home``'s jobs under the canonical cron writer lock, restore the prompts that
-    are STILL degraded, and publish through the locked, merge-aware cron save path.
-
-    Publishing a document read before the lock would erase any cron edit committed in between
-    (create, remove, schedule/prompt edit). ``use_cron_store`` pins both the lock file and the
-    store to ``home`` so a sibling profile's recovery serializes with THAT profile's writers.
-    Raises ``RuntimeError`` on an unreadable store and ``OSError`` on a failed write.
-    """
-    from cron import jobs as cron_jobs
-
-    with cron_jobs.use_cron_store(home), cron_jobs._jobs_lock():
-        jobs = cron_jobs.load_jobs()
-        restored_ids = _restore_degraded_prompts(jobs, snap_prompts, apply=True)
-        if restored_ids:
-            cron_jobs.save_jobs(jobs)
-    return restored_ids
-
-
 def restore_cron_prompt_fields_if_degraded(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[dict[str, Any]]:
+) -> Optional[Dict[str, Any]]:
     """Safety net for field-level cron-job degradation across ``hermes update``.
 
     A writer active during the update's mutation window replaced every
@@ -149,34 +99,55 @@ def restore_cron_prompt_fields_if_degraded(
     if not snapshot_id:
         return None
 
-    from hermes_cli.backup import _CRON_JOBS_REL, _quick_snapshot_root
+    from hermes_cli.backup import _CRON_JOBS_REL, _atomic_output_path, _quick_snapshot_root
 
     home = hermes_home or get_hermes_home()
     live_path = home / _CRON_JOBS_REL
     snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
 
+    live_doc = _load_cron_jobs_doc(live_path)
+    if live_doc is None:
+        return None
     snap_doc = _load_cron_jobs_doc(snap_path)
     if snap_doc is None:
         return None
-    snap_prompts = _snapshot_prompts_by_id(snap_doc)
-    # Unlocked pre-check keeps the healthy path free of lock/dir side effects. It only gates:
-    # the patch itself is decided on a fresh read under the cron writer lock below.
-    live_doc = _load_cron_jobs_doc(live_path)
-    if live_doc is None or not _restore_degraded_prompts(
-        _cron_jobs_list(live_doc), snap_prompts, apply=False
-    ):
+
+    snap_by_id: Dict[str, Dict[str, Any]] = {}
+    for job in _cron_jobs_list(snap_doc):
+        if isinstance(job, dict):
+            snap_by_id[str(job.get("id", ""))] = job
+
+    restored_ids: list[str] = []
+    live_jobs = _cron_jobs_list(live_doc)
+    for job in live_jobs:
+        if not isinstance(job, dict):
+            continue
+        snap_job = snap_by_id.get(str(job.get("id", "")))
+        if snap_job is None:
+            continue
+        if not _prompt_degraded(job):
+            continue
+        snap_prompt = snap_job.get("prompt")
+        if not isinstance(snap_prompt, str) or not snap_prompt.strip():
+            continue
+        job["prompt"] = snap_prompt
+        restored_ids.append(str(job.get("id", "")))
+
+    if not restored_ids:
         return None
 
     try:
-        restored_ids = _restore_under_cron_lock(home, snap_prompts)
-    except (OSError, RuntimeError) as exc:
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        with _atomic_output_path(live_path) as tmp_path:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(live_doc, f, indent=2)
+                f.write("\n")
+    except (OSError, PermissionError) as exc:
         logger.error(
             "Cron job prompts were degraded during update but auto-restore "
             "failed: %s",
             exc,
         )
-        return None
-    if not restored_ids:
         return None
 
     logger.warning(
@@ -195,9 +166,9 @@ def restore_cron_prompt_fields_if_degraded(
 
 
 def restore_cron_prompt_fields_all_profiles(
-    profile_snapshots: dict[str, str],
+    profile_snapshots: Dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[dict[str, Any]]:
+) -> list[Dict[str, Any]]:
     """Run the cron prompt-field safety net for every sibling profile.
 
     Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
@@ -205,7 +176,7 @@ def restore_cron_prompt_fields_all_profiles(
     pre-update snapshot. Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[dict[str, Any]] = []
+    restored: list[Dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     from hermes_cli.backup import _sibling_profile_homes

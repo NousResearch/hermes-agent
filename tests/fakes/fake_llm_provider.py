@@ -240,7 +240,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:
+        def do_GET(self) -> None:  # noqa: N802
             if server.record_get:
                 with server._lock:
                     server.requests.append({
@@ -254,7 +254,7 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json(404, {"error": {"message": "not found"}})
 
-        def do_POST(self) -> None:
+        def do_POST(self) -> None:  # noqa: N802
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             try:
                 body = json.loads(raw or b"{}")

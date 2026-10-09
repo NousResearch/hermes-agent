@@ -32,7 +32,7 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
 
-from agent import chat_completion_helpers
+import agent.chat_completion_helpers as chat_completion_helpers
 from agent.chat_completion_helpers import direct_api_call
 
 

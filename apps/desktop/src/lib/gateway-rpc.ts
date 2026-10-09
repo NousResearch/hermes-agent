@@ -38,15 +38,6 @@ export function isMissingRestEndpoint(error: unknown): boolean {
   )
 }
 
-/** Narrow twin of isMissingRestEndpoint for routes with path params: only the
- *  backend's catch-all verdict (or the Electron HTML guard) proves the ROUTE is
- *  absent; a handler's own 404 (unknown session/profile) never matches. */
-export function isUnroutedRestPath(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /no such api endpoint|endpoint is likely missing/i.test(message)
-}
-
 /** True when the backend refused a request because it owns the profile and the
  *  call is offline-only maintenance (`web_server_sessions.py::_with_session_maintenance`
  *  → HTTP 409 "Exclusive maintenance refused"). The refusal is the steady state

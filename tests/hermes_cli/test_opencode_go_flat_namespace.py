@@ -13,7 +13,7 @@ Two bugs this exercises:
    deepseek catalog.  Fix: once step d matches the model in the current
    aggregator's live catalog, skip ``detect_provider_for_model``.
 
-2. ``normalize_model_for_provider('minimax/minimax-m2.7', 'opencode-go')``
+2. ``normalize_model_id('opencode-go', 'minimax/minimax-m2.7')``
    used to pass the ``minimax/`` prefix through unchanged.  When user configs
    contained prefixed fallback entries (commonly copied from aggregator slugs),
    the fallback activation path sent ``minimax/minimax-m2.7`` to opencode-go
@@ -23,7 +23,7 @@ Two bugs this exercises:
 
 from unittest.mock import patch
 
-from hermes_cli.model_normalize import normalize_model_for_provider
+from models import normalize_model_id
 from hermes_cli.model_switch import switch_model
 
 
@@ -39,13 +39,13 @@ _OPENCODE_GO_LIVE = [
 
 
 # ---------------------------------------------------------------------------
-# normalize_model_for_provider: strip vendor prefix for flat-namespace providers
+# normalize_model_id: strip vendor prefix for flat-namespace providers
 # ---------------------------------------------------------------------------
 
 
 def test_opencode_go_strips_deepseek_prefix():
-    assert normalize_model_for_provider(
-        "deepseek/deepseek-v4-flash", "opencode-go"
+    assert normalize_model_id(
+        "opencode-go", "deepseek/deepseek-v4-flash"
     ) == "deepseek-v4-flash"
 
 

@@ -49,7 +49,8 @@ class DummyAgent:
         *,
         auto_compaction="native",
     ):
-        self.api_mode = "codex_app_server"
+        self.api_mode = "codex_responses"
+        self.runtime_kind = "app_server"
         self.codex_app_server_auto_compaction = auto_compaction
         self.session_id = "hermes-session-1"
         self.platform = "cli"

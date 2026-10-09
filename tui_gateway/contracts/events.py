@@ -55,9 +55,6 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
-    # WebSocket transport bound to a session authority: session verbs speak the canonical wire
-    # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
-    session_authority: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -710,9 +707,9 @@ class PetChangedPayload(OpenPayload):
 
     enabled: bool
     slug: str | None = None
-    displayName: str | None = None
+    displayName: str | None = None  # noqa: N815 - wire key
     scale: float | None = None
-    spritesheetRevision: str | None = None
+    spritesheetRevision: str | None = None  # noqa: N815 - wire key
 
 
 class PetGenerateProgressPayload(OpenPayload):
@@ -721,7 +718,7 @@ class PetGenerateProgressPayload(OpenPayload):
     token: str
     count: int
     index: int | None = None
-    dataUri: str | None = None
+    dataUri: str | None = None  # noqa: N815 - wire key
 
 
 class PetHatchProgressPayload(OpenPayload):

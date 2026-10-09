@@ -12,7 +12,7 @@ from pathlib import Path
 
 import hermes_yaml as yaml
 
-from tui_gateway import server
+import tui_gateway.server as server
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

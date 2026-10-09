@@ -22,10 +22,8 @@ from agent.conversation_compression import (
 )
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
-from agent.model_metadata import (
-    get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
-    parse_available_output_tokens_from_error,
-)
+from agent.model_metadata import get_context_length_from_provider_error, is_output_cap_error, parse_available_output_tokens_from_error
+from models.metadata.context import is_local_endpoint
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from utils import base_url_host_matches
@@ -61,8 +59,8 @@ class OverflowVerdict:
     fields are the loop locals the handler may have rebound."""
 
     action: str
-    result: Optional[dict[str, Any]]
-    messages: list[dict[str, Any]]
+    result: Optional[Dict[str, Any]]
+    messages: List[Dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     approx_tokens: int
@@ -84,11 +82,11 @@ class _Recovery(OverflowVerdict):
     api_call_count: int
     max_compression_attempts: int
     action: str = "fallthrough"
-    result: Optional[dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
     provider_overflow_recovery_pending: bool = False
     is_context_length_error: bool = False
 
-    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> OverflowVerdict:
+    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> OverflowVerdict:
         self.action, self.result = action, result
         return self
 
@@ -186,7 +184,7 @@ class _Recovery(OverflowVerdict):
 
     def compress_scored_by_tokens(
         self, request_tokens: int, *, fail_on_timeout: bool = False,
-    ) -> tuple[Optional[OverflowVerdict], bool, int]:
+    ) -> Tuple[Optional[OverflowVerdict], bool, int]:
         """``compress`` scored in message count / tokens (context-overflow errors ARE
         token-budget errors). Same-message-count compression (tool-result pruning,
         in-place summarization) can shrink the request, so re-estimate rather than trust
@@ -323,7 +321,7 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     """Shrink context_length only when the provider reports the real limit; else keep
     the window and compress. Guessed probe tiers can turn a configured 1M window into
     256K/128K/64K. Returns the provider-reported limit, or ``None``."""
-    from agent.model_metadata import save_provider_context_length
+    from models.metadata.context import save_provider_context_length
 
     agent = st.agent
     compressor = agent.context_compressor
@@ -461,7 +459,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 def recover_from_overflow(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_msg: str, wrapped_output_cap_budget: Optional[int],
-    messages: list[dict[str, Any]], api_messages: Any, system_message: Any,
+    messages: List[Dict[str, Any]], api_messages: Any, system_message: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: int,
     compression_attempts: int, max_compression_attempts: int, api_call_count: int,
     effective_task_id: Any,

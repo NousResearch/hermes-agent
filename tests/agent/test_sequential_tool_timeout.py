@@ -38,7 +38,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    from tools import daemon_pool
+    import tools.daemon_pool as daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -77,7 +77,7 @@ def _make_agent(tmp_path: Path) -> AIAgent:
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("models.metadata.context.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -167,7 +167,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    from hermes_cli import lifecycle
+    import hermes_cli.lifecycle as lifecycle
     import model_tools
 
     agent = _make_agent(tmp_path)

@@ -14,7 +14,7 @@ from providers import get_provider_profile
 
 @pytest.fixture
 def transport():
-    import agent.transports.chat_completions
+    import agent.transports.chat_completions  # noqa: F401
     return get_transport("chat_completions")
 
 

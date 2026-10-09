@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scripts.bundles import release_artifacts as artifacts
-from tests.scripts.test_release_r2 import r2_server
+from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 
 
 @pytest.mark.parametrize('variant', ['bundled', 'light'])

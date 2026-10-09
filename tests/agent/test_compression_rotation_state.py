@@ -33,7 +33,6 @@ from agent.conversation_compression import (
 )
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
-import itertools
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -146,7 +145,7 @@ class TestGoalMigratesOnRotation:
         # Set a persistent goal on the parent via the real persistence path.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
             (tmp_path / ".hermes").mkdir(exist_ok=True)
-            from hermes_cli import goals
+            import hermes_cli.goals as goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):
@@ -303,7 +302,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            _returned, _ = agent._compress_context(
+            returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -345,7 +344,7 @@ class TestRotationChildFlushDedup:
             "publish_compression_child",
             side_effect=RuntimeError("simulated publish failure"),
         ):
-            _returned, _ = agent._compress_context(
+            returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -406,7 +405,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            _returned, _ = agent._compress_context(
+            returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -509,7 +508,7 @@ class TestRotationChildFlushDedup:
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
         ]
 
-        _returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+        returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
         agent._flush_messages_to_session_db(messages, conversation_history=loaded)
 
         child_rows = db.get_messages_as_conversation(
@@ -1074,9 +1073,9 @@ class TestFallbackStreakFollowsRotation:
             side_effect=_fallback_compress,
         ):
             compressor.compression_count = 1
-            agent.context_compressor = compressor
+            setattr(agent, "context_compressor", compressor)
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
-        child = agent.session_id
+        child = getattr(agent, "session_id")
 
         assert child != parent
         assert compressor._fallback_compression_streak == 1
@@ -1290,7 +1289,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         assert "task A" in tail["content"]
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in itertools.pairwise(compressed)
+            for previous, current in zip(compressed, compressed[1:])
         )
 
 
@@ -1357,7 +1356,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in itertools.pairwise(compressed)
+            for previous, current in zip(compressed, compressed[1:])
         )
 
         db_msgs = db.get_messages(agent.session_id)
@@ -1370,7 +1369,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in itertools.pairwise(db_msgs)
+            for previous, current in zip(db_msgs, db_msgs[1:])
         )
 
 
@@ -1427,7 +1426,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in tail
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in itertools.pairwise(compressed)
+            for previous, current in zip(compressed, compressed[1:])
         )
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
@@ -1622,7 +1621,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in repaired
         assert not any(
             previous.get("role") == current.get("role")
-            for previous, current in itertools.pairwise(compressed)
+            for previous, current in zip(compressed, compressed[1:])
         )
 
     def test_multimodal_content_survives_and_synthetic_provenance_clears(
@@ -1732,7 +1731,7 @@ class TestTodoSnapshotScaffoldingTails:
         db.create_session(session_id, source="telegram")
         agent = _build_agent_with_db(db, session_id, platform="telegram")
         pending_task = "- [ ] pending-task. Continue after the next compaction"
-        agent.context_compressor.compress.return_value = [
+        getattr(agent, "context_compressor").compress.return_value = [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "assistant", "content": "acknowledged"},
             {
@@ -1827,7 +1826,7 @@ class TestAbortedRotationDoesNotGrowParent:
         db.end_session(parent, "tui_shutdown")
         assert db.get_session(parent)["ended_at"] is not None
 
-        _returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
         # Rotation went through — no abort loop, no repeated flush growth.
         assert agent.session_id != parent

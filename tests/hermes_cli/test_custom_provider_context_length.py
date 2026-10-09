@@ -122,14 +122,14 @@ class TestGetCustomProviderModelCapability:
 
 
 class TestGetModelContextLengthHonorsOverride:
-    """agent.model_metadata.get_model_context_length must honor the
+    """models.metadata.context.get_model_context_length must honor the
     custom_providers override at step 0b — before any probe, cache hit,
     or models.dev lookup can override it.
     """
 
     def _mock_all_probes(self):
         """Context manager that disables every downstream resolution step."""
-        from agent import model_metadata as _mm
+        import models.metadata.context as _mm
         return [
             patch.object(_mm, "get_cached_context_length", return_value=None),
             patch.object(_mm, "fetch_endpoint_model_metadata", return_value={}),
@@ -139,7 +139,7 @@ class TestGetModelContextLengthHonorsOverride:
         ]
 
     def test_custom_providers_override_wins_over_default_fallback(self):
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         custom = [
             {
                 "base_url": "https://example.invalid/v1",
@@ -167,7 +167,7 @@ class TestGetModelContextLengthHonorsOverride:
         Users who set both should see the top-level value — that's the
         documented precedence and matches the long-standing step-0 behavior.
         """
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         custom = [
             {
                 "base_url": "https://example.invalid/v1",
@@ -187,7 +187,7 @@ class TestGetModelContextLengthHonorsOverride:
         """With custom_providers=None and all probes disabled, resolver
         returns DEFAULT_FALLBACK_CONTEXT (256K after the stepdown bump).
         """
-        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from models.metadata.context import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
         patches = self._mock_all_probes()
         for p in patches:
             p.start()
@@ -226,6 +226,6 @@ def test_override_honored_when_caller_passes_no_custom_providers(tmp_path, monke
         f"        context_length: {override}\n",
         encoding="utf-8",
     )
-    from agent.model_metadata import get_model_context_length
+    from models.metadata.context import get_model_context_length
 
     assert get_model_context_length(model, base_url=base_url, api_key="", provider="custom") == override

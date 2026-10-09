@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Regression tests for the fail-closed PID-ownership guard.
 
 Refs #90471 / #89614.  The shared Windows ``taskkill`` boundaries:

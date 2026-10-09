@@ -37,49 +37,11 @@ def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     from agent.display import build_tool_preview, tool_labels_for_call
     name = str(tool_name or "tool")
     args = args if isinstance(args, dict) else {}
-    from gateway.session_tool_events import bounded_args
     payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
-               "tool_call_id": str(call_id or ""), "tool_name": name, "args": bounded_args(args)}
+               "tool_call_id": str(call_id or ""), "tool_name": name, "args": args}
     if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
         payload["labels"] = labels
     return payload
-
-
-def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, verbose=False) -> dict:
-    """``tool.complete`` as every viewer reads it: the start contract plus the executor's verdict and
-    the result (ACP renders paths/output and failure from it), and ``result_text`` under /verbose."""
-    from gateway.session_tool_events import bounded_result
-    if is_error is None:
-        from agent.display import _detect_tool_failure
-        is_error = _detect_tool_failure(tool_name, result)[0]
-    payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
-               "result": bounded_result(result, is_error)}
-    if verbose:
-        from tui_gateway.tool_progress import _tool_result_text
-        payload["result_text"] = _tool_result_text(result)
-    return payload
-
-
-def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
-    """A managed worker's tool frame, published exactly as an in-process turn publishes its own
-    (the shared viewer stream and this admission's API observers). False for any other frame."""
-    kind = frame.get("type")
-    fields = {"type", "tool_call_id", "name", "args"} | ({"result", "is_error"} if kind == "tool.complete" else set())
-    if (kind not in ("tool.start", "tool.complete") or set(frame) != fields
-            or not isinstance(frame["tool_call_id"], str) or not isinstance(frame["name"], str)
-            or not isinstance(frame["args"], dict)
-            or (kind == "tool.complete" and (not isinstance(frame["result"], str) or type(frame["is_error"]) is not bool))):
-        return False
-    call_id, name, args, result = frame["tool_call_id"], frame["name"], frame["args"], frame.get("result")
-    if kind == "tool.start":
-        payload = _tool_lifecycle_payload(call_id, name, args)
-    else:
-        verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
-        payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
-    authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event
-    publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
-    return True
 
 
 class GatewayTurnProgressMixin:
@@ -831,11 +793,14 @@ class GatewayTurnProgressMixin:
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
         from agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
+        payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
+                   "result": result if isinstance(result, str) else str(result)}
         owner = self._approval_owner
         live = owner[0].sessions.get(owner[1]) if owner is not None else None
         # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
-        verbose = live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose"
-        payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
+        if live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose":
+            from tui_gateway.tool_progress import _tool_result_text
+            payload["result_text"] = _tool_result_text(result)
         self._publish_execution("tool.complete", payload)
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:

@@ -9,8 +9,12 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+from providers import get_provider_profile
+
+OPENROUTER_FALLBACK_MODEL = get_provider_profile("openrouter").fallback_aux_model
+NOUS_FALLBACK_MODEL = get_provider_profile("nous").fallback_aux_model
+
 from agent.auxiliary_client import (
-    _NOUS_MODEL,
     CodexAuxiliaryClient,
     get_text_auxiliary_client,
     get_available_vision_backends,
@@ -30,7 +34,6 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _try_openrouter,
-    _OPENROUTER_MODEL,
     OPENROUTER_BASE_URL,
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
@@ -159,7 +162,7 @@ class TestResolveTaskProviderModel:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
         monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
-        resolved_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
             provider="moa",
             model="opus-gpt",
@@ -178,7 +181,7 @@ class TestResolveTaskProviderModel:
         reached via the config path instead of an explicit call-time arg.
         Before the fix this returned ("moa", ...) verbatim, and
         resolve_provider_client() would then look up "moa" in
-        PROVIDER_REGISTRY (which has no such entry, it's not a real HTTP
+        canonical provider projection (which has no such entry, it's not a real HTTP
         provider), fail, and surface a "MOA_API_KEY environment variable"
         error for a provider that was never meant to be reached over the wire."""
         preset = {
@@ -195,7 +198,7 @@ class TestResolveTaskProviderModel:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
         monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
-        resolved_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
         )
 
@@ -217,7 +220,7 @@ class TestResolveTaskProviderModel:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
         monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
-        resolved_provider, model, _base_url, _api_key, _api_mode = _resolve_task_provider_model(
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
             provider="moa",
             model="gone-preset",
@@ -233,7 +236,7 @@ class TestResolveTaskProviderModel:
         auxiliary.<task> config. Only cfg_model was normalized before, so a
         MoA reference/aggregator slot configured with `model: auto` sent the
         literal string "auto" to the wire as a model id."""
-        resolved_provider, model, _base_url, _api_key, _api_mode = _resolve_task_provider_model(
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             provider="anthropic",
             model="auto",
         )
@@ -300,7 +303,7 @@ class TestMoaAggregatorSharedResolution:
         cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
         (home / "config.yaml").write_text(yaml.safe_dump(cfg))
 
-        resolved_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
         )
 
@@ -482,11 +485,13 @@ class TestNormalizeAuxProvider:
         assert str(alias_client.base_url) == str(canon_client.base_url)
         assert alias_model == canon_model
 
-    def test_covers_every_alias_the_main_path_resolves(self):
-        """Every alias hermes_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
-        from hermes_cli.auth import _PROVIDER_ALIASES as auth_table
-        for alias, canonical in auth_table.items():
-            assert _normalize_aux_provider(alias) == canonical, alias
+    def test_covers_every_registered_provider_alias(self):
+        """Every canonical provider alias resolves identically in aux."""
+        from providers import list_providers
+
+        for profile in list_providers():
+            for alias in profile.aliases:
+                assert _normalize_aux_provider(alias) == profile.name, alias
 
 
 class TestResolveCodexCredentialToken:
@@ -640,7 +645,7 @@ class TestAnthropicOAuthFlag:
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
-            client, _model = _try_anthropic()
+            client, model = _try_anthropic()
             assert client is not None
             assert isinstance(client, AnthropicAuxiliaryClient)
             # The adapter inside should have is_oauth=True
@@ -654,7 +659,7 @@ class TestAnthropicOAuthFlag:
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
-            client, _model = _try_anthropic()
+            client, model = _try_anthropic()
             assert client is not None
             assert isinstance(client, AnthropicAuxiliaryClient)
             adapter = client.chat.completions
@@ -679,7 +684,7 @@ class TestAnthropicOAuthFlag:
         ):
             from agent.auxiliary_client import _try_anthropic
 
-            client, _model = _try_anthropic()
+            client, model = _try_anthropic()
 
         assert client is not None
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
@@ -829,9 +834,9 @@ class TestResolveProviderClientUniversalModelFallback:
                 return_value="gpt-5.4",
             ),
             patch(
-                "agent.auxiliary_client._get_aux_model_for_provider",
-                return_value="",  # openai-codex has no catalog default either
-            ),
+                "agent.auxiliary_client.select_provider_auxiliary_model",
+                return_value="gpt-5.4",
+            ) as mock_select,
             patch(
                 "agent.auxiliary_client._build_codex_client",
                 return_value=(MagicMock(), "gpt-5.4"),
@@ -845,6 +850,7 @@ class TestResolveProviderClientUniversalModelFallback:
 
         assert client is not None
         assert model == "gpt-5.4"
+        mock_select.assert_called_once_with("openai-codex", main_model="gpt-5.4")
         assert mock_build.call_args.args[0] == "gpt-5.4"
 
 
@@ -859,9 +865,8 @@ class TestResolveProviderClientUniversalModelFallback:
         with (
             patch("agent.auxiliary_client._read_main_model") as mock_read_main,
             patch(
-                "agent.auxiliary_client._get_aux_model_for_provider",
-                return_value="catalog-default-should-not-be-used",
-            ),
+                "agent.auxiliary_client.select_provider_auxiliary_model",
+            ) as mock_select,
             patch(
                 "agent.auxiliary_client._build_xai_oauth_aux_client",
                 return_value=(MagicMock(), "grok-4.20-multi-agent"),
@@ -874,6 +879,7 @@ class TestResolveProviderClientUniversalModelFallback:
         assert client is not None
         assert model == "grok-4.20-multi-agent"
         mock_read_main.assert_not_called()
+        mock_select.assert_not_called()
         assert mock_build.call_args.args[0] == "grok-4.20-multi-agent"
 
 
@@ -919,7 +925,7 @@ class TestExpiredCodexFallback:
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import _resolve_auto_route
-            client, _model, _provider = _resolve_auto_route()
+            client, model, _provider = _resolve_auto_route()
             assert client is not None
             # OpenRouter is 1st in chain, should win
             mock_openai.assert_called()
@@ -936,7 +942,7 @@ class TestExpiredCodexFallback:
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic
-            client, _model = _try_anthropic()
+            client, model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions
             assert adapter._is_oauth is True
@@ -951,7 +957,7 @@ class TestExplicitProviderRouting:
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            client, _model = resolve_provider_client("anthropic")
+            client, model = resolve_provider_client("anthropic")
             assert client is not None
             adapter = client.chat.completions
             assert adapter._is_oauth is False
@@ -969,7 +975,7 @@ class TestExplicitProviderRouting:
             client, model = _try_openrouter()
 
         assert client is mock_client
-        assert model == _OPENROUTER_MODEL
+        assert model == OPENROUTER_FALLBACK_MODEL
         mock_openai.assert_called_once()
         assert mock_openai.call_args.kwargs["api_key"] == "sk-or-env-fallback"
         assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
@@ -995,7 +1001,7 @@ class TestOpenRouterPaidLaneGuard:
             mock_openai.return_value = mock_client
             client, model = _try_openrouter()
         assert client is mock_client
-        assert model == _OPENROUTER_MODEL
+        assert model == OPENROUTER_FALLBACK_MODEL
 
     def test_free_only_skips_paid_configured_model(self, monkeypatch):
         """free_only=true + user-configured PAID model → OpenRouter skipped."""
@@ -1025,7 +1031,7 @@ class TestOpenRouterPaidLaneGuard:
         assert model == "nvidia/nemotron-3-ultra-550b-a55b:free"
 
     def test_configured_model_overrides_hardcoded_default(self, monkeypatch):
-        """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
+        """auxiliary.openrouter_model overrides the provider fallback model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
@@ -1266,7 +1272,7 @@ class TestAuxiliaryPoolAwareness:
         with (
             patch("agent.auxiliary_client.load_pool", return_value=pool),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+            patch("agent.auxiliary_client.get_provider_profile", return_value=SimpleNamespace(resolve_aux_model=lambda **_kw: "")),
         ):
             from agent.auxiliary_client import _try_nous
 
@@ -1274,7 +1280,7 @@ class TestAuxiliaryPoolAwareness:
 
         assert pool.refreshed is True
         assert client is not None
-        assert model == _NOUS_MODEL
+        assert model == NOUS_FALLBACK_MODEL
         assert mock_openai.call_args.kwargs["api_key"] == fresh_token
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
 
@@ -1382,7 +1388,7 @@ class TestIsPaymentError:
             "this model requires a subscription, upgrade for access: "
             "https://ollama.com/upgrade"
         )
-        exc.status_code = 403
+        setattr(exc, "status_code", 403)
         assert _is_payment_error(exc) is True
 
 
@@ -1473,25 +1479,55 @@ class TestRefreshNousRecommendedModel:
 
 
 
-    def test_falls_back_to_default_when_portal_unavailable(self, monkeypatch):
+    def test_falls_back_to_canonical_selector_when_portal_unavailable(self, monkeypatch):
         def _boom(**kw):
             raise RuntimeError("portal down")
-        monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model", _boom)
+
+        monkeypatch.setitem(
+            _refresh_nous_recommended_model.__globals__,
+            "get_provider_profile",
+            lambda _provider: SimpleNamespace(resolve_aux_model=_boom),
+        )
+        selector = MagicMock(return_value=NOUS_FALLBACK_MODEL)
+        monkeypatch.setitem(
+            _refresh_nous_recommended_model.__globals__,
+            "select_provider_auxiliary_fallback",
+            selector,
+        )
+
         out = _refresh_nous_recommended_model(
             vision=False, stale_model="some/dead-model")
-        assert out == _NOUS_MODEL
 
-    def test_returns_none_when_no_distinct_alternative(self, monkeypatch):
-        """When the failed model IS the default and the Portal has nothing
-        else, there's no usable alternative."""
-        monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model",
-            lambda **kw: _NOUS_MODEL,
+        assert out == NOUS_FALLBACK_MODEL
+        selector.assert_called_once_with(
+            "nous", preferred_model="", excluded_model="some/dead-model",
         )
+
+    def test_returns_none_when_canonical_selector_has_no_distinct_alternative(self, monkeypatch):
+        """The refreshed recommendation is passed through the stale-model exclusion."""
+        monkeypatch.setitem(
+            _refresh_nous_recommended_model.__globals__,
+            "get_provider_profile",
+            lambda _provider: SimpleNamespace(
+                resolve_aux_model=lambda **_kw: NOUS_FALLBACK_MODEL,
+            ),
+        )
+        selector = MagicMock(return_value="")
+        monkeypatch.setitem(
+            _refresh_nous_recommended_model.__globals__,
+            "select_provider_auxiliary_fallback",
+            selector,
+        )
+
         out = _refresh_nous_recommended_model(
-            vision=False, stale_model=_NOUS_MODEL)
+            vision=False, stale_model=NOUS_FALLBACK_MODEL)
+
         assert out is None
+        selector.assert_called_once_with(
+            "nous",
+            preferred_model=NOUS_FALLBACK_MODEL,
+            excluded_model=NOUS_FALLBACK_MODEL.lower(),
+        )
 
 
 class TestIsRateLimitError:
@@ -2119,7 +2155,7 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         return None, None
 
     monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("agent.auxiliary_client.iter_provider_configs", lambda: fake_registry.values())
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
@@ -2154,7 +2190,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
         return False, None
 
     monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("agent.auxiliary_client.iter_provider_configs", lambda: fake_registry.values())
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
@@ -3166,7 +3202,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
         # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
         # fallback the adapter used to read is suppressed). The adapter must still be told.
-        import model_tools
+        import model_tools  # noqa: F401 — triggers provider discovery
         import providers
 
         assert providers.get_provider_profile("commandcode-anthropic") is not None
@@ -3186,7 +3222,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # Bare ``provider: commandcode-anthropic`` (no api_mode) must wrap the client on the
         # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
         # OpenAI client and TypeError.
-        import model_tools
+        import model_tools  # noqa: F401
         from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
 
         monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)
@@ -4330,7 +4366,7 @@ class TestOpenRouterExplicitApiKey:
         mock_openai.return_value = MagicMock(name="openrouter-client")
 
         with patch("agent.auxiliary_client.OpenAI", mock_openai):
-            client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 provider="openrouter",
                 explicit_api_key="explicit-pool-key",
             )
@@ -4377,7 +4413,7 @@ class TestAnthropicExplicitApiKey:
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 provider="anthropic",
                 explicit_api_key="explicit-fallback-key",
             )
@@ -4442,7 +4478,7 @@ class TestAuxUnhealthyCache:
              patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
              patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
-            client, _model, label = _try_payment_fallback("openrouter", task="compression")
+            client, model, label = _try_payment_fallback("openrouter", task="compression")
         assert client is nous_client
         assert label == "nous"
         # OR is skipped via skip_chain_labels (failed provider), custom via unhealthy cache.
@@ -4741,7 +4777,7 @@ class TestCompressionFallbackContextFilter:
         so the runtime fallback stays consistent with the startup feasibility
         check in agent/conversation_compression.py."""
         from agent.auxiliary_client import _task_minimum_context_length
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from models.metadata.context import MINIMUM_CONTEXT_LENGTH
 
         assert _task_minimum_context_length("compression") == MINIMUM_CONTEXT_LENGTH
         # Non-compression tasks have no minimum (None)
@@ -4794,7 +4830,7 @@ class TestCustomEndpointApiKeyInheritance:
 
         with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            _client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 "custom",
                 model="test-model",
                 explicit_base_url="https://gw.example.com/v1",
@@ -4822,7 +4858,7 @@ class TestCustomEndpointApiKeyInheritance:
 
         with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            _client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 "custom",
                 model="test-model",
                 explicit_base_url="https://gw.example.com/v1",
@@ -4849,7 +4885,7 @@ class TestCustomEndpointApiKeyInheritance:
              patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
              patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            _client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 "custom",
                 model="test-model",
                 explicit_base_url="https://gw.example.com/v1",
@@ -4881,7 +4917,7 @@ class TestCustomEndpointApiKeyInheritance:
 
         with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-            _client, _model = resolve_provider_client(
+            client, model = resolve_provider_client(
                 "custom",
                 model="test-model",
                 explicit_base_url="https://other-host.example.net/v1",
@@ -5307,363 +5343,47 @@ class TestFastModelTier:
         """Changing the routing preference must not reuse the old auto client."""
         from agent import auxiliary_client as ac
 
-        with patch.object(ac, "_task_prefers_fast_model", return_value=False):
+        with patch.object(ac, "_task_fast_preference_enabled", return_value=False):
             main_key = ac._client_cache_key(
                 "auto", async_mode=False, task="title_generation"
             )
-        with patch.object(ac, "_task_prefers_fast_model", return_value=True):
+        with patch.object(ac, "_task_fast_preference_enabled", return_value=True):
             fast_key = ac._client_cache_key(
                 "auto", async_mode=False, task="title_generation"
             )
 
         assert main_key != fast_key
 
-    def test_catalog_match_prefers_rolling_alias_over_pinned_id(self):
-        """A "-latest" alias wins: it is the only id that cannot go stale."""
-        from agent import auxiliary_client as ac
-
-        catalog = {
-            "z-ai/glm-5.2": {},
-            "openai/gpt-5.4-mini": {},
-            "~openai/gpt-mini-latest": {},
-            "stepfun/step-3.7-flash:free": {},
-        }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "~openai/gpt-mini-latest"
-
-    def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
-        """Substring matching must not pick a thinker, a queue, or an encoder."""
-        from agent import auxiliary_client as ac
-
-        catalog = {
-            "openai/o3-mini": {},
-            "openai/gpt-5.4-mini:batch": {},
-            "sentence-transformers/all-minilm-l6-v2": {},
-            "google/gemini-3.6-flash": {},
-        }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
-
-    def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
-        """A provider names its speech and image endpoints after the chat model
-        they're paired with, so they satisfy the family rungs and can't answer."""
-        from agent import auxiliary_client as ac
-
-        catalog = {
-            "openai/gpt-4o-mini-tts": {},
-            "openai/gpt-4o-mini-transcribe": {},
-            "openai/gpt-4o-mini-search-preview": {},
-            "openai/gpt-4o-mini": {},
-        }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
-
-    def test_catalog_match_takes_the_newest_of_a_family(self):
-        """The bare family rungs must land on the current generation.
-
-        A provider serves every generation of its small tier it hasn't retired,
-        and compared as strings the oldest sorts first — so the rung meant to
-        keep the titler current was pinning it to the most obsolete member.
-        """
-        from agent import auxiliary_client as ac
-
-        catalog = {
-            "openai/gpt-3.5-mini": {},
-            "openai/gpt-9-mini": {},
-            "openai/gpt-10-mini": {},
-        }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "openai/gpt-10-mini"
-
-    def test_catalog_fetch_is_authenticated(self):
-        """Most /v1/models endpoints need a key; anonymously they 401.
-
-        A 401 reads as "this provider serves no small model", so the titler
-        would fall back to the curated default and never notice.
-        """
-        from agent import auxiliary_client as ac
+    def test_fast_catalog_fetch_is_authenticated(self):
+        """Fact acquisition authenticates the catalog without choosing the model."""
+        from agent import auxiliary_model_resolution as selection_aux
 
         with patch(
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
         ), patch(
-            "hermes_cli.models_pricing.fetch_models_with_pricing", return_value={}
+            "application_model_pricing.fetch_models_with_pricing",
+            return_value={"openai/gpt-5.4-mini": {}},
         ) as fetch:
-            ac._fast_model_from_catalog("openai")
+            assert selection_aux._fast_catalog_ids("openai") == ("openai/gpt-5.4-mini",)
 
         assert fetch.call_args.kwargs["api_key"] == "sk-test"
         assert fetch.call_args.kwargs["base_url"] == "https://api.example.com"
 
-    def test_falls_back_to_curated_default_when_catalog_unavailable(self):
-        """An offline catalog degrades to the provider's pinned default."""
-        from agent import auxiliary_client as ac
+    def test_fast_tier_falls_back_to_profile_default_when_catalog_unavailable(self):
+        from agent import auxiliary_model_resolution as selection_aux
 
-        with patch.object(ac, "_fast_model_from_catalog", return_value=""):
-            assert (
-                ac._get_aux_model_for_provider("anthropic", prefer_fast=True)
-                == ac._get_aux_model_for_provider("anthropic")
+        with patch.object(selection_aux, "_fast_catalog_ids", return_value=()):
+            fast = selection_aux.select_provider_auxiliary_model(
+                "anthropic", prefer_fast=True
             )
+            ordinary = selection_aux.select_provider_auxiliary_model("anthropic")
+        assert fast == ordinary
 
     def test_fast_tier_is_opt_in(self):
         """Without prefer_fast the resolver must not touch the live catalog."""
-        from agent import auxiliary_client as ac
+        from agent import auxiliary_model_resolution as selection_aux
 
-        with patch.object(ac, "_fast_model_from_catalog") as spy:
-            ac._get_aux_model_for_provider("nous")
+        with patch.object(selection_aux, "_fast_catalog_ids") as spy:
+            selection_aux.select_provider_auxiliary_model("anthropic")
         spy.assert_not_called()
-
-    def test_only_titling_is_in_the_fast_tier(self):
-        """Compression/vision/search keep 'auto means my chat model'."""
-        from agent.auxiliary_client import _FAST_MODEL_TASKS
-
-        assert "title_generation" in _FAST_MODEL_TASKS
-        overlap = {"compression", "vision", "web_extract"}.intersection(
-            _FAST_MODEL_TASKS
-        )
-        assert not overlap
-    def test_builtin_registry_raises_does_not_suppress_named_custom_lookup(self, monkeypatch):
-        """#76602 (review feedback) — a partial catalog-load failure in the
-        built-in registry must not short-circuit the user-defined
-        provider lookup. The two lookups are now parallel and
-        independent; an exception in one does not suppress the other.
-
-        Before the refactor, ``get_provider`` raising jumped the outer
-        ``except`` to the hardcoded allowlist fallback and never
-        consulted ``_get_named_custom_provider`` — so a configured
-        named provider was still downgraded to ``"custom"`` whenever the
-        built-in catalog failed to load. The user's repro path
-        (Hermes desktop on Windows with a partial / early-startup
-        catalog state) hits this branch.
-        """
-        import agent.auxiliary_client as ac
-
-        def _catalog_raises(_name):
-            raise RuntimeError("built-in catalog unavailable")
-
-        fake_entry = {
-            "name": "AgnesAI",
-            "base_url": "https://api.agnes-ai.cn/v1",
-            "api_key": "sk-agnes-from-config",
-            "model": "agnes-2.5-flash",
-        }
-        with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
-            return_value=fake_entry,
-        ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_catalog_raises,
-        ):
-            resolved_provider, _model, base_url, _api_key, _api_mode = (
-                ac._resolve_task_provider_model(
-                    task="vision",
-                    provider="agnes-ai.cn",
-                    model="agnes-2.5-flash",
-                    base_url="https://api.agnes-ai.cn/v1",
-                    api_key=None,
-                )
-            )
-
-        assert resolved_provider == "agnes-ai.cn", (
-            "Built-in registry raising must not suppress the named-custom "
-            "lookup; the user-defined provider must remain named (review "
-            "feedback on #76602 — partial-load failure path)"
-        )
-        assert base_url == "https://api.agnes-ai.cn/v1"
-
-    def test_resolve_vision_provider_client_preserves_named_provider_via_config(self, tmp_path):
-        """#76602 (review feedback) — integration test through the real
-        ``resolve_vision_provider_client`` entry point with a real
-        ``HERMES_HOME`` config.yaml, mirroring the pattern from
-        ``tests/agent/test_auxiliary_named_custom_providers.py``.
-
-        Before the fix the repro in the issue body returned
-        ``('custom', 'no-key-required')`` for this exact config shape;
-        after the fix the named provider is preserved and the inline
-        ``api_key`` from the providers: entry reaches the client.
-        """
-        import hermes_yaml as yaml
-
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
-            "model": {"default": "test-model"},
-            "providers": {
-                "agnes-ai.cn": {
-                    "name": "AgnesAI",
-                    "base_url": "https://api.agnes-ai.cn/v1",
-                    "api_key": "sk-agnes-test",
-                    "model": "agnes-2.5-flash",
-                },
-            },
-        }))
-        import os
-        old_home = os.environ.get("HERMES_HOME")
-        os.environ["HERMES_HOME"] = str(hermes_home)
-        try:
-            from agent.auxiliary_client import resolve_vision_provider_client
-
-            resolved_provider, client, _model = resolve_vision_provider_client(
-                provider="agnes-ai.cn",
-                model="agnes-2.5-flash",
-                base_url="https://api.agnes-ai.cn/v1",
-                api_key=None,
-            )
-        finally:
-            if old_home is None:
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = old_home
-
-        assert resolved_provider == "agnes-ai.cn", (
-            "resolve_vision_provider_client must preserve a named "
-            "user-defined provider + explicit base_url rather than "
-            "downgrading to 'custom' (issue #76602 repro)"
-        )
-        # The inline api_key from the providers: entry must reach the
-        # client — this is what the 'custom' downgrade was losing.
-        assert client.api_key == "sk-agnes-test"
-
-
-# ---------------------------------------------------------------------------
-# Regression coverage for #76602 — auxiliary vision with a custom provider
-# defined in the ``providers:`` section of config.yaml plus an explicit
-# ``base_url`` was being silently downgraded to ``"custom"`` because
-# ``_preserve_provider_with_base_url`` only consulted the built-in
-# provider registry (``hermes_cli.providers.get_provider``). The
-# downgrade routed the call through the bare-custom branch in
-# ``resolve_provider_client`` with no key, producing 401s from
-# auth-required providers (e.g. agnes-ai.cn, nvidia-nim with key_env).
-# The fix also checks ``_get_named_custom_provider`` so a named
-# user-defined provider + explicit base_url stays named through to the
-# named-custom-provider key-resolution branch.
-# ---------------------------------------------------------------------------
-
-
-class TestPreserveNamedCustomProviderWithBaseUrl:
-    """#76602 — _resolve_task_provider_model must keep a user-defined
-    provider named when the call site passes ``provider=<name>`` +
-    ``base_url=...`` (the shape async_call_llm takes after resolving the
-    auxiliary.vision task config). The bare-custom downgrade to the
-    ``"custom"`` string loses the key and produces 401s.
-    """
-
-    def test_user_defined_provider_named_in_config_is_preserved(self, monkeypatch):
-        """A provider name from ``providers:`` survives explicit base_url.
-
-        Before the fix this returned ``("custom", ...)`` → bare-custom
-        branch in ``resolve_provider_client`` → ``no-key-required`` → 401.
-        After the fix it returns ``("agnes-ai.cn", ...)`` so the
-        named-custom-provider branch picks up
-        ``providers.<name>.api_key`` (or the configured ``key_env``).
-        """
-        import agent.auxiliary_client as ac
-
-        fake_entry = {
-            "name": "AgnesAI",
-            "base_url": "https://api.agnes-ai.cn/v1",
-            "api_key": "sk-agnes-test",
-            "model": "agnes-2.5-flash",
-        }
-        with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
-            return_value=fake_entry,
-        ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
-        ):
-            resolved_provider, _model, base_url, _api_key, _api_mode = (
-                ac._resolve_task_provider_model(
-                    task="vision",
-                    provider="agnes-ai.cn",
-                    model="agnes-2.5-flash",
-                    base_url="https://api.agnes-ai.cn/v1",
-                    api_key=None,
-                )
-            )
-
-        assert resolved_provider == "agnes-ai.cn", (
-            "User-defined provider from providers: section must be preserved "
-            "instead of being downgraded to 'custom' (issue #76602)"
-        )
-        assert base_url == "https://api.agnes-ai.cn/v1"
-
-    def test_built_in_provider_with_base_url_still_preserved(self, monkeypatch):
-        """Built-in registry hit still wins — user-defined fallback only
-        fires when the built-in registry missed. This guards against
-        regressing the pre-existing built-in provider behavior.
-        """
-        import agent.auxiliary_client as ac
-
-        with patch(
-            "hermes_cli.providers.get_provider",
-            return_value={"name": "Anthropic", "api_key": "sk-anthropic"},
-        ):
-            resolved_provider, _model, base_url, _api_key, _api_mode = (
-                ac._resolve_task_provider_model(
-                    task="moa_reference",
-                    provider="anthropic",
-                    model="claude-sonnet-4-6",
-                    base_url="https://api.anthropic.com/v1",
-                    api_key="sk-anthropic",
-                )
-            )
-
-        assert resolved_provider == "anthropic"
-        assert base_url == "https://api.anthropic.com/v1"
-
-    def test_unknown_provider_with_base_url_falls_back_to_custom_downgrade(self, monkeypatch):
-        """Provider name not in either registry → keep the existing
-        ``"custom"`` downgrade behavior. Nothing changes for truly
-        anonymous custom endpoints (no name → no key → bare-custom branch
-        handles ``no-key-required`` itself).
-        """
-        import agent.auxiliary_client as ac
-
-        with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
-            return_value=None,
-        ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
-        ):
-            resolved_provider, _model, base_url, _api_key, _api_mode = (
-                ac._resolve_task_provider_model(
-                    task="vision",
-                    provider="some-unknown-gateway",
-                    model="custom-model",
-                    base_url="https://example.com/v1",
-                    api_key="some-token",
-                )
-            )
-
-        # Pre-existing behavior: unknown name + explicit base_url →
-        # downgrade to "custom" so the caller routes through the
-        # bare-custom branch (which uses the explicit api_key).
-        assert resolved_provider == "custom"
-        assert base_url == "https://example.com/v1"
-
-    def test_hardcoded_allowlist_still_works_when_both_registries_unavailable(self, monkeypatch):
-        """If both the built-in registry and the user-defined config are
-        unavailable (e.g. early import path before config is loaded), the
-        existing hardcoded allowlist still returns True for known names —
-        so xai-oauth / qwen-oauth / etc. aren't regressed by the fix.
-        """
-        import agent.auxiliary_client as ac
-
-        def _boom(_name):
-            raise RuntimeError("catalog unavailable")
-
-        with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
-            side_effect=_boom,
-        ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_boom,
-        ):
-            resolved_provider, _model, _base_url, _api_key, _api_mode = (
-                ac._resolve_task_provider_model(
-                    task="moa_reference",
-                    provider="xai-oauth",
-                    model="grok-3",
-                    base_url="https://api.x.ai/v1",
-                    api_key="xai-token",
-                )
-            )
-
-        assert resolved_provider == "xai-oauth"

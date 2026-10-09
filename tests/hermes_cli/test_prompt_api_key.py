@@ -5,6 +5,7 @@ Regression coverage for #16394: the wizard used to silently skip the key prompt
 when any value was present (even malformed junk), leaving users stuck.
 """
 from __future__ import annotations
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 from pathlib import Path
 from unittest.mock import patch
@@ -24,8 +25,8 @@ def profile_env(tmp_path, monkeypatch):
 
 
 def _pconfig(name="deepseek"):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    return PROVIDER_REGISTRY[name]
+
+    return get_provider_config(name)
 
 
 def _run_prompt(existing_key, choice, new_key="", provider_id="", pconfig_name="deepseek"):

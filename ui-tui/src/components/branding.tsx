@@ -213,8 +213,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
-  const tr = useT()
-  const T = tr.chatBits.branding
+  const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -260,10 +259,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     return (
       <Box flexDirection="column">
         <Text>
-          <Text color={t.color.sessionLabel}>{T.sessionLabel}</Text>
+          <Text color={t.color.sessionLabel}>Session: </Text>
           <Text color={t.color.sessionBorder}>{sid}</Text>
         </Text>
-        <Text color={t.color.muted}>{tr.canonical.launch.inventoryUnavailable}</Text>
+        <Text color={t.color.muted}>Tool and skill inventory is not exposed by this runtime.</Text>
       </Box>
     )
   }

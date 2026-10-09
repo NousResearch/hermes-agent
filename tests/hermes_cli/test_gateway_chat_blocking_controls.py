@@ -96,8 +96,6 @@ async def test_oneshot_applies_foreign_control_settlement_before_receipt(kind):
         events = asyncio.Queue()
 
         async def rpc(self, method, **params):
-            if method == "prompt.receipt":
-                return {"status": "terminal", "result": {"completed": True, "final_response": "done"}}
             assert method == "prompt.submit"
             self.events.put_nowait(_control_event(kind))
             self.events.put_nowait({

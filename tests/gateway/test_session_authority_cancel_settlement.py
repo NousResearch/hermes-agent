@@ -81,15 +81,12 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
         head = await _submit(authority, 'blocked')
         await _submit(authority, 'follower')
         # The drain pauses on the head's preclaim refusal and its task ends.
-        paused = authority.sessions['s'].task
-        await asyncio.wait_for(paused, 5)
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
         assert executed == []
 
         await authority.cancel_queued(ACTOR, REF, head.admission_id)
-        # cancel_queued awaits its off-loop media release after rescheduling, so the new drain
-        # may already have finished: assert it is a NEW task, not that it is still running.
         task = authority.sessions['s'].task
-        assert task is not None and task is not paused, 'cancelling the blocking head must reschedule the drain'
+        assert task is not None and not task.done(), 'cancelling the blocking head must reschedule the drain'
         await asyncio.wait_for(task, 5)
         assert executed == ['follower']
         statuses = {r['request_id']: (r['status'], r['outcome'])
@@ -205,7 +202,7 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
     """finish_result can raise (a concurrent reset/compression moved runtime_generation).
 
     The pump must survive that: the failure is logged with the admission id, the row is
-    marked unknown rather than silently re-settled, and the
+    left for recovery (owner restart -> unknown) rather than silently re-settled, and the
     drain task ends without an unretrieved exception so the FIFO can be re-armed.
     """
     import logging
@@ -230,78 +227,5 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
             [rec.getMessage() for rec in caplog.records]
         row, = [r for r in list_session_admissions(db, session_id='s', pending_only=False)
                 if r['admission_id'] == head.admission_id]
-        assert row['status'] == 'unknown', 'explicit recovery is possible without inventing a terminal result'
+        assert row['status'] == 'started', 'left for recovery, never silently re-settled'
         assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'
-
-
-@pytest.mark.asyncio
-async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_path, monkeypatch):
-    """A writer held past the claim's patience (or a full disk) is transient. The drain must not die
-    with the committed head queued and its waiter parked forever: every _schedule caller is
-    event-driven, so nothing would re-arm it. It retries in place and runs the head once."""
-    import sqlite3
-    from gateway import session_authority, session_finite
-
-    db, authority = _authority(tmp_path, monkeypatch)
-    monkeypatch.setattr(db, '_WRITE_PATIENCE_S', 0.2)
-    monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
-    ran = []
-
-    async def execute(authority, ref, row):
-        ran.append(row['request_id'])
-        return 'done'
-    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
-    schedule = authority._schedule
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    with db:
-        head = await _submit(authority, 'head')
-        waiter = authority.waiters.setdefault(head.admission_id, asyncio.get_running_loop().create_future())
-        blocker = sqlite3.connect(tmp_path / 'state.db', isolation_level=None)
-        blocker.execute('BEGIN IMMEDIATE')
-        try:
-            schedule(REF)
-            task = authority.sessions['s'].task
-            await asyncio.sleep(0.6)
-            assert not task.done(), task.exception() if task.done() else None
-            assert not waiter.done(), 'a transient storage error must not release accepted work'
-        finally:
-            blocker.execute('ROLLBACK')
-            blocker.close()
-        assert await asyncio.wait_for(waiter, 10) == 'done'
-        await asyncio.wait_for(task, 5)
-    assert ran == ['head']
-    row, = list_session_admissions(db, session_id='s', pending_only=False)
-    assert (row['status'], row['outcome']) == ('terminal', 'completed')
-
-
-@pytest.mark.asyncio
-async def test_cancel_committed_before_a_failed_media_cleanup_still_settles_observers_once(tmp_path, monkeypatch):
-    """Media collection is a separate write after the cancellation commits. Its failure must not
-    withhold observer settlement, and an exact retry (which collects again) must neither leave the
-    waiter parked nor publish a second completion."""
-    from gateway import session_ingress_media
-
-    db, authority = _authority(tmp_path, monkeypatch)
-    scheduled, frames = [], []
-    monkeypatch.setattr(authority, '_schedule', scheduled.append)
-    collect = session_ingress_media.release_admission_media
-    def fail_once(db, admission_id):
-        monkeypatch.setattr(session_ingress_media, 'release_admission_media', collect)
-        raise OSError('media cleanup write failed')
-    with db:
-        receipt = await _submit(authority, 'cancel-then-cleanup-fails')
-        scheduled.clear()
-        authority.native_waiters.add(receipt.admission_id)
-        waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
-        authority.sessions['s'].event_stream.observers.add(frames.append)
-        monkeypatch.setattr(session_ingress_media, 'release_admission_media', fail_once)
-        with pytest.raises(OSError, match='media cleanup'):
-            await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
-        retried = await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
-        await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
-
-    assert (retried.status, retried.outcome) == ('terminal', 'cancelled')
-    assert waiter.done() and receipt.admission_id not in authority.native_waiters
-    completions = [f for f in frames if f['params']['type'] == 'message.complete']
-    assert len(completions) == 1 and completions[0]['params']['payload']['outcome'] == 'cancelled'
-    assert len(scheduled) == 1, 'the successors of a paused head need exactly one fresh drain'

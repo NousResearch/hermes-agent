@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import web_git
+import hermes_cli.web_git as web_git
 
 
 def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> CompletedProcess:

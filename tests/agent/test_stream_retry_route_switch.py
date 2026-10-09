@@ -59,7 +59,7 @@ def test_stream_retry_does_not_replay_stale_route_after_switch_model():
 
     def switch_then_drop(**kwargs):
         sent.append((kwargs["model"], agent.base_url))
-        with patch("agent.model_metadata.get_model_context_length", return_value=128000):
+        with patch("models.metadata.context.get_model_context_length", return_value=128000):
             agent.switch_model("kimi-k2.6", "kimi-coding", api_key="k",
                                base_url="https://api.moonshot.ai/v1", api_mode="chat_completions")
         raise httpx.ReadError("stale stream killed")

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server
+import tui_gateway.server as server
 
 
 @pytest.fixture
@@ -144,7 +144,7 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
 
 
 def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
-    from tools import mcp_tool
+    import tools.mcp_tool as mcp_tool
 
     _result(
         _call(
@@ -184,7 +184,7 @@ def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from tools import mcp_tool
+    import tools.mcp_tool as mcp_tool
 
     _result(
         _call(
@@ -459,7 +459,7 @@ def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
 
 
 def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
-    from hermes_cli import mcp_config
+    import hermes_cli.mcp_config as mcp_config
     from hermes_cli.mcp_catalog import get_entry
 
     preset_name = next(
@@ -501,7 +501,7 @@ def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root,
     secret scope, not the launch process's ``os.environ`` (the default profile's value) — the
     Desktop MCP setup "Test connection" otherwise reports green against the wrong credential.
     ``os.environ`` is never mutated by the scope."""
-    from hermes_cli import mcp_config
+    import hermes_cli.mcp_config as mcp_config
 
     work = hermes_root / "profiles" / "work"
     (work / ".env").write_text("ALPHA_ONLY_TOKEN=work-token\n", encoding="utf-8")

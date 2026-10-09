@@ -115,10 +115,7 @@ def test_busy_policy_is_authorized_session_scoped_and_not_inference(tmp_path):
                 for method, params, reason in [
                     ('config.get', {'session_id': ids[0], 'key': 'busy', 'profile': 'foreign'}, 'profile_mismatch'),
                     ('config.set', {'key': 'busy', 'value': 'queue'}, 'invalid_params'),
-                    ('config.set', {'session_id': ids[0], 'key': 'model', 'value': 'other'}, 'use_session_mutation_model'),
-                    # The Desktop picker's legacy shape: refused with the same actionable code.
-                    ('config.set', {'session_id': ids[0], 'key': 'model', 'value': 'other --provider custom --session',
-                                    'confirm_expensive_model': True}, 'use_session_mutation_model'),
+                    ('config.set', {'session_id': ids[0], 'key': 'model', 'value': 'other'}, 'invalid_params'),
                 ]:
                     result = await rpc(ws, method, **params)
                     assert result.get('error', {}).get('message') == reason, result

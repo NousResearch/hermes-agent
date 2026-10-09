@@ -271,7 +271,7 @@ class TestClientCacheBoundedGrowth:
             # Now call _get_cached_client — should detect stale loop and evict
             with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
                 mock_resolve.return_value = (MagicMock(), "new-model")
-                _client, _model = _get_cached_client(
+                client, model = _get_cached_client(
                     "test_replace", async_mode=True,
                 )
             # The old entry should have been replaced

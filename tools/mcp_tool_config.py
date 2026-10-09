@@ -17,7 +17,7 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
-_mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
+_mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
 
@@ -87,7 +87,7 @@ class _StderrTee:
         if rest := pending + decoder.decode(b"", final=True):
             self._write_lines([rest])
 
-    def _write_lines(self, lines: list[str]) -> None:
+    def _write_lines(self, lines: List[str]) -> None:
         if not lines:
             return
         try:
@@ -472,22 +472,20 @@ def _require_rendered_remote(server_name: str, config: dict) -> dict:
     unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
     if unresolved:
         refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
-        unset = ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
-                           ".env or secret source")
-        unset.failure_class = "missing_credentials"  # type: ignore[attr-defined]
-        raise unset
+        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                         ".env or secret source")
     return config
 
 
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
-_whitespace_warned: set[tuple[str, str]] = set()
+_whitespace_warned: Set[Tuple[str, str]] = set()
 
 
-def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
+def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     """Warn once per (server, key path) about string values with leading/trailing whitespace (a
     pasted newline causes opaque auth failures). Advisory only: values are never mutated (could be
     intentional) nor logged (often secrets). Returns flagged paths."""
-    flagged: list[str] = []
+    flagged: List[str] = []
 
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str) and value != value.strip():
@@ -509,7 +507,7 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
     return flagged
 
 
-def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
+def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
@@ -525,7 +523,7 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     return safe_servers
 
 
-def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
+def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -540,7 +538,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
 
-def _load_mcp_config() -> dict[str, dict]:
+def _load_mcp_config() -> Dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
     from agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
@@ -556,7 +554,7 @@ def _load_mcp_config() -> dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        safe_servers: dict[str, dict] = {}
+        safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):

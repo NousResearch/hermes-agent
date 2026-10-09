@@ -14,7 +14,7 @@ import sqlite3
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
@@ -149,7 +149,7 @@ _SCHEMA_DDL = (
 # (table, required columns) parsed from the DDL, in the order _schema_is_current probes them.
 _REQUIRED_COLUMNS = tuple(
     (re.search(r"EXISTS (\w+)", ddl).group(1),
-     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.MULTILINE))) for ddl in _SCHEMA_DDL)
+     frozenset(re.findall(r"^\s*(\w+) (?:TEXT|INTEGER|REAL)\b", ddl.split("(", 1)[1], re.M))) for ddl in _SCHEMA_DDL)
 _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 
 # --- SQL fragments (statement text must stay byte-stable after whitespace normalisation) ---
@@ -863,21 +863,15 @@ def _adopt_legacy_room(
 
 
 def create_room(
-    db_path: DbPath, *, room_id: Any, name: Any, members: Any, authority_gateway_id: Any, now: float | None = None,
-    admit: Callable[[sqlite3.Connection], Any] | None = None,
+    db_path: DbPath, *, room_id: Any, name: Any, members: Any, authority_gateway_id: Any, now: float | None = None
 ) -> dict[str, Any]:
-    """Create a room, or return the identical existing room idempotently.
-
-    ``admit(conn)`` runs first inside the write transaction (after payload validation), so a
-    caller's side effect such as an owner claim commits only together with this create."""
+    """Create a room, or return the identical existing room idempotently."""
     room_id = _room_id(room_id)
     name = _validate_room_name(name)
     normalized_members, members_json = _validate_members(members)
     authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
-        if admit is not None:
-            admit(conn)
         if _is_retired(conn, room_id):
             raise RoomConflictError("room_id belongs to a disbanded room")
         existing = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()

@@ -134,9 +134,6 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
             async with asyncio.timeout(10):
                 while adapter._active_sessions:
                     await asyncio.sleep(0.01)
-            # The busy receive returned at commit; the queued turn finishes on the FIFO drain.
-            if authority.sessions[entry.session_id].task is not None:
-                await asyncio.wait_for(authority.sessions[entry.session_id].task, 10)
         assert all(row['outcome'] == 'completed' for row in rows(entry.session_id))
         assert worker_scopes == [(str(state), 'runtime-fixture-key')] * 2 + [(str(state), 'runtime-fresh-key')], worker_scopes
     if mode == 'capture':

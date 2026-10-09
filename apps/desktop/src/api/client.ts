@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalSessionKey, recordCanonicalOwner } from './canonical-protocol'
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -62,28 +62,12 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
 }
 
-function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
-  signal?.throwIfAborted()
-  const remaining = deadline - Date.now()
-
-  if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
-
-  return remaining
-}
-
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private readonly protocol = new CanonicalDesktopProtocol()
   private readonly promptHandlers = new Set<ServerRequestHandler>()
-  // A stored ID can exist in several profile islands (for example after import).
-  private readonly deliveredPrompts = new Map<string, { sessionId: string; profile: string }>()
-  private readonly sessionProfiles = new Map<string, Set<string>>()
-  private readonly profileAliases = new Map<string, string>()
-  private readonly replayProfiles = new Map<string, { sessionId: string; profile: string }>()
-  private readonly displayProfiles = new Map<string, string>()
-  private readonly eventRoutes = new WeakMap<GatewayEvent, string>()
-  private readonly reconciledEpochs = new Set<string>()
-  private connectionGeneration = 0
+  // Delivered canonical prompt id → its session (the fenced respond needs both).
+  private readonly deliveredPrompts = new Map<string, string>()
 
   override onRequest(handler: ServerRequestHandler): () => void {
     this.promptHandlers.add(handler)
@@ -95,18 +79,16 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  private deliverCanonicalPrompt(event: { type: string; session_id?: string; profile?: string; payload?: unknown }, replayed: boolean) {
+  private deliverCanonicalPrompt(event: { type: string; session_id?: string; payload?: unknown }, replayed: boolean) {
     const kind = CANONICAL_PROMPT_EVENTS[event.type]
     const p = event.payload as Record<string, unknown> | undefined
     const sid = event.session_id
 
     if (!kind || !p || !sid || typeof p.prompt_id !== 'string') { return }
     const id = p.prompt_id
-    const profile = canonicalProfile(event.profile)
-    const generation = this.connectionGeneration
 
     if (this.deliveredPrompts.has(id)) { return }
-    this.deliveredPrompts.set(id, { sessionId: sid, profile })
+    this.deliveredPrompts.set(id, sid)
     const choices = Array.isArray(p.choices) ? p.choices : []
 
     // The question card reads one `questions[]` shape. A canonical clarify prompt is one
@@ -126,150 +108,35 @@ export class HermesGateway extends JsonRpcGatewayClient {
       params,
       replayed,
       respond: result => {
-        if (settled || generation !== this.connectionGeneration) { return }
+        if (settled) { return }
         settled = true
-
         // A clarify reply without an answer (skip, Stop, cancel) is the empty answer the
         // authority records as skipped; `clarify.respond` refuses a missing field.
         const answer = kind === 'clarify'
           ? { answer: typeof result.answer === 'string' ? result.answer : '' }
           : { choice: result.choice }
-
-        void this.request(`${kind}.respond`, { session_id: sid, profile, request_id: id, ...answer })
-          .catch(() => this.recoverCanonicalPrompt(id, sid, profile, generation))
+        void this.request(`${kind}.respond`, { session_id: sid, request_id: id, ...answer }).catch(() => undefined)
       },
       fail: () => { settled = true }
     }
-
-    recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(sid, profile)) ?? profile)
 
     for (const handler of this.promptHandlers) {
       if (handler(request) !== false) { return }
     }
   }
 
-  private async recoverCanonicalPrompt(id: string, sessionId: string, profile: string, generation: number): Promise<void> {
-    if (generation !== this.connectionGeneration || !this.deliveredPrompts.has(id)) { return }
-    this.deliveredPrompts.delete(id)
-
-    // A lost reply may have committed. Reopen a card only if the authority's
-    // snapshot still lists it; never resend an approval from a cached event.
-    try { await this.request('session.resume', { session_id: sessionId, profile }) } catch {
-      // A disconnected socket will reconcile its pending prompts on reattach.
-    }
-  }
-
-  override close(): void {
-    this.connectionGeneration++
-    this.deliveredPrompts.clear()
-    this.sessionProfiles.clear()
-    this.profileAliases.clear()
-    this.replayProfiles.clear()
-    this.displayProfiles.clear()
-    this.reconciledEpochs.clear()
-    this.attached.clear()
-    super.close()
-  }
-
   override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
     return super.on<K>(type, event => {
       // Named listeners run before wildcard listeners in the shared client.
       // Normalize before either kind sees the prompt, including replay delivery.
-      if (this.canonical && !this.normalizeCanonicalEvent(event)) { return }
+      if (this.canonical) { this.protocol.event(event) }
       handler(event)
     })
-  }
-
-  override onAny(handler: (event: GatewayEvent) => void): () => void {
-    return super.onAny(event => {
-      if (this.canonical && !this.normalizeCanonicalEvent(event)) { return }
-      handler(event)
-    })
-  }
-
-  private rememberSessionProfile(sessionId: string, profile: unknown): void {
-    const profiles = this.sessionProfiles.get(sessionId) ?? new Set<string>()
-    profiles.add(this.resolveSessionProfile(sessionId, profile))
-    this.sessionProfiles.set(sessionId, profiles)
-  }
-
-  private resolveSessionProfile(sessionId: string, profile: unknown): string {
-    return this.profileAliases.get(canonicalSessionKey(sessionId, profile)) ?? canonicalProfile(profile)
-  }
-
-  private snapshotRoute(params: Record<string, unknown>, snapshot: any): Record<string, unknown> {
-    const sid = snapshot?.session_id
-
-    if (typeof sid !== 'string') { return params }
-    const previous = canonicalProfile(params.profile)
-    const replayOwner = this.replayProfiles.get(snapshot.replay_epoch)
-    const named = snapshot.info?.profile_name
-
-    const profile = typeof named === 'string' && named ? named :
-      replayOwner?.sessionId === sid ? replayOwner.profile : previous
-
-    this.profileAliases.set(canonicalSessionKey(sid, previous), profile)
-
-    if (typeof snapshot.info?.profile_id === 'string') {
-      this.profileAliases.set(canonicalSessionKey(sid, snapshot.info.profile_id), profile)
-    }
-
-    const profiles = this.sessionProfiles.get(sid)
-    profiles?.delete(previous)
-    this.rememberSessionProfile(sid, profile)
-
-    // The implicit route of a named launch profile and its explicit name are
-    // one owner. Store retry identities under that stable name across redials.
-    return profile === previous ? params : { ...params, profile }
-  }
-
-  private normalizeCanonicalEvent(event: GatewayEvent): boolean {
-    if (!event.session_id) { return true }
-    const owner = event.replay_epoch ? this.replayProfiles.get(event.replay_epoch) : undefined
-    const profiles = this.sessionProfiles.get(event.session_id)
-
-    let profile = owner?.sessionId === event.session_id ? owner.profile : this.eventRoutes.get(event) ??
-      (profiles?.size === 1 ? profiles.values().next().value : profiles?.size ? undefined : 'default')
-
-    if (profile === undefined) {
-      this.reconcileAmbiguousEvent(event.session_id, event.replay_epoch)
-
-      return false
-    }
-
-    profile = this.resolveSessionProfile(event.session_id, profile)
-    // The renderer already understands an owner profile tag on shared-socket events.
-    this.eventRoutes.set(event, profile)
-    event.profile = this.displayProfiles.get(canonicalSessionKey(event.session_id, profile)) ?? profile
-    recordCanonicalOwner(event, event.profile)
-    this.protocol.event({ ...event, profile })
-
-    return true
-  }
-
-  private reconcileAmbiguousEvent(sessionId: string, epoch?: string): void {
-    const key = JSON.stringify([sessionId, epoch])
-
-    if (this.reconciledEpochs.has(key)) { return }
-    this.reconciledEpochs.add(key)
-
-    // A new/unknown replay epoch cannot choose between equal stored IDs. One
-    // authoritative snapshot per known owner recovers cards and establishes routes.
-    for (const profile of this.sessionProfiles.get(sessionId) ?? []) {
-      void this.request('session.resume', { session_id: sessionId, profile }).catch(() => undefined)
-    }
   }
 
   override async connect(wsUrl: string): Promise<void> {
-    this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
     this.attached.clear()
-    this.deliveredPrompts.clear()
-    this.sessionProfiles.clear()
-    this.profileAliases.clear()
-    this.replayProfiles.clear()
-    this.displayProfiles.clear()
-    this.reconciledEpochs.clear()
 
     return super.connect(wsUrl)
   }
@@ -279,88 +146,33 @@ export class HermesGateway extends JsonRpcGatewayClient {
   // a redial) the new socket must resume before it may submit or respond.
   private attached = new Set<string>()
 
-  private routeCanonicalParams(method: string, params: Record<string, unknown>): Record<string, unknown> {
-    if (method === 'session.events.since' && params.profile === undefined && typeof params.replay_epoch === 'string') {
-      const owner = this.replayProfiles.get(params.replay_epoch)
-
-      // The shared client's reconnect cursor predates the new socket's
-      // attachments. Never route an unknown old cursor to the launch profile.
-      if (!owner || owner.sessionId !== params.session_id) { throw new Error('Replay owner unavailable; reopen the session') }
-      params = { ...params, profile: owner.profile }
-    }
-
-    // Prompt callbacks carry session identity, while sibling sessions share the
-    // primary socket. Keep the route learned from their successful attachment.
-    const sid = params.session_id ?? params.parent_session_id
-
-    if (typeof sid === 'string' && params.profile !== undefined) {
-      params = { ...params, profile: this.resolveSessionProfile(sid, params.profile) }
-    }
-
-    const profiles = this.sessionProfiles.get(String(sid ?? ''))
-
-    if (params.profile === undefined && profiles?.size) {
-      if (profiles.size !== 1) { throw new Error('Session ID belongs to several profiles; select its owner profile before continuing') }
-      const profile = profiles.values().next().value!
-
-      if (profile !== 'default') { params = { ...params, profile } }
-    }
-
-    if (typeof sid === 'string' && ['session.resume', 'session.activate'].includes(method)) {
-      // Live frames may precede the attachment ACK. Register its explicit route
-      // before the await; concurrent equal-ID mounts are reconciled above.
-      this.rememberSessionProfile(sid, params.profile)
-    }
-
-    return params
-  }
-
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
-    const generation = this.connectionGeneration
-    const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
 
-    // A question's owner is immutable even when a second profile attaches an
-    // equal stored session ID while the first card remains open.
-    const promptOwner = method === 'clarify.lock' ? this.deliveredPrompts.get(String(params.request_id ?? '')) : undefined
+    // The card locks each question with `clarify.lock`; a canonical prompt is a single
+    // question, so its one lock is the generation-fenced `clarify.respond` (null = skipped).
+    const promptSession = method === 'clarify.lock' ? this.deliveredPrompts.get(String(params.request_id ?? '')) : undefined
 
-    if (promptOwner) {
+    if (promptSession) {
       const answer = typeof params.answer === 'string' ? params.answer : ''
 
-      return this.request<T>('clarify.respond', { session_id: promptOwner.sessionId, profile: promptOwner.profile, request_id: params.request_id, answer }, timeoutMs, signal)
+      return this.request<T>('clarify.respond', { session_id: promptSession, request_id: params.request_id, answer }, timeoutMs, signal)
     }
 
-    params = this.routeCanonicalParams(method, params)
+    await this.attachForRequest(method, params)
 
-    await this.attachForRequest(method, params, deadline, signal)
-    this.requireConnectionGeneration(generation)
-    // The attach may have identified the named launch profile behind an
-    // implicit route. Its revision and generation are cached under that owner.
-    params = this.routeCanonicalParams(method, params)
-
-    let prepared = this.protocol.prepare(method, params)
+    const prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
-      const result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
-      this.requireConnectionGeneration(generation)
-
-      if (['session.resume', 'session.create', 'session.activate'].includes(method)) {
-        prepared = this.snapshotRoute(prepared, result)
-      }
+      const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
 
       // A settle follow-up (compress -> resume) inherits the caller's deadline and cancellation.
-      const followUp = (m: string, p: Record<string, unknown>) => {
-        this.requireConnectionGeneration(generation)
-
-        return this.request(m, p, remainingRequestBudget(deadline, signal), signal)
-      }
-
-      const settled = await this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
-      this.requireConnectionGeneration(generation)
+      const followUp = (m: string, p: Record<string, unknown>) => this.request(m, p, timeoutMs, signal)
+      const settled = this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
 
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
-        this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> }, prepared.profile)
+        this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> })
       }
 
       return settled
@@ -370,50 +182,30 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  private requireConnectionGeneration(generation: number): void {
-    if (generation !== this.connectionGeneration) { throw new Error('Hermes gateway connection changed; reopen the session') }
-  }
-
   // Resume the session (and, for branch-like methods, its parent) on THIS socket before a
   // method that needs an authority subscription here.
-  private async attachForRequest(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<void> {
+  private async attachForRequest(method: string, params: Record<string, unknown>): Promise<void> {
     const sid = typeof params.session_id === 'string' ? params.session_id : null
 
-    const resume = (sessionId: string) => this.request('session.resume', {
-      session_id: sessionId, defer_history: true, omit_messages: true,
-      ...(params.profile ? { profile: params.profile } : {})
-    }, remainingRequestBudget(deadline, signal), signal)
-
-    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(canonicalSessionKey(sid, params.profile))) {
-      await resume(sid)
+    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
+      await this.request('session.resume', { session_id: sid, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
     }
 
     const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id : null
 
-    if (typeof parent === 'string' && parent && !this.attached.has(canonicalSessionKey(parent, params.profile))) {
-      await resume(parent)
+    if (typeof parent === 'string' && parent && !this.attached.has(parent)) {
+      await this.request('session.resume', { session_id: parent, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
     }
   }
 
-  private adoptAttachedSnapshot(settled: { session_id?: string; replay_epoch?: string; info?: { profile_name?: string }; prompts?: Array<Record<string, unknown>> }, profile?: unknown): void {
+  private adoptAttachedSnapshot(settled: { session_id?: string; prompts?: Array<Record<string, unknown>> }): void {
     // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
     const sid = settled.session_id
 
-    if (sid) {
-      this.attached.add(canonicalSessionKey(sid, profile))
-      this.rememberSessionProfile(sid, profile)
-
-      if (settled.info?.profile_name) {
-        this.displayProfiles.set(canonicalSessionKey(sid, profile), settled.info.profile_name)
-      }
-
-      if (typeof settled.replay_epoch === 'string') {
-        this.replayProfiles.set(settled.replay_epoch, { sessionId: sid, profile: canonicalProfile(profile) })
-      }
-    }
+    if (sid) { this.attached.add(sid) }
 
     for (const prompt of (settled.prompts ?? [])) {
-      this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, profile: canonicalProfile(profile), payload: prompt }, true)
+      this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)
     }
   }
 
@@ -444,9 +236,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
     this.onEvent(event => {
       if (!this.canonical) { return }
+      this.protocol.event(event)
 
       if (event.type in CANONICAL_PROMPT_EVENTS) {
-        this.deliverCanonicalPrompt({ ...event, profile: this.eventRoutes.get(event) }, false)
+        this.deliverCanonicalPrompt(event, false)
       } else if (event.type.endsWith('.settled')) {
         const id = (event.payload as { prompt_id?: unknown } | undefined)?.prompt_id
 

@@ -13,14 +13,8 @@ from typing import Any
 
 from agent.i18n import t
 
-__all__ = [
-    "EXECUTORS",
-    "CommandContext",
-    "CommandReply",
-    "execute_command",
-    "resolve_executor",
-    "run_execute",
-]
+__all__ = ["CommandContext", "CommandReply", "EXECUTORS", "execute_command", "resolve_executor",
+           "run_execute"]
 
 
 @dataclass(frozen=True)

@@ -398,9 +398,9 @@ export interface ComposerActions {
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
-  stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
+  stage?: (text: string, display?: string, destination?: SubmissionDestination) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
+  enqueue: (text: string, display?: string, destination?: SubmissionDestination) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
@@ -570,7 +570,7 @@ export interface SlashHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
-    closeSession: (targetSid?: null | string, deferMessages?: boolean) => Promise<unknown>
+    closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean

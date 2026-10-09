@@ -31,7 +31,7 @@ from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
+    from gateway.run import GatewayRunner  # noqa: F401
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -382,20 +382,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
-        agent.reasoning_callback = None  # per turn: a reused agent never keeps an earlier API turn's sink
-        if self._approval_owner is not None:
-            from gateway.session_api_turn import api_execution, wire_api_observers
-            if api_execution.get() is not None:
-                # The API request's SSE observes reasoning/status/commentary through its admission.
-                wire_api_observers(agent, self._approval_owner, want_interim_messages)
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        from gateway.session_surface import surface_turn_note, surface_voice_turn
+        # auxiliary.voice_chat route: a voice note, or a canonical admission committed as a voice turn.
+        agent._voice_turn_pending = ctx.voice_turn or surface_voice_turn()
         self._merge_turn_request_overrides(agent, turn_route)
-        from gateway.session_surface import arm_surface_turn
-        # auxiliary.voice_chat route (a voice note, or an admission committed as a voice turn) and
-        # this turn's must-deliver notes; a managed worker arms its agent through the same helper.
-        arm_surface_turn(agent, runner._consume_pending_turn_sidecar_notes(ctx.session_key), voice_turn=ctx.voice_turn)
+        # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
+        # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
+        agent._gateway_turn_context_notes = "\n\n".join(
+            note for note in (*runner._consume_pending_turn_sidecar_notes(ctx.session_key), surface_turn_note(agent)) if note)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
@@ -481,8 +478,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         last question — between two cards it only opens a bubble the next boundary closes."""
         from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
         from tools.clarify_gateway import CANCELLED, SKIPPED
-        answers: dict[str, Any] = {}
-        reply: dict[str, Any] = {"answers": answers, "outcome": "submitted"}
+        answers: Dict[str, Any] = {}
+        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
             question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
@@ -1088,12 +1085,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(runner, ctx.source)
         if policy and policy.yolo and ctx.session_key:
-            from tools.approval_yolo import apply_launch_yolo
+            from tools.approval import apply_launch_yolo
             apply_launch_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()
-        if policy and policy.skills_prompt:
-            combined_ephemeral = "\n\n".join(p for p in (combined_ephemeral, policy.skills_prompt) if p)
         max_iterations = policy.max_turns if policy else _current_max_iterations()
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         room = current_room_execution_policy()
@@ -1219,12 +1214,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
-            # Same rule as the direct API path (``_finish_turn_result``): the returned `messages` replaced the
-            # transcript, so a stored receipt must keep it whole instead of cutting it to this turn's suffix.
-            **({"_compressed": True} if compacted_in_place or effective_session_id != ctx.session_id else {}),
-            # The loop's proven current-turn row (``export_current_turn_boundary``) for the same `messages`: the
-            # stored receipt cuts there instead of re-guessing from text (multimodal or rewritten input + a nudge).
-            **({"current_turn_user_idx": result["current_turn_user_idx"]} if "current_turn_user_idx" in result else {}),
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }

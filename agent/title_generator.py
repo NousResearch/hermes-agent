@@ -211,7 +211,7 @@ def _is_self_hosted_provider(provider: str) -> bool:
 
     Normalised here so the main route and the title pin resolve aliases (``ollama``, ``lm-studio``…) the same way.
     """
-    from hermes_cli.providers import normalize_provider
+    from providers import normalize_provider
     provider = normalize_provider(provider)
     return provider in ("custom", "lmstudio", "local") or provider.startswith("custom:")
 
@@ -222,17 +222,19 @@ def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str, main
     Hosted pins (``openrouter``…) multiplex and never share the slot. A pin to ``custom``/``lmstudio``/``local``/any
     ``custom:<name>`` is assumed to share until the caller compares ``base_url``, and a bare ``<name>`` /
     display-name pin is the same endpoint when it aliases the main ``custom:<name>`` route
-    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
+    (``providers.custom_provider_aliases`` — the canonical identity set) or resolves to a
     configured custom entry serving ``main_base_url`` (a keyed ``providers:`` entry's display name does not
     alias its ``custom:<key>`` id).
     """
     from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
-    from hermes_cli.providers import custom_provider_aliases, resolve_custom_provider
+    from providers import custom_provider_aliases
+    from providers import match_configured_provider
     if _is_self_hosted_provider(pinned_provider):
         return True
     if custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider):
         return True
-    pdef = resolve_custom_provider(pinned_provider, get_compatible_custom_providers(load_config_readonly()))
+    pdef = match_configured_provider(
+        pinned_provider, custom_providers=get_compatible_custom_providers(load_config_readonly()))
     return bool(pdef and main_base_url and pdef.base_url.strip().rstrip("/") == main_base_url)
 
 
@@ -472,7 +474,7 @@ def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict | None = None,
+    main_runtime: dict = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
 ) -> Optional[str]:
@@ -644,7 +646,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict | None = None,
+    main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
@@ -739,7 +741,7 @@ def maybe_auto_title(
     user_message: str,
     conversation_history: Optional[list] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict | None = None,
+    main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,

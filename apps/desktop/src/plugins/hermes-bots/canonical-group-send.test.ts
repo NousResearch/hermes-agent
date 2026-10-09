@@ -21,11 +21,7 @@ test('uncertain sends reopen with exact identity and attachments, isolated by au
     const journal = preparedJournal(dir, 'http://localhost:5174')
     vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: {
       read: async () => JSON.stringify(journal.read()),
-      update: async (key: string, entry: string | null) => journal.update(key, entry === null ? null : JSON.parse(entry)),
-      compareAndSet: async (key: string, expected: string | null, entry: string | null) => {
-        const { applied, current } = journal.compareAndSet(key, expected && JSON.parse(expected), entry && JSON.parse(entry))
-        return { applied, current: current === null ? null : JSON.stringify(current) }
-      }
+      update: async (key: string, entry: string | null) => journal.update(key, entry === null ? null : JSON.parse(entry))
     } } })
   }
   try {
@@ -56,11 +52,7 @@ test('native journal acknowledgement gates send and a failed write cannot downgr
   let entered!: () => void
   const writing = new Promise<void>(resolve => { entered = resolve })
   const gate = new Promise<void>(resolve => { acknowledge = resolve })
-  const native = { read: async () => '{}', compareAndSet: vi.fn(async (_key: string, _expected: string | null, entry: string | null) => {
-    entered()
-    await gate
-    return { applied: true, current: entry }
-  }) }
+  const native = { read: async () => '{}', update: vi.fn(() => { entered(); return gate }) }
   const browserWrite = vi.fn()
   vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions: native }, localStorage: { setItem: browserWrite } })
   const send = vi.fn()
@@ -70,7 +62,7 @@ test('native journal acknowledgement gates send and a failed write cannot downgr
   acknowledge()
   await pending
   expect(send).toHaveBeenCalledOnce()
-  native.compareAndSet.mockRejectedValueOnce(new Error('disk full'))
+  native.update.mockRejectedValueOnce(new Error('disk full'))
   await expect(prepareCanonicalGroupSend(binding, { text: 'blocked' }).then(send)).rejects.toThrow('disk full')
   expect(send).toHaveBeenCalledOnce()
   expect(browserWrite).not.toHaveBeenCalled()

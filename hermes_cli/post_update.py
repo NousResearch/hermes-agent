@@ -282,7 +282,7 @@ def step_provision_runtimes() -> dict:
             else:
                 pm.ensure(name, explicit=True)
             refreshed.append(name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — one tool must not stop the rest
             logger.warning("provision_runtimes: %s failed: %s", name, exc)
             errors.append(f"{name}: {exc}")
     if errors:

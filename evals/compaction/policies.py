@@ -16,7 +16,7 @@ from typing import Any, Dict
 EVAL_MODEL = "anthropic/claude-fable-5"
 EVAL_WINDOW = 1_000_000
 
-POLICIES: dict[str, dict[str, Any]] = {
+POLICIES: Dict[str, Dict[str, Any]] = {
     # Shipping behavior, untouched.
     "current": {
         "ctor": {},
@@ -79,7 +79,7 @@ POLICIES: dict[str, dict[str, Any]] = {
 }
 
 
-def apply_policy(compressor, spec: dict[str, Any]):
+def apply_policy(compressor, spec: Dict[str, Any]):
     for key, value in (spec.get("attrs") or {}).items():
         setattr(compressor, key, value)
     return compressor

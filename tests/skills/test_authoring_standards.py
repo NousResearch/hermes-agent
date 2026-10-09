@@ -18,10 +18,10 @@ import hermes_yaml as yaml
 REPO = Path(__file__).resolve().parents[2]
 MARKETING = re.compile(
     r"\b(powerful|comprehensive|seamless|revolutionary|cutting-edge|state-of-the-art)\b",
-    re.IGNORECASE,
+    re.I,
 )
 MACHINE_LOCAL = re.compile(r"/home/(?!runner\b)[a-z0-9_-]+/|[A-Z]:\\+Users\\+(?!<)")
-SHELL_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*(bash|sh|shell|zsh|console)\b", re.IGNORECASE)
+SHELL_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*(bash|sh|shell|zsh|console)\b", re.I)
 # A line-continuation backslash must be the last character on its line: a
 # comment after it voids the continuation and the flags below run as a
 # separate command when the snippet is pasted (#113448).

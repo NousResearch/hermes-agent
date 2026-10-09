@@ -66,14 +66,14 @@ def test_worker_binds_bypass_policy_before_runtime_imports(tmp_path, mode):
     script.write_text(f'''
 import json, os, sys, threading
 sys.path.insert(0, {str(root)!r})
-from agent.managed_worker import bind_worker_policy
+from agent.managed_worker import bind_bypass_policy
 home = os.environ['HERMES_HOME']
 frame = {{'safe_mode': {mode == 'safe'!r}, 'ignore_user_config': True,
          'policy': {{'config_json': json.dumps({{'model': {{'default': 'safe-fixture', 'provider': 'custom'}},
                     'plugins': {{'enabled': ['sentinel']}}, 'agent': {{'max_turns': 7}}}})}}}}
 opened = []
 sys.addaudithook(lambda event, args: opened.append(str(args[0])) if event == 'open' and home in str(args[0]) else None)
-bind_worker_policy(frame)
+bind_bypass_policy(frame)
 from hermes_cli.config import load_config, read_raw_config
 from hermes_cli.plugins import discover_plugins, get_plugin_manager
 discover_plugins()

@@ -140,7 +140,7 @@ class TestRenderQR:
     def test_prints_when_qrcode_available(self, capsys):
         """End-to-end: render a real QR and verify SOMETHING got printed."""
         try:
-            import qrcode
+            import qrcode  # noqa: F401
         except ImportError:
             pytest.skip("qrcode library not available")
 

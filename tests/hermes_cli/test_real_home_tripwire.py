@@ -35,9 +35,7 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    # io.open is a separate guarded entry point from builtins.open (HomeIOGuard wraps both);
-    # bare `open` would only re-exercise the builtin-open case above.
-    with io.open(path, encoding="utf-8"):  # noqa: UP020 — exercise io.open separately
+    with io.open(path, encoding="utf-8"):
         pass
 
 
@@ -144,7 +142,7 @@ def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
         original_close(fd)
         reopened.append(os.open(second, os.O_RDONLY))
 
-    guard = HomeIOGuard(list)
+    guard = HomeIOGuard(lambda: [])
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(os, "close", close_and_reopen)

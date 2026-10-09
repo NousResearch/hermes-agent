@@ -48,7 +48,7 @@ def homes(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     yield launch, profile
-    from agent.secret_sources import registry
+    import agent.secret_sources.registry as registry
     from hermes_cli.env_loader import reset_secret_source_cache
     from hermes_cli.plugins import _reset_plugin_managers_for_tests
 
@@ -58,8 +58,8 @@ def homes(tmp_path, monkeypatch):
 
 
 def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, monkeypatch):
-    _launch, profile = homes
-    from cron import scheduler
+    launch, profile = homes
+    import cron.scheduler as scheduler
 
     payload = tmp_path / "payload.json"
     payload.write_text(

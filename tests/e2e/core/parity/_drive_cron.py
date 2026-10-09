@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 # cron/scheduler.py::_resolve_cron_enabled_toolsets -> _get_platform_tools(cfg, "cron") default.
 CRON_TOOLSET = "hermes-cron"
 _JOB_ID = re.compile(r"Created job: (\S+)")
-_RESPONSE = re.compile(r"^## Response\s*\n(.*)\Z", re.DOTALL | re.MULTILINE)
+_RESPONSE = re.compile(r"^## Response\s*\n(.*)\Z", re.S | re.M)
 
 
 def _cron(ph: ParityHome, *args: str) -> subprocess.CompletedProcess:

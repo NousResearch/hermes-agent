@@ -14,7 +14,7 @@ import pytest
 import shlex
 from pathlib import Path
 
-from cron import lifecycle_guard
+import cron.lifecycle_guard as lifecycle_guard
 
 guard = lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script
 

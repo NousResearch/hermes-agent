@@ -394,7 +394,7 @@ def _requirements_in(
                     if not resolved:
                         try:
                             text = ast.unparse(child)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             text = f"{fname}(...)"
                         unresolved.append(f"{source_file}:{func.name}: {text[:90]}")
 

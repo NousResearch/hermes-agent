@@ -106,9 +106,6 @@ def build_gateway_parser(
             "gateway. In-chat restarts and updates exit back to that manager "
             "instead of spawning a detached replacement. Use this when a "
             "launchd/systemd wrapper strips its native environment markers.")
-    # Internal: set only by a client that auto-starts its own gateway (chat, TUI, cron/kanban
-    # clients). Never in service units, Desktop's `gateway ensure` start or a hand-run gateway.
-    _flag(gateway_run, "--idle-exit", help=argparse.SUPPRESS)
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
@@ -169,8 +166,6 @@ def build_gateway_parser(
         help="Do not enable the service to start on login/boot")
     _flag(gateway_install, "--if-missing", dest="if_missing",
         help="Do nothing when a gateway service is already installed")
-    _flag(gateway_install, "--force-unit-path", dest="force_unit_path",
-        help="Repoint a service definition that pins another HERMES_HOME at this one")
     _flag(gateway_install, "--elevated-handoff", dest="elevated_handoff", help=argparse.SUPPRESS)
 
     gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")

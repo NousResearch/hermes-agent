@@ -3,17 +3,10 @@ import crypto from 'node:crypto'
 
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
-// `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
-// its own startup deadline: `--timeout` defaults to 60 s (hermes_cli/gateway_runtime.py
-// DEFAULT_ENSURE_TIMEOUT). The client is killed only after that deadline plus interpreter start
-// and verdict output, so a slow-but-valid cold start is never reported as "produced no result".
-const GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS = 60_000
-const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
-
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
   backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
-  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
+  { timeoutMs = 40_000, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // shell: true hands cmd.exe one command line it cuts at the first unquoted space,
@@ -21,35 +14,16 @@ export function runGatewayEnsure(
     const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
-    let expired: Error | undefined
-    let forceTimer: ReturnType<typeof setTimeout> | undefined
-
-    const expire = (message: string) => {
-      if (expired) { return }
-      expired = new Error(message)
-      child.kill()
-      forceTimer = setTimeout(() => { child.kill('SIGKILL'); reject(expired) }, 1000)
-    }
-
     // Only the bounded CLI client is ours. Never retain/kill its detached owner.
-    const timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
+    const timer = setTimeout(() => child.kill(), timeoutMs)
     child.stdout.on('data', data => { stdout += data.toString();
 
- if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
+ if (stdout.length > 65536) {child.kill()} })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
-    child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
-    // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
-    // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An
-    // expired run never reads as success, and its last diagnostic line names the deadline.
-    child.on('close', code => {
-      clearTimeout(timer)
-      clearTimeout(forceTimer)
-
-      if (expired) { resolve({ code: code || 7, stdout, stderr: `${stderr}\n${expired.message}`.trim() }) }
-      else { resolve({ code: code ?? 7, stdout, stderr }) }
-    })
+    child.on('error', () => { clearTimeout(timer); reject(new Error(`Could not run ${label}`)) })
+    child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? 7, stdout, stderr }) })
   })
 }
 
@@ -198,15 +172,11 @@ export async function ensureLocalGateway(
 // update restart) every ticket mint against the stale control socket fails and
 // the renderer's reconnect backoff would loop on the dead descriptor forever.
 // Forget the cached descriptor exactly once and re-run the canonical ensure;
-// a second failure is a real error and surfaces to the caller. A pointer mid-rewrite
-// or left by an earlier owner, and a profile home moved since caching, may recover.
-// Unsafe path permissions or types require repair, not another ensure of the same home.
-const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
-
+// a second failure is a real error and surfaces to the caller.
 export function isStaleLocalGatewayError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return message.startsWith('Gateway ticket') || STALE_CONTROL_ERRORS.has(message)
+  return message.startsWith('Gateway ticket') || message === 'Invalid gateway ticket response' || message === 'Unsafe gateway control path'
 }
 
 export async function redialLocalGateway<TEndpoint, TResult>(deps: {
@@ -271,45 +241,11 @@ export function createLocalGatewayDials() {
   }
 }
 
-// A profile home keeps the operator's mode (Python `home_mode_unsafe`: HERMES_HOME_MODE 0750/0701,
-// a 0755 home): read/search bits grant nothing against the 0600 socket; only write by another user
-// could swap it. Group-write is safe only for a proven-private group without an ACL, which Node
-// cannot establish (no xattrs/NSS): a group-writable home returns true so the caller hands the
-// ticket to the Python bridge, which applies that exact policy. The socket, pointer and fallback
-// directory stay owner-only.
-async function privateNode(file: string, kind: 'directory' | 'socket' | 'file' | 'home'): Promise<boolean> {
+async function privateNode(file: string, kind: 'directory' | 'socket' | 'file') {
   const node = await fs.lstat(file)
-  const valid = { directory: node.isDirectory(), home: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
-  const uid = process.getuid?.()
-  const quoted = shellQuote(file)
+  const valid = { directory: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
 
-  // Not stale (a re-ensure of the same home would hit the same refusal): name the repair.
-  if (!valid) {
-    const found = node.isSymbolicLink() ? 'a symlink' : node.isDirectory() ? 'a directory' : node.isFile() ? 'a regular file' : node.isSocket() ? 'a socket' : 'another file type'
-
-    // The socket, pointer and fallback directory are the gateway's to recreate; a home is not.
-    throw new Error(kind === 'home'
-      ? `Unsafe gateway control path: profile home ${quoted} is ${found}, not a directory: move it aside and recreate the profile`
-      : `Unsafe gateway control path: ${quoted} should be a ${kind} but is ${found}: remove it, then run hermes gateway restart`)
-  }
-
-  if (node.uid !== uid) {
-    throw new Error(`Unsafe gateway control path: ${quoted} is owned by uid ${node.uid}, not this user (uid ${uid}): run sudo chown ${uid} ${quoted}`)
-  }
-
-  if (kind === 'home' && node.mode & 0o002) {
-    throw new Error(`Unsafe gateway control path: profile home ${quoted} is writable by other users (mode ${(node.mode & 0o777).toString(8)}): run chmod o-w ${quoted}`)
-  }
-
-  if (kind !== 'home' && node.mode & 0o077) {
-    throw new Error(`Unsafe gateway control path: ${quoted} is accessible to other users (mode ${(node.mode & 0o777).toString(8)}): run chmod go-rwx ${quoted}`)
-  }
-
-  return kind === 'home' && Boolean(node.mode & 0o020)
-}
-
-function shellQuote(file: string): string {
-  return `'${file.replace(/'/g, `'\\''`)}'`
+  if (!valid || node.uid !== process.getuid?.() || (node.mode & 0o077)) {throw new Error('Unsafe gateway control path')}
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
@@ -339,25 +275,10 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, url, launchHome), 'native-http') }
 }
 
-// The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
-// home whose group-write only Python can prove private.
-let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
+let windowsTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
 
-export function configurePythonGatewayTicketClient(client: NonNullable<typeof pythonTicketClient>) {
-  pythonTicketClient = client
-}
-
-async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http', homes: string[]) {
-  if (!pythonTicketClient) {throw new Error(`Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`)}
-
-  try {
-    return await pythonTicketClient(endpoint, purpose)
-  } catch (error) {
-    if ((error as { reason?: string })?.reason !== 'unsafe_control_permissions') {throw error}
-    const quoted = homes.map(shellQuote).join(' ')
-
-    throw new Error(`Profile home is writable by a group other accounts share: run chmod g-w ${quoted}`)
-  }
+export function configureWindowsGatewayTicketClient(client: NonNullable<typeof windowsTicketClient>) {
+  windowsTicketClient = client
 }
 
 function isMissingNodeError(error: unknown): boolean {
@@ -386,18 +307,11 @@ async function resolveControlSocket(home: string): Promise<string> {
   return socketPath
 }
 
-/** The Desktop's interactive socket is the one shared-primary route: its renderer selects every
- *  served sibling with a `profile` param, so it asks for a host-scoped grant explicitly. Every
- *  other ticket (and every other client's) stays bound to the one profile it names. */
-export function ticketScope(purpose: 'interactive' | 'native-http'): { scope?: 'host' } {
-  return purpose === 'interactive' ? { scope: 'host' } : {}
-}
-
 export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
   if (process.platform === 'win32') {
-    if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
+    if (!windowsTicketClient) {throw new Error('Gateway ticket client is not configured')}
 
-    return pythonTicketClient(endpoint, purpose)
+    return windowsTicketClient(endpoint, purpose)
   }
 
   const home = endpoint.profile_id
@@ -406,15 +320,10 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   // hermes_cli.gateway_runtime.control_home_for.
   const controlHome = endpoint.control_home || home
 
-  const groupWritable: string[] = []
-
   for (const dir of new Set([home, controlHome])) {
     if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
-
-    if (await privateNode(dir, 'home')) {groupWritable.push(dir)}
+    await privateNode(dir, 'directory')
   }
-
-  if (groupWritable.length) {return mintGroupWritableHome(endpoint, purpose, groupWritable)}
 
   let socketPath: string
 
@@ -431,7 +340,7 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
     const deadline = setTimeout(() => socket.destroy(new Error('Gateway ticket deadline')), 5000)
     socket.on('error', () => reject(new Error('Gateway ticket bootstrap failed')))
     socket.on('close', () => { clearTimeout(deadline); reject(new Error('Gateway ticket connection closed')) })
-    socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) } }) + '\n'))
+    socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose } }) + '\n'))
     socket.on('data', chunk => {
       buffer += chunk.toString()
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles
+import hermes_cli.profiles as profiles
 
 
 @pytest.fixture(autouse=True)

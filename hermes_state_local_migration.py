@@ -7,16 +7,10 @@ from hermes_state_runtime import RuntimeStoreError, _json
 LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 
 
-# Sources the pre-authority local CLI/TUI/GUI wrote. ``oneshot`` (finite ``chat -q`` / ``-z``) and ``tool``
-# (``chat --source tool``) are CLI runs that printed ``hermes --resume <id>``: adopted for resume like
-# ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'oneshot', 'tool'})
-
-
 def validate_legacy_row(db, row):
-    # Unrouted old local history only. Existing identity, foreign profile,
+    # Unrouted old CLI/TUI/GUI history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    if (row['source'] not in {'cli', 'tui', 'gui'}
             or any(row.get(k) for k in ('session_key', 'chat_id', 'user_id', 'origin_json'))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')

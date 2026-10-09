@@ -370,7 +370,7 @@ class TestHTTP413Compression:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.model_metadata.save_context_length") as mock_save,
+            patch("models.metadata.context.save_context_length") as mock_save,
         ):
             mock_compress.return_value = (
                 [{"role": "user", "content": "compressed summary"}],

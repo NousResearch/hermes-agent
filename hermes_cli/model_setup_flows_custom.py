@@ -12,7 +12,7 @@ import os
 import urllib.parse
 
 from hermes_cli.cli_output import line_input
-from hermes_cli.providers import custom_provider_slug
+from providers import custom_provider_slug
 from hermes_cli.model_setup_flows_common import (
     _HTTP, _ask, _commit_model_config, _load_config_model_section,
     _prune_replaced_custom_model_config_credentials, _radiolist, _say)
@@ -40,7 +40,7 @@ def _report_context_length_detection(model_name: str, base_url: str, api_key: st
     is NOT written to config, which would freeze a probe result into a permanent override.
     """
     try:
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+        from models.metadata.context import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
         from hermes_cli.banner import _format_context_length
         detected = get_model_context_length(model_name, base_url=base_url, api_key=api_key or "")
     except Exception:  # a failing probe must never block the save
@@ -234,7 +234,8 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
     """Live catalog probe for a named custom endpoint (native ``/api/tags`` for Ollama).
     Returns ``(models, native_catalog_empty)``; persists the live catalog as a side effect."""
     from hermes_cli.config import normalize_extra_headers
-    from hermes_cli.models import fetch_api_models, _get_ollama_native_headers
+    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models_local import _get_ollama_native_headers
     from hermes_cli.models_local import (
         fetch_ollama_local_models,
         _normalize_openai_base_url,
@@ -284,7 +285,8 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
     # _save_discovered_models_to_config. A failed save is non-fatal.
     if live_models:
         with contextlib.suppress(Exception):
-            from hermes_cli.model_switch_providers import _entry_credentials, _save_discovered_models_to_config
+            from application_provider_discovery import _entry_credentials
+            from application_discovered_catalog_persistence import _save_discovered_models_to_config
             _save_discovered_models_to_config(
                 base_url, live_models, api_mode=api_mode, headers=extra_headers or None,
                 credential_identity=_entry_credentials(provider_info, "key_env", "api_key_env")[2])

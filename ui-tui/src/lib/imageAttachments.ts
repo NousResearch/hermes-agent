@@ -8,7 +8,6 @@ import { promisify } from 'node:util'
 
 import type { SubmissionDestination } from '../app/submissionDestination.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { t } from '../i18n/runtime.js'
 
 export interface ImageAttachment { path: string; mime: string }
 export interface StagedImage extends ImageAttachment { name: string; remainder?: string }
@@ -32,7 +31,7 @@ function imageFormat(bytes: Buffer): { mime: string; ext: string } {
     return { mime: 'image/webp', ext: '.webp' }
   }
 
-  throw new Error(t('canonical.images.unsupported'))
+  throw new Error('Unsupported image: expected PNG, JPEG, GIF, or WebP bytes')
 }
 
 // Match an existing whole path first, so unquoted filenames with spaces survive.
@@ -58,7 +57,7 @@ async function resolveImagePath(raw: string): Promise<{ path: string; remainder:
 
       if (!info.isFile()) { continue }
 
-      if (info.size > MAX_IMAGE_BYTES) { throw new Error(t('canonical.images.tooLarge')) }
+      if (info.size > MAX_IMAGE_BYTES) { throw new Error('Image exceeds 20 MiB upload limit') }
 
       return { path, remainder: remainder! }
     } catch (error) {
@@ -66,7 +65,7 @@ async function resolveImagePath(raw: string): Promise<{ path: string; remainder:
     }
   }
 
-  throw new Error(t('canonical.images.notFound', value))
+  throw new Error(`Image not found: ${value}`)
 }
 
 async function extractClipboardImage(path: string): Promise<boolean> {
@@ -99,7 +98,7 @@ export async function stageImagePath(raw: string, gw: GatewayClient, destination
   const source = await resolveImagePath(raw)
   const bytes = await readFile(source.path)
 
-  if (bytes.length > MAX_IMAGE_BYTES) { throw new Error(t('canonical.images.tooLarge')) }
+  if (bytes.length > MAX_IMAGE_BYTES) { throw new Error('Image exceeds 20 MiB upload limit') }
   const { mime, ext } = imageFormat(bytes)
   const name = basename(source.path)
 
@@ -110,7 +109,7 @@ export async function stageImagePath(raw: string, gw: GatewayClient, destination
       session_id: destination.sid, filename: `${randomUUID()}${ext}`, content_base64: bytes.toString('base64')
     })
 
-    if (!result?.path) { throw new Error(t('canonical.images.noOwnerPath')) }
+    if (!result?.path) { throw new Error('Image upload did not return an owner path') }
 
     return { path: result.path, mime, name, remainder: source.remainder }
   }

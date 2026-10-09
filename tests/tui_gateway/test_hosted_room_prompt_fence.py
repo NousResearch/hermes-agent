@@ -8,7 +8,7 @@ import time
 import pytest
 
 from gateway import hosted_rooms
-from tui_gateway import server
+import tui_gateway.server as server
 
 
 def _stub_session(monkeypatch, *, title, profile_home=None):

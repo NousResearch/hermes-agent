@@ -26,7 +26,7 @@ import pytest
 
 import hermes_cli.mcp_startup as startup
 from hermes_constants import hermes_home_key
-from tui_gateway import entry
+import tui_gateway.entry as entry
 
 
 @pytest.fixture

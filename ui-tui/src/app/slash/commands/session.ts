@@ -20,7 +20,6 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
-import { canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -116,10 +115,6 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.session.bg.usage'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'bg'))
-      }
-
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
         ctx.guarded<BackgroundStartResponse>(r => {
           if (!r.task_id) {
@@ -139,10 +134,6 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.transcript.sys(t('slashCmd.session.btw.usage'))
-      }
-
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'btw'))
       }
 
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
@@ -770,10 +761,6 @@ export const sessionCommands: SlashCommand[] = [
     help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
-      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
-        return canonicalUsage(ctx)
-      }
-
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return

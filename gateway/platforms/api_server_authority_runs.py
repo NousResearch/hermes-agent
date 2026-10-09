@@ -16,13 +16,8 @@ def run_admission(adapter, run_id):
     authority = _authority(adapter)
     if authority is None:
         return None
-    # A streaming completion's public run id names its admission through the in-memory binding
-    # its own request holds; every other run id is the admission's durable request id.
-    alias = getattr(adapter, '_run_admission_aliases', {}).get(run_id)
-    column, value = ('admission_id', alias) if alias else ('request_id', run_id)
     with authority.db._read_ctx() as conn:
-        rows = conn.execute(f"SELECT * FROM session_admissions WHERE principal_id='api' AND {column}=?",
-                            (value,)).fetchall()
+        rows = conn.execute("SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
     if len(rows) > 1:
         raise RuntimeStoreError('admission_conflict')
     return (authority, _row(rows[0])) if rows else None
@@ -41,12 +36,6 @@ def run_projection(adapter, run_id):
             status = 'cancelled'
         elif result.get('failed') or result.get('error'):
             status = 'failed'
-        elif row['outcome'] == 'completed' and saved:
-            # The run SSE's own mapper: a `partial` or `completed: false` turn (iteration
-            # budget, truncation) settles with outcome `completed` but is a failed run there,
-            # so polling must not report `completed` for the same receipt.
-            from gateway.platforms.api_server_runs import terminal_run_status
-            status = terminal_run_status(result)[0]
     pending = []
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
@@ -130,8 +119,8 @@ async def resolve_unknown_run(adapter, run_id, body):
     if body['admission_id'] != row['admission_id']:
         raise RuntimeStoreError('not_found')
     generation = body['execution_generation']
-    # Status/generation are the store's decision (``resolve_unknown_session_input``): it also replays the
-    # committed receipt to an exact retry whose acknowledgement was lost, which a pre-check here refused.
+    if row['status'] != 'unknown' or type(generation) is not int or generation != row['generation']:
+        raise RuntimeStoreError('stale_generation')
     actor = Principal(
         'api', authority.profile_id, frozenset({'session:submit', 'session:control'}),
         'api-run:' + run_id)

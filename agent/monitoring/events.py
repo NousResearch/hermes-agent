@@ -17,7 +17,7 @@ class _MonitoringEvent:
     __slots__ = ()
     EVENT: ClassVar[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return {"event": self.EVENT, **asdict(self)}
 
 
@@ -75,4 +75,4 @@ class CronExecutionEvent(_MonitoringEvent):
     ts_ns: int = field(default_factory=time.time_ns)
 
 
-__all__ = ["CronExecutionEvent", "GatewayDiagnosticEvent", "GatewayHealthEvent"]
+__all__ = ["GatewayHealthEvent", "GatewayDiagnosticEvent", "CronExecutionEvent"]

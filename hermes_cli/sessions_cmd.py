@@ -292,9 +292,9 @@ def _cmd_list(db, args):
     def _ws(s):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]
-    _preview = lambda s, n: s.get("preview", "")[:n]
-    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])
+    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
+    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
 
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
         created = s.get("created_source") or ""
@@ -1185,16 +1185,10 @@ def _cmd_set_journal_mode(args):
     return cmd_set_journal_mode(args)
 
 
-def _cmd_discard(args):
-    from hermes_cli.sessions_discard import cmd_discard
-    return cmd_discard(args)
-
-
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
-    "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {

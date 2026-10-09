@@ -590,7 +590,7 @@ def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatc
     from hermes_cli import gateway_client, kanban_worker_client
     from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
-    run, _entered, context = owner_worker(_failed, recovery=1)
+    run, entered, context = owner_worker(_failed, recovery=1)
     assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
     submitted = []
 
@@ -644,8 +644,7 @@ async def test_non_worker_one_shot_prints_its_exit_summary(capsys):
     view = GatewayChatView(_Owner(), {"stored_session_id": "stored"}, quiet=True)
     assert await asyncio.wait_for(view.run("hello", oneshot=True), 2) == 1
     out, err = capsys.readouterr()
-    # One admission, never a resubmit; the settled-result read (prompt.receipt) is read-only.
-    assert submitted.count("prompt.submit") == 1 and set(submitted) <= {"prompt.submit", "prompt.receipt"}
+    assert submitted == ["prompt.submit"]
     assert "API call failed" in out and "session_id: stored" in err
 
 

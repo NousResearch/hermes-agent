@@ -178,7 +178,6 @@ class GatewaySessionAgentMixin:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=not bool(policy and policy.ignore_rules),
             skip_memory=bool(policy and policy.ignore_rules),
-            pass_session_id=bool(policy and policy.pass_session_id),
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):

@@ -7,7 +7,6 @@ import logging
 import time
 from contextlib import closing
 from dataclasses import asdict
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -177,7 +176,7 @@ def _local_session(db, epoch):
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
     now = _now()
     entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
-    policy = build_policy({'source': 'cli', 'cwd': str(Path(db.db_path).parent), 'model': 'm', 'toolsets': []},
+    policy = build_policy({'source': 'cli', 'cwd': '/', 'model': 'm', 'toolsets': []},
                           {'platform_toolsets': {'cli': []}}, private_secrets={})
     commit_local_session(db, epoch=epoch, receipt={
         'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,
@@ -231,13 +230,34 @@ def test_local_reset_refuses_over_live_compute_worker_but_not_a_queued_follower(
         with pytest.raises(rt.RuntimeStoreError, match='session_busy'):
             reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         assert db.get_session(sid) == before and db.get_session('child') is None
-        rt.mutate_worker_execution(db, epoch=epoch, **scope, sequence=1, operation='transcript.append',
-                                   payload={'messages': [{'role': 'assistant', 'content': 'ok'}]})
-        rt.mutate_worker_execution(db, epoch=epoch, **scope, sequence=2, operation='execution.finish', payload={})
+        rt.persist_worker_message(db, epoch=epoch, **scope, sequence=1, role='assistant', content='ok')
+        rt.finish_worker_execution(db, epoch=epoch, **scope)
         # Worker terminal, follower still queued: /reset is exactly what the follower waits on.
         reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         assert db.get_session(sid)['runtime_generation'] == before['runtime_generation'] + 1
         claimed = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+        assert claimed is not None and claimed['admission_id'] == follower['admission_id']
+
+
+def test_adopted_worker_finish_settles_linked_admission_and_frees_follower(tmp_path):
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        db.create_session('s', source='test')
+        epoch = rt.begin_runtime_epoch(db, instance_id='boot')
+        first = _started_admission(db, epoch, 's', 'first')
+        assignment = dict(execution_id='compute', session_id='s', generation=first['generation'])
+        rt.register_worker_execution(db, epoch=epoch, **assignment, kind='compute', adoption_secret='private')
+        follower = rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id='s',
+                                          request_id='second', payload={})
+        epoch = rt.begin_runtime_epoch(db, instance_id='replacement')
+        rt.recover_session_inputs(db, epoch=epoch)
+        rt.adopt_worker_execution(db, epoch=epoch, **assignment, adoption_secret='private')
+        assert rt.get_session_admission(db, admission_id=first['admission_id'])['status'] == 'started'
+        assert rt.claim_session_input(db, epoch=epoch, session_id='s') is None
+        rt.persist_worker_message(db, epoch=epoch, **assignment, sequence=1, role='assistant', content='done')
+        rt.finish_worker_execution(db, epoch=epoch, **assignment)
+        settled = rt.get_session_admission(db, admission_id=first['admission_id'])
+        assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
+        claimed = rt.claim_session_input(db, epoch=epoch, session_id='s')
         assert claimed is not None and claimed['admission_id'] == follower['admission_id']
 
 
@@ -259,54 +279,3 @@ def test_discarding_an_unadmitted_row_leaves_no_fence_but_an_admitted_row_is_fen
         _settled_admission(db, epoch, 'used')
         assert db.discard_unadmitted_session('used') is True
         assert db.get_meta(RETIRED_PREFIX + 'used') is not None
-
-
-def test_local_reset_stamps_ended_at_on_the_same_float_clock_as_started_at(tmp_path):
-    """``ended_at`` uses the ``time.time()`` clock of ``started_at`` and every sibling end path:
-    SQLite's integer-second clock truncates, so a reset in the same second as the creation
-    recorded a session that ended before it started."""
-    from hermes_state_local_lineage import reset_local_target
-    with closing(SessionDB(tmp_path / 'state.db')) as db:
-        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
-        sid, reset = _local_session(db, epoch)
-        before = time.time()
-        reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
-        parent = db.get_session(sid)
-        assert parent['ended_at'] >= max(parent['started_at'], before)
-
-
-def test_pending_and_idle_probes_do_not_scan_finished_history(tmp_path, monkeypatch):
-    """pastels minor: ``status!='terminal'`` cannot bound the (session, status) indexes, so every
-    pending/idle probe walked the session's whole finished ledger. Probes must stay O(live rows)."""
-    from contextlib import nullcontext
-    from hermes_state_local import end_idle_local_session
-    from hermes_state_mutation_guards import require_idle
-    from hermes_state_mutation_retirement import _LIVE_LEDGER_SQL
-    with closing(SessionDB(tmp_path / 'state.db')) as db:
-        db.create_session('s', source='api_server')
-        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
-        def history(conn):
-            conn.executemany(
-                "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,lineage_json,"
-                "payload_json,payload_digest,intent,status,outcome,owner_epoch,generation) "
-                "VALUES(?,?,'p','s','[]','{}','d','queue','terminal','completed',1,1)",
-                [(f'a{i}', f'r{i}') for i in range(20000)])
-            conn.executemany("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,"
-                             "status,adoption_digest) VALUES(?,'s','compute',1,1,'terminal','d')",
-                             [(f'w{i}',) for i in range(20000)])
-        db._execute_write(history)
-        monkeypatch.setattr(db, '_read_ctx', lambda: nullcontext(db._conn))
-        ticks = []
-        db._conn.set_progress_handler(lambda: ticks.append(1) and 0, 1000)
-        probes = {
-            'pending': lambda: rt.list_session_admissions(db, session_id='s'),
-            'require_idle': lambda: db._execute_write(lambda c: require_idle(db, c, ['s'])),
-            'prune_live_check': lambda: db._execute_write(lambda c: c.execute(_LIVE_LEDGER_SQL, ('s', 's')).fetchone()),
-            'end_idle': lambda: end_idle_local_session(db, epoch=epoch, session_id='s', target_id='s', reason='idle'),
-        }
-        for name, probe in probes.items():
-            ticks.clear()
-            probe()
-            # A scan of 40k finished rows is hundreds of thousands of VM steps; a bounded probe is a few.
-            assert len(ticks) < 20, f'{name} scanned finished history ({len(ticks)}k VM steps)'
-        db._conn.set_progress_handler(None, 0)

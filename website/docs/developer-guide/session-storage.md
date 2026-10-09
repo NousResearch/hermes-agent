@@ -4,13 +4,6 @@ Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
 metadata, full message history, and model configuration across CLI and gateway
 sessions. This replaces the earlier per-session JSONL file approach.
 
-The profile's gateway is the **only writer of canonical sessions**: `hermes chat`,
-the TUI, Desktop (local), the API server, ACP, cron, Bot Chat and Kanban workers are
-clients that admit input to its session authority over `/api/ws` (see
-[Gateway local sessions](./gateway-local-sessions.md)). Out-of-process managed
-workers write through that owner (`RuntimeSessionStore` RPC), never by opening
-`state.db` for transcript writes themselves.
-
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
 ## Hermes home and profile isolation
@@ -134,27 +127,13 @@ ownership for a redelivered event.
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
 ├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
-├── runtime_epoch         — Session authority's owner epoch + instance id (one row)
-├── session_admissions    — Durable per-session input FIFO (queued → started → terminal; unknown on owner loss)
-├── worker_executions     — Managed worker/child/cron/kanban executions bound to a session and epoch
-├── worker_receipts       — Ordered, digest-checked results a managed worker reported
 └── schema_version        — Single-row table tracking migration state
 ```
-
-`session_admissions`, `worker_executions` and `worker_receipts` reference `sessions`
-with `ON DELETE RESTRICT`: deleting or pruning a session retires its terminal ledger
-rows in the same transaction and refuses while work is live or `unknown`. An input that
-was `started` when its owner died becomes `unknown` at the next owner start and is never
-replayed; its later inputs wait until it is resolved (`prompt.resolve_unknown`).
 
 `hermes sessions recover` copies the row-bearing tables above into the
 recovered database (FTS indexes and `schema_version` are regenerated), including
 the lazily-created `delivery_obligations` ledger when the source has one — its
-row count is verified like `sessions`/`messages`. The four runtime-ledger tables
-(`runtime_epoch`, `session_admissions`, `worker_executions`, `worker_receipts`) are
-inventoried and reported as excluded, not copied: a partial ledger could replay
-started effects or adopt another owner's workers. A full `hermes backup` restore keeps
-the complete ledger for startup reconciliation instead.
+row count is verified like `sessions`/`messages`.
 
 Key design decisions:
 - **WAL mode** for concurrent readers + one writer (gateway multi-platform)
@@ -343,9 +322,8 @@ Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to ha
 
 ## Write Contention Handling
 
-Several processes still open one `state.db`: the gateway (the canonical session
-writer), read-only browsers (dashboard, `hermes sessions list`), maintenance commands,
-and writers of non-session tables. The `SessionDB` class handles write contention with:
+Multiple hermes processes (gateway + CLI sessions + worktree agents) share one
+`state.db`. The `SessionDB` class handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
 - **Time-budgeted application-level retry** with random jitter (20-150ms for the

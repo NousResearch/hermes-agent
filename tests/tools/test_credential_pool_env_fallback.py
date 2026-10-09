@@ -19,7 +19,7 @@ def _make_pconfig(provider_id="deepseek", env_vars=None):
     """Create a minimal ProviderConfig for testing.
 
     Default provider_id is 'deepseek' because it's a real api_key provider
-    in PROVIDER_REGISTRY (needed for _seed_from_env's generic path).
+    in live provider projection (needed for _seed_from_env's generic path).
     """
     from hermes_cli.auth import ProviderConfig
     return ProviderConfig(
@@ -193,7 +193,7 @@ class TestAuthCredentialPoolFallback:
 
         from hermes_cli.auth import _resolve_api_key_provider_secret
         with patch("agent.credential_pool.load_pool", return_value=mock_pool):
-            key, _source = _resolve_api_key_provider_secret(
+            key, source = _resolve_api_key_provider_secret(
                 provider_id="deepseek",
                 pconfig=_make_pconfig(),
             )

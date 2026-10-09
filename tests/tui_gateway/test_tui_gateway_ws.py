@@ -1,11 +1,8 @@
 import asyncio
 import concurrent.futures
-import contextlib
 import datetime
 import json
 import threading
-
-import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
@@ -230,7 +227,7 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
     starve gateway.ping — the client's 45s heartbeat deadline would otherwise tear down a busy but healthy
     backend. Non-ping RPCs keep their serial arrival order."""
     ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
-    ids = lambda: [f.get("id") for f in sent if "id" in f]
+    ids = lambda: [f.get("id") for f in sent if "id" in f]  # noqa: E731
 
     async def scenario():
         task = asyncio.create_task(ws_mod.handle_ws(ws))
@@ -254,7 +251,7 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
 def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
     """A client that drops while a handler runs must not have its sessions torn down under that handler, and
     frames it sent before dropping are still dispatched (as the serial read loop did)."""
-    ws, inbound, _sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
 
     async def scenario():
         task = asyncio.create_task(ws_mod.handle_ws(ws))
@@ -273,7 +270,7 @@ def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
 
 def test_ws_failed_reply_from_dispatcher_ends_the_connection(monkeypatch):
     """A response the dispatcher cannot send ends the connection even while the reader waits on the socket."""
-    ws, inbound, _sent, log, _release = _slow_dispatch_harness(monkeypatch)
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
     real_send = type(ws).send_text
 
     async def send_text(self, line):
@@ -409,7 +406,7 @@ _INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "s
 def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
     """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
     request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
-    from gateway import session_controls
+    import gateway.session_controls as session_controls
 
     class FakeConnection:
         def __init__(self, authority, transport, identity, operator=False):
@@ -446,44 +443,6 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
     return next(frame for frame in sent if frame.get("id") == 1)
 
 
-def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monkeypatch):
-    """An explicit TUI attach (HERMES_TUI_GATEWAY_URL) negotiates the canonical wire from this flag."""
-    from gateway import session_controls
-
-    class FakeConnection:
-        def __init__(self, authority, transport, identity, operator=False):
-            self.actor = type("Actor", (), {"capabilities": frozenset(), "profile_id": "p"})()
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-
-    def ready(scope):
-        sent = []
-
-        class FakeWS:
-            async def accept(self, **_kw):
-                pass
-
-            async def send_text(self, line):
-                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
-
-            async def receive_text(self):
-                raise ws_mod._WebSocketDisconnect()
-
-            async def close(self, **_kw):
-                pass
-
-        FakeWS.scope = scope
-        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
-        return sent[0]["params"]["payload"]
-
-    assert ready({"hermes.session_authority": object()})["session_authority"] is True
-    assert "session_authority" not in ready({})
-
-
 def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):
     """A worker-adoption ticket (or any connection without the authority's interactive grant) must
     not reach general legacy dispatch after an authority -32601; an interactive one still does."""
@@ -510,51 +469,3 @@ def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handler
     reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=str(secondary),
                                       method="probe.scoped")
     assert reply["result"]["home"] == str(secondary)
-
-
-@pytest.mark.parametrize("method,params", [
-    ("session.delete", {"session_id": "owned"}),
-    ("session.archive", {"session_id": "owned", "archived": True}),
-])
-def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tmp_path, method, params):
-    """A session write the authority answers -32601 for must not reach the legacy writer: it would
-    change the authority's state.db behind its receipts and revision fence (and a delete would leave
-    the authority holding a live session whose row is gone)."""
-    from types import SimpleNamespace
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
-
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session("owned", source="tui")
-        revision = db.get_session("owned")["runtime_revision"]
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
-                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
-        authority.sessions["owned"] = LiveSession(None, "route")
-        monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
-        sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
-
-        class FakeWS:
-            scope = {"hermes.session_authority": authority}
-
-            async def accept(self, **_kw):
-                pass
-
-            async def send_text(self, line):
-                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
-
-            async def receive_text(self):
-                if inbound:
-                    return inbound.pop()
-                raise ws_mod._WebSocketDisconnect()
-
-            async def close(self, **_kw):
-                pass
-
-        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
-        reply = next(frame for frame in sent if frame.get("id") == 1)
-        assert reply["error"]["code"] == -32601, reply
-        row = db.get_session("owned")
-        assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
-        assert "owned" in authority.sessions

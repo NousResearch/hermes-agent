@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import uninstall
+import hermes_cli.uninstall as uninstall
 
 
 @pytest.fixture

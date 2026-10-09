@@ -1,7 +1,7 @@
 """Wire contracts (see ``base.py``). Importing this package fills the registry tables; every topic
 module is listed here so the generator and the runtime see the same catalog."""
 
-from . import (
+from . import (  # noqa: F401
     billing_delegation_pets,
     common,
     config_free_tier_control,
@@ -20,8 +20,7 @@ from . import (
     tools_commands,
     tools_mcp_plugins,
 )
-from . import canonical  # noqa: F401,E402  (last: authority-only verbs reuse the topic models above)
 from .base import JsonValue, Params, Payload, Result, WireEnum
-from .registry import CANONICAL_METHODS, EVENTS, METHODS, SERVER_REQUESTS
+from .registry import EVENTS, METHODS, SERVER_REQUESTS
 
-__all__ = ["CANONICAL_METHODS", "EVENTS", "METHODS", "SERVER_REQUESTS", "JsonValue", "Params", "Payload", "Result", "WireEnum"]
+__all__ = ["EVENTS", "METHODS", "SERVER_REQUESTS", "JsonValue", "Params", "Payload", "Result", "WireEnum"]

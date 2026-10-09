@@ -35,7 +35,7 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
-# DeepInfra STT base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
+# DeepInfra STT base URL uses the shared application DeepInfra profile facts.
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -71,7 +71,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
 
 
-def _error_result(error: str, **extra: Any) -> dict[str, Any]:
+def _error_result(error: str, **extra: Any) -> Dict[str, Any]:
     """Standard failure envelope shared by every provider and validator."""
     return {"success": False, "transcript": "", "error": error, **extra}
 
@@ -94,7 +94,7 @@ def normalize_xai_stt_model(model: Any) -> str:
     return value
 
 
-def _ok_result(transcript: str, provider: str) -> dict[str, Any]:
+def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:
     return {"success": True, "transcript": transcript, "provider": provider}
 
 
@@ -124,7 +124,7 @@ def _log_prompt_unsupported(label: str) -> None:
     logger.debug("%s does not support transcription prompts — proceeding without the prompt.", label)
 
 
-def _config_number(cfg: dict[str, Any], key: str, default, cast=float):
+def _config_number(cfg: Dict[str, Any], key: str, default, cast=float):
     """Read ``cfg[key]`` through *cast*, falling back to *default* on bad values."""
     try:
         return cast(cfg.get(key, default))

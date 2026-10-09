@@ -545,7 +545,7 @@ def register(ctx):
 
 def test_hardline_blocks_before_selected_transport(monkeypatch):
     from tools import approval
-    from tools import approval_detection
+    import tools.approval_detection as approval_detection
 
     manager = PluginManager()
     calls = []

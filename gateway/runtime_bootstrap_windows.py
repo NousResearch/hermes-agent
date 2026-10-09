@@ -1,6 +1,6 @@
 """Native local-only bootstrap pipes with cancellable overlapped I/O.
 
-The pipe worker threads do not own session state. Handlers marshal authority
+The single pipe thread does not own session state. Handlers marshal authority
 operations to the gateway loop; the ticket store itself is thread-safe.
 """
 from __future__ import annotations
@@ -189,44 +189,30 @@ def query_runtime_control(home: Path, request: bytes, timeout: float) -> bytes:
         win.CloseHandle(handle)
 
 
-# Listening pipe instances, one worker each. Requests are served concurrently, as the POSIX
-# socket does through its executor: a handler may dial this same pipe (a hosted room whose
-# source and member share one multiplexer re-enters it via hosted-producer -> hosted-attest).
-_PIPE_INSTANCES = 8
-
-
 class NativeControlServer:
-    """Bounded native workers, independent of asyncio event-loop policy."""
+    """One bounded native worker, independent of asyncio event-loop policy."""
     def __init__(self, home, handler):
         self.home, self.handler = home, handler
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._error = None
-        self._threads = [threading.Thread(target=self._run, args=(index == 0,), daemon=True,
-                                          name=f'runtime-control-pipe-{index}')
-                         for index in range(_PIPE_INSTANCES)]
-        self._thread = self._threads[0]
+        self._thread = threading.Thread(target=self._run, name='runtime-control-pipe', daemon=True)
 
     def start(self):
-        # The first instance claims the name (FILE_FLAG_FIRST_PIPE_INSTANCE) before any other.
         self._thread.start()
         if not self._ready.wait(5):
             self.close()
             raise TimeoutError('runtime control pipe startup deadline exceeded')
         if self._error:
             raise self._error
-        for thread in self._threads[1:]:
-            thread.start()
 
     def close(self):
         self._stop.set()
-        for thread in self._threads:
-            if thread.ident is not None:
-                thread.join(timeout=5)
-        if any(thread.is_alive() for thread in self._threads):
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
             raise TimeoutError('runtime control pipe did not stop')
 
-    def _create_pipe(self, first=True):
+    def _create_pipe(self):
         from gateway.control_socket import windows_pipe_name
         win = _native()
         class SecurityAttributes(ctypes.Structure):
@@ -241,17 +227,17 @@ class NativeControlServer:
         attrs = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
         try:
             return win.CreateNamedPipe(windows_pipe_name(self.home),
-                                       3 | win.FILE_FLAG_OVERLAPPED | (0x00080000 if first else 0),
-                                       8, _PIPE_INSTANCES, 65536, 65536, 2000, ctypes.addressof(attrs))
+                                       3 | win.FILE_FLAG_OVERLAPPED | 0x00080000,
+                                       8, 1, 65536, 65536, 2000, ctypes.addressof(attrs))
         finally:
             k = ctypes.WinDLL('kernel32', use_last_error=True)
             _api(k, 'LocalFree', ctypes.c_void_p, [ctypes.c_void_p])(descriptor)
 
-    def _run(self, first=True):
+    def _run(self):
         win = _native()
         handle = None
         try:
-            handle = self._create_pipe(first)
+            handle = self._create_pipe()
             self._ready.set()
             while not self._stop.is_set():
                 try:
@@ -266,11 +252,9 @@ class NativeControlServer:
                     continue
                 try:
                     subject = _peer_subject(handle, server=False)
-                    raw = _read_line(handle, time.monotonic() + 2, 64 * 1024)
-                    response = self.handler(raw, subject)
-                    # The I/O budget bounds the peer, not the handler's own (client-bounded) work.
                     deadline = time.monotonic() + 2
-                    _write(handle, response, deadline)
+                    raw = _read_line(handle, deadline, 64 * 1024)
+                    _write(handle, self.handler(raw, subject), deadline)
                     # DisconnectNamedPipe discards unread output. Let the client
                     # consume and close, bounded by the same I/O deadline.
                     _read_line(handle, deadline, 64 * 1024)

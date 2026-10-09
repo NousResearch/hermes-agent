@@ -238,14 +238,14 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
         "register_provider(ProviderProfile(name='acme-doctor-probe', auth_type='external_process',\n"
         "                                  process_command='acme', aliases=('acme-alias',)))\n",
         encoding="utf-8")
-    registry_before = dict(providers._REGISTRY)
+    registry_before = dict(providers.registry._REGISTRY)
 
     report = doctor_plugin(plugin)
     assert report.ok, report.format_text()
     assert report.registered_providers == ("acme-doctor-probe",)
     assert "provider(s): acme-doctor-probe" in report.format_text()
-    assert providers._REGISTRY == registry_before
-    assert "acme-alias" not in providers._ALIASES
+    assert providers.registry._REGISTRY == registry_before
+    assert "acme-alias" not in providers.registry._ALIASES
 
     (plugin / "__init__.py").write_text("x = 1\n", encoding="utf-8")
     report = doctor_plugin(plugin)

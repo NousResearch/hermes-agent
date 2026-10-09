@@ -65,7 +65,7 @@ class TestResolveProviderClientMainAlias:
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
-        client, _model = resolve_provider_client("main", "test")
+        client, model = resolve_provider_client("main", "test")
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
@@ -74,7 +74,7 @@ class TestResolveProviderClientMainAlias:
             "model": {"default": "gpt-5.4", "provider": "github-copilot"},
         })
         with (
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            patch("hermes_cli.auth.resolve_copilot_provider_credentials", return_value={
                 "api_key": "ghu_test_token",
                 "base_url": "https://api.githubcopilot.com",
             }),
@@ -427,7 +427,7 @@ class TestResolveProviderClientMainRuntimeCustom:
 
         from agent.auxiliary_client import resolve_provider_client
         # main_runtime with key but no base_url → must fall through
-        client, _model = resolve_provider_client(
+        client, model = resolve_provider_client(
             "custom",
             main_runtime={"api_key": "k", "base_url": ""},
         )

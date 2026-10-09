@@ -60,7 +60,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         with step_plan_live_listing(STEP_PLAN_LIVE_IDS):
             ids = provider_model_ids("stepfun")
         assert len(ids) == len(set(i.lower() for i in ids)), "duplicate rows in merged picker"
-        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from models.catalog_static import _PROVIDER_MODELS
 
         for curated_id in _PROVIDER_MODELS["stepfun"]:
             assert curated_id in ids
@@ -69,7 +69,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         """Outage fallback unchanged: the curated list, flagged as placeholder."""
         with step_plan_live_listing([]):
             ids = provider_model_ids("stepfun")
-        from hermes_cli.models_catalog_static import CuratedFallbackModels, _PROVIDER_MODELS
+        from models.catalog_static import CuratedFallbackModels, _PROVIDER_MODELS
 
         assert list(ids) == list(_PROVIDER_MODELS["stepfun"])
         # The placeholder flag rides on the list subclass, so the disk cache can
@@ -84,6 +84,7 @@ class TestStepfunPickerMergesLiveWithCurated:
 
         def fake_pick(model_list, *args, **kwargs):
             captured["models"] = list(model_list)
+            return None
 
         with patch(
             "hermes_cli.model_setup_flows._ensure_flow_api_key", return_value=(None, "sk-stepfun-test", False)
@@ -101,7 +102,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         # Contract: the wizard offers the same MERGED list as the picker — every
         # Step Plan live id plus the curated floor, no duplicates.
         assert set(STEP_PLAN_LIVE_IDS) <= {m.lower() for m in captured["models"]}
-        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from models.catalog_static import _PROVIDER_MODELS
 
         for curated_id in _PROVIDER_MODELS["stepfun"]:
             assert curated_id in captured["models"]

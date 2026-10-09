@@ -16,18 +16,3 @@ export async function discardLostPrompt(
     admission_id: admissionId
   })
 }
-
-/** Withdraw a server-queued admission before it starts. The authority settles every waiter and
- *  its pending fanout retires the card; a row that started meanwhile is refused (stale_generation)
- *  and keeps running. Same owner routing as discardLostPrompt. */
-export async function cancelQueuedPrompt(
-  sessionId: string | null | undefined,
-  queueSessionKey: string,
-  admissionId: string,
-  request: GatewayRequest
-): Promise<unknown> {
-  return requestForOwnedSession(queueSessionKey, request, 'prompt.cancel', {
-    session_id: sessionId ?? queueSessionKey,
-    admission_id: admissionId
-  })
-}

@@ -34,28 +34,6 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
     return ref
 
 
-def resolve_latest_session(authority, actor, family, workspace=None):
-    """The most recently active session of a surface family (``cli`` = classic CLI incl. its finite
-    one-shot runs, ``tui``), scoped to ``workspace`` (git root / cwd) first and then global: the
-    classic ``hermes -c`` / ``--resume latest`` rule (``hermes_cli.main._resolve_last_session``),
-    applied by the owner so the client opens no database. Only a local session the actor may read
-    counts; another principal's sessions are skipped, never confirmed."""
-    from agent.session_source import CLI_FAMILY_SOURCES
-    families = {'cli': sorted(CLI_FAMILY_SOURCES), 'tui': ['tui']}
-    if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
-        raise RuntimeStoreError('invalid_params')
-    from gateway.session_local_migration import resolve_local_target
-    for scope in ([workspace] if workspace else []) + [None]:
-        for row in authority.db.search_sessions(source=families[family], limit=50, workspace_key=scope):
-            tip = authority.db.get_compression_tip(row['id']) or row['id']
-            try:
-                return resolve_local_target(authority, actor, tip)
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'permission_denied', 'not_found', 'profile_mismatch'}:
-                    raise
-    raise RuntimeStoreError('not_found')
-
-
 def validate_title(title):
     from hermes_state import SessionDB
     try:

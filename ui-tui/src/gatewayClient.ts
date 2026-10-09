@@ -14,13 +14,7 @@ import {
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
-import {
-  canonicalEvent,
-  canonicalRequest,
-  canonicalResult,
-  type CreationContract,
-  launchToolProgress
-} from './canonicalGateway.js'
+import { canonicalEvent, canonicalRequest, canonicalResult, type CreationContract } from './canonicalGateway.js'
 import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
@@ -120,17 +114,11 @@ const redactUrl = (raw: string): string => {
 
 export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
 
-// Reconnects after the first launch are discovery-only, except that a bounded number per window
-// may re-ensure an owner that crashed (gateway_bootstrap.py --recover decides from the owner's
-// retained runtime record; an explicitly stopped gateway is never resurrected).
-export const OWNER_RECOVERY_LIMIT = 3
-export const OWNER_RECOVERY_WINDOW_MS = 60_000
-
-const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
+const bootstrapLocalGateway = async (start: boolean): Promise<LocalGatewayGrant> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
   const { stdout } = await promisify(execFile)(resolvePython(),
-    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
+    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : [])],
     { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
 
   return JSON.parse(stdout) as LocalGatewayGrant
@@ -180,14 +168,10 @@ export class GatewayClient extends EventEmitter {
   private bootstrapError: Error | null = null
   private localStarted = false
   private localGeneration = 0
-  private recoveryAttempts: number[] = []
   isCanonical = false
   private creationContract?: CreationContract
-  private describeFlight?: Promise<void>
 
-  constructor(
-    private bootstrap: (start: boolean, recover?: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway
-  ) {
+  constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
     super()
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
@@ -211,13 +195,6 @@ export class GatewayClient extends EventEmitter {
    * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
    * second one) while still negotiating the transport's heartbeat capability. */
   private publishWire(ev: AnyGatewayEvent) {
-    if (!this.isCanonical && ev.type === 'gateway.ready' && this.attachUrl !== null &&
-        (ev as { payload?: { session_authority?: boolean } }).payload?.session_authority === true) {
-      // An explicit HERMES_TUI_GATEWAY_URL endpoint whose session verbs belong to an authority:
-      // negotiate the canonical wire exactly like a local grant, keeping the listener's skin.
-      return this.adoptCanonicalAttach(ev as GatewayEvent<'gateway.ready'>)
-    }
-
     if (this.isCanonical && ev.type === 'gateway.ready') {
       if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
         this.channel.startHeartbeat()
@@ -233,27 +210,6 @@ export class GatewayClient extends EventEmitter {
     }
 
     this.publish(ev)
-  }
-
-  private adoptCanonicalAttach(ev: GatewayEvent<'gateway.ready'>) {
-    const ws = this.ws
-
-    this.isCanonical = true
-
-    if (ev.payload?.heartbeat && ws?.readyState === WS_OPEN) {
-      this.channel.startHeartbeat()
-    }
-
-    this.describeFlight = undefined
-    void this.describeRuntime().then(() => {
-      if (this.ws === ws) {
-        this.publish({ type: 'gateway.ready', payload: { skin: ev.payload?.skin } } as unknown as AnyGatewayEvent)
-      }
-    }).catch(error => {
-      this.publish({ type: 'gateway.start_timeout', payload: {
-        python: 'runtime.describe', cwd: '', stderr_tail: String(error)
-      } })
-    })
   }
 
   private publish(ev: AnyGatewayEvent) {
@@ -527,10 +483,9 @@ export class GatewayClient extends EventEmitter {
   private startLocalGateway() {
     const generation = ++this.localGeneration
     const start = !this.localStarted
-    const recover = !start && this.claimOwnerRecovery()
     this.localStarted = true
     this.bootstrapError = null
-    this.bootstrapFlight = this.bootstrap(start, recover).then(grant => {
+    this.bootstrapFlight = this.bootstrap(start).then(grant => {
       if (this.disposed || generation !== this.localGeneration) { return }
       this.attachUrl = grant.url
       this.isCanonical = true
@@ -545,19 +500,6 @@ export class GatewayClient extends EventEmitter {
       this.channel.detach(this.bootstrapError)
       this.scheduleReconnect()
     })
-  }
-
-  /** One slot of the sliding owner re-ensure budget, so a crash-looping owner is not respawned forever. */
-  private claimOwnerRecovery(now = Date.now()) {
-    this.recoveryAttempts = this.recoveryAttempts.filter(at => now - at < OWNER_RECOVERY_WINDOW_MS)
-
-    if (this.recoveryAttempts.length >= OWNER_RECOVERY_LIMIT) {
-      return false
-    }
-
-    this.recoveryAttempts.push(now)
-
-    return true
   }
 
   private startAttachedGateway(attachUrl: string, protocols?: string[]) {
@@ -603,8 +545,9 @@ export class GatewayClient extends EventEmitter {
             this.connectSidecarMirror()
 
             if (this.isCanonical) {
-              this.describeFlight = undefined
-              void this.describeRuntime().then(() => {
+              void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
+                this.creationContract = description.session_create
+
                 // The canonical gateway has no ready frame (readiness is the discovery
                 // grant + runtime.describe); publish a client-local ready with no skin so
                 // the renderer boots on its default theme.
@@ -715,9 +658,6 @@ export class GatewayClient extends EventEmitter {
     this.closeSidecarSocket()
 
     if (attachUrl) {
-      // Each explicit connection negotiates its wire from the listener's ready frame.
-      this.isCanonical = false
-      this.creationContract = undefined
       this.startAttachedGateway(attachUrl)
 
       return
@@ -825,24 +765,6 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
-  /** The owner's session.create contract. A failed read is not cached: the next
-   * session.create asks again instead of reporting an outdated gateway forever. */
-  private describeRuntime(): Promise<void> {
-    if (!this.describeFlight) {
-      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract }>('runtime.describe').then(
-        description => { this.creationContract = description.session_create },
-        error => {
-          if (this.describeFlight === flight) { this.describeFlight = undefined }
-
-          throw error
-        })
-
-      this.describeFlight = flight
-    }
-
-    return this.describeFlight
-  }
-
   private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     return this.ensureAttachedWebSocket(method).then(() =>
       this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method)))
@@ -861,37 +783,18 @@ export class GatewayClient extends EventEmitter {
         this.start()
       }
 
-      return this.isCanonical
-        ? this.requestCanonical<T>(method, params, timeoutMs)
-        : this.requestOverWebSocket<T>(method, params, timeoutMs)
+      return this.requestOverWebSocket<T>(method, params, timeoutMs)
     }
 
     if (!this.bootstrapFlight) { this.start() }
 
     return this.bootstrapFlight!.then(() => {
       if (this.bootstrapError) { throw this.bootstrapError }
-
-      return this.requestCanonical<T>(method, params, timeoutMs)
-    })
-  }
-
-  /** One request through the canonical wire adapter (local grant or negotiated explicit attach). */
-  private requestCanonical<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
-    return (async () => {
-      if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
       const request = canonicalRequest(method, params, this.creationContract)
-      const toolProgress = method === 'session.create' ? launchToolProgress() : undefined
-      const value = await this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
 
-      if (toolProgress) {
-        // Launch pin, before the caller can submit: a refusal fails this create visibly.
-        const sid = (value as { session_id?: string } | null)?.session_id
-
-        await this.requestOverWebSocket('config.set', { key: 'verbose', session_id: sid, value: toolProgress })
-      }
-
-      return canonicalResult(method, value, request.params)
-    })()
+      return this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
+        .then(value => canonicalResult(method, value, request.params))
+    })
   }
 
   kill(reason = 'requested') {

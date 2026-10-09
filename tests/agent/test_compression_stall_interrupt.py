@@ -280,7 +280,7 @@ class TestStallInterruptedBackoff:
             "agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
-        _db, agent = _build_agent(tmp_path, "FORCE_BYPASS_STALL")
+        db, agent = _build_agent(tmp_path, "FORCE_BYPASS_STALL")
         original = _messages()
         fence = CompressionCommitFence()
 

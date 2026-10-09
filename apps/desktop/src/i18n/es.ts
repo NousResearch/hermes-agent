@@ -1234,7 +1234,9 @@ export const esOverrides = {
         maxLines: 'Límite de páginas de archivo',
         maxLineLength: 'Límite de longitud de línea'
       },
-      codeExecution: { mode: 'Modo de ejecución de código' },
+      codeExecution: {
+        mode: 'Modo de ejecución de código'
+      },
       approvals: {
         mode: 'Modo de aprobación',
         timeout: 'Tiempo límite de aprobación',
@@ -4003,7 +4005,6 @@ export const esOverrides = {
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
     queueLostNote: 'Turno perdido durante el reinicio',
     restoreImageDraft: 'Restaurar borrador con imagen',
-    queueCancelFailed: 'No se pudo quitar el turno en cola',
     queueLostDiscard: 'Descartar',
     queueLostDiscardTip:
       'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',

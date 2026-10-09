@@ -96,7 +96,7 @@ _INDEX_MISS_FALLBACK_IDS = _API_SOURCE_IDS - {"github"}
 _INDEX_MISS_FALLBACK_BUDGET = 8.0
 
 
-def create_source_router(auth: Optional[GitHubAuth] = None) -> list[SkillSource]:
+def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """All configured source adapters, in priority order."""
     from tools.skills_hub import TapsManager
     if auth is None:
@@ -116,7 +116,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> list[SkillSource]
 
 def _search_one_source(
     src: SkillSource, query: str, limit: int, provider_filter: str = "",
-) -> tuple[str, list[SkillMeta]]:
+) -> Tuple[str, List[SkillMeta]]:
     """Search a single source.  Runs in a thread for parallelism."""
     try:
         # These sources mix providers in one catalog. Narrow before their top-N
@@ -129,7 +129,7 @@ def _search_one_source(
         return src.source_id(), []
 
 
-def _select_active_sources(sources: list[SkillSource], source_filter: str) -> list[SkillSource]:
+def _select_active_sources(sources: List[SkillSource], source_filter: str) -> List[SkillSource]:
     """Sources to query for ``source_filter``.
 
     A provider filter (nvidia/openai/...) is not a source id — the data lives
@@ -142,7 +142,7 @@ def _select_active_sources(sources: list[SkillSource], source_filter: str) -> li
     index_available = effective == "all" and any(
         src.source_id() == "hermes-index" and getattr(src, "is_available", False) for src in sources
     )
-    active: list[SkillSource] = []
+    active: List[SkillSource] = []
     for src in sources:
         sid = src.source_id()
         if effective != "all" and sid != effective and sid != "official":
@@ -154,9 +154,9 @@ def _select_active_sources(sources: list[SkillSource], source_filter: str) -> li
 
 
 def _index_miss_fallback_sources(
-    sources: list[SkillSource], active: list[SkillSource], query: str, source_counts: dict[str, int],
+    sources: List[SkillSource], active: List[SkillSource], query: str, source_counts: Dict[str, int],
     provider_filter: str = "",
-) -> list[SkillSource]:
+) -> List[SkillSource]:
     """Registries to consult after the index stood in for them and found nothing.
 
     Empty for a browse (no query), when the index was not consulted (no skip
@@ -174,9 +174,9 @@ def _index_miss_fallback_sources(
 
 
 def _fan_out(
-    active: list[SkillSource], query: str, per_source_limits: dict[str, int], provider_filter: str,
-    deadline: float, on_source_done: Optional[Any], all_results: list[SkillMeta],
-    source_counts: dict[str, int], timed_out_ids: list[str],
+    active: List[SkillSource], query: str, per_source_limits: Dict[str, int], provider_filter: str,
+    deadline: float, on_source_done: Optional[Any], all_results: List[SkillMeta],
+    source_counts: Dict[str, int], timed_out_ids: List[str],
 ) -> None:
     """Query ``active`` in parallel until ``deadline`` (monotonic), merging into the accumulators."""
     from concurrent.futures import as_completed
@@ -221,9 +221,9 @@ def _fan_out(
 
 
 def parallel_search_sources(
-    sources: list[SkillSource], query: str = "", per_source_limits: Optional[dict[str, int]] = None,
+    sources: List[SkillSource], query: str = "", per_source_limits: Optional[Dict[str, int]] = None,
     source_filter: str = "all", overall_timeout: float = 30, on_source_done: Optional[Any] = None,
-) -> tuple[list[SkillMeta], dict[str, int], list[str]]:
+) -> Tuple[List[SkillMeta], Dict[str, int], List[str]]:
     """Search all sources in parallel with an overall timeout.
 
     Returns ``(all_results, source_counts, timed_out_ids)``. *on_source_done*
@@ -241,9 +241,9 @@ def parallel_search_sources(
     per_source_limits = per_source_limits or {}
     active = _select_active_sources(sources, source_filter)
     provider_filter = _provider_filter_of(source_filter)
-    all_results: list[SkillMeta] = []
-    source_counts: dict[str, int] = {}
-    timed_out_ids: list[str] = []
+    all_results: List[SkillMeta] = []
+    source_counts: Dict[str, int] = {}
+    timed_out_ids: List[str] = []
     if not active:
         return all_results, source_counts, timed_out_ids
 
@@ -258,8 +258,8 @@ def parallel_search_sources(
     return all_results, source_counts, timed_out_ids
 
 
-def unified_search(query: str, sources: list[SkillSource],
-                   source_filter: str = "all", limit: int = 10) -> list[SkillMeta]:
+def unified_search(query: str, sources: List[SkillSource],
+                   source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
     """Search all sources (in parallel) and merge results."""
     all_results, _, _ = parallel_search_sources(sources, query=query, source_filter=source_filter, overall_timeout=30)
     deduped = _dedupe_by_trust(all_results)

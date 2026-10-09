@@ -43,27 +43,3 @@ def bound_interpreter_gone(conn, task_id):
         return False
     bound = json.loads(row['payload'])
     return not _worker_alive(bound.get('pid'), bound.get('started_at'))
-
-
-def managed_run_exit_code(conn, task_id, worker_pid, claim_lock):
-    """The exit code a managed run's authority recorded for the task's CURRENT run, else None.
-
-    Managed interpreters are children of the authority, not the dispatcher, so their result is
-    read from the run's ``worker_result`` event (it survives a dispatcher restart and cannot be
-    reaped here). It speaks for the run only under the same claim and from a pid of this run:
-    the dispatcher's own worker, or the owner-side interpreter ``worker_bound`` recorded under
-    that claim — ``session_kanban._record_worker_result`` writes the interpreter's pid, never the
-    spawned submitter's ``tasks.worker_pid``."""
-    def latest(kind):
-        row = conn.execute(
-            "SELECT e.payload FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id "
-            "WHERE t.id=? AND e.task_id=t.id AND e.kind=? ORDER BY e.id DESC LIMIT 1", (task_id, kind)).fetchone()
-        try:
-            payload = json.loads(row['payload']) if row else {}
-        except ValueError:
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    result, bound = latest('worker_result'), latest('worker_bound')
-    pids = {worker_pid, *([bound.get('pid')] if bound.get('claim_lock') == claim_lock else [])}
-    return result.get('exit_code') if result.get('claim_lock') == claim_lock and result.get('pid') in pids else None

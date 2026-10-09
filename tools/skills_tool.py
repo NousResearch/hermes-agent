@@ -17,14 +17,14 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
-from tools.skills_tool_setup import (
+from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
-from tools.skills_tool_plugin import (
+from tools.skills_tool_plugin import (  # noqa: F401
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import (
+from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
 from tools.skill_provenance import is_background_review
 
@@ -93,7 +93,7 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     return None
 
 
-def load_env() -> dict[str, str]:
+def load_env() -> Dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
     installs the profile scope, so a captured value never differs from the served one). A frozen-policy
     worker never opens the profile ``.env``: ``hermes_cli.config.load_env`` owns that short-circuit."""
@@ -146,7 +146,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-def _parse_tags(tags_value) -> list[str]:
+def _parse_tags(tags_value) -> List[str]:
     """Tags from frontmatter: a parsed list, "[a, b]", or "a, b"."""
     if not tags_value:
         return []
@@ -158,7 +158,7 @@ def _parse_tags(tags_value) -> list[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
+def _is_skill_disabled(*names: str, platform: str = None) -> bool:
     """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
     ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
@@ -179,7 +179,7 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
+def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
     ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
@@ -189,7 +189,7 @@ def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
-def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
+def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> List[Dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
@@ -237,7 +237,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -245,12 +245,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
-def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str | None = None, task_id: str | None = None) -> str:
+def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
@@ -350,7 +350,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
     (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
     from agent.skill_utils import iter_skill_index_files
-    candidates: list[tuple[Optional[Path], Path]] = []
+    candidates: List[Tuple[Optional[Path], Path]] = []
     seen_md: set = set()
 
     def _record(sd: Optional[Path], smd: Path) -> None:
@@ -409,7 +409,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     return files
 
 
-def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
+def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
@@ -553,7 +553,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;

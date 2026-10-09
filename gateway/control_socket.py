@@ -300,12 +300,7 @@ class GatewayControlServer:
         except Exception:
             encoded = b'{"ok": false, "error": "response serialization failed"}'
         if len(encoded) > _MAX_RESPONSE_BYTES:
-            # Structured and distinct: a caller must not read an oversized answer as a drain.
-            too_large: dict[str, Any] = {"ok": False, "error": "response_too_large", "code": "response_too_large",
-                                         "limit": _MAX_RESPONSE_BYTES, "protocol": CONTROL_PROTOCOL_VERSION}
-            if isinstance(request_id, (int, str)) and len(str(request_id)) <= 128:
-                too_large["id"] = request_id
-            encoded = json.dumps(too_large).encode("utf-8")
+            encoded = b'{"ok": false, "error": "response too large"}'
         return encoded + b"\n"
 
     def _session_ticket(self, request: dict, peer_subject: Optional[str]) -> dict:
@@ -314,13 +309,12 @@ class GatewayControlServer:
         if set(request) - {"protocol", "verb", "id", "params"} or request.get("protocol") != 1:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
-        if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope"}):
+        if not isinstance(params, dict) or set(params) != {"profile_id", "instance_id", "purpose"}:
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
-        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=peer_subject,
-                                       purpose=params["purpose"], scope=params.get("scope", "profile"))
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"],
+                                       subject=peer_subject, purpose=params["purpose"])
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}

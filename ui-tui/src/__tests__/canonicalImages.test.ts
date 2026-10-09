@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -14,9 +14,7 @@ import { loadPendingInputs } from '../lib/pendingInputs.js'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64')
 
 it('stages private immutable local bytes, uploads remote bytes, and never falls back to a client path', async () => {
-  // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
-  // HERMES_HOME, so the expected staging dir must be built from the canonical path too.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-images-')))
+  const home = mkdtempSync(join(tmpdir(), 'ink-images-'))
   vi.stubEnv('HERMES_HOME', home)
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   resetUiState()

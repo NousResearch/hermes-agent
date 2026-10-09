@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import run_runtime
-from gateway.session_authority import LiveSession
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch
 from tools.bot_live_delivery import _locked, _write
@@ -47,7 +46,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
         payload={"text": "queued bot delivery"},
     )
 
-    live = LiveSession(SimpleNamespace(platform=None, user_id='owner'), 'route')
+    live = SimpleNamespace(task=None)
     authority = SimpleNamespace(
         runner=runner,
         db=db,
@@ -145,7 +144,6 @@ async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
     task = asyncio.create_task(receipt_writer())
     authority = SimpleNamespace(sessions={}, _bot_receipt_tasks={task})
     runner = SimpleNamespace(session_authority=authority)
-    authority.runner = runner
 
     settling = asyncio.create_task(run_runtime.settle_gateway_runtime(runner))
     await asyncio.sleep(0)

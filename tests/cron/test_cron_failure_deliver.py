@@ -119,7 +119,7 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, None)
     )
-    monkeypatch.setattr(s, "load_config", dict)
+    monkeypatch.setattr(s, "load_config", lambda: {})
     return state
 
 

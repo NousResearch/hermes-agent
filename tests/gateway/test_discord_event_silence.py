@@ -16,11 +16,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.gateway.test_discord_connect import _ensure_discord_mock
+from tests.gateway.test_discord_connect import _ensure_discord_mock  # noqa: E402
 
 _ensure_discord_mock()
 
-from tests.gateway.test_discord_liveness import (
+from tests.gateway.test_discord_liveness import (  # noqa: E402
     _LiveBot,
     _connect,
     _make_adapter,

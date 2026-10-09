@@ -152,7 +152,7 @@ That same id should appear in:
 
 - `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
 - `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
+- `aliases=(...)` on the provider's canonical `ProviderProfile` declaration
 - CLI `--provider` choices in `hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults
@@ -171,7 +171,7 @@ For API-key providers, add a `ProviderConfig` entry to `PROVIDER_REGISTRY` with:
 - `api_key_env_vars`
 - optional `base_url_env_var`
 
-Also add aliases to `_PROVIDER_ALIASES`.
+Declare provider aliases once on `ProviderProfile.aliases`; auth, model parsing, and picker surfaces project that canonical declaration.
 
 Use the existing providers as templates:
 
@@ -196,9 +196,8 @@ Update the provider catalog so the provider works in menus and in `provider:mode
 Typical edits:
 
 - `_PROVIDER_MODELS`
-- `_PROVIDER_LABELS`
-- `_PROVIDER_ALIASES`
-- provider display order inside `list_available_providers()`
+- the provider's `ProviderProfile` display metadata and `aliases=(...)`
+- provider presentation order when needed
 - `provider_model_ids()` if the provider supports a live `/models` fetch
 
 If the provider exposes a live model list, prefer that first and keep `_PROVIDER_MODELS` as the static fallback.
@@ -393,7 +392,7 @@ A developer can wire the provider perfectly and still leave users unable to disc
 Use this if the provider is standard chat completions.
 
 - [ ] `ProviderConfig` added in `hermes_cli/auth.py`
-- [ ] aliases added in `hermes_cli/auth.py` and `hermes_cli/models.py`
+- [ ] aliases declared once on the provider's `ProviderProfile`
 - [ ] model catalog added in `hermes_cli/models.py`
 - [ ] runtime branch added in `hermes_cli/runtime_provider.py`
 - [ ] CLI wiring added in `hermes_cli/main.py` (setup.py inherits automatically)
@@ -449,8 +448,8 @@ Both flows need to know about the provider.
 
 If you are hunting for all the places a provider touches, search these symbols:
 
-- `PROVIDER_REGISTRY`
-- `_PROVIDER_ALIASES`
+- `ProviderProfile`
+- `ProviderProfile.aliases`
 - `_PROVIDER_MODELS`
 - `resolve_runtime_provider`
 - `_model_flow_`

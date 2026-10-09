@@ -18,7 +18,7 @@ from pathlib import Path
 class CaptureHandler(BaseHTTPRequestHandler):
     log_path: Path
 
-    def do_POST(self) -> None:
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
         record = {

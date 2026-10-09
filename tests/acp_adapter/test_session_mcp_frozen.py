@@ -38,40 +38,6 @@ def test_editor_manifest_stays_frozen_across_live_refresh(server_spec, tmp_path)
             pass
 
 
-def test_editor_freeze_follows_the_connection_owner_not_the_callers_scope(server_spec, tmp_path):
-    """Under a multiplexer the ledger key is ``(editor scope, name)``. A re-registration that runs
-    outside the session's context still publishes into the editor scope the key names, so the
-    freeze must be judged by that same owner, never by the bare name in the caller's scope."""
-    import threading
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
-    from tools.registry import registry
-    from tools.mcp_tool import _servers
-    from tools.mcp_tool_registration import _register_server_tools
-    authority = owner()
-    p = policy(authority, 'owner-scope', server_spec, tmp_path)
-    with policy_scope(p, authority=authority):
-        names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
-        schemas = {n: registry.get_schema(n) for n in names}
-        server = next(s for key, s in _servers.items() if key[-1].startswith('editor_'))
-        server._tools[0].description = 'changed after first discovery'
-        outcome = []
-
-        def foreign_caller():
-            token = set_multiplex_context(True)
-            try:
-                _register_server_tools(server.name, server, server._config)
-                outcome.append('registered')
-            except RuntimeStoreError as exc:
-                outcome.append(exc.reason)
-            finally:
-                reset_multiplex_context(token)
-        thread = threading.Thread(target=foreign_caller)
-        thread.start()
-        thread.join(20)
-        assert outcome == ['acp_mcp_schema_changed']
-        assert schemas == {n: registry.get_schema(n) for n in names}
-
-
 def test_silent_editor_discovery_is_bounded_and_reaps_only_itself(server_spec, tmp_path):
     from tools.registry import registry
     authority = owner()

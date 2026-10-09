@@ -45,7 +45,7 @@ from hermes_cli.backup_restore import (
 logger = logging.getLogger(__name__)
 
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     # Shim to stop the old updater doing work until relaunch. None means unknown,
     # not permission to restore over a database whose holders we did not scan.
     return None
@@ -239,7 +239,7 @@ def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Op
         raise
 
 
-def _collect_memory_provider_external_paths() -> list[Path]:
+def _collect_memory_provider_external_paths() -> List[Path]:
     """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
     provider failure (backup must never fail because of a flaky plugin)."""
     try:
@@ -255,7 +255,7 @@ def _collect_memory_provider_external_paths() -> list[Path]:
     except Exception as exc:
         logger.warning("backup_paths() failed for memory provider %r: %s", active, exc)
         return []
-    out: dict[Path, Path] = {}  # resolved -> first declared spelling
+    out: Dict[Path, Path] = {}  # resolved -> first declared spelling
     for raw in declared:
         try:
             p = Path(raw).expanduser()
@@ -271,13 +271,13 @@ def _collect_memory_provider_external_paths() -> list[Path]:
     return list(out.values())
 
 
-def _iter_external_files(base: Path) -> list[Path]:
+def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
     if base.is_file() and not base.is_symlink():
         return [base]
     if not base.is_dir():
         return []
-    files: list[Path] = []
+    files: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
@@ -504,7 +504,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path,
+    zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
     *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
@@ -533,7 +533,7 @@ def _write_zip_entries(
     return total_bytes
 
 
-def _print_capped(header: str, lines: list[str], indent: str) -> None:
+def _print_capped(header: str, lines: List[str], indent: str) -> None:
     """Print *header*, then at most 10 of *lines* (each prefixed by *indent*) and a "... and N more" tail."""
     print(header)
     for line in lines[:10]:
@@ -681,7 +681,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
 
 # --- Import ---
 
-def _find_corrupt_members(zf: zipfile.ZipFile, members: list[str]) -> list[str]:
+def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
     """Return ``"<member>: <error>"`` for every member whose data does not decompress or
     fails its CRC, streaming each one in 1 MiB chunks so a multi-GB ``state.db`` is never
     held in memory.
@@ -912,7 +912,7 @@ def run_import(args) -> Optional[int]:
 
 
 def _import_members(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Reserve all affected profiles before publishing even the first config file."""
     from gateway.runtime_ownership import exclusive_maintenance
@@ -935,7 +935,7 @@ def _import_members(
 
 
 def _import_external_member(
-    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: list[str]
+    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: List[str]
 ) -> bool:
     """Publish one ``_external/`` member under the user's home; False (with ``errors`` appended)
     when it is a traversal or cannot be written."""
@@ -962,7 +962,7 @@ def _import_external_member(
 
 
 def _import_members_exclusive(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
 
@@ -1127,7 +1127,7 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
-def _newest_first(root: Path, keep_entry) -> list[Path]:
+def _newest_first(root: Path, keep_entry) -> List[Path]:
     """Entries of *root* passing ``keep_entry``, newest (by name) first; ``[]`` if *root* is missing."""
     if not root.exists():
         return []
@@ -1138,7 +1138,7 @@ def _newest_first(root: Path, keep_entry) -> list[Path]:
 _CRON_JOBS_REL = "cron/jobs.json"
 
 
-def _prune_oldest(newest_first: list[Path], keep: int, remove, what: str) -> int:
+def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int:
     """``remove(path)`` every entry past the first *keep*; return how many succeeded."""
     deleted = 0
     for p in newest_first[keep:]:
@@ -1311,7 +1311,7 @@ def _create_quick_snapshot_locked(
     staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
-    manifest: dict[str, int] = {}  # rel_path -> file size
+    manifest: Dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
     # #68805: track protected DB files skipped for size — they are snapshot
     # incompleteness just like a failed copy, so pruning must be suppressed
@@ -1492,7 +1492,7 @@ def _create_quick_snapshot_locked(
 def list_quick_snapshots(
     limit: int = 20,
     hermes_home: Optional[Path] = None,
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """List existing quick state snapshots, most recent first."""
     root = _quick_snapshot_root(hermes_home)
     if not root.exists():
@@ -1624,7 +1624,7 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
 
     snap_res, home_res = snap_dir.resolve(), home.resolve()
 
-    def _entry_paths(rel: str) -> Optional[tuple[Path, Path]]:
+    def _entry_paths(rel: str) -> Optional[Tuple[Path, Path]]:
         # Security: reject absolute paths and traversals in manifest entries
         src, dst = snap_dir / rel, home / rel
         if not src.resolve().is_relative_to(snap_res):
@@ -1708,7 +1708,7 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
 def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[dict[str, Any]]:
+) -> Optional[Dict[str, Any]]:
     """Safety net for silent cron-job loss across ``hermes update``.
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
@@ -1819,7 +1819,7 @@ def create_pre_update_snapshots_all_profiles(
     invoking_home: Optional[Path] = None,
     keep: Optional[int] = None,
     max_file_size: Optional[int] = None,
-) -> dict[str, str]:
+) -> Dict[str, str]:
     """Pre-update quick snapshots for every SIBLING profile (#66140).
 
     Same snapshot set, same per-file size cap, same keep policy as the
@@ -1829,7 +1829,7 @@ def create_pre_update_snapshots_all_profiles(
     it where it expects. Returns ``{profile_name: snapshot_id}`` for the
     siblings that snapshotted successfully. Never raises.
     """
-    results: dict[str, str] = {}
+    results: Dict[str, str] = {}
     home = invoking_home or get_hermes_home()
     for name, profile_home in _sibling_profile_homes(home):
         try:
@@ -1851,7 +1851,7 @@ def create_pre_update_snapshots_all_profiles(
 # (gateway, cron, desktop), so an update/repair cycle that rewrites them
 # silently redirects paid inference. Each entry is a dotted path into the raw
 # config.yaml document; a single-element tuple protects the whole section.
-_PROTECTED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
     ("model", "provider"),
     ("model", "default"),
     ("model", "base_url"),
@@ -1860,7 +1860,7 @@ _PROTECTED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
+def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
     """Parse ``path`` as a YAML mapping. ``None`` = missing/unreadable/non-dict."""
     if not path.is_file():
         return None
@@ -1874,7 +1874,7 @@ def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
+def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
     node: Any = data
     for key in dotted:
         if not isinstance(node, dict):
@@ -1883,7 +1883,7 @@ def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any
     return node
 
 
-def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
+def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
     node = data
     for key in dotted[:-1]:
         child = node.get(key)
@@ -1897,7 +1897,7 @@ def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value:
 def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[dict[str, Any]]:
+) -> Optional[Dict[str, Any]]:
     """Safety net for silent config.yaml model/MoA loss across ``hermes update``.
 
     Desktop update/repair cycles have been observed to rewrite user-set
@@ -1976,9 +1976,9 @@ def restore_config_model_settings_if_rewritten(
 
 
 def restore_config_model_settings_all_profiles(
-    profile_snapshots: dict[str, str],
+    profile_snapshots: Dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[dict[str, Any]]:
+) -> list[Dict[str, Any]]:
     """Run the config model-settings safety net for every sibling profile.
 
     Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
@@ -1986,7 +1986,7 @@ def restore_config_model_settings_all_profiles(
     pre-update snapshot. Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[dict[str, Any]] = []
+    restored: list[Dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     home = invoking_home or get_hermes_home()
@@ -2013,9 +2013,9 @@ def restore_config_model_settings_all_profiles(
 
 
 def restore_cron_jobs_all_profiles(
-    profile_snapshots: dict[str, str],
+    profile_snapshots: Dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[dict[str, Any]]:
+) -> list[Dict[str, Any]]:
     """Run the cron-jobs safety net for every sibling profile (#66140).
 
     ``profile_snapshots`` is the map returned by
@@ -2025,7 +2025,7 @@ def restore_cron_jobs_all_profiles(
     this update run). Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[dict[str, Any]] = []
+    restored: list[Dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     home = invoking_home or get_hermes_home()

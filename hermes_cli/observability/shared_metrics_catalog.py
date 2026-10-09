@@ -80,51 +80,35 @@ def display_languages() -> frozenset[str]:
 
 @functools.cache
 def provider_names() -> frozenset[str]:
-    """Provider ids Hermes itself ships: built-in auth rows, overlays, alias tables and the
-    in-tree ``plugins/model-providers`` profiles. Never the live registries (``PROVIDER_REGISTRY``,
-    picker labels): ``$HERMES_HOME`` and pip provider plugins add their user-chosen names there."""
-    import providers
-    from hermes_cli.auth import _PROVIDER_ALIASES, BUILTIN_PROVIDER_IDS
-    from hermes_cli.models_catalog_static import _PROVIDER_ALIASES as _CATALOG_ALIASES
-    from hermes_cli.providers import ALIASES, HERMES_OVERLAYS
+    """Static shipped provider vocabulary, excluding home and entry-point plugins."""
+    from hermes_cli.provider_catalog import PROVIDER_PICKER_ORDER
 
-    providers.list_providers()  # runs discovery; bundled profiles land in the process-wide layer
-    bundled = {
-        alias for name, profile in providers._REGISTRY.items() if providers._SOURCES.get(name) == "bundled"
-        for alias in (name, *profile.aliases)
-    }
-    return BUILTIN_PROVIDER_IDS.union(
-        HERMES_OVERLAYS, ALIASES, _PROVIDER_ALIASES, _CATALOG_ALIASES, bundled, ("openrouter", CUSTOM)
-    )
+    bundled_root = _REPO_ROOT / "plugins" / "model-providers"
+    bundled = {p.name.lower() for p in bundled_root.iterdir()
+               if p.is_dir() and (p / "plugin.yaml").is_file()} if bundled_root.is_dir() else set()
+    return frozenset(set(PROVIDER_PICKER_ORDER) | bundled | {
+        "openrouter", "openai", "anthropic", "gemini", "xai", "custom", "ollama", "local", "vllm", "llamacpp", "llama.cpp", "azure", "lm-studio", "lm_studio",
+    })
 
 
 @functools.cache
 def user_named_model_providers() -> frozenset[str]:
-    """Providers whose model ids the user names: custom endpoints and loopback servers."""
+    """Shipped loopback/local provider aliases have user-defined model identifiers."""
+    from hermes_cli.provider_auth import iter_provider_configs
     from urllib.parse import urlparse
-
-    from hermes_cli import auth, models, providers
-    from hermes_cli.auth import PROVIDER_REGISTRY
 
     hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
     loopback = {
-        name for name, config in PROVIDER_REGISTRY.items()
-        if urlparse(str(getattr(config, "inference_base_url", "") or "")).hostname in hosts
+        config.id for config in iter_provider_configs()
+        if urlparse(str(config.inference_base_url or "")).hostname in hosts
     }
-    # Alias spellings (``lm-studio``) pass provider_metric_name as shipped names, so they must collapse too.
-    tables = (providers.ALIASES, getattr(auth, "_PROVIDER_ALIASES", {}), getattr(models, "_PROVIDER_ALIASES", {}))
-    aliases = {alias for table in tables for alias, canon in table.items() if canon in loopback}
-    return frozenset(loopback | aliases | {CUSTOM})
+    return frozenset(loopback | custom_provider_aliases() | {CUSTOM})
 
 
 @functools.cache
 def custom_provider_aliases() -> frozenset[str]:
-    """Provider ids Hermes routes through the generic ``custom`` provider (``ollama``, ``vllm``,
-    ``llamacpp``...): shipped names, but the server and its model ids are the user's own."""
-    from hermes_cli import auth, models, providers
-
-    tables = (providers.ALIASES, getattr(auth, "_PROVIDER_ALIASES", {}), getattr(models, "_PROVIDER_ALIASES", {}))
-    return frozenset(alias for table in tables for alias, canon in table.items() if canon == CUSTOM)
+    """Names of bundled local endpoints that route via a custom model server."""
+    return frozenset({"ollama", "local", "vllm", "llamacpp", "llama.cpp", "lmstudio", "lm-studio", "lm_studio"})
 
 
 # ---- v4 gateway ----
@@ -302,7 +286,7 @@ def public_model_ids() -> frozenset[str]:
     """Model ids Hermes ships in its static catalogs plus every id in the local models.dev cache
     (never a network call), with and without a ``vendor/`` prefix."""
     from agent.models_dev import fetch_models_dev
-    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+    from models.catalog_static import _PROVIDER_MODELS
 
     ids = {model for models in _PROVIDER_MODELS.values() for model in models}
     for entry in fetch_models_dev(allow_network=False).values():

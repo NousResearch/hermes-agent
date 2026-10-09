@@ -98,7 +98,7 @@ def fetch(
         }
         try:
             payload = _post(body)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"USAspending error on page {page}: {e}", file=sys.stderr)
             break
         results = payload.get("results", [])

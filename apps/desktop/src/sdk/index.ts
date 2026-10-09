@@ -22,7 +22,10 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
-import { mutateSessionFenced } from '@/api/sessions'
+
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
+const mutatePersistedVisibility = createSessionMutationClient()
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -106,8 +109,6 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
-import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
-
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
@@ -123,8 +124,7 @@ import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
-/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
-export type * from './plugin-contract'
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1520,7 +1520,7 @@ export const host = {
     const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
     const payload = { hidden: options.hidden, profile }
 
-    return mutateSessionFenced(
+    return mutatePersistedVisibility(
       JSON.stringify([scope, options.sessionId, payload]),
       () =>
         hermesApi<SessionMutationSnapshot>({
@@ -1572,11 +1572,10 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- ui: the design language --------------------------------------------------
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1661,7 +1660,6 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1672,6 +1670,7 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
+
 /** Appearance settings' plugin seam: register a render contribution at
  *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
@@ -1802,6 +1801,18 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
+export type {
+  HermesPlugin,
+  PluginContext,
+  PluginContribution,
+  PluginNativeNotificationInput,
+  PluginNotificationAction,
+  PluginOs,
+  PluginRestOptions,
+  PluginSettingsPage,
+  PluginSettingsSubpage,
+  PluginStorage
+} from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —

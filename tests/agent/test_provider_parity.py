@@ -67,7 +67,7 @@ def _reset_auxiliary_provider_state():
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     kwargs = dict(
         api_key="test-key",
@@ -567,7 +567,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, _reason = _normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.codex_reasoning_items is not None
         assert len(msg.codex_reasoning_items) == 1
         assert msg.codex_reasoning_items[0]["encrypted_content"] == "gAAAA_secret_blob_123"
@@ -592,7 +592,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, _reason = _normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.codex_message_items is not None
         assert len(msg.codex_message_items) == 2
         assert msg.codex_message_items[0]["id"] == "msg_abc"
@@ -711,24 +711,26 @@ class TestAuxiliaryClientProviderPriority:
 
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        from agent.auxiliary_client import _OPENROUTER_MODEL, get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_model_resolution import select_provider_auxiliary_fallback
         with patch("agent.auxiliary_client.OpenAI") as mock:
-            _client, model = get_text_auxiliary_client()
-        assert model == _OPENROUTER_MODEL
+            client, model = get_text_auxiliary_client()
+        assert model == select_provider_auxiliary_fallback("openrouter")
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
 
     def test_nous_when_no_openrouter(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        from agent.auxiliary_client import _NOUS_MODEL, get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_model_resolution import select_provider_auxiliary_fallback
         nous_auth = {
             "access_token": _fake_invoke_jwt(),
             "scope": "inference:invoke",
         }
         with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
              patch("agent.auxiliary_client.OpenAI") as mock, \
-             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
-            _client, model = get_text_auxiliary_client()
-        assert model == _NOUS_MODEL
+             patch("agent.auxiliary_client.get_provider_profile", return_value=SimpleNamespace(resolve_aux_model=lambda **_kw: "")):
+            client, model = get_text_auxiliary_client()
+        assert model == select_provider_auxiliary_fallback("nous")
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
         """Custom endpoint is used when no OpenRouter/Nous keys are available.
@@ -744,7 +746,7 @@ class TestAuxiliaryClientProviderPriority:
              patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("http://localhost:1234/v1", "local-key", "openai-compatible")), \
              patch("agent.auxiliary_client.OpenAI") as mock:
-            _client, _model = get_text_auxiliary_client()
+            client, model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
     def test_codex_not_in_auto_fallback(self, monkeypatch):

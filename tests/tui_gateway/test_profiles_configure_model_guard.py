@@ -19,11 +19,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import nullcontext
 
 import pytest
 import hermes_yaml as yaml
 
-import hermes_cli.model_selection_guards as guards
+import application_model_selection_guards as guards
 import tui_gateway.server as srv
 
 GUARDED_MODEL = "muse-spark-1.2-contributor"
@@ -35,13 +36,23 @@ def home(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    # The profile write now validates through ``switch_model`` (catalog + credentials); these
-    # tests pin the guard handshake, so echo the pick back as an accepted route.
-    from hermes_cli.model_switch import ModelSwitchResult
+    # This suite isolates the profile confirmation handshake from the dashboard's
+    # independent validation transaction (migrated separately in 5.8.6.6).
+    # Avoid importing the entire dashboard server via its late-bound profile scope.
+    # This test already points HERMES_HOME at its isolated temporary default profile.
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
-        lambda *, raw_input, explicit_provider, **_kw: ModelSwitchResult(
-            success=True, new_model=raw_input, target_provider=explicit_provider))
+        "hermes_cli.web_routers.profiles._config_profile_scope",
+        lambda _name: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.profiles._CONFIG_MUTATION_LOCK",
+        nullcontext(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.profiles._validated_main_model_selection",
+        lambda _cfg, provider, model, **_kw: SimpleNamespace(
+            new_model=model, target_provider=provider, base_url="", api_mode=""),
+    )
     return hermes_home
 
 

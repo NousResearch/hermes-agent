@@ -3,6 +3,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 
 
 def _normalize_parts(content: list) -> list | None:
@@ -23,8 +24,10 @@ def _normalize_parts(content: list) -> list | None:
     return parts if parts and changed else None
 
 
-class QwenProfile(ProviderProfile):
+class QwenProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Qwen Portal — message normalization, vl_high_resolution, metadata top-level."""
+
+    model_prefix_exclusions = ("qwen", "qwen-cli")
 
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize content to list-of-dicts and inject cache_control on the (first)
@@ -65,8 +68,11 @@ class QwenProfile(ProviderProfile):
 
 
 qwen = QwenProfile(
-    name="qwen-oauth", aliases=("qwen", "qwen-portal", "qwen-cli"), env_vars=("QWEN_API_KEY",),
-    base_url="https://portal.qwen.ai/v1", auth_type="oauth_external", default_max_tokens=65536,
+    name="qwen-oauth", aliases=("qwen", "qwen-portal", "qwen-cli"),
+    display_name="Qwen OAuth (Portal)", description="Qwen OAuth (Reuses local Qwen CLI login)",
+    env_vars=("QWEN_API_KEY",),
+    base_url="https://portal.qwen.ai/v1", base_url_env_var="HERMES_QWEN_BASE_URL",
+    auth_type="oauth_external", default_max_tokens=65536,
 )
 
 register_provider(qwen)

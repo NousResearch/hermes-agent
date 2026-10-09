@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_cli import env_loader
+from hermes_cli import env_loader  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

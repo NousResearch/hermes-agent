@@ -105,11 +105,11 @@ def extract_text(message: Any) -> str:
     return fallback(message) if fallback else content
 
 
-def extract_media(message: Any) -> tuple[MessageType, list[str], list[str]]:
+def extract_media(message: Any) -> Tuple[MessageType, List[str], List[str]]:
     """Return ``(MessageType, [download codes/urls], [mime types])`` for a message."""
     msg_type = MessageType.TEXT
-    media_urls: list[str] = []
-    media_types: list[str] = []
+    media_urls: List[str] = []
+    media_types: List[str] = []
     image_content = getattr(message, "image_content", None)
     if download_code := (getattr(image_content, "download_code", None) if image_content else None):
         media_urls.append(download_code)
@@ -154,9 +154,9 @@ def extract_media(message: Any) -> tuple[MessageType, list[str], list[str]]:
     return msg_type, media_urls, media_types
 
 
-def collect_download_codes(message: Any) -> list[tuple[Any, str]]:
+def collect_download_codes(message: Any) -> List[Tuple[Any, str]]:
     """Return ``(container, key)`` pairs whose download code should be resolved to a URL."""
-    codes: list[tuple[Any, str]] = []
+    codes: List[Tuple[Any, str]] = []
     img_content = getattr(message, "image_content", None)
     if img_content and getattr(img_content, "download_code", None):
         codes.append((img_content, "download_code"))

@@ -9,6 +9,8 @@ Covers:
 - /model tab completion for model aliases
 """
 
+from models import ModelRef
+
 
 # ---------------------------------------------------------------------------
 # OLLAMA_API_KEY credential resolution
@@ -71,26 +73,10 @@ class TestDirectAliases:
         aliases = _load_direct_aliases()
 
         assert "mymodel" in aliases
-        assert aliases["mymodel"].model == "custom-model:latest"
-        assert aliases["mymodel"].provider == "custom"
+        assert aliases["mymodel"].ref.model == "custom-model:latest"
+        assert aliases["mymodel"].ref.provider == "custom"
         assert aliases["mymodel"].base_url == "https://example.com/v1"
 
-    def test_direct_alias_resolved_before_catalog(self, monkeypatch):
-        """Direct aliases take priority over models.dev catalog lookup."""
-        from hermes_cli.model_switch import DirectAlias, resolve_alias
-        import hermes_cli.model_switch as ms
-
-        test_aliases = {
-            "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        result = resolve_alias("glm", "openrouter")
-        assert result is not None
-        provider, model, alias = result
-        assert model == "glm-4.7"
-        assert provider == "custom"
-        assert alias == "glm"
 
 
 # ---------------------------------------------------------------------------
@@ -121,95 +107,16 @@ class TestLoadDirectAliasesEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# resolve_alias: fallthrough and edge cases
+# switch_model: semantic alias ambiguity
 # ---------------------------------------------------------------------------
 
-class TestResolveAliasEdgeCases:
-    """Edge cases for resolve_alias."""
-
-
-    def test_whitespace_input_handled(self, monkeypatch):
-        """Input with whitespace is stripped before lookup."""
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
-
-        test_aliases = {
-            "myalias": DirectAlias("my-model", "custom", "https://example.com"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        result = ms.resolve_alias("  myalias  ", "openrouter")
-        assert result is not None
-        assert result[1] == "my-model"
-
-
-# ---------------------------------------------------------------------------
-# resolve_alias: sort-key date-stamp handling
-# ---------------------------------------------------------------------------
-
-class TestResolveAliasSorting:
-    """Aliases matching multiple catalog models must NOT silently pick one —
-    resolve_alias raises AmbiguousAliasError with candidates sorted
-    best-guess-first (dated snapshots demoted below real point versions)."""
-
-    def test_anthropic_opus_ambiguous_lists_candidates(self, monkeypatch):
-        """Multiple family matches surface a choice instead of auto-picking;
-        the display ordering demotes date-stamped snapshots."""
-        import pytest
-
-        import hermes_cli.model_switch as ms
-
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
-        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
-        monkeypatch.setattr(ms, "list_provider_models",
-                            lambda p: ["claude-opus-4-1", "claude-opus-4-7",
-                                       "claude-opus-4-8",
-                                       "claude-opus-4-20250514"])
-        with pytest.raises(ms.AmbiguousAliasError) as exc:
-            ms.resolve_alias("opus", "anthropic")
-        assert exc.value.candidates[0] == "claude-opus-4-8"
-        assert set(exc.value.candidates) == {
-            "claude-opus-4-1", "claude-opus-4-7",
-            "claude-opus-4-8", "claude-opus-4-20250514",
-        }
-
-    def test_unsynced_new_model_sorts_first(self, monkeypatch):
-        """A just-released model missing from models.dev still ranks above
-        older, dated siblings in the candidate ordering."""
-        import pytest
-
-        import hermes_cli.model_switch as ms
-
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
-        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
-        monkeypatch.setattr(ms, "list_provider_models",
-                            lambda p: ["claude-opus-4-7", "claude-opus-4-8",
-                                       "claude-opus-4-20250514",
-                                       "claude-opus-4-9"])
-        with pytest.raises(ms.AmbiguousAliasError) as exc:
-            ms.resolve_alias("opus", "anthropic")
-        assert exc.value.candidates[0] == "claude-opus-4-9"
-
-    def test_single_match_resolves_without_error(self, monkeypatch):
-        """Exactly one family match still resolves automatically."""
-        import hermes_cli.model_switch as ms
-
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
-        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
-        monkeypatch.setattr(ms, "list_provider_models",
-                            lambda p: ["claude-opus-4-8", "claude-sonnet-4-6"])
-        result = ms.resolve_alias("opus", "anthropic")
-        assert result is not None and result[1] == "claude-opus-4-8"
-
+class TestSwitchModelAliasAmbiguity:
     def test_switch_model_surfaces_ambiguity_message(self, monkeypatch):
         """switch_model returns a failure result listing the candidates
         instead of switching to a heuristic guess."""
         import hermes_cli.model_switch as ms
 
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr("models.catalog_static._PROVIDER_MODELS", {})
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
         monkeypatch.setattr(ms, "list_provider_models",
@@ -225,6 +132,7 @@ class TestResolveAliasSorting:
         assert "claude-opus-4-20250514" in result.error_message
 
 
+
 # ---------------------------------------------------------------------------
 # switch_model: direct alias base_url override
 # ---------------------------------------------------------------------------
@@ -238,12 +146,9 @@ class TestSwitchModelDirectAliasOverride:
         import hermes_cli.model_switch as ms
 
         test_aliases = {
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
+            "qwen": DirectAlias(ModelRef("custom", "qwen3.5:397b"), "https://ollama.com/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-
-        monkeypatch.setattr(ms, "resolve_alias",
-            lambda raw, prov, *_: ("custom", "qwen3.5:397b", "qwen"))
 
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -252,8 +157,6 @@ class TestSwitchModelDirectAliasOverride:
 
         monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
-            lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("qwen", "openrouter", "old-model")
         assert result.success
@@ -266,19 +169,15 @@ class TestSwitchModelDirectAliasOverride:
         import hermes_cli.model_switch as ms
 
         test_aliases = {
-            "local": DirectAlias("local-model", "custom", "http://localhost:11434/v1"),
+            "local": DirectAlias(ModelRef("custom", "local-model"), "http://localhost:11434/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
-        monkeypatch.setattr(ms, "resolve_alias",
-            lambda raw, prov, *_: ("custom", "local-model", "local"))
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
         monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
-            lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("local", "openrouter", "old-model")
         assert result.success
@@ -318,7 +217,7 @@ class TestSwitchModelDirectAliasOverride:
         from hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
-            "a-alias": DirectAlias("shared-model", "custom", "https://alias-host.example.com/v1",
+            "a-alias": DirectAlias(ModelRef("custom", "shared-model"), "https://alias-host.example.com/v1",
                                    api_key="sk-alias-host"),
         })
 
@@ -334,9 +233,9 @@ class TestSwitchModelDirectAliasOverride:
         from hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
-            "a-alias": DirectAlias("shared-model", "custom", "https://alias-host.example.com/v1",
+            "a-alias": DirectAlias(ModelRef("custom", "shared-model"), "https://alias-host.example.com/v1",
                                    api_key="sk-alias-host"),
-            "b-alias": DirectAlias("shared-model", "Provider-B", "https://api-b.example.com/v2"),
+            "b-alias": DirectAlias(ModelRef("Provider-B", "shared-model"), "https://api-b.example.com/v2"),
         })
 
         assert result.success, result.error_message
@@ -350,9 +249,9 @@ class TestSwitchModelDirectAliasOverride:
         from hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
-            "a-alias": DirectAlias("shared-model", "provider-a", "https://alias-host.example.com/v1",
+            "a-alias": DirectAlias(ModelRef("provider-a", "shared-model"), "https://alias-host.example.com/v1",
                                    api_key="sk-alias-host"),
-            "corp-alias": DirectAlias("shared-model", "corp-llm", "https://corp.example.com/v2",
+            "corp-alias": DirectAlias(ModelRef("corp-llm", "shared-model"), "https://corp.example.com/v2",
                                       api_key="sk-corp-alias"),
         }, explicit="corp-llm", extra_cfg=(
             "custom_providers:\n  - name: corp-llm\n"
@@ -380,9 +279,9 @@ class TestSwitchModelDirectAliasOverride:
             "custom_providers:\n  - name: corp-llm\n"
             "    base_url: https://corp.example.com/v1\n    api_key: sk-corp\n")
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {
-            "a-alias": DirectAlias("shared-model", "provider-a", "https://alias-host.example.com/v1",
+            "a-alias": DirectAlias(ModelRef("provider-a", "shared-model"), "https://alias-host.example.com/v1",
                                    api_key="sk-alias-host"),
-            "corp-alias": DirectAlias("shared-model", "corp-llm", "https://corp.example.com/v2",
+            "corp-alias": DirectAlias(ModelRef("corp-llm", "shared-model"), "https://corp.example.com/v2",
                                       api_key="sk-corp-alias"),
         })
         monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from utils import base_url_hostname, is_truthy_value
+from utils import is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -314,7 +314,6 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
 # Native-SDK providers speak their own wire protocol and can't be reached via chat_completions against a base_url:
 # always take the runtime-provider path (a configured base_url still flows through it, e.g. a Bedrock region).
 _NATIVE_SDK_PROVIDERS = frozenset({"bedrock", "vertex", "google", "google-genai"})
-_EXPLICIT_API_MODES = frozenset({"chat_completions", "codex_responses", "anthropic_messages"})
 
 def _require_pinned_command(command: Optional[str], message: str) -> None:
     """A pinned ACP transport command must exist on PATH — refuse loudly rather
@@ -331,27 +330,16 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
     }
 
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
-    """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
-    # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
-    # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
-    # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak
-    # the Anthropic Messages protocol. Fixes #10213.
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
-    base_lower = v["base_url"].lower()
-    host = base_url_hostname(v["base_url"])
-    provider = "custom"
-    api_mode = _detect_api_mode_for_url(v["base_url"]) or "chat_completions"
-    if host == "chatgpt.com" and "/backend-api/codex" in base_lower:
-        provider, api_mode = "openai-codex", "codex_responses"
-    elif host == "api.anthropic.com":
-        provider, api_mode = "anthropic", "anthropic_messages"
-    elif "api.kimi.com/coding" in base_lower:
-        api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
-    # registered dialect counts as explicit.
-    from agent.transports import registered_api_modes
-    if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
-        api_mode = v["api_mode"]
+    """``delegation.base_url`` branch: route through the canonical invocation policy."""
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    route = resolve_invocation_route(InvocationRequest(
+        provider="custom",
+        model=v["model"] or "",
+        base_url=v["base_url"] or "",
+        explicit_api_mode=v["api_mode"] or "",
+    ))
+    provider, api_mode = route.provider, route.api_mode
 
     # Preserve the configured provider's request personality on an explicit endpoint.
     request_overrides = None
@@ -470,7 +458,7 @@ _ROUTING_FILTER_DEFAULTS = (
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
-def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[list[dict[str, Any]]]:
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
     """Fallback chain for a child, owned by the same config block as its route.
 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
@@ -487,9 +475,9 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
-    routing_cfg: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    routing_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
     or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
@@ -510,25 +498,27 @@ def _resolve_child_runtime(
     else:
         effective_provider = getattr(parent_agent, "provider", None)
         effective_base_url, parent_api_key = _inherit_parent_endpoint(parent_agent, parent_agent.base_url, parent_api_key)
-    # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
-    # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
-    # same-provider inheritance would pin the child on the wrong wire — re-derive.
-    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a different provider than
-    # the parent — each provider has its own API surface (e.g. MiniMax uses anthropic_messages, DeepSeek
-    # uses chat_completions). Inheriting the parent's mode causes 404 errors when the child routes to the
-    # wrong endpoint. Derive the mode from the target provider when it differs. Same-provider inheritance
-    # would pin a child Hermes/Qwen subagent onto the parent's Claude Messages wire (or the reverse).
-    # agent_init honors an explicit api_mode above its nous branch, so re-derive here before construction.
+    # Resolve the child's wire through the same route owner as cold start and model switch.
+    # A same-provider child may reuse the parent's already-resolved mode as a configured hint;
+    # provider/model policy still outranks it, so model-dependent wires are re-derived correctly.
+    from providers.routing import InvocationRequest, resolve_invocation_route
     _parent_provider = getattr(parent_agent, "provider", None) or ""
-    if override_api_mode is not None:
-        effective_api_mode = override_api_mode
-    elif (effective_provider or "").strip().lower() in _NOUS_PROVIDERS:
-        from hermes_cli.providers import nous_api_mode
-        effective_api_mode = nous_api_mode(effective_model)
-    elif effective_provider != _parent_provider:
-        effective_api_mode = None  # force re-derivation from provider's defaults
-    else:
-        effective_api_mode = getattr(parent_agent, "api_mode", None)
+    route = resolve_invocation_route(InvocationRequest(
+        provider=effective_provider or "",
+        model=effective_model or "",
+        base_url=effective_base_url or "",
+        explicit_api_mode=override_api_mode or "",
+        configured_api_mode=(
+            getattr(parent_agent, "api_mode", None) or ""
+            if effective_provider == _parent_provider and override_api_mode is None
+            else ""
+        ),
+        configured_provider=_parent_provider,
+        requested_provider=override_provider or effective_provider or "",
+    ))
+    effective_provider = route.provider
+    effective_base_url = route.base_url or effective_base_url
+    effective_api_mode = route.api_mode
     # A pinned transport that cannot run must fail the spawn loudly, never fall
     # back silently (delegate_task pre-validates; this covers direct callers).
     _require_pinned_command(
@@ -579,7 +569,7 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    kwargs: dict[str, Any] = {
+    kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),

@@ -25,7 +25,7 @@ from unittest import mock
 
 import pytest
 
-from hermes_cli import gateway_windows
+import hermes_cli.gateway_windows as gateway_windows
 
 # ---------------------------------------------------------------------------
 # _resolve_detached_python: legacy pythonw normalization

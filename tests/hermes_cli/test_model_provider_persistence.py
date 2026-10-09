@@ -5,6 +5,7 @@ as a plain string, causing subsequent provider writes (which check
 isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 from unittest.mock import patch
 
@@ -82,11 +83,10 @@ class TestProviderPersistsAfterModelSave:
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when
         config.model started as a plain string."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
 
-        pconfig = PROVIDER_REGISTRY.get("kimi-coding")
+        pconfig = get_provider_config("kimi-coding")
         if not pconfig:
-            pytest.skip("kimi-coding not in PROVIDER_REGISTRY")
+            pytest.skip("kimi-coding not in live provider projection")
 
         # Simulate: user has a Kimi API key, model was a string
         monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
@@ -122,11 +122,10 @@ class TestBaseUrlValidation:
 
     def test_empty_base_url_keeps_default(self, config_home, monkeypatch):
         """Pressing Enter (empty) should not change the base URL."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
 
-        pconfig = PROVIDER_REGISTRY.get("minimax")
+        pconfig = get_provider_config("minimax")
         if not pconfig:
-            pytest.skip("minimax not in PROVIDER_REGISTRY")
+            pytest.skip("minimax not in live provider projection")
 
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)

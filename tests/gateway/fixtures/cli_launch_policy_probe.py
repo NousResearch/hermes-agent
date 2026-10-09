@@ -107,9 +107,7 @@ def probe(tmp_path):
                         max_turns=1 if side == 'left' else 3, ignore_rules=side == 'left', toolsets='terminal')
         result = subprocess.run([sys.executable, '-c', 'import cli; cli.main(**' + repr(args) + ')'],
             cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70)
-        # A budget run stops at --max-turns with the work unfinished: `chat -Q` exits 1 (documented
-        # contract, same as the in-process CLI), never 0.
-        assert result.returncode == (1 if budget else 0), result.stdout + result.stderr
+        assert result.returncode == 0, result.stdout + result.stderr
         if not resume:
             sessions[side] = re.search(r'Session: (\S+)', result.stderr).group(1)
         return result.stdout

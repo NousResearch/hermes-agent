@@ -14,21 +14,31 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
-    "image", "worktree", "w",
+    "image", "skills", "worktree", "w", "checkpoints", "pass_session_id",
+    "accept_hooks",
     "no_restore_cwd",
     "run_budget", "verbose", "compact",
+    "list_tools", "list_toolsets",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
-           "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
+           "yolo", "safe_mode", "ignore_user_config")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
-    "image": "`hermes --tui` or the Desktop app to attach the image",
+    "image": "attach the image in `hermes --tui` or the Desktop app",
+    "skills": "`hermes --tui -s <skill>`",
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
+    "checkpoints": "`checkpoints.enabled: true` in config.yaml, or `hermes --tui --checkpoints`",
+    "pass_session_id": "`hermes --tui --pass-session-id`",
+    "accept_hooks": "`hooks_auto_accept: true` in config.yaml, or `hermes --tui --accept-hooks`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
     "run_budget": "`agent.run_budget_seconds` in config.yaml",
-    "verbose": "`hermes logs --follow`, or `hermes chat --tui -v`",
+    "verbose": "`hermes logs --follow`, or `hermes --tui -v`",
     "compact": "`display.compact: true` in config.yaml",
+    "list_tools": "`hermes tools list`",
+    "list_toolsets": "`hermes tools list`",
+    "resume latest": "`hermes --tui --resume latest`, or `hermes sessions list` then `--resume <id>`",
+    "continue": "`-c <name>` (or `hermes --tui -c` for the most recent session)",
     "create-if-missing without -c <name>": "`-c <name> --create-if-missing`",
 }
 _SAFE_MODE_EXAMPLE = 'hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"'
@@ -40,22 +50,18 @@ def bypass_launch(args) -> bool:
 
 
 def continue_title(args):
-    """``-c <name>`` (classic precedence: ignored when ``--resume`` is given)."""
+    """``-c <name>`` (classic precedence: ignored when ``--resume`` is given). Bare ``-c`` needs the
+    breadcrumb/MRU lookup the authority does not expose, so it stays refused like ``--resume latest``."""
     name = getattr(args, "continue_last", None)
     return name if isinstance(name, str) and not getattr(args, "resume", None) else None
 
 
-def wants_latest(args):
-    """Bare ``-c`` or ``--resume latest`` (the keyword wins over a session titled "latest", which
-    stays reachable by id or ``-c latest``)."""
-    resume = getattr(args, "resume", None)
-    if isinstance(resume, str):
-        return resume.strip().lower() == "latest"
-    return getattr(args, "continue_last", None) is True
-
-
 def validate_options(args):
     unsupported = [name for name in _UNSUPPORTED if getattr(args, name, None)]
+    if getattr(args, "resume", None) == "latest":
+        unsupported.append("resume latest")
+    if getattr(args, "continue_last", None) is True:
+        unsupported.append("continue")
     if getattr(args, "create_if_missing", False) and not continue_title(args):
         unsupported.append("create-if-missing without -c <name>")
     if unsupported:
@@ -75,57 +81,13 @@ def _caller_cwd(args) -> str:
     return str(Path(getattr(args, "in_dir", None) or os.getcwd()).expanduser().resolve())
 
 
-def _workspace_key(cwd):
-    """The classic CLI's workspace identity for ``-c`` (git root, else the cwd)."""
-    from hermes_cli.main import _resolve_workspace_key
-    previous = os.getcwd()
-    try:
-        os.chdir(cwd)
-        return _resolve_workspace_key()
-    finally:
-        os.chdir(previous)
-
-
-async def _resume_latest(client, args):
-    """Bare ``-c``: this terminal's breadcrumb session when the owner still has it, else (and for
-    ``--resume latest``) the owner's most recent CLI session, this workspace first."""
-    from hermes_cli.terminal_breadcrumbs import read_breadcrumb
-    crumb = (read_breadcrumb() or {}).get("session_id") if getattr(args, "continue_last", None) is True else None
-    if isinstance(crumb, str) and crumb:
-        try:
-            return await client.rpc("session.resume", session_id=crumb)
-        except GatewayClientError as exc:
-            if str(exc) not in {"not_found", "permission_denied"}:
-                raise
-    workspace = await asyncio.to_thread(_workspace_key, _caller_cwd(args))
-    try:
-        return await client.rpc("session.resume", latest="cli", **({"workspace": workspace} if workspace else {}))
-    except GatewayClientError as exc:
-        if str(exc) != "not_found":
-            raise
-        raise GatewayClientError("No previous CLI session to continue. Start a new one with `hermes`, "
-                                 "or list sessions with `hermes sessions list`.") from None
-
-
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
-    query = getattr(args, "query", None) or getattr(args, "q", None)
-    oneshot_prompt = getattr(args, "oneshot", None)
-    if isinstance(oneshot_prompt, str):
-        query = oneshot_prompt
-    quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
-    # Finite: answer one prompt and exit (-z, --oneshot, -Q, stream-json, or -q off a TTY).
-    oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
-                   (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
     async with connect_gateway() as client:
         description = await client.rpc("runtime.describe")
         title = continue_title(args)
         create_if_missing = bool(title and getattr(args, "create_if_missing", False))
-        latest = wants_latest(args)
-        if latest:
-            snapshot = await _resume_latest(client, args)
-            check_resume_policy(args, snapshot)
-        elif getattr(args, "resume", None) or (title and not create_if_missing):
+        if getattr(args, "resume", None) or (title and not create_if_missing):
             name = getattr(args, "resume", None) or title
             try:
                 # Exact id first, then title (latest lineage continuation), as the classic CLI did.
@@ -144,21 +106,15 @@ async def run_gateway_chat(args, emitter=None):
             check_resume_policy(args, snapshot)
         else:
             contract = description.get("session_create", {})
-            # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
-            # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
-            sources = contract.get("sources", [])
-            source = getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli")
-            if source not in sources:
+            source = getattr(args, "source", None) or "cli"
+            if source not in contract.get("sources", []):
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
-            policy = _requested_policy(args)
-            policy.pop("source", None)
+            policy = {key: getattr(args, key) for key in _POLICY if getattr(args, key, None) not in (None, False)}
             if create_if_missing:
                 policy["title"] = title
-            # The documented `HERMES_ACCEPT_HOOKS=1` opt-in, as the in-process CLI read it; a
-            # creation flag of THIS session only (a resume keeps the frozen route's consent).
-            if os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in {"1", "true", "yes", "on"}:
-                policy["accept_hooks"] = True
+            if isinstance(policy.get("toolsets"), str):
+                policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
@@ -171,16 +127,19 @@ async def run_gateway_chat(args, emitter=None):
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
         print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
-        if not oneshot:
-            from hermes_cli.terminal_breadcrumbs import write_breadcrumb
-            await asyncio.to_thread(write_breadcrumb, snapshot["stored_session_id"])
         if emitter is not None:
             emitter.bind_session(snapshot["stored_session_id"])
+        query = getattr(args, "query", None) or getattr(args, "q", None)
+        oneshot_prompt = getattr(args, "oneshot", None)
+        if isinstance(oneshot_prompt, str):
+            query = oneshot_prompt
+        quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
+        oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
+                       (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
                                usage_file=getattr(args, "usage_file", None))
         view.unattended = isinstance(oneshot_prompt, str)
-        view.resume_footer = oneshot and not quiet
-        if (getattr(args, "resume", None) or title or latest) and not quiet:
+        if (getattr(args, "resume", None) or title) and not quiet:
             for row in snapshot.get("messages", []):
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
                     print(f"{row['role']}: {row['content']}")
@@ -190,23 +149,10 @@ async def run_gateway_chat(args, emitter=None):
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."
 
 
-def _launch_flags(args):
-    """The creation flags the user passed. Identity, not equality: ``--max-turns 0`` (unlimited)
-    is a value, while ``0 == False`` would drop it to the profile default."""
-    return {key: value for key in _POLICY if (value := getattr(args, key, None)) is not None and value is not False}
-
-
 def _requested_policy(args):
-    policy = _launch_flags(args)
+    policy = {key: getattr(args, key) for key in _POLICY if getattr(args, key, None) not in (None, False)}
     if isinstance(policy.get("toolsets"), str):
         policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
-    if "skills" in policy:
-        # `-s a,b -s c` (argparse append) or cli.main's comma string: one deduplicated list.
-        raw = policy["skills"] if isinstance(policy["skills"], (list, tuple)) else [policy["skills"]]
-        names = [name.strip() for item in raw for name in str(item).split(",") if name.strip()]
-        policy["skills"] = list(dict.fromkeys(names))
-        if not policy["skills"]:
-            policy.pop("skills")
     if getattr(args, "source", None):
         policy["source"] = args.source
     return policy
@@ -260,10 +206,6 @@ def launch_from_args(args) -> int:
 
     try:
         validate_options(args)
-        if getattr(args, "list_tools", False) or getattr(args, "list_toolsets", False):
-            # A catalog listing needs no session and no gateway (main printed it and exited).
-            from hermes_cli.gateway_chat_listing import print_tool_listing
-            return print_tool_listing(args)
         _register_terminal_process()
         from hermes_cli.gateway_chat_startup import ensure_launch_provider
         if emitter is None:

@@ -14,7 +14,7 @@ pytestmark = pytest.mark.platforms("linux")
 
 
 def _force_wsl(monkeypatch):
-    from tools import voice_mode
+    import tools.voice_mode as voice_mode
 
     monkeypatch.setattr(voice_mode, "is_wsl", lambda: True)
 

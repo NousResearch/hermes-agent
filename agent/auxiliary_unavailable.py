@@ -202,8 +202,8 @@ def missing_provider_credentials_message(provider_id: str) -> str:
         return cooldown
     pconfig = None
     with contextlib.suppress(Exception):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        from hermes_cli.provider_auth import get_provider_config
+        pconfig = get_provider_config(provider_id)
     env_vars = tuple(getattr(pconfig, "api_key_env_vars", None) or ())
     problem, remedy = "no API key was found", ""
     from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES

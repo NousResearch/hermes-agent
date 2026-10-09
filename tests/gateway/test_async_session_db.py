@@ -27,6 +27,7 @@ class _SpyDB:
 
     def returns_none(self):
         self._ran_on("returns_none")
+        return None
 
     def returns_bool(self):
         self._ran_on("returns_bool")

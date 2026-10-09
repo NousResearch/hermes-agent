@@ -5,7 +5,7 @@ provider reports unavailable, status lists the missing env vars and surfaces
 the systemd/gateway ``.env``-inheritance gotcha that most often causes it.
 """
 
-from hermes_cli import memory_setup
+import hermes_cli.memory_setup as memory_setup
 
 
 class _UnavailableProvider:

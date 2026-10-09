@@ -37,7 +37,7 @@ def session_key_profile(session_key: Any) -> Optional[str]:
     parts = session_key.split(":")
     if len(parts) < 3 or parts[0] != "agent" or not parts[1]:
         return None
-    from hermes_state_keys import profile_from_session_key_namespace
+    from gateway.session import profile_from_session_key_namespace
     return profile_from_session_key_namespace(parts[1])
 
 
@@ -47,7 +47,7 @@ def _stored_profile(value: Any) -> Optional[str]:
     return name or None
 
 
-def _table_columns(conn, table: str) -> list[str]:
+def _table_columns(conn, table: str) -> List[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")]
 
 
@@ -58,19 +58,12 @@ def _table_columns(conn, table: str) -> list[str]:
 _MESSAGE_MOVE_SKIP = frozenset({"id", "display_order"})
 
 
-class SessionLedgeredError(RuntimeError):
-    """A session with gateway admission/worker history cannot be moved between stores."""
-
-    def __init__(self, session_id: str) -> None:
-        super().__init__(f"{session_id} has gateway admission/worker history; not moved")
-
-
 class SessionProfileRepairMixin:
     """Per-store crossed-profile identity: find, relabel, sever, move, and settle routing/topic rows."""
 
     # ── finders ────────────────────────────────────────────────────────────────
 
-    def find_crossed_profile_sessions(self, owner: str) -> dict[str, list[dict[str, Any]]]:
+    def find_crossed_profile_sessions(self, owner: str) -> Dict[str, List[Dict[str, Any]]]:
         """Keyed session rows whose identity disagrees with itself or with this store.
 
         ``mislabelled``: ``profile_name`` names a profile other than the one in the row's own key
@@ -85,8 +78,7 @@ class SessionProfileRepairMixin:
             "       p.session_key AS parent_session_key "
             "FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id "
             "WHERE s.session_key LIKE 'agent:%' ORDER BY s.started_at, s.id")
-        ledgered = self._ledgered_session_ids()
-        found: dict[str, list[dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
+        found: Dict[str, List[Dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
             if key_profile is None:
@@ -99,8 +91,7 @@ class SessionProfileRepairMixin:
             if key_profile != owner:
                 found["foreign"].append({
                     "id": row["id"], "session_key": row["session_key"], "key_profile": key_profile,
-                    "message_count": int(row["message_count"] or 0),
-                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered})
+                    "message_count": int(row["message_count"] or 0)})
             parent_profile = session_key_profile(row["parent_session_key"])
             if parent_profile is not None and parent_profile != key_profile:
                 found["crossed_parents"].append({
@@ -108,29 +99,12 @@ class SessionProfileRepairMixin:
                     "parent_session_id": row["parent_session_id"], "parent_profile": parent_profile})
         return found
 
-    def _ledgered_session_ids(self) -> set[str]:
-        """Sessions the gateway's durable ledger references (``session_admissions`` /
-        ``worker_executions``, both ``ON DELETE RESTRICT``). A move copies only the transcript, so
-        such a row could never leave the source: report it instead of copying it. A store whose
-        schema predates the ledger has none."""
-        def _read(conn):
-            tables = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name IN ('session_admissions', 'worker_executions')")}
-            ids: set[str] = set()
-            if "session_admissions" in tables:
-                ids.update(r[0] for r in conn.execute("SELECT DISTINCT target_session_id FROM session_admissions"))
-            if "worker_executions" in tables:
-                ids.update(r[0] for r in conn.execute("SELECT DISTINCT session_id FROM worker_executions"))
-            return ids
-        return self._read_retrying_ioerr(_read)
-
-    def list_gateway_routing_rows(self) -> list[dict[str, Any]]:
+    def list_gateway_routing_rows(self) -> List[Dict[str, Any]]:
         return [dict(row) for row in self._read_all(
             "SELECT scope, session_key, entry_json, updated_at FROM gateway_routing "
             "ORDER BY scope, session_key")]
 
-    def find_profile_less_telegram_topic_rows(self) -> list[dict[str, Any]]:
+    def find_profile_less_telegram_topic_rows(self) -> List[Dict[str, Any]]:
         """``telegram_dm_topic_bindings`` rows labelled ``default`` whose ``session_key`` names a named
         profile: written by a multiplexer that had not yet learned to stamp the routed profile
         (#76423). Stores whose topic tables predate ``profile_name`` have nothing to relabel."""
@@ -203,7 +177,7 @@ class SessionProfileRepairMixin:
 
     # ── cross-store move ──────────────────────────────────────────────────────
 
-    def export_session_for_move(self, session_id: str) -> Optional[dict[str, Any]]:
+    def export_session_for_move(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Everything the target store needs to hold *session_id* as its own: the row (every column),
         the resolved system prompt, EVERY message row (inactive and compacted generations included —
         a move is not an export) and its usage rows."""
@@ -223,14 +197,9 @@ class SessionProfileRepairMixin:
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
                     "usage": usage}
-        payload = self._read_retrying_ioerr(_read)
-        if payload is not None and session_id in self._ledgered_session_ids():
-            # Re-checked at apply time: the scan may predate a turn, and copying first would leave
-            # the session in both stores once the ledger's RESTRICT FK refuses the source delete.
-            raise SessionLedgeredError(session_id)
-        return payload
+        return self._read_retrying_ioerr(_read)
 
-    def import_moved_session(self, payload: dict[str, Any], *, profile_name: str) -> str:
+    def import_moved_session(self, payload: Dict[str, Any], *, profile_name: str) -> str:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already
         exists (an earlier run copied but did not delete), else ``imported``. The parent link survives
         only when the parent is already here — a moved row must never point across stores or at a
@@ -265,7 +234,7 @@ class SessionProfileRepairMixin:
         return self._execute_write(_do)
 
     @staticmethod
-    def _insert_row(conn, table: str, values: dict[str, Any], *, skip: frozenset) -> None:
+    def _insert_row(conn, table: str, values: Dict[str, Any], *, skip: frozenset) -> None:
         columns = [c for c in _table_columns(conn, table) if c in values and c not in skip]
         conn.execute(
             f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
@@ -308,7 +277,7 @@ class SessionProfileRepairMixin:
             return changed
         return self._execute_write(_do)
 
-    def delete_gateway_routing_rows(self, rows: Iterable[tuple[str, str]]) -> int:
+    def delete_gateway_routing_rows(self, rows: Iterable[Tuple[str, str]]) -> int:
         wanted = list(rows)
         if not wanted:
             return 0
@@ -319,7 +288,7 @@ class SessionProfileRepairMixin:
                 for scope, key in wanted)
         return self._execute_write(_do)
 
-    def insert_gateway_routing_rows_if_absent(self, rows: Iterable[tuple[str, str, str, float]]) -> int:
+    def insert_gateway_routing_rows_if_absent(self, rows: Iterable[Tuple[str, str, str, float]]) -> int:
         """Adopt ``(scope, session_key, entry_json, updated_at)`` rows another store held for this
         one's routing index. An existing key wins — the row the gateway actually loads stays."""
         wanted = list(rows)
@@ -334,7 +303,7 @@ class SessionProfileRepairMixin:
 
     # ── telegram topic tables ─────────────────────────────────────────────────
 
-    def relabel_telegram_topic_rows(self, rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    def relabel_telegram_topic_rows(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
         """Stamp the key's profile onto ``default``-labelled bindings (and the chat's mode row when
         only the default one exists). A binding that would collide with one the named profile already
         wrote is the stale duplicate and is removed."""
@@ -343,7 +312,7 @@ class SessionProfileRepairMixin:
         if not wanted:
             return counts
 
-        def _do(conn) -> dict[str, int]:
+        def _do(conn) -> Dict[str, int]:
             mode_has_profile = "profile_name" in _table_columns(conn, "telegram_dm_topic_mode")
             for row in wanted:
                 target = session_key_profile(row["session_key"])
@@ -372,7 +341,7 @@ class SessionProfileRepairMixin:
 
     # ── evidence for JSON-file repairs ────────────────────────────────────────
 
-    def key_profiles_for_chat(self, platform: str, chat_id: str) -> set[str]:
+    def key_profiles_for_chat(self, platform: str, chat_id: str) -> Set[str]:
         """Profiles whose keyed sessions hold *(platform, chat_id)* in this store — the evidence for
         who owns a profile-less ``gateway_voice_mode.json`` entry."""
         rows = self._read_all(

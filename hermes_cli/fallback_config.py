@@ -21,7 +21,7 @@ def _normalize_provider_id(value: str) -> str:
     and letting an alias slip past the same-backend skip (#85235).
     """
     try:
-        from hermes_cli.providers import normalize_provider
+        from providers.identity import normalize_provider
     except Exception:  # pragma: no cover - import resilience
         # Silent degradation: alias collapse is disabled and we fall back to a
         # bare lowercase. Log so a future import cycle/refactor can't regress

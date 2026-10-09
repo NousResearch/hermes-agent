@@ -46,14 +46,14 @@ def test_actual_agent_tool_round_never_loads_plugins_in_safe_worker(tmp_path, mo
             _bind_safe_worker_policy(safe_mode=mode == 'safe', ignore_user_config=True, config=config)
         reads, executions = [], []
         def audit(event, args):
-            if event == 'open' and 'plugins' in Path(str(args[0])).parts and args[1] != 'w':
+            if event == 'open' and '/plugins/' in str(args[0]) and args[1] != 'w':
                 frame = sys._getframe(); stack = []
                 while frame:
                     if 'importlib' not in frame.f_code.co_filename:
                         stack.append((frame.f_code.co_filename, frame.f_lineno))
                     frame = frame.f_back
                 reads.append((str(args[0]), stack))
-            if event == 'exec' and 'plugins' in Path(str(getattr(args[0], 'co_filename', ''))).parts:
+            if event == 'exec' and '/plugins/' in str(getattr(args[0], 'co_filename', '')):
                 executions.append(args[0].co_filename)
         sys.addaudithook(audit)
         from run_agent import AIAgent

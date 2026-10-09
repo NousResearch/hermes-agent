@@ -684,6 +684,7 @@ class TestSpawnSupervised:
 
         async def _coro():
             calls["n"] += 1
+            return
 
         runner._spawn_supervised(lambda: _coro(), "clean_watcher")
 

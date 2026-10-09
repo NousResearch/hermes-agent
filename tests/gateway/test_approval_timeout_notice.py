@@ -15,6 +15,7 @@ class _Runner:
     def _schedule(self, coro, label):
         coro.close()
         self.scheduled.append(label)
+        return None
 
 
 def _capture_settle(monkeypatch):

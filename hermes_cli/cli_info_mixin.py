@@ -179,7 +179,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from models.metadata.context import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        self._show_plugin_compat_notice()
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -201,7 +202,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_config")
             self._console_print(f"[dim]   {fix}[/]")
 
-        from hermes_cli.model_switch import is_nous_hermes_non_agentic
+        from agent.model_warnings import is_nous_hermes_non_agentic
         if is_nous_hermes_non_agentic(getattr(self, "model", "") or ""):
             self._console_print()
             self._console_print(f"[bold yellow]{t('cli.banner.hermes_models_not_agentic')}[/]")
@@ -231,7 +232,7 @@ class CLIInfoMixin:
 
     def _fast_command_available(self) -> bool:
         try:
-            from hermes_cli.models import model_supports_fast_mode
+            from models.metadata.fast_mode import model_supports_fast_mode
         except Exception:
             return False
         agent = getattr(self, "agent", None)
@@ -731,7 +732,7 @@ class CLIInfoMixin:
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         compressor = agent.context_compressor
-        last_prompt = max(0, compressor.last_prompt_tokens)
+        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())

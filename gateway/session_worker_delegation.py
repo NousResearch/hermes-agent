@@ -54,7 +54,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     session = conn.execute('SELECT source,session_key FROM sessions WHERE id=?', (session_id,)).fetchone()
     # Only compute registrations are currently enabled. Native/child origins need
     # an owner-reserved source envelope, not worker-selected transport identities.
-    if session is None or session['source'] not in ('cli', 'tui', 'gui', 'tool', 'oneshot'):
+    if session is None or session['source'] not in ('cli', 'tui', 'gui'):
         raise RuntimeStoreError('unsupported_producer')
     if (payload['parent_session_id'] != session_id
             or payload['session_key'] != (session['session_key'] or '')
@@ -193,11 +193,40 @@ def persist_worker_delegation(db, *, epoch, execution_id, session_id, generation
     Gateway calls this ONLY after its ordinary worker claim verification. The
     verified process identity is deliberately separate from the operation payload.
     """
-    from hermes_state_runtime import apply_worker_receipt
+    from gateway.session_admission import admission_fingerprint
+    from hermes_state_runtime import _epoch, _worker_assignment, _json
     handlers = worker_delegation_handlers(execution_id, worker_pid, worker_birth)
-    return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
-                                generation=generation, sequence=sequence, operation=operation,
-                                payload=payload, handlers=handlers)
+    if type(sequence) is not int or sequence < 1 or not isinstance(operation, str) or operation not in handlers:
+        raise RuntimeStoreError('invalid_params')
+    encoded = _json(payload)
+    if len(encoded.encode('utf-8', errors='surrogatepass')) > 4 * 1024 * 1024:
+        raise RuntimeStoreError('invalid_params')
+    digest = admission_fingerprint(canonical_target=session_id,
+        payload={'operation': operation, 'payload': json.loads(encoded)})
+
+    def write(conn):
+        _epoch(conn, epoch)
+        row = _worker_assignment(conn, execution_id, session_id, generation)
+        if row['owner_epoch'] != epoch:
+            raise RuntimeStoreError('stale_epoch')
+        old = conn.execute('SELECT * FROM worker_receipts WHERE execution_id=? AND sequence=?',
+                           (execution_id, sequence)).fetchone()
+        if old is not None:
+            if old['payload_digest'] != digest:
+                raise RuntimeStoreError('admission_conflict')
+            return json.loads(old['result_json'])
+        if row['status'] not in ('registered', 'running'):
+            raise RuntimeStoreError('stale_generation')
+        if sequence != row['last_sequence'] + 1:
+            raise RuntimeStoreError('invalid_params')
+        result = handlers[operation](db, conn, session_id, json.loads(encoded))
+        conn.execute('INSERT INTO worker_receipts(execution_id,sequence,payload_digest,result_json) VALUES(?,?,?,?)',
+                     (execution_id, sequence, digest, json.dumps(result, ensure_ascii=True, allow_nan=False)))
+        conn.execute("UPDATE worker_executions SET last_sequence=?,status='running' WHERE execution_id=?",
+                     (sequence, execution_id))
+        conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+        return result
+    return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
 
 
 async def worker_delegation_request(connection, ref, params):
@@ -208,6 +237,7 @@ async def worker_delegation_request(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
     authority = connection.authority
+    authority._require_admission_open()
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     _verify(connection, ref, params, claim)

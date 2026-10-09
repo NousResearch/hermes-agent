@@ -36,7 +36,8 @@ def _log(msg: object) -> None:
         return
     items = msg if isinstance(msg, list) else [msg]
     with _LOG_LOCK, open(path, "a", encoding="utf-8") as fh:
-        fh.writelines(json.dumps({"pid": os.getpid(), "msg": item}) + "\n" for item in items)
+        for item in items:
+            fh.write(json.dumps({"pid": os.getpid(), "msg": item}) + "\n")
 
 
 def _log_raw_line(line: bytes) -> None:

@@ -689,6 +689,6 @@ class ChatCompletionsTransport(ProviderTransport):
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
 
-from agent.transports import register_transport
+from agent.transports import register_transport  # noqa: E402
 
 register_transport("chat_completions", ChatCompletionsTransport)

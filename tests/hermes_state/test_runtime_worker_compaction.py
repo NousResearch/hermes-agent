@@ -69,32 +69,3 @@ def test_in_place_archive_without_a_lease_persists_from_a_worker(worker):
     assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 2
     store.append_messages_batch('owned', [{'role': 'user', 'content': 'after'}])
     assert [r['content'] for r in store.get_messages_as_conversation('owned')] == ['pruned', 'after']
-
-
-def test_micro_compaction_live_dicts_persist_through_the_worker_like_direct(worker):
-    """The real micro-compaction commit hands its LIVE list (``_db_persisted`` stamps, the marker's
-    ``_micro_compact_marker``) to archive_and_compact. The worker facade projects those dicts onto the
-    closed handoff fields; otherwise the owner refuses the receipt and the sticky journal refuses every
-    later persist of the session (helix4u #4)."""
-    import types
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY
-    from agent.micro_compaction import MicroCompactionMixin
-    db, store = worker
-    db.create_session('direct', 'cli')
-    durable = {}
-    for sid, sdb in (('direct', db), ('owned', store)):
-        live = [{'role': 'user', 'content': 'u1'}, {'role': 'assistant', 'content': 'a1'},
-                {'role': 'user', 'content': 'u2'}]
-        sdb.append_messages_batch(sid, live)
-        for message in live:
-            message['_db_persisted'] = True  # sync_flushed_message_markers' post-commit stamp
-        marker = {'role': 'assistant', 'content': 'micro summary', COMPRESSED_SUMMARY_METADATA_KEY: True,
-                  MICRO_COMPACT_MARKER_KEY: True, '_compressed_summary_has_user_turn': False}
-        compacted = [live[0], marker, live[2]]
-        assert MicroCompactionMixin._sync_micro_compact_to_db(
-            types.SimpleNamespace(_session_db=sdb, _session_id=sid), compacted)
-        assert marker[MICRO_COMPACT_MARKER_KEY] and marker['_db_persisted'] and isinstance(marker['_row_id'], int)
-        sdb.append_messages_batch(sid, [{'role': 'assistant', 'content': 'after'}])
-        durable[sid] = [r['content'] for r in db.get_messages_as_conversation(sid)]
-    assert store.failure is None and store.journal['pending'] == []
-    assert durable['owned'] == durable['direct'] == ['u1', 'micro summary', 'u2', 'after']

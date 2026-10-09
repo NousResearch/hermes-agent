@@ -10,7 +10,7 @@ import os
 import pytest
 import hermes_yaml as yaml
 
-from gateway import relay
+import gateway.relay as relay
 from gateway.config import Platform, load_gateway_config
 from gateway.platform_registry import platform_registry
 from gateway.run_startup import GatewayStartupMixin

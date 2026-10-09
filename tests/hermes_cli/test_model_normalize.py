@@ -1,14 +1,20 @@
-"""Tests for hermes_cli.model_normalize — provider-aware model name normalization.
+"""Tests for canonical provider-aware model identity normalization.
 
 Covers issue #5211: opencode-go model names with dots (e.g. minimax-m2.7)
 must NOT be mangled to hyphens (minimax-m2-7).
 """
 import pytest
 
-from hermes_cli.model_normalize import (
-    normalize_model_for_provider,
-    _normalize_for_deepseek,
-)
+from models.catalog_static import static_provider_model_ids
+from models import normalize_model_id
+
+
+def _normalize(model, provider):
+    return normalize_model_id(
+        provider,
+        model,
+        known_ids=static_provider_model_ids(provider),
+    )
 
 
 # ── Regression: issue #5211 ────────────────────────────────────────────
@@ -24,7 +30,7 @@ class TestIssue5211OpenCodeGoDotPreservation:
         ("some-model-1.0.3", "some-model-1.0.3"),
     ])
     def test_opencode_go_preserves_dots(self, model, expected):
-        result = normalize_model_for_provider(model, "opencode-go")
+        result = _normalize(model, "opencode-go")
         assert result == expected, f"Expected {expected!r}, got {result!r}"
 
 
@@ -51,7 +57,7 @@ class TestCopilotModelNormalization:
 
     def test_openai_codex_still_strips_openai_prefix(self):
         """Regression: openai-codex must still strip the openai/ prefix."""
-        assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
+        assert _normalize("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
 
 # ── Aggregator providers (regression) ──────────────────────────────────
@@ -72,9 +78,9 @@ class TestDeepseekVSeriesPassThrough:
     """
 
     def test_deepseek_provider_preserves_v4_pro(self):
-        """End-to-end via normalize_model_for_provider — user selecting
+        """End-to-end via canonical model normalization — user selecting
         V4 Pro must reach DeepSeek's API as V4 Pro, not V3 alias."""
-        result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
+        result = _normalize("deepseek-v4-pro", "deepseek")
         assert result == "deepseek-v4-pro"
 
     def test_deepseek_provider_preserves_versionless_flash_id(self):
@@ -88,7 +94,7 @@ class TestDeepseekVSeriesPassThrough:
         and the config stored a different model than the picker advertised.
         """
         assert (
-            normalize_model_for_provider("deepseek-flash", "deepseek")
+            _normalize("deepseek-flash", "deepseek")
             == "deepseek-flash"
         )
 
@@ -101,7 +107,7 @@ class TestDeepseekRetiredAliasesAndCustomSlugs:
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
-            normalize_model_for_provider("deepseek-reasoner", "deepseek")
+            _normalize("deepseek-reasoner", "deepseek")
             == "deepseek-flash"
         )
 
@@ -113,7 +119,7 @@ class TestDeepseekRetiredAliasesAndCustomSlugs:
         "my-fine-tune",
     ])
     def test_unknown_ids_pass_through_untouched(self, model):
-        assert _normalize_for_deepseek(model) == model
+        assert normalize_model_id("deepseek", model) == model
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────
@@ -135,19 +141,19 @@ class TestIssue78796NvidiaPrefixRepair:
         ),
     ])
     def test_bare_nemotron_regains_prefix(self, model, expected):
-        assert normalize_model_for_provider(model, "nvidia") == expected
+        assert _normalize(model, "nvidia") == expected
 
     def test_third_party_model_gets_its_own_vendor(self):
         """NIM also hosts third-party models — the prefix is the catalogue's,
         not a hardcoded ``nvidia/``."""
-        assert normalize_model_for_provider("glm-5.2", "nvidia") == "z-ai/glm-5.2"
+        assert _normalize("glm-5.2", "nvidia") == "z-ai/glm-5.2"
 
     @pytest.mark.parametrize("model", [
         "nvidia/nemotron-3-ultra-550b-a55b",
         "z-ai/glm-5.2",
     ])
     def test_already_prefixed_is_untouched(self, model):
-        assert normalize_model_for_provider(model, "nvidia") == model
+        assert _normalize(model, "nvidia") == model
 
     @pytest.mark.parametrize("model", [
         "my-local-nim-container",
@@ -156,12 +162,12 @@ class TestIssue78796NvidiaPrefixRepair:
     def test_unknown_names_pass_through(self, model):
         """The same provider id fronts local NIM containers. An id absent from
         the catalogue is a lookup miss, not a guess — leave it alone."""
-        assert normalize_model_for_provider(model, "nvidia") == model
+        assert _normalize(model, "nvidia") == model
 
     def test_other_providers_unaffected(self):
-        assert normalize_model_for_provider("my-model", "custom") == "my-model"
+        assert _normalize("my-model", "custom") == "my-model"
         assert (
-            normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
+            _normalize("claude-sonnet-4.6", "openrouter")
             == "anthropic/claude-sonnet-4.6"
         )
 
@@ -193,11 +199,11 @@ class TestColonProviderPrefixIsStrippedLikeSlash:
         ("custom:qwen3:8b", "custom", "qwen3:8b"),
     ])
     def test_matching_colon_prefix_stripped(self, model, provider, expected):
-        assert normalize_model_for_provider(model, provider) == expected
+        assert _normalize(model, provider) == expected
 
     @pytest.mark.parametrize("model,provider", [
         ("qwen3:8b", "custom"),            # bare Ollama tag: first colon is not a provider prefix
         ("anthropic:claude-x", "openai-codex"),  # non-matching prefix passes through untouched
     ])
     def test_non_matching_colon_untouched(self, model, provider):
-        assert normalize_model_for_provider(model, provider) == model
+        assert _normalize(model, provider) == model

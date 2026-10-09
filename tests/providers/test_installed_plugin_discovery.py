@@ -29,10 +29,10 @@ _PROFILE_SOURCE = textwrap.dedent(
 def _clear_provider_caches():
     import providers as _pkg
 
-    _pkg._REGISTRY.clear()
-    _pkg._ALIASES.clear()
-    _pkg._PROVIDER_LIST_CACHE = None
-    _pkg._discovered = False
+    _pkg.registry._REGISTRY.clear()
+    _pkg.registry._ALIASES.clear()
+    _pkg.registry._PROVIDER_LIST_CACHE = None
+    _pkg.discovery._discovered = False
     for mod in list(sys.modules):
         if mod.startswith(("plugins.model_providers", "_hermes_user_provider")):
             del sys.modules[mod]

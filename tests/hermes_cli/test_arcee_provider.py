@@ -1,11 +1,11 @@
 """Tests for Arcee AI provider support — standard direct API provider."""
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import types
 
 import pytest
 
 from hermes_cli.auth import (
-    PROVIDER_REGISTRY,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -41,7 +41,7 @@ class TestArceeAliases:
         assert resolve_provider(alias) == "arcee"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from providers import normalize_provider
         assert normalize_provider("arcee-ai") == "arcee"
         assert normalize_provider("arceeai") == "arcee"
 
@@ -70,7 +70,7 @@ class TestArceeCredentials:
         monkeypatch.delenv("ARCEE_BASE_URL", raising=False)
         creds = resolve_api_key_provider_credentials("arcee")
         assert creds["api_key"] == "arc-direct-key"
-        assert creds["base_url"] == PROVIDER_REGISTRY["arcee"].inference_base_url
+        assert creds["base_url"] == get_provider_config("arcee").inference_base_url
 
 
 # =============================================================================
@@ -87,8 +87,8 @@ class TestArceeNormalization:
 
 
     def test_bare_name_unchanged(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        assert normalize_model_for_provider("trinity-mini", "arcee") == "trinity-mini"
+        from models import normalize_model_id
+        assert normalize_model_id("arcee", "trinity-mini") == "trinity-mini"
 
 
 # =============================================================================
@@ -107,7 +107,7 @@ class TestArceeURLMapping:
 
 
 # =============================================================================
-# providers.py overlay + aliases
+# provider profile + aliases
 # =============================================================================
 
 

@@ -17,10 +17,9 @@ Lanes:
 * ``nix``         — ``nix flake check``: the flake files and the dependency
   manifests.
 * ``e2e``, ``e2e_upgrade``, ``e2e_desktop_core``, ``e2e_desktop_update`` —
-  the end-to-end suites. The classifier still says which suites a diff
-  touches (``_E2E_LANES``, the ``run-e2e`` label), but ci.yaml's ``detect``
-  gate forces these lanes off on pull requests and pushes to main: the E2E
-  suites run only on a release run or a manual dispatch.
+  the end-to-end suites. Each runs on a pull request only when the PR edits
+  that suite or the code the suite exists to guard (``_E2E_LANES``), or
+  carries the ``run-e2e`` label.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
@@ -375,11 +374,6 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "hermes_state",
-        # Messaging-gated gateway cases: only the e2e job installs the real
-        # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
-        "tests/gateway/test_native_role_reauthorization.py",
-        "tests/gateway/test_native_telegram_startup_recovery.py",
-        "tests/gateway/test_native_pause_notice.py",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,
@@ -393,8 +387,6 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
-        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state_holders.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

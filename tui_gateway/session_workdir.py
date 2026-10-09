@@ -452,9 +452,9 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     # ``custom:<name>`` identity (matches _runtime_model_config).
     if str(model_config.get("provider") or "").strip().lower() == "custom":
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            healed = canonical_custom_identity(
-                base_url=model_config.get("base_url") or None, model=model_config.get("model") or row_model or None)
+            from application_configured_provider_facts import custom_identity
+            healed = custom_identity(
+                base_url=model_config.get("base_url") or "", model=model_config.get("model") or row_model or "")
             if healed:
                 model_config["provider"] = healed
         except Exception:
@@ -475,8 +475,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
-    from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
-    return row_model, with_session_yolo(model_config, session.get("session_key") or "")
+    return row_model, model_config
 
 
 def _ensure_session_db_row(session: dict) -> bool:

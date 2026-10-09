@@ -8,12 +8,14 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     from hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
-    for option in ("image", "worktree", "run_budget"):
+    for option in ("checkpoints", "worktree", "run_budget"):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
-    # A nameless --create-if-missing stays refused (bare -c resolves on the owner, see
-    # test_gateway_chat_flags_live.py).
+    # Bare -c (breadcrumb/MRU) and a nameless --create-if-missing stay refused; only a
+    # titled -c is a gateway-resolvable selector.
+    assert gateway_chat.launch_from_args(argparse.Namespace(continue_last=True)) == 2
+    assert "--continue" in capsys.readouterr().err
     assert gateway_chat.launch_from_args(argparse.Namespace(create_if_missing=True)) == 2
     assert "create-if-missing" in capsys.readouterr().err
     # Creation flags on resume are judged against the frozen route: repeating the launch
@@ -36,9 +38,9 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     refusal prints a command they can run as-is."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
-    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True, run_budget=30.0)) == 2
+    assert gateway_chat.launch_from_args(argparse.Namespace(checkpoints=True, run_budget=30.0)) == 2
     err = capsys.readouterr().err
-    assert "--worktree: use" in err and "hermes --tui -w" in err
+    assert "--checkpoints: use" in err and "checkpoints.enabled" in err
     assert "--run-budget: use" in err and "run_budget_seconds" in err
     for name in gateway_chat._UNSUPPORTED:
         assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
@@ -62,9 +64,7 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
         async def rpc(self, method, **params):
             calls.append((method, params))
             if method == "runtime.describe":
-                return {"session_create": {"sources": ["cli"], "parameters": [
-                    "cwd", "model", "toolsets", "request_id", "source", "skills", "checkpoints", "accept_hooks",
-                    "pass_session_id"]}}
+                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "toolsets", "request_id", "source"]}}
             return {"stored_session_id": "stored"}
 
     @asynccontextmanager
@@ -78,53 +78,13 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
     monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
     monkeypatch.setattr(GatewayChatView, "run", rendered)
     monkeypatch.chdir(tmp_path)
-    # `-s a,b -s a` + the session-scoped launch flags + an exported HERMES_ACCEPT_HOOKS=1 ride the
-    # create (the classic client is a gateway client; nothing is refused or dropped).
-    monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
-    args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True,
-                              skills=["a,b", "a"], checkpoints=True, pass_session_id=True)
+    args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True)
     assert await gateway_chat.run_gateway_chat(args) == 0
     create = calls[1][1]
     assert create["cwd"] == str(tmp_path)
     assert create["model"] == "explicit-model"
     assert create["toolsets"] == ["terminal", "file"]
-    assert create["skills"] == ["a", "b"] and create["checkpoints"] is create["pass_session_id"] is True
-    assert create["accept_hooks"] is True
     assert create["source"] == "cli" and create["request_id"]
-
-
-@pytest.mark.asyncio
-async def test_finite_runs_create_oneshot_sessions_and_explicit_source_wins(monkeypatch, tmp_path):
-    """Finite ``-q``/``-z`` runs are stored as ``oneshot`` (kept out of human pickers); ``--source``
-    always wins, and a gateway that does not advertise ``oneshot`` still gets a plain ``cli`` run."""
-    from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    created, sources = [], ["cli", "tool", "oneshot"]
-
-    class Peer:
-        async def rpc(self, method, **params):
-            if method == "runtime.describe":
-                return {"session_create": {"sources": sources, "parameters": ["cwd", "request_id", "source"]}}
-            created.append(params["source"])
-            return {"stored_session_id": "stored"}
-
-    @asynccontextmanager
-    async def connected():
-        yield Peer()
-
-    async def rendered(self, query, *, oneshot):
-        return 0
-
-    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
-    monkeypatch.setattr(GatewayChatView, "run", rendered)
-    monkeypatch.chdir(tmp_path)
-    for args in (argparse.Namespace(query="q", quiet=True), argparse.Namespace(oneshot="z"),
-                 argparse.Namespace(query="q", quiet=True, source="tool")):
-        assert await gateway_chat.run_gateway_chat(args) == 0
-    sources.remove("oneshot")
-    assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 0
-    assert created == ["oneshot", "oneshot", "tool", "cli"]
 
 
 @pytest.mark.asyncio
@@ -169,17 +129,3 @@ async def test_yolo_slash_toggles_the_session_bypass_on_the_owner(capsys):
     assert calls == [("config.set", {"session_id": "sid", "key": "yolo", "value": "0"}),
                      ("config.set", {"session_id": "sid", "key": "yolo"})]
     assert "YOLO off for this session" in capsys.readouterr().out
-
-
-def test_every_relocation_hint_names_a_command_that_parses():
-    """A refusal that points at `hermes --tui --checkpoints` / `hermes --tui -v` must not send the
-    user to a command argparse rejects."""
-    import re
-    import shlex
-    from hermes_cli import gateway_chat
-    from hermes_cli.main import _build_cli_parser
-    parser = _build_cli_parser()
-    parser = parser[0] if isinstance(parser, tuple) else parser
-    for hint in gateway_chat._RELOCATED.values():
-        for command in re.findall(r"`(hermes [^`]*)`", hint):
-            parser.parse_args([arg for arg in shlex.split(command)[1:] if not arg.startswith("<")])

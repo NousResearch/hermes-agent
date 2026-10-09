@@ -83,7 +83,7 @@ class TestCronRunJobGuard:
         try:
             with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
                 await execute(owner, ref, admission, policy)
-            success, _output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
+            success, output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
             assert current_execution() is previous
             assert not owner._cron_cancellations
         finally:
@@ -100,7 +100,7 @@ class TestCronRunJobGuard:
 
         _write_corrupt_config(tmp_path)
 
-        _success, _output_doc, _final_response, error = run_job(
+        success, output_doc, final_response, error = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
         assert "Hermes stopped because your settings file" not in (error or "")

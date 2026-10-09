@@ -23,7 +23,7 @@ def _call(server, method, params):
 
 
 def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypatch, clean_layers):
-    from tui_gateway import server
+    import tui_gateway.server as server
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
 
@@ -62,7 +62,7 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
 def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, clean_layers):
     """Two on-disk homes; only the named profile overlays de. The method must read that home's overlay
     and leave the launch home's (empty) view intact."""
-    from tui_gateway import server
+    import tui_gateway.server as server
 
     launch, named = tmp_path / "launch", tmp_path / "profiles" / "named"
     (launch / "locales").mkdir(parents=True)

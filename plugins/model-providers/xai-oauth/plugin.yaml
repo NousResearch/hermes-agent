@@ -1,0 +1,5 @@
+name: xai-oauth-provider
+kind: model-provider
+version: 1.0.0
+description: xAI Grok OAuth provider
+author: Nous Research

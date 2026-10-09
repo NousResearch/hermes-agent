@@ -93,7 +93,7 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
 def _list_auth_returning(rows: list[dict]):
     """Patch list_authenticated_providers to return a fixed row list."""
     return patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "application_provider_discovery.list_authenticated_providers",
         return_value=rows,
     )
 
@@ -165,7 +165,7 @@ def test_build_models_payload_hides_moa_without_raw_preset():
 
 
 def test_include_unconfigured_appends_canonical_skeletons():
-    """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
+    """include_unconfigured=True adds live provider-catalog rows that
     list_authenticated_providers didn't emit. Skeleton rows have empty
     models and source='canonical'. MoA is a virtual routing mode, not a
     canonical provider, so it is excluded — see issue #63353."""
@@ -178,16 +178,13 @@ def test_include_unconfigured_appends_canonical_skeletons():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx, include_unconfigured=True)
     # All canonical providers other than openrouter should appear as
-    # skeleton rows. MoA is virtual/opt-in and excluded from unconfigured;
-    # so is a pre-release provider the user has not signed into.
-    from hermes_cli.models_catalog_static import listed_canonical_providers
+    # skeleton rows.
+    from hermes_cli.provider_catalog import provider_slugs
 
     seen_slugs = {r["slug"] for r in payload["providers"]}
-    for entry in listed_canonical_providers():
-        if entry.slug == "moa":
-            continue  # virtual; only shown when explicitly configured
-        assert entry.slug in seen_slugs, f"missing {entry.slug}"
-    assert "solstice" not in seen_slugs
+    for slug in provider_slugs():
+        if slug != "moa":  # virtual selection mode, not a credential skeleton
+            assert slug in seen_slugs, f"missing {slug}"
     # Skeletons have empty models and source='canonical'.
     skeletons = [r for r in payload["providers"]
                  if r.get("source") == "canonical"]
@@ -390,9 +387,9 @@ def test_canonical_order_uses_slug_not_is_user_defined_flag():
     canonical providers configured via the keyed schema get demoted to
     the tail.
     """
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.provider_catalog import provider_slugs
 
-    canonical_slug = CANONICAL_PROVIDERS[2].slug  # any canonical
+    canonical_slug = provider_slugs()[2]  # any canonical
     rows = [
         # A truly-custom row (correct: is_user_defined=True)
         {"slug": "custom:Ollama", "name": "Ollama", "models": [],
@@ -425,7 +422,7 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     custom rows trailing. MoA is excluded from unconfigured skeletons
     (virtual, opt-in only — issue #63353).
     """
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.provider_catalog import provider_entries
 
     rows = [
         {"slug": "custom:Ollama", "name": "Ollama", "models": [],
@@ -442,14 +439,12 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
         )
     slugs = [r["slug"] for r in payload["providers"]]
     # First row: first canonical provider in declaration order.
-    assert slugs[0] == CANONICAL_PROVIDERS[0].slug
+    assert slugs[0] == provider_entries()[0].slug
     # Custom row trails all visible canonical rows. MoA is virtual/opt-in
     # so it is excluded from the unconfigured skeleton set, and so is an
     # unlisted pre-release provider.
-    from hermes_cli.models_catalog_static import listed_canonical_providers
-    visible_canonical_count = sum(
-        1 for e in listed_canonical_providers() if e.slug != "moa"
-    )
+    from hermes_cli.provider_catalog import provider_catalog
+    visible_canonical_count = sum(1 for e in provider_catalog() if e.slug != "moa")
     assert slugs.index("custom:Ollama") >= visible_canonical_count
 
 
@@ -679,7 +674,7 @@ def test_list_authenticated_providers_refresh_busts_cache():
 def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_path, monkeypatch):
     """Custom-provider metadata stays constant-read as its model count grows (#119048).
 
-    ``get_model_capabilities`` and ``get_model_info`` deliberately stay real:
+    ``query_model_metadata`` and ``get_model_info`` deliberately stay real:
     each lookup resolves ``providers.lab.catalog_provider`` before consulting
     the seeded models.dev catalog.  Removing snapshot threading from that
     path makes the larger payload re-open config.yaml once per lookup.
@@ -725,14 +720,14 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     snapshot = config_module.load_config_readonly()
     baseline = [
         (
-            models_dev.get_model_capabilities("custom:lab", model),
+            models_dev.query_model_metadata("custom:lab", model),
             models_dev.get_model_info("custom:lab", model),
         )
         for model in models
     ]
     snapshot_result = [
         (
-            models_dev.get_model_capabilities("custom:lab", model, config=snapshot),
+            models_dev.query_model_metadata("custom:lab", model, config=snapshot),
             models_dev.get_model_info("custom:lab", model, config=snapshot),
         )
         for model in models
@@ -759,11 +754,16 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
             cfg_get_calls += 1
             return real_cfg_get(*keys, **kwargs)
 
+        from traceback import extract_stack
+        original_readonly = config_module.load_config_readonly
+        def traced_readonly(*args, **kwargs):
+            print("CFG-READ", [(frame.filename.split("hermes-phase5-8-runtime-consumers")[-1], frame.lineno, frame.name) for frame in extract_stack(limit=35) if ("hermes-phase5-8-runtime-consumers" in frame.filename and "test_inventory" not in frame.filename)][-12:])
+            return original_readonly(*args, **kwargs)
         with (
             _list_auth_returning(_rows(model_ids)),
             patch("hermes_cli.inventory._local_runtime_row", return_value=None),
             patch("hermes_cli.inventory._moa_provider_row", return_value=None),
-            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+            patch("models.metadata.fast_mode.model_supports_fast_mode", return_value=False),
             patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
             patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
             patch.object(

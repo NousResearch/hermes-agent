@@ -15,8 +15,6 @@ from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
-# Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
-_RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
@@ -78,16 +76,8 @@ class HostedRoomAuthorityRPC:
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.session_policy import build_policy
         from gateway.session_local import create_local_session
-        from agent.skill_utils import parse_config_string_list
         private = {}
-        config = _load_gateway_config()
-        # A room has no clarification reply (group controls expose approvals only), so a member
-        # turn that called clarify would block for clarify_timeout with its question unseen. As
-        # for cron, freeze it out; the member asks its question in the room reply instead.
-        agent = dict(config.get('agent') or {})
-        agent['disabled_toolsets'] = sorted(
-            set(parse_config_string_list(agent.get('disabled_toolsets'))) | {'clarify'})
-        policy = build_policy({'source': 'gui'}, {**config, 'agent': agent}, private_secrets=private)
+        policy = build_policy({'source': 'gui'}, _load_gateway_config(), private_secrets=private)
         policy = replace(policy, source='bot_room', platform='bot_room',
                          model=policy.model or _resolve_gateway_model(policy.config()),
                          toolsets=tuple(sorted(set(policy.toolsets) | {'bot_room'})))
@@ -169,10 +159,6 @@ class HostedRoomAuthorityRPC:
     def _completed(self, admission_id, future):
         if future.cancelled() or admission_id not in self.callbacks:
             return
-        if future.exception() is not None:
-            # A paused FIFO remains queued/unknown; polling or an explicit
-            # resolution will publish its eventual durable terminal outcome.
-            return
         if self.authorizer('terminal', None, None) is not True:
             self.callbacks.pop(admission_id, None)
             return
@@ -189,32 +175,6 @@ class HostedRoomAuthorityRPC:
                 receipt = self._terminal(row, task, generation)
                 history.append({**receipt, 'role': 'assistant', 'content': receipt['text']})
         return history
-
-    async def _results(self, params):
-        """Terminal receipts only, never the transcript: one bounded response line.
-
-        ``admission_ids`` narrows the read to the caller's pending callbacks. Each text
-        keeps just over the driver's persisted bound, so its own truncation (and notice)
-        is unchanged; newest receipts win the byte budget and the rest follow next poll.
-        """
-        wanted = params.get('admission_ids')
-        if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
-                                   or not all(isinstance(i, str) and i for i in wanted)):
-            raise RuntimeStoreError('invalid_params')
-        from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
-        receipts, used = [], 0
-        for row, task, generation in reversed(self._rows()):
-            if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):
-                continue
-            receipt = self._terminal(row, task, generation)
-            raw = receipt['text'].encode('utf-8')
-            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
-                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
-            used += len(json.dumps(receipt))
-            if receipts and used > _RESULTS_BUDGET_BYTES:
-                break
-            receipts.append(receipt)
-        return receipts[::-1]
 
     async def _info(self, params):
         rows = self._rows()
@@ -294,10 +254,6 @@ class HostedRoomAuthorityRPC:
 
     def history(self, *, profile, session_id, source):
         return self._call('history', profile=profile, session_id=session_id, source=source)
-
-    def results(self, *, profile, session_id, source, admission_ids=None):
-        return self._call('results', profile=profile, session_id=session_id, source=source,
-                          admission_ids=admission_ids)
 
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)

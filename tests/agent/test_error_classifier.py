@@ -31,6 +31,7 @@ class MockAPIError(Exception):
 
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
+    pass
 
 
 class ReadTimeout(MockTransportError):

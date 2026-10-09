@@ -264,7 +264,7 @@ def _failed_from_exception(exc: BaseException) -> Failed:
     return Failed(reason=reason, detail=str(exc), retry_after=float(err.retry_after or 0.0))
 
 
-def _outcome_state(outcome: dict[str, Any], anon_token: str) -> SignInState:
+def _outcome_state(outcome: Dict[str, Any], anon_token: str) -> SignInState:
     """The one reason -> state mapping in the tree, for a promotion that did not complete.
 
     A retiring outcome clears the dead identity here, pinned to the token this attempt started
@@ -325,7 +325,8 @@ def run_sign_in(
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
     from hermes_cli import anon_auth as _core
-    from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
+    from hermes_cli.auth import _resolve_verify
+    from hermes_cli.provider_auth import get_provider_config
     from hermes_cli.auth_device_flow import _request_device_code
     from hermes_cli.auth_nous import _nous_http_client
 
@@ -340,7 +341,7 @@ def run_sign_in(
     # from: with none on disk there is nothing to promote and the answer is ``Unavailable`` (the boot
     # bootstrap is the only creator, NS-845 Q1.2).
     precondition_state: Optional[SignInState] = None
-    state: Optional[dict[str, Any]] = None
+    state: Optional[Dict[str, Any]] = None
     try:
         with open_scope():
             state = _core.current_nous_state()
@@ -360,10 +361,10 @@ def run_sign_in(
     anon_token = str(state.get("anon_token") or "")
     portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
 
-    outcome: dict[str, Any] = {}
-    account_state: Optional[dict[str, Any]] = None
+    outcome: Dict[str, Any] = {}
+    account_state: Optional[Dict[str, Any]] = None
     try:
-        pconfig = PROVIDER_REGISTRY["nous"]
+        pconfig = get_provider_config("nous")
         client_id, scope_str = pconfig.client_id, pconfig.scope
         # A malformed CA bundle raises here, before the wire: inside the try, so it lands on Failed.
         verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)

@@ -97,12 +97,12 @@ def _iter_active_skill_mds(sort: bool = False) -> Iterator[Path]:
     return _iter_skill_mds(_skills_dir(), sort)
 
 
-def _build_external_skill_index() -> set[str]:
+def _build_external_skill_index() -> Set[str]:
     """Names (directory and frontmatter) of every skill provided by external_dirs,
     so sync_skills never shadows an externally-delegated skill."""
     from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
     _external_dirs_cache_clear()  # so a config edit (or a test patch) is seen
-    external_names: set[str] = set()
+    external_names: Set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
             external_names.update({skill_md.parent.name, _read_skill_name(skill_md, "")})
@@ -110,7 +110,7 @@ def _build_external_skill_index() -> set[str]:
     return external_names
 
 
-def _read_manifest() -> dict[str, str]:
+def _read_manifest() -> Dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
         result = {}
@@ -126,7 +126,7 @@ def _read_manifest() -> dict[str, str]:
                 # v1 format: plain name — empty hash triggers migration
                 result[line] = ""
         return result
-    except OSError:
+    except (OSError, IOError):
         return {}
 
 
@@ -156,7 +156,7 @@ def _read_suppressed_names() -> set:
         return names
 
 
-def _write_manifest(entries: dict[str, str]):
+def _write_manifest(entries: Dict[str, str]):
     """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(_manifest_file().parent)
@@ -167,7 +167,7 @@ def _write_manifest(entries: dict[str, str]):
         logger.debug("Failed to write skills manifest %s: %s", _manifest_file(), e, exc_info=True)
 
 
-def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
+def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     """``(skill_name, skill_dir)`` per SKILL.md under the bundled dir. Exclusions are evaluated
     relative to the bundled tree: the install prefix itself may contain ``venv``/``site-packages``
     (which once made wheel installs discover zero skills)."""
@@ -263,17 +263,17 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
 @dataclass
 class _SyncState:
     """Mutable accumulator threaded through one sync_skills() run."""
-    manifest: dict[str, str]
+    manifest: Dict[str, str]
     quiet: bool
     skipped: int = 0
-    copied: list[str] = field(default_factory=list)
-    updated: list[str] = field(default_factory=list)
-    user_modified: list[str] = field(default_factory=list)
-    suppressed: list[str] = field(default_factory=list)
-    relocated: list[str] = field(default_factory=list)
-    shadowed_by_external: list[str] = field(default_factory=list)
-    active_index: Optional[dict[str, list[Path]]] = None  # rename-recovery indexes are expensive on
-    hub_paths: set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
+    copied: List[str] = field(default_factory=list)
+    updated: List[str] = field(default_factory=list)
+    user_modified: List[str] = field(default_factory=list)
+    suppressed: List[str] = field(default_factory=list)
+    relocated: List[str] = field(default_factory=list)
+    shadowed_by_external: List[str] = field(default_factory=list)
+    active_index: Optional[Dict[str, List[Path]]] = None  # rename-recovery indexes are expensive on
+    hub_paths: Set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
 
     def say(self, msg: str) -> None:
         if not self.quiet:
@@ -379,7 +379,7 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     st.say(f"  ↑ {skill_name} (updated)")
 
 
-def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]]) -> None:
+def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]]) -> None:
     """Copy category DESCRIPTION.md files not already present; ``only_dirs`` restricts
     seeding to the essential skills' categories on opted-out profiles."""
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):

@@ -29,10 +29,6 @@ export interface DesktopHalfMarker {
   source: string
   /** mtimeMs of the source `plugin.js` at copy time; a newer source re-copies. */
   sourceMtimeMs: number
-  /** The package folder is a symlink (a dev checkout linked into `plugins/`):
-   *  the copy re-syncs on ANY byte difference and the renderer watches the
-   *  source, so saving the checkout hot-reloads the pane. */
-  linked?: boolean
   /** Where the PACKAGE came from, so "Install here" can install its agent half
    *  into another profile: the catalog sidecar's repo/sha, else the git remote. */
   repo?: string
@@ -82,30 +78,11 @@ export async function ensureDir(dir: string): Promise<string> {
   return dir
 }
 
-async function listDirs(dir: string, followLinks = false): Promise<string[]> {
+async function listDirs(dir: string): Promise<string[]> {
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true })
 
-    // `Dirent.isDirectory()` is false for a symlink. A package root follows
-    // links to directories: `ln -s ~/src/my-plugin ~/.hermes/plugins/` is how a
-    // plugin is developed in place, and the Python loader already follows it.
-    const linkedDir = async (name: string) => {
-      try {
-        return (await fs.promises.stat(path.join(dir, name))).isDirectory()
-      } catch {
-        return false
-      }
-    }
-
-    const names: string[] = []
-
-    for (const entry of entries) {
-      if (entry.isDirectory() || (followLinks && entry.isSymbolicLink() && (await linkedDir(entry.name)))) {
-        names.push(entry.name)
-      }
-    }
-
-    return names
+    return entries.filter(entry => entry.isDirectory()).map(entry => entry.name)
   } catch {
     return []
   }
@@ -217,13 +194,11 @@ export async function materializeDesktopHalf(
 
   const target = path.join(appRoot, packageName)
   const existing = await readMarker(target)
-  const linked = (await fs.promises.lstat(packageDir)).isSymbolicLink()
 
   const marker: DesktopHalfMarker = {
     package: packageName,
     source: sourceDir,
     sourceMtimeMs: stat.mtimeMs,
-    ...(linked ? { linked } : {}),
     ...(await packageOrigin(packageDir))
   }
 
@@ -254,15 +229,7 @@ export async function materializeDesktopHalf(
       }
     }
 
-    // An installed package re-copies when its source is newer. A linked dev
-    // checkout compares bytes: mtime alone misses a `cp -p` / `git stash pop`
-    // that lands an older timestamp, and the copy would stay stale silently.
-    if (
-      existing &&
-      existing.source === sourceDir &&
-      Boolean(existing.linked) === linked &&
-      (linked ? await sameFile(path.join(target, 'plugin.js'), entry) : existing.sourceMtimeMs >= stat.mtimeMs)
-    ) {
+    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
       return null
     }
   }
@@ -338,7 +305,7 @@ export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot:
   for (const home of await localHomes(hermesHome)) {
     const pluginsRoot = path.join(home, 'plugins')
 
-    for (const name of await listDirs(pluginsRoot, true)) {
+    for (const name of await listDirs(pluginsRoot)) {
       if (seen.has(name)) {
         continue
       }

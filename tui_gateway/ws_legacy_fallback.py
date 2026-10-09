@@ -22,27 +22,10 @@ _connection_profile_home: contextvars.ContextVar[str | None] = contextvars.Conte
     "hermes_ws_connection_profile_home", default=None)
 
 
-# The authority owns every session, its transcript and its admissions: a legacy handler in these
-# namespaces would write the same state.db behind its receipts and revision fence (a legacy
-# ``session.delete`` dropped a row the authority still held live; ``session.branch_stored`` built a
-# second, legacy-owned runtime). Kept: store-wide reads, foreign-history import (new rows only), and
-# Desktop's project move (``session.workspace.move``), which rewrites only the row's cwd/git grouping
-# and has no authority verb yet.
-_SESSION_NAMESPACES = ("session.", "prompt.", "message.")
-_SESSION_FALLBACK_ALLOWED = frozenset({
-    "session.most_recent", "session.active_list", "session.events.stats",
-    "session.foreign.list", "session.foreign.preview", "session.foreign.import",
-    "session.workspace.move",
-})
-
-
-def legacy_fallback_allowed(actor: Any, method: str) -> bool:
+def legacy_fallback_allowed(actor: Any) -> bool:
     """True when the connection's grant covers the interactive purpose (the authority's own
-    capability map; never a second list that could drift) and *method* is not a session verb
-    the authority owns."""
+    capability map; never a second list that could drift)."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    if method.startswith(_SESSION_NAMESPACES) and method not in _SESSION_FALLBACK_ALLOWED:
-        return False
     return _PURPOSE_CAPABILITIES["interactive"] <= frozenset(getattr(actor, "capabilities", ()) or ())
 
 

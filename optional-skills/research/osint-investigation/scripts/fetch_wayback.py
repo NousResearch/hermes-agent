@@ -14,7 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json
+from _http import get_json  # noqa: E402
 
 BASE = "https://web.archive.org/cdx/search/cdx"
 
@@ -62,7 +62,7 @@ def fetch(
     url = f"{BASE}?{urllib.parse.urlencode(params)}"
     try:
         payload = get_json(url)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Wayback CDX error: {e}", file=sys.stderr)
         payload = []
 

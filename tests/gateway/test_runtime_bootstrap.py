@@ -126,34 +126,6 @@ def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_native_pipe_handler_may_dial_its_own_pipe(tmp_path):
-    """A hosted room whose source and member share one multiplexer re-enters the control pipe
-    from inside a handler (hosted-producer -> hosted-attest). A single serving instance cannot
-    accept that nested request, so the outer call timed out; a slow handler must also still be
-    able to answer once its own (client-bounded) work finishes."""
-    import time
-    from gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
-
-    def handler(raw, subject):
-        if raw == b'outer':
-            try:
-                inner = json.loads(query_runtime_control(tmp_path, b'inner', 5))
-            except Exception as exc:  # report, never kill the serving thread
-                inner = {'error': repr(exc)}
-            return json.dumps({'outer': inner}).encode() + b'\n'
-        time.sleep(2.5)  # longer than the per-peer I/O budget
-        return json.dumps({'inner': raw.decode()}).encode() + b'\n'
-
-    server = NativeControlServer(tmp_path, handler)
-    server.start()
-    try:
-        assert json.loads(query_runtime_control(tmp_path, b'outer', 15)) == {'outer': {'inner': 'inner'}}
-        assert server._error is None, server._error
-    finally:
-        server.close()
-
-
-@pytest.mark.platforms("windows")
 def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_path, monkeypatch):
     """A listening pipe accepts CreateFile with no ConnectNamedPipe pending, so a client can land
     after an idle accept is cancelled and before the next one is issued. Recycling the instance

@@ -20,7 +20,6 @@ from cron.blueprint_catalog import (
     get_blueprint,
     blueprint_deeplink,
 )
-import itertools
 
 
 class TestCatalog:
@@ -88,7 +87,7 @@ class TestValidation:
         first_three = [it.get_next(datetime) for _ in range(3)]
         gaps = {
             (b - a).total_seconds()
-            for a, b in itertools.pairwise(first_three)
+            for a, b in zip(first_three, first_three[1:])
         }
         assert gaps == {7200.0}, f"expected 2h gaps, got {spec['schedule']} -> {first_three}"
 
@@ -123,7 +122,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_constants
     importlib.reload(hermes_constants)
-    from cron import jobs
+    import cron.jobs as jobs
     importlib.reload(jobs)
     return jobs
 

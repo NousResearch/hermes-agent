@@ -32,8 +32,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_runner import TurnRunner
+    from gateway.run import GatewayRunner  # noqa: F401
+    from gateway.run_turn_runner import TurnRunner  # noqa: F401
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -52,12 +52,6 @@ def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
     frozen = policy.config(authority)
     key = launch_key(authority, policy)
     launch_url = json.loads(policy.request_json).get('base_url')
-    if launch_url:
-        # The creation request is immutable identity, not the current selection: once a canonical
-        # model mutation moved the route off the launch endpoint, the policy's selection wins.
-        from hermes_cli.route_identity import normalize_route_base_url
-        if normalize_route_base_url(launch_url) != normalize_route_base_url(policy.base_url):
-            launch_url = None
     # Every rung reads the session's FROZEN config, never live config.yaml: a later
     # ``model.base_url`` edit must not carry this route's frozen credential to the new host
     # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
@@ -224,8 +218,9 @@ class GatewayTurnPrepareMixin:
         # provider's first catalog model.
         if not model and runtime_kwargs.get("provider"):
             with suppress(Exception):
-                from hermes_cli.models import get_default_model_for_provider
-                model = get_default_model_for_provider(runtime_kwargs["provider"])
+                from gateway.model_runtime_facts import provider_default_model
+
+                model = provider_default_model(runtime_kwargs["provider"])
                 if model:
                     logger.info(
                         "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
@@ -237,8 +232,7 @@ class GatewayTurnPrepareMixin:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
         from gateway.run import _deep_merge_request_overrides
-        from agent.fast_mode import STATIC_TIERS
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from models.metadata.fast_mode import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
             k: runtime_kwargs.get(k) for k in (
@@ -638,13 +632,13 @@ class GatewayTurnPrepareMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
-        from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
-        restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
+        self._restore_session_yolo(session_key, session_entry)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
+        # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
+        # UIs render timeline notices, not user bubbles; role/content untouched.
         from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
@@ -665,7 +659,7 @@ class GatewayTurnPrepareMixin:
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: list[str] = []
+        turn_sidecar_notes: List[str] = []
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 
@@ -693,8 +687,7 @@ class GatewayTurnPrepareMixin:
             )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
-            from gateway.session_results import record_unexecuted_failure
-            return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
+            return t("gateway.errors.history_unavailable"), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 

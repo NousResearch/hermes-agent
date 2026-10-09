@@ -10,9 +10,10 @@ from typing import Any
 from agent.reasoning_effort import OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import MatchingPrefixModelIdsMixin
 
 
-class OllamaCloudProfile(ProviderProfile):
+class OllamaCloudProfile(MatchingPrefixModelIdsMixin, ProviderProfile):
     """Ollama Cloud — maps xhigh→max via top-level reasoning_effort."""
 
     def build_api_kwargs_extras(
@@ -36,8 +37,10 @@ class OllamaCloudProfile(ProviderProfile):
 
 
 ollama_cloud = OllamaCloudProfile(
-    name="ollama-cloud", aliases=("ollama_cloud",), default_aux_model="nemotron-3-nano:30b",
-    env_vars=("OLLAMA_API_KEY",), base_url="https://ollama.com/v1",
+    name="ollama-cloud", aliases=("ollama_cloud",), display_name="Ollama Cloud",
+    description="Ollama Cloud (Cloud-hosted open models, ollama.com)", signup_url="https://ollama.com/settings",
+    default_aux_model="nemotron-3-nano:30b", env_vars=("OLLAMA_API_KEY",),
+    base_url="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL",
 )
 
 register_provider(ollama_cloud)

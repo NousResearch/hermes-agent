@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main
-from hermes_cli import main_install_repair
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 

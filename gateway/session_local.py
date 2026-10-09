@@ -66,20 +66,6 @@ class LocalSessionAdapter(BasePlatformAdapter):
         # selects that rendering path without a plaintext fallback or a second waiter.
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
-    async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
-        policy = self.policies.get(chat_id)
-        if policy is not None and policy.source == 'bot_room':
-            # Hosted controls expose approvals only; acknowledging this question would park the
-            # member on an answer nobody can submit. A structured decline releases the wait at
-            # once and skips the plain-text re-ask (an ordinary failure would fall back to a
-            # send() that ACKs, and the member would wait the whole clarify timeout).
-            from gateway.relay.egress import EGRESS_DECLINE_CODE
-            error = 'Clarification is unavailable in hosted rooms'
-            return SendResult(success=False, error=error, error_kind='forbidden',
-                              raw_response={'success': False, 'code': EGRESS_DECLINE_CODE, 'error': error})
-        # Local sessions keep the base prompt: a choice question also captures typed text.
-        return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
-
 
 def authorize_local_source(runner, source):
     """None for legacy/nonlocal routes; registered local adapters fail closed."""
@@ -116,7 +102,7 @@ def _bypass_policy(params, *, private_secrets):
     return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False)
 
 
-def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -159,12 +145,6 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
-    from gateway.session_policy import launch_skills
-    if launch_skills(params) and skills_prompt is None:
-        # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
-        # skipped it must not mint a session silently missing its preload.
-        raise RuntimeStoreError('invalid_params')
-    policy = replace(policy, skills_prompt=skills_prompt)
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)

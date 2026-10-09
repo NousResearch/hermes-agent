@@ -6,14 +6,17 @@ so an anonymous read, and two different tokens, must not share a cache entry.
 
 from __future__ import annotations
 
+import application_model_pricing
+
 import json
 from unittest.mock import MagicMock
 
 import pytest
 
 import hermes_cli.models as models_mod
-from hermes_cli import models_pricing
-from hermes_cli.models_pricing import fetch_models_with_pricing, peek_cached_pricing
+import application_model_pricing as models_pricing
+from application_model_pricing import fetch_models_with_pricing
+from application_model_pricing import peek_cached_pricing
 
 BASE = "https://inference-api.example.com"
 
@@ -24,11 +27,11 @@ _FILTERED = ["vendor/allowed"]
 
 @pytest.fixture(autouse=True)
 def _clear_pricing_cache():
-    models_pricing._pricing_cache.clear()
-    models_pricing._pricing_cache_retry_after.clear()
+    application_model_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache_retry_after.clear()
     yield
-    models_pricing._pricing_cache.clear()
-    models_pricing._pricing_cache_retry_after.clear()
+    application_model_pricing._pricing_cache.clear()
+    application_model_pricing._pricing_cache_retry_after.clear()
 
 
 @pytest.fixture
@@ -97,7 +100,7 @@ def test_one_token_does_not_receive_another_tokens_catalog(per_org_catalog):
 
 def test_credential_value_does_not_appear_in_the_cache_key():
     """Guards against keying on the raw token."""
-    assert "sk-super-secret" not in models_pricing._pricing_auth_fingerprint("sk-super-secret")
+    assert "sk-super-secret" not in application_model_pricing._pricing_auth_fingerprint("sk-super-secret")
 
 
 def test_anonymous_and_authenticated_reads_are_separate(catalog):
@@ -160,7 +163,7 @@ class TestNousCatalogExpiry:
     a long-lived process holds the entry."""
 
     def test_entry_expires_so_a_policy_change_is_picked_up(self, catalog, monkeypatch):
-        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+        from application_model_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,
@@ -197,7 +200,7 @@ class TestNousCatalogExpiry:
 
     def test_peek_skips_an_expired_entry(self, catalog, monkeypatch):
         """Reading _pricing_cache directly walked straight past the TTL."""
-        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+        from application_model_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,
@@ -209,3 +212,28 @@ class TestNousCatalogExpiry:
             lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
         )
         assert peek_cached_pricing(BASE) == {}
+
+def test_profile_switch_restores_own_pricing_peek_and_failure_window(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    mp = application_model_pricing
+    mp._pricing_cache.clear()
+    mp._pricing_cache_retry_after.clear()
+    for profile, expected in (("a", "org-a/only"), ("b", "org-b/only"), ("a", "org-a/only")):
+        token = set_hermes_home_override(tmp_path / profile)
+        try:
+            if profile == "b":
+                assert mp.peek_cached_pricing(BASE) == {}
+                assert not mp.pricing_fetch_suppressed(BASE)
+            cached = mp.peek_cached_pricing(BASE)
+            if not cached:
+                mp._cache_catalog(BASE + mp._pricing_auth_fingerprint("same-token"),
+                                  {expected: {"prompt": "0", "completion": "0"}})
+            assert list(mp.peek_cached_pricing(BASE)) == [expected]
+            if profile == "a":
+                mp._cache_catalog(BASE + "/failed", {})
+                assert mp.pricing_fetch_suppressed(BASE + "/failed")
+            else:
+                assert not mp.pricing_fetch_suppressed(BASE + "/failed")
+        finally:
+            reset_hermes_home_override(token)

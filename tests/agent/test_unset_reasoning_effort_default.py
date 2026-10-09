@@ -11,8 +11,9 @@ from unittest.mock import patch
 import pytest
 
 from agent.chat_completion_helpers import _build_api_kwargs_for_mode
-from agent.models_dev import ModelCapabilities
 from agent.transports.chat_completions import ChatCompletionsTransport
+from models import ModelRef
+from models.metadata import ModelMetadata
 from providers import get_provider_profile
 
 
@@ -62,7 +63,7 @@ def _custom_wire_field(reasoning_config):
 )
 def test_unset_effort_goes_out_as_medium_and_explicit_efforts_are_untouched(configured, expected_wire):
     agent = _Agent(configured)
-    with patch("agent.models_dev.get_model_capabilities", return_value=None):
+    with patch("agent.models_dev.query_model_metadata", return_value=None):
         sent = _wire_reasoning_config(agent)
     assert _custom_wire_field(sent) == expected_wire
     # The rejection ladder classifies the NEXT 400 from what was recorded as sent.
@@ -71,9 +72,12 @@ def test_unset_effort_goes_out_as_medium_and_explicit_efforts_are_untouched(conf
 
 def test_unset_effort_default_keeps_the_field_off_where_it_would_be_wrong():
     # A model the catalog / model_overrides mark as non-reasoning.
-    with patch("agent.models_dev.get_model_capabilities", return_value=ModelCapabilities(supports_reasoning=False)):
+    with patch(
+        "agent.models_dev.query_model_metadata",
+        return_value=ModelMetadata(ref=ModelRef("custom:relay", "moonshotai/kimi-k3"), supports_reasoning=False),
+    ):
         assert _wire_reasoning_config(_Agent(None)) is None
-    with patch("agent.models_dev.get_model_capabilities", return_value=None):
+    with patch("agent.models_dev.query_model_metadata", return_value=None):
         # The route already rejected the reasoning field this session (#112781 ladder → route default).
         rejected = _Agent(None)
         rejected._reasoning_effort_rejected = True

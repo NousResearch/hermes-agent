@@ -9,7 +9,7 @@ from agent.transports.types import NormalizedResponse
 
 @pytest.fixture
 def transport():
-    import agent.transports.bedrock
+    import agent.transports.bedrock  # noqa: F401
     return get_transport("bedrock_converse")
 
 

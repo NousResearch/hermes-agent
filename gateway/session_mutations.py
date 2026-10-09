@@ -49,31 +49,6 @@ def _authorize_control(authority, actor, ref, params):
 
 
 async def mutate_session(authority, actor, ref, params):
-    from gateway.session_runtime_workers import track_mutation
-    authority._require_admission_open()
-    # A request socket can disappear while its writer is inside to_thread. The owner task keeps
-    # the session gate until commit AND publication finish, and retirement joins that same task.
-    task = track_mutation(authority, _owned_mutation(authority, actor, ref, params))
-    return await asyncio.shield(task)
-
-
-async def _owned_mutation(authority, actor, ref, params):
-    if (params.get('operation') in {'model', 'compress', 'reset', 'rewind'}
-            and ref.session_id not in authority.sessions and 'request_id' in params):
-        _authorize_control(authority, actor, ref, params)
-    live = authority.sessions.get(ref.session_id)
-    if live is None:
-        return await _mutate_session(authority, actor, ref, params)
-    # Prepared policy/route publication is inseparable from its durable commit
-    # for admission and claim: neither may observe a half-published policy.
-    async with live.mutation_lock:
-        result = await _mutate_session(authority, actor, ref, params)
-    if params.get('operation') in {'model', 'compress', 'reset'}:
-        authority._schedule(ref)
-    return result
-
-
-async def _mutate_session(authority, actor, ref, params):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
@@ -129,9 +104,8 @@ async def _mutate_session(authority, actor, ref, params):
             prepare = {'model': prepare_model, 'compress': prepare_compress}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
             applied = False
-            if prepared.get('status') in {'preview', 'confirmation_required'}:
-                # ``--preview`` is a read-only report and a guarded model target awaits the user's
-                # confirmation: no receipt, no publication, no eviction.
+            if prepared.get('status') == 'preview':
+                # ``--preview`` is a read-only report: no receipt, no publication, no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     if prepared is not None and 'snapshot' not in prepared:
         # Exact retry: the durable receipt is the result. Never re-prepare (compress
@@ -148,21 +122,12 @@ async def _mutate_session(authority, actor, ref, params):
             _authorize_write=authorize_write if cold_history or operation == 'import' else None)
     # Post-commit projections are idempotent reads of the committed receipt, so exact
     # retries repeat them (like delete's retirement); only the one-shot event is fenced.
-    current = authority.db.get_session(ref.session_id)
-    owns_projection = current is not None and (
-        current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
-    if operation not in {'model', 'reset', 'compress', 'rewind'} or owns_projection:
-        _project_committed(authority, ref, operation, result)
+    _project_committed(authority, ref, operation, result)
     if live is not None:
-        if operation == 'rewind' and owns_projection:
+        if operation == 'rewind':
             authority.runner._evict_cached_agent(live.route)
         if applied:
             live.event_stream.publish(ref.session_id, result, event_type='session.updated')
-    if operation == 'delete':
-        # After the synchronous projections (no yield before retirement), off the loop: the
-        # retired-media owner check is a messages-table pass (exact retries repeat it too).
-        from hermes_state_media import collect_retired_media
-        await asyncio.to_thread(collect_retired_media, authority.db)
     return result
 
 
@@ -171,10 +136,6 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'model':
         from gateway.session_local import publish_local_policy
         publish_local_policy(authority, ref.session_id)
-        # A drain that ran while the receipt committed off-loop saw the new stored policy beside
-        # the old live one and paused; with both now equal, queued input must run, not wait for
-        # the next submit or restart.
-        authority._schedule(ref)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
@@ -199,8 +160,6 @@ def _project_committed(authority, ref, operation, result):
         store = getattr(authority.runner, 'session_store', None)
         if store is not None:
             store.retire_runtime_sessions(result['deleted_ids'])
-        from gateway.session_policy import release_launch_secrets
-        release_launch_secrets(authority, result['deleted_ids'])
         for sid in result['deleted_ids']:
             candidate = authority.sessions.pop(sid, None)
             if candidate is not None:

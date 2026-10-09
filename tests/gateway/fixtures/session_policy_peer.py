@@ -79,7 +79,7 @@ async def probe(peer):
                 result = json.loads(await ws.recv())
                 if result.get('id') == method:
                     return result
-    sockets, sessions, created_ids = [], [], {}
+    sockets, sessions = [], []
     before = dict(os.environ)
     config_before = Path(os.environ['HERMES_HOME'], 'config.yaml').read_bytes()
     try:
@@ -91,13 +91,10 @@ async def probe(peer):
             params = dict(request_id=source, source=source, cwd=str(cwd), model='policy-' + source)
             if source == 'cli':
                 params['toolsets'] = ['terminal']
-            if source == 'tui':  # `hermes --tui -s policy-skill --pass-session-id`
-                params.update(skills=['policy-skill'], pass_session_id=True)
             created = await rpc(ws, 'session.create', **params)
             assert 'result' in created, created
             sid = created['result']['session_id']
             sessions.append(sid)
-            created_ids[sid] = created['result']['stored_session_id']
             from gateway.session_policy import policy_for_source
             from hermes_state_runtime import RuntimeStoreError
             live_source = authority.sessions[sid].source
@@ -134,12 +131,6 @@ async def probe(peer):
             assert len(requests) >= 2, peer.requests
             # Git Bash prints the MSYS form (/c/Users/...) on Windows; json.dumps doubles backslashes.
             assert any(_names_cwd(m.get('content'), cwd) for m in tool_results), (source, str(cwd), tool_results)
-            # The preloaded skill and the session id ride every request's system prompt (frozen at
-            # creation); the sessions launched without them carry neither.
-            systems = [json.dumps([m for m in r['messages'] if m['role'] in {'system', 'developer'}]) for r in requests]
-            stored = created_ids[sid]
-            assert all(('POLICY_SKILL_BODY' in text) == (source == 'tui') for text in systems), (source, systems)
-            assert all((('Session ID: ' + stored) in text) == (source == 'tui') for text in systems), (source, systems)
             names = {t['function']['name'] for t in requests[0]['tools']}
             assert 'terminal' in names
             assert ('desktop_ui' in agent.enabled_toolsets) == (source == 'gui')
@@ -169,9 +160,6 @@ def main():
     threading.Thread(target=peer.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
-    skill = Path(os.environ['HERMES_HOME'], 'skills', 'policy-skill')
-    skill.mkdir(parents=True)
-    (skill / 'SKILL.md').write_text('---\nname: policy-skill\ndescription: fixture\n---\n\nPOLICY_SKILL_BODY\n')
     Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
         f'model:\n  default: policy-default\n  provider: custom\n  base_url: {url}\n'
         'terminal:\n  env_type: local\nstreaming:\n  enabled: false\n'

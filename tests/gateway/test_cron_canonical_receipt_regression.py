@@ -50,9 +50,7 @@ def canonical_bot(tmp_path, monkeypatch):
         'auxiliary': {'title_generation': {'enabled': False}},
         'platform_toolsets': {'gui': []}, 'terminal': {'cwd': str(home)},
     }))
-    child_user = user / 'daemon'
-    child_user.mkdir()
-    env = child_env() | dict(HOME=str(child_user), USERPROFILE=str(child_user), HERMES_HOME=str(home),
+    env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
         PYTHONPATH=str(root), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base,
         PYTHONUNBUFFERED='1')
 

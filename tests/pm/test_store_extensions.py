@@ -2,9 +2,9 @@
 
 import pytest
 
-from pm import paths
+import pm.paths as paths
 from pm.lock import Facts
-from tests.pm.test_pm_authority import core_env, pm_env, served
+from tests.pm.test_pm_authority import core_env, pm_env, served  # noqa: F401 — fixtures
 
 
 @pytest.mark.parametrize("sealed_install", [True, False])

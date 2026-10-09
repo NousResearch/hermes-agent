@@ -106,13 +106,13 @@ def _transaction() -> Iterator[sqlite3.Connection]:
         yield conn
 
 
-def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[dict[str, Any]]:
+def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     return dict(row) if row is not None else None
 
 
 def _emit_execution_state(
-    record: Optional[dict[str, Any]], *, delivery_outcome: Optional[str] = None
+    record: Optional[Dict[str, Any]], *, delivery_outcome: Optional[str] = None
 ) -> None:
     """Project durable state to monitoring without affecting ledger behavior."""
     try:
@@ -212,7 +212,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
 
 def create_execution(
     job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
     from cron.occurrences import scheduled_instant as canonical_instant
 
@@ -247,7 +247,7 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
             raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
-def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
+def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
         cur = conn.execute(
@@ -264,7 +264,7 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
-def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
+def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
@@ -290,7 +290,7 @@ def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
-def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
+def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:
@@ -311,37 +311,20 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None, departed_owner: bool = False,
-) -> Optional[dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten.
-
-    Only the owning process may finish its attempt. ``departed_owner`` is the one exception:
-    receipt recovery (``cron.scheduler_authority.reconcile_pending``) holds the owner's
-    terminal canonical result for an attempt whose firing process provably exited before its
-    own bookkeeping. It settles that attempt with the receipt's verdict instead of leaving it
-    ``running`` for the dead-owner sweep to rewrite as ``unknown``; a live or same-process
-    owner still finishes its own row.
-    """
+    delivery_outcome: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
-        owner = (_PROCESS_ID, os.getpid())
-        if departed_owner:
-            row = conn.execute(
-                """SELECT process_id, pid, process_started_at FROM executions
-                   WHERE id=? AND status IN ('claimed','running')""", (execution_id,)).fetchone()
-            if (row is None or row["process_id"] == _PROCESS_ID
-                    or _owner_is_live(int(row["pid"]), row["process_started_at"])):
-                return None
-            owner = (row["process_id"], row["pid"])
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
                    handoff_started_at=NULL, delivery_outcome=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, *owner),
+            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None
@@ -350,52 +333,6 @@ def finish_execution(
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     record_cron_finish(record, delivery_outcome)
     return record
-
-
-def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None):
-    """Settle a verified canonical receipt after owner loss, including its unknown audit row.
-
-    Terminal verdicts stay immutable. A live firer still owns its bookkeeping
-    (``execution_owner_live``).
-    """
-    now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        row = _recoverable_row(conn, execution_id, job_id)
-        if row is None or _row_owner_live(row):
-            return None
-        conn.execute(
-            """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
-               handoff_started_at=NULL, delivery_outcome=? WHERE id=?""",
-            ('completed' if success else 'failed', now, None if success else (str(error) if error else 'unknown failure'),
-             delivery_outcome, execution_id))
-        _prune_unlocked(conn)
-        record = _fetch(conn, execution_id)
-    _emit_execution_state(record, delivery_outcome=delivery_outcome)
-    record_cron_finish(record, delivery_outcome)
-    return record
-
-
-def _recoverable_row(conn, execution_id, job_id):
-    return conn.execute(
-        """SELECT status, process_id, pid, process_started_at FROM executions
-           WHERE id=? AND job_id=? AND status IN ('claimed','running','unknown')""",
-        (str(execution_id), str(job_id))).fetchone()
-
-
-def _row_owner_live(row) -> bool:
-    if row['process_id'] == _PROCESS_ID:
-        # The in-gateway ticker fires on pool threads: a claimed/running row of THIS process is
-        # still in flight here. Only an unknown row was given up by its own firer.
-        return row['status'] != 'unknown'
-    return _owner_is_live(int(row['pid']), row['process_started_at'])
-
-
-def execution_owner_live(execution_id: str, job_id: str) -> bool:
-    """True while the attempt's own firer (this process included) can still finish it, so receipt
-    recovery must not act for it: no output re-save, no job mark, no ledger write."""
-    with _transaction() as conn:
-        row = _recoverable_row(conn, execution_id, job_id)
-    return row is not None and _row_owner_live(row)
 
 
 def settle_delivery_outcome(execution_id: str, outcome: str) -> bool:
@@ -441,7 +378,7 @@ def recover_interrupted_executions() -> int:
     process is not killed)."""
     now = _hermes_now().isoformat()
     changed = 0
-    recovered: list[dict[str, Any]] = []
+    recovered: List[Dict[str, Any]] = []
     # Derived on the first live-owned row only: the bound reads config, and the idle gateway
     # tick must stay config-free (tests/cron/test_idle_tick_config_skip.py).
     stale_after: Optional[float] = None
@@ -564,10 +501,10 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
 
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """Return indexed, newest-first execution history with cursor pagination."""
-    clauses: list[str] = []
-    params: list[Any] = []
+    clauses: List[str] = []
+    params: List[Any] = []
     if job_id is not None:
         clauses.append("job_id=?")
         params.append(str(job_id))
@@ -588,7 +525,7 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
-def get_execution(execution_id: str) -> Optional[dict[str, Any]]:
+def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
     with _transaction() as conn:
         row = conn.execute(
@@ -598,12 +535,12 @@ def get_execution(execution_id: str) -> Optional[dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
-def latest_execution(job_id: str) -> Optional[dict[str, Any]]:
+def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
 
 
-def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
+def live_inflight_execution(job_id: str) -> Optional[Dict[str, Any]]:
     """The job's latest attempt while it is still claimed/running under a LIVE owner, else ``None``.
 
     This is scheduler OWNERSHIP, not recent activity: a run inside a long tool call writes no
@@ -618,7 +555,7 @@ def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
-def latest_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:
+def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """Load latest execution for many jobs in one query."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]
     if not clean:

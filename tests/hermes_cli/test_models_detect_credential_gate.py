@@ -39,7 +39,8 @@ class TestNoCredentialsNoSwitch:
             "openrouter", "vendor/some-model-only-openrouter-has")
 
     def test_static_vendor_match_requires_that_vendors_credentials(self, no_live_catalog, authed, monkeypatch):
-        monkeypatch.setattr(models, "detect_static_provider_for_model", lambda n, c: ("anthropic", n))
+        from models import catalog_detection
+        monkeypatch.setattr(catalog_detection, "_static_catalog_matches", lambda n, c: (("anthropic", n),))
         assert models.detect_provider_for_model("claude-something", "deepseek") is None
         authed.add("anthropic")
         assert models.detect_provider_for_model("claude-something", "deepseek") == ("anthropic", "claude-something")
@@ -47,8 +48,8 @@ class TestNoCredentialsNoSwitch:
     def test_explicitly_named_provider_is_not_gated(self, no_live_catalog, authed, monkeypatch):
         """``/model nous`` names the provider: hand it back so the credential step can prompt/fail
         loudly instead of silently ignoring the request."""
-        monkeypatch.setattr(models, "detect_static_provider_for_model", lambda n, c: ("nous", "hermes-4-405b"))
-        assert models.detect_provider_for_model("nous", "deepseek") == ("nous", "hermes-4-405b")
+        from application_model_selection_defaults import select_provider_default, selected_model_id
+        assert models.detect_provider_for_model("nous", "deepseek") == ("nous", selected_model_id(select_provider_default("nous")))
 
 
 class TestSharedSlugTiebreak:

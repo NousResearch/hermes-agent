@@ -39,7 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow
 # CI checkout resolves to; tests of version resolution call _reset_version_info_cache().
-from hermes_cli import version_info as _version_info
+from hermes_cli import version_info as _version_info  # noqa: E402
 
 _version_info._cached_version_info = _version_info.VersionInfo(
     "unknown", "git.0000000", None, "0" * 40, "main", "git")
@@ -245,12 +245,12 @@ if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
 # non-root conftest carrying ``pytest_plugins`` after startup (e.g. ``pytest .``).
 # Fixtures imported here register exactly as if they were defined here.
 from tests._fixtures.env_filter import _HERMES_BEHAVIORAL_VARS, _looks_like_credential
-from tests._fixtures.live_system_guard import (
+from tests._fixtures.live_system_guard import (  # noqa: F401 — _live_system_guard registers here
     _GATEWAY_LOOKALIKE_MARK,
     _LIVE_SYSTEM_GUARD_BYPASS_MARK,
     _live_system_guard,
 )
-from tests._fixtures.model_peer import model_peer  # fixture registers here
+from tests._fixtures.model_peer import model_peer  # noqa: F401 — fixture registers here
 from tests._fixtures.platform_gating import _platforms_gate_reason, _reject_contradictory_platform_marks
 
 
@@ -418,7 +418,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
-    return
+    return None
 
 
 @pytest.fixture(autouse=True)
@@ -448,7 +448,7 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
         from hermes_cli import kanban_db_dispatch as _kbd_mod
     except Exception:
         return
-    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", dict, raising=False)
+    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -565,12 +565,12 @@ def _neutralize_webbrowser(monkeypatch):
 def _neutralize_macos_keychain_creds(request, monkeypatch):
     """Default Anthropic credential resolution away from the real macOS Keychain."""
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
-        return
+        return None
 
     try:
         _mod = importlib.import_module("agent.anthropic_credentials")
     except Exception:
-        return
+        return None
     monkeypatch.setattr(
         _mod,
         "_read_claude_code_credentials_from_keychain",
@@ -585,7 +585,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         lambda *_args, **_kwargs: None,
         raising=False,
     )
-    return
+    return None
 
 
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
@@ -1057,59 +1057,6 @@ def _remove_relocated_basetemp(config) -> None:
         shutil.rmtree(safe, ignore_errors=True)
 
 
-def _processes_with_hermes_home_under(roots) -> list[int]:
-    """PIDs (never this process) whose environment names a ``HERMES_HOME`` inside one of *roots*.
-
-    Linux only (``/proc/<pid>/environ``; unreadable entries are another user's and skipped).
-    Elsewhere the scan is empty: a test-spawned daemon there is the per-test guard's problem.
-    """
-    if not sys.platform.startswith("linux") or not os.path.isdir("/proc"):
-        return []
-    resolved = [Path(r).resolve() for r in roots if r]
-    found = []
-    for entry in os.scandir("/proc"):
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
-            continue
-        try:
-            with open(f"/proc/{entry.name}/environ", "rb") as handle:
-                environ = handle.read().split(b"\0")
-        except OSError:
-            continue
-        home = next((item[12:] for item in environ if item.startswith(b"HERMES_HOME=")), None)
-        if not home:
-            continue
-        try:
-            path = Path(os.fsdecode(home)).resolve()
-        except (OSError, ValueError):
-            continue
-        if any(path == root or path.is_relative_to(root) for root in resolved):
-            found.append(int(entry.name))
-    return found
-
-
-def _reap_session_hermes_processes(config) -> list[int]:
-    """SIGTERM every process still running against a Hermes home this session created.
-
-    Tests that run a real ``hermes chat -q`` child get a grandchild ``gateway run`` (detached, own
-    session) that no per-test subprocess patch can see, and pytest's tmp cleanup removes only
-    directories: each one used to outlive the run at ~250 MB. The session basetemp and the session
-    sandbox home bound exactly what this run created, so nothing else is ever signalled.
-    """
-    import signal
-
-    factory = getattr(config, "_tmp_path_factory", None)
-    # The basetemp pytest already created (never create one at teardown just to scan it).
-    roots = [getattr(config, "_hermes_relocated_basetemp", None), os.environ.get("HERMES_TEST_SANDBOX_HOME"),
-             getattr(factory, "_basetemp", None)]
-    pids = _processes_with_hermes_home_under(roots)
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    return pids
-
-
 def _pinned_mcp_sdk_version() -> str:
     """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
     import tomllib
@@ -1144,13 +1091,12 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
-def pytest_unconfigure(config):
-    _reap_session_hermes_processes(config)
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
     _remove_relocated_basetemp(config)
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
-def pytest_configure(config):
+def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
@@ -1280,7 +1226,7 @@ def pytest_runtest_setup(item):
             )
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
     OS gating: a test marked ``platforms(...)`` runs only on hosts its
@@ -1460,7 +1406,7 @@ _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 # Captured before any test can patch sys.platform, HOME or XDG_*: a test that runs the real
 # GUI uninstall or update swap would otherwise delete the developer's own Hermes app. Only the
 # ones present (none on CI runners, so the guard costs nothing there), each literal and resolved.
-from hermes_cli.gui_uninstall import packaged_gui_app_paths
+from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: E402
 
 _REAL_INSTALLED_GUI_APPS = sorted({
     os.path.normcase(form) for app in packaged_gui_app_paths() if os.path.lexists(app)

@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def opencode_go_profile():
     """Resolve the registered OpenCode Go provider profile."""
-    import model_tools
+    import model_tools  # noqa: F401
     import providers
 
     profile = providers.get_provider_profile("opencode-go")
@@ -19,7 +19,7 @@ def opencode_go_profile():
 @pytest.fixture
 def opencode_zen_profile():
     """Resolve the registered OpenCode Zen provider profile."""
-    import model_tools
+    import model_tools  # noqa: F401
     import providers
 
     profile = providers.get_provider_profile("opencode-zen")
@@ -195,7 +195,7 @@ class TestOpenCodeGoGLM52Reasoning:
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])
     def test_alias_spellings_recognized(self, opencode_go_profile, model):
-        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
             model=model,
         )
@@ -225,6 +225,27 @@ class TestOpenCodeGoModelGating:
         )
         assert extra_body == {}
         assert top_level == {}
+
+
+class TestOpenCodeRoutePolicy:
+    @pytest.mark.parametrize(
+        ("profile_name", "model", "expected"),
+        [
+            ("opencode-zen", "claude-sonnet-4.6", "anthropic_messages"),
+            ("opencode-zen", "qwen3-coder-plus", "anthropic_messages"),
+            ("opencode-zen", "gpt-5.5", "codex_responses"),
+            ("opencode-go", "minimax-m2.7", "anthropic_messages"),
+            ("opencode-go", "grok-code-fast-1", "codex_responses"),
+        ],
+    )
+    def test_model_wire_policy_is_owned_by_the_profile(
+        self, opencode_zen_profile, opencode_go_profile, profile_name, model, expected
+    ):
+        profile = opencode_zen_profile if profile_name == "opencode-zen" else opencode_go_profile
+        assert profile.resolve_route_policy(model) == expected
+
+    def test_unlisted_model_has_no_policy(self, opencode_go_profile):
+        assert opencode_go_profile.resolve_route_policy("gemini-3-flash") is None
 
 
 class TestOpenCodeGoFullKwargsIntegration:
@@ -297,10 +318,8 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
 
     monkeypatch.setattr("httpx.Client", _Client)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
-        # /v1 stripped, as anthropic_messages routing leaves it — the hook must not reuse this base_url.
-        lambda requested, explicit_base_url=None, explicit_api_key=None: {
-            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_key": "sk-test"},
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda provider: {"provider": provider, "api_key": "sk-test"},
     )
 
     snapshot = fetch_account_usage("opencode-go")

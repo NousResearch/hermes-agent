@@ -25,7 +25,8 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
-from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+from providers.routing import canonicalize_api_mode
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,7 +47,7 @@ save_env_value = late("save_env_value", "hermes_cli.config")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # Simple rate limiter for the reveal endpoint
-_reveal_timestamps: list[float] = []
+_reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
@@ -368,7 +369,7 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
-def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> tuple[Any, Optional[dict[str, Any]]]:
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
     """Resolve a custom endpoint id using the stored key first, then its legacy slug.
 
     The list route hands Desktop the literal ``providers.<key>`` (a v11→v12
@@ -386,8 +387,8 @@ def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> tuple[An
     return find_provider_entry(providers, normalized_key)
 
 
-def _models_from_custom_endpoint_entry(entry: dict[str, Any]) -> list[str]:
-    models: list[str] = []
+def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
+    models: List[str] = []
     raw_models = entry.get("models")
     if isinstance(raw_models, (dict, list)):
         models.extend(str(model).strip() for model in raw_models)
@@ -400,7 +401,7 @@ def _models_from_custom_endpoint_entry(entry: dict[str, Any]) -> list[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
-def _api_key_display(entry: dict[str, Any]) -> tuple[bool, Optional[str]]:
+def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """Return ``(has_api_key, preview)`` for a provider or model config block.
 
     Keys live in ``.env`` behind ``key_env``; only older entries still carry a
@@ -438,19 +439,19 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
 _DESKTOP_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
 
 
-def _endpoint_api_mode(entry: dict[str, Any]) -> str:
+def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
     """The transport a providers entry pins (``api_mode``, or the v12 migration's ``transport``
     spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
     ``runtime_provider_custom._get_named_custom_provider``."""
     raw = str(entry.get("api_mode") or entry.get("transport") or "")
-    mode = _canonical_api_mode(raw).lower()
+    mode = canonicalize_api_mode(raw).lower()
     return mode if mode in _DESKTOP_API_MODES else ""
 
 
 def _endpoint_row(
-    endpoint_id: str, name: str, base_url: str, model: str, models: list[str], context_length,
-    discover_models: bool, key_entry: dict[str, Any], is_current: bool, source: str,
-) -> dict[str, Any]:
+    endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
+    discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
+) -> Dict[str, Any]:
     has_api_key, api_key_preview = _api_key_display(key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
@@ -461,7 +462,7 @@ def _endpoint_row(
     }
 
 
-def _model_names_provider(model_cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]]) -> bool:
+def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]]) -> bool:
     """True when ``model.provider`` points at this ``providers`` entry.
 
     ``switch_model`` spells the active provider either as the stored key or as
@@ -476,13 +477,13 @@ def _model_names_provider(model_cfg: dict[str, Any], provider_key: str, entry: O
     return current.removeprefix("custom:") in names
 
 
-def _custom_endpoint_response(cfg: dict[str, Any]) -> dict[str, Any]:
+def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
     current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
     current_base_url = str(model_cfg.get("base_url", "") or "")
 
-    endpoints: list[dict[str, Any]] = []
+    endpoints: List[Dict[str, Any]] = []
     providers = cfg.get("providers")
     if isinstance(providers, dict):
         for provider_id, raw_entry in providers.items():
@@ -538,7 +539,7 @@ def _custom_endpoint_response(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _pop_legacy_custom_provider(cfg: dict[str, Any], provider_key: str) -> Optional[dict[str, Any]]:
+def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optional[Dict[str, Any]]:
     """Remove and return the legacy ``custom_providers:`` list entry whose name slugs to *provider_key*."""
     legacy = cfg.get("custom_providers")
     if not isinstance(legacy, list):
@@ -549,7 +550,7 @@ def _pop_legacy_custom_provider(cfg: dict[str, Any], provider_key: str) -> Optio
     return None
 
 
-def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]] = None) -> None:
+def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
@@ -570,7 +571,7 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
-def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
+def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -624,7 +625,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
-    entry: dict[str, Any] = dict(existing)
+    entry: Dict[str, Any] = dict(existing)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -647,7 +648,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # See #69988.
     details = {d.id.strip(): d for d in (body.model_details or ()) if d.id.strip()}
     existing_models = entry.get("models")
-    models_map: dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
     for candidate in (*(body.models or ()), *details, model):
         model_id = str(candidate).strip()
         if not model_id:
@@ -883,7 +884,7 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
     # base that actually served /models (#65488) — that is the URL the runtime will persist.
-    mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
+    mode = canonicalize_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
     probe_model = (body.model or "").strip() or (ids[0] if ids else "")
     try:
         async with _endpoint_probe_client(resolved, 8.0) as client:
@@ -921,7 +922,7 @@ def _no_models_probe_message(resp: Any, base_url: str) -> str:
             "Start a model on that endpoint and try again.")
 
 
-async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> tuple[str, Any]:
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
     first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
     model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
@@ -952,13 +953,15 @@ _TRANSPORT_LABELS = {"chat_completions": "Chat Completions", "codex_responses": 
 
 
 def _auto_api_mode(base_url: str) -> str:
-    """The transport the runtime falls back to for an endpoint without a pinned ``api_mode``
-    (same resolver as ``runtime_provider_custom._custom_runtime``)."""
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
-    return _detect_api_mode_for_url(base_url) or "chat_completions"
+    """Canonical transport for an otherwise unpinned custom endpoint."""
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
+    return resolve_invocation_route(
+        InvocationRequest(provider="custom", base_url=base_url or "")
+    ).api_mode
 
 
-async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
     """POST a 1-token request to ``mode``'s route; return a failure message when the host does
     not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
     422, 429 — means the route exists, which is all the check needs to know; a network error or
@@ -990,7 +993,7 @@ def _endpoint_probe_client(url: str, timeout: float):
     system proxy (Clash on Windows, corporate) answered the ``127.0.0.1`` probe with its own error
     page and the GUI reported "advertised no models" while the CLI saw the model (#63472)."""
     import httpx
-    from agent.model_metadata import is_local_endpoint
+    from models.metadata.context import is_local_endpoint
     return httpx.AsyncClient(timeout=httpx.Timeout(timeout), trust_env=not is_local_endpoint(url))
 
 

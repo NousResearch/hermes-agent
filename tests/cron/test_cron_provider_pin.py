@@ -170,7 +170,7 @@ class TestPinnedLocksTheMainModel:
 
     @staticmethod
     def _store(monkeypatch, tmp_path, main_model="main-model", main_provider="openrouter"):
-        from cron import jobs
+        import cron.jobs as jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}

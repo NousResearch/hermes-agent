@@ -35,15 +35,10 @@ class SummaryModel(CatalogModel):
         self.wfile.write(payload)
 
 
-# The managed_workers=True rows live in test_session_mutation_compress_managed.py: every turn
-# spawns a fresh agent.managed_worker interpreter (~5-7 s x 17 turns per row), and all five rows
-# in one file ran ~360 s, over the per-file cap.
-@pytest.mark.parametrize(('mode', 'in_place'), [('normal', True), ('normal', False), ('safe', None)])
+@pytest.mark.parametrize(('mode', 'in_place'), [
+    ('normal', True), ('normal', False), ('managed', True), ('managed', False), ('safe', None),
+])
 def test_compress_preserves_configured_history_and_admission_owner(tmp_path, mode, in_place):
-    run_compress_case(tmp_path, mode, in_place)
-
-
-def run_compress_case(tmp_path, mode, in_place):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)

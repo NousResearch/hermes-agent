@@ -12,7 +12,7 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-import agent.model_metadata as MM
+import models.metadata.context as MM
 
 
 def _clear_in_proc():

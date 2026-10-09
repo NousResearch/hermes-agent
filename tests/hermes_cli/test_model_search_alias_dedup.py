@@ -7,7 +7,7 @@ render both as separate rows for the same model.
 
 from unittest.mock import patch
 
-from hermes_cli.model_search import model_alias_canonical
+from models.catalog_projection import model_alias_canonical
 from hermes_cli.models import provider_model_ids
 
 

@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from agent import i18n
+import agent.i18n as i18n
 from cli import HermesCLI
 from hermes_cli import cli_billing_mixin as bm
 

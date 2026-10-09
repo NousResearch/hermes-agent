@@ -27,7 +27,7 @@ def _normalize_segments(segments: list) -> str:
 
 def cmd_fetch(args: argparse.Namespace) -> None:
     try:
-        import youtube_transcript_api
+        import youtube_transcript_api  # noqa: F811
     except ImportError:
         _out({
             "ok": False,

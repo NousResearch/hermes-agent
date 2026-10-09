@@ -31,7 +31,7 @@ def minimax_profile(request):
     if someone later replaces the registered class with a plain
     ``ProviderProfile``, every assertion below collapses.
     """
-    import model_tools
+    import model_tools  # noqa: F401  -- triggers plugin discovery
     import providers
 
     profile = providers.get_provider_profile(request.param)
@@ -43,7 +43,7 @@ class TestMinimaxAuxModelM3:
     """MiniMax profile aux model is the new frontier M3, not the stale M2.7.
 
     The catalog top entry is ``MiniMax-M3`` in
-    ``hermes_cli.models._PROVIDER_MODELS['minimax']`` and the
+    ``models.catalog_static._PROVIDER_MODELS['minimax']`` and the
     user-facing ``model.default`` for a Token-Plan install is M3,
     so pinning the aux default to the same model keeps the runtime
     consistent (same auth, same billing pool, same rate limits, no
@@ -54,18 +54,18 @@ class TestMinimaxAuxModelM3:
 
 
     def test_consumer_api_returns_non_empty_for_each_provider(self, minimax_profile):
-        from agent.auxiliary_client import _get_aux_model_for_provider
+        from agent.auxiliary_model_resolution import select_provider_auxiliary_model
 
         profile, provider_id = minimax_profile
-        resolved = _get_aux_model_for_provider(provider_id)
+        resolved = select_provider_auxiliary_model(provider_id)
         assert resolved != "", (
-            f"_get_aux_model_for_provider({provider_id!r}) returned empty — "
+            f"select_provider_auxiliary_model({provider_id!r}) returned empty — "
             "the 'No auxiliary LLM provider configured' warning will fire on "
             f"every {provider_id} session even though the profile advertises "
             f"default_aux_model={profile.default_aux_model!r}"
         )
         assert resolved == profile.default_aux_model, (
-            f"_get_aux_model_for_provider({provider_id!r}) returned "
+            f"select_provider_auxiliary_model({provider_id!r}) returned "
             f"{resolved!r} but profile advertises {profile.default_aux_model!r} "
             "— the consumer API and the profile have drifted out of sync"
         )
@@ -77,7 +77,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     """MiniMax-M3 on api.minimax.io/v1 gets MiniMax's OpenAI-compatible knobs."""
 
     def test_m3_openai_route_requests_reasoning_split_by_default(self):
-        import model_tools
+        import model_tools  # noqa: F401
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -102,7 +102,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     def test_non_m3_or_non_global_openai_routes_emit_no_openai_reasoning_knobs(
         self, model, base_url
     ):
-        import model_tools
+        import model_tools  # noqa: F401
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -116,7 +116,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert top_level == {}
 
     def test_transport_threads_base_url_to_profile(self):
-        import model_tools
+        import model_tools  # noqa: F401
         import providers
         from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -143,7 +143,7 @@ class TestMinimaxOauthAliases:
     anthropic_messages wire, extra_body and headers (#107928)."""
 
     def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
-        import model_tools
+        import model_tools  # noqa: F401
         import providers
 
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):

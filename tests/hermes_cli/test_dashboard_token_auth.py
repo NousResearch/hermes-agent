@@ -206,7 +206,7 @@ def test_authenticate_token_buggy_provider_does_not_crash():
     register_provider(_BuggyTokenProvider())
     register_provider(_TokenProvider(secret="good"))
     req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, _unreachable = token_auth.authenticate_token(req)
+    principal, unreachable = token_auth.authenticate_token(req)
     assert principal is not None and principal.provider == "tok"
 
 

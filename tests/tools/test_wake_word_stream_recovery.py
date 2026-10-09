@@ -25,6 +25,7 @@ def test_listener_recovers_after_transient_capture_failure(monkeypatch):
                 raise OSError("transient microphone disconnect")
             recovered.set()
             stop.wait(5)
+            return None
 
         def close(self):
             closed.append(self)
@@ -106,6 +107,7 @@ def test_halt_releases_reader_wedged_in_recovered_capture(monkeypatch):
                 recovered.set()
                 raise OSError("transient microphone disconnect")
             self._unblock.wait(30)
+            return None
 
         def close(self):
             closed.append(self)

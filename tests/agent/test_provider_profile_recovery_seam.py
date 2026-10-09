@@ -34,8 +34,8 @@ def plugin_profiles():
                                                 base_url="https://example.invalid/v1"))
     yield
     for name in ("example-oauth", "example-nohook"):
-        providers._REGISTRY.pop(name, None)
-    providers._PROVIDER_LIST_CACHE = None
+        providers.registry._REGISTRY.pop(name, None)
+    providers.registry._PROVIDER_LIST_CACHE = None
 
 
 def test_profile_hook_reclassifies_only_its_own_provider(plugin_profiles):
@@ -70,8 +70,8 @@ def test_profile_hook_should_fallback_is_non_retryable_by_default(monkeypatch):
     try:
         verdict = classify_api_error(_error(403, "quota_exhausted"), provider="example-fallback", model="m")
     finally:
-        providers._REGISTRY.pop("example-fallback", None)
-        providers._PROVIDER_LIST_CACHE = None
+        providers.registry._REGISTRY.pop("example-fallback", None)
+        providers.registry._PROVIDER_LIST_CACHE = None
     assert (verdict.reason, verdict.should_fallback, verdict.retryable) == (FailoverReason.billing, True, False)
 
     providers.register_provider(ProviderProfile(
@@ -80,6 +80,6 @@ def test_profile_hook_should_fallback_is_non_retryable_by_default(monkeypatch):
     try:
         limited = classify_api_error(_error(429, "slow_down"), provider="example-ratelimit", model="m")
     finally:
-        providers._REGISTRY.pop("example-ratelimit", None)
-        providers._PROVIDER_LIST_CACHE = None
+        providers.registry._REGISTRY.pop("example-ratelimit", None)
+        providers.registry._PROVIDER_LIST_CACHE = None
     assert (limited.reason, limited.should_fallback, limited.retryable) == (FailoverReason.rate_limit, True, True)

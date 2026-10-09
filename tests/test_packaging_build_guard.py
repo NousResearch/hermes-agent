@@ -39,7 +39,9 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
         [
             sys.executable,
             "-c",
-            f"from setuptools.build_meta import build_{kind}; build_{kind}(r'{tmp_path}')",
+            "from setuptools.build_meta import build_{kind}; build_{kind}(r'{out}')".format(
+                kind=kind, out=tmp_path
+            ),
         ],
         cwd=PROJECT_ROOT,
         env=env,

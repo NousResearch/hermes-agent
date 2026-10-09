@@ -65,7 +65,7 @@ def authority_delivery(home, params):
     """Call only this home's already-running authority; never start a fallback."""
     import asyncio
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
+    from hermes_cli.gateway_client import GatewayClient, _session_ticket
     from websockets.asyncio.client import connect
 
     home = Path(home).resolve()
@@ -76,10 +76,11 @@ def authority_delivery(home, params):
             raise ValueError('profile authority is not ready')
         endpoint = discovery.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
-        url, protocols = gateway_ws_target(endpoint, ticket)
+        url = endpoint.api_origin.replace('http:', 'ws:').replace('https:', 'wss:') + '/api/ws'
         # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
-        async with connect(url, subprotocols=protocols, open_timeout=10, proxy=None) as ws:
-            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
+        async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
+                           open_timeout=10, proxy=None) as ws:
+            if ws.subprotocol != 'hermes-gateway-v1':
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
                 return await client.rpc('bot_relay.deliver', **params)
@@ -314,33 +315,21 @@ def cancel_queued_delivery(
 
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
-    key = _delivery_id(delivery_id)
-    if not _root(profile_home).is_dir():
-        return None
-    # atomic_replace can fall back to an in-place rewrite on Windows. Use the writer's
-    # short lock so local pollers never open a partially rewritten or sharing-locked file.
-    with _locked(profile_home) as root:
-        record = _read(root / f'{key}.json')
-    if record is not None and record.get('admission_id') and record.get('status') == 'canonical':
-        # Older owners used this transitional spelling. Publication/recovery updates it;
-        # a reader never dials the owner or replays an admission just to inspect its receipt.
-        return {**record, 'status': 'queued'}
+    record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+    if record is not None and record.get('admission_id'):
+        home = Path(profile_home).resolve()
+        # Readback replays the immutable envelope; dropping category or author conflicts.
+        category = ({'notification_category': record['notification_category']}
+                    if 'notification_category' in record else {})
+        # The receipt carries the envelope's category so a producer can detect a changed retry.
+        return {**authority_delivery(home, dict(id=delivery_id,
+            profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
+            **({'author': dict(record['author'])} if record.get('author') else {}), **category)), **category}
     return record
 
 
 _PENDING = ("queued", "claimed")
 _POLL_SECONDS = 0.5
-
-
-def _poll_receipt(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
-    """A waiter's read: the receipt file the owner republishes when the admission settles (and on
-    restart recovery). Never an authority RPC: a wait outlives owner restarts, and replaying the
-    envelope (``read_delivery_result``) is for producers re-confirming their admission."""
-    record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
-    if record is not None and record.get("status") == "canonical":
-        # Admitted with its outcome not yet published (an older owner's last write): pending.
-        return {**record, "status": "queued"}
-    return record
 
 
 def await_delivery(
@@ -353,12 +342,11 @@ def await_delivery(
     Desktop relay, ``hermes peer dm`` and ``hermes peer run``) waits on the same receipt; keeping
     the loop here is what stops the lanes drifting (one lane returned a receipt sentence instead
     of the reply, two never waited at all). Returns the last record read — still pending when the
-    budget lapsed, None when the receipt was never readable. Polls the local receipt file only, so
-    an owner restart mid-wait is just a longer pending stretch.
+    budget lapsed, None when the receipt was never readable.
     """
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
-        record = _poll_receipt(profile_home, delivery_id)
+        record = read_delivery_result(profile_home, delivery_id)
         if record is None or record["status"] not in _PENDING:
             return record
         if should_stop is not None and should_stop():
@@ -378,7 +366,7 @@ async def await_delivery_async(
 
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
-        record = await asyncio.to_thread(_poll_receipt, profile_home, delivery_id)
+        record = await asyncio.to_thread(read_delivery_result, profile_home, delivery_id)
         if record is None or record["status"] not in _PENDING:
             return record
         if should_stop is not None and should_stop():

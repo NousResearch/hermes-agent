@@ -49,7 +49,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     without an AWS account who received a Bedrock API Key from their AWS admin."""
     from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
     from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
+    from models.catalog_static import _PROVIDER_MODELS
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
     # Check env var and credential pool (keys added via `hermes auth`)
@@ -148,7 +148,7 @@ def _bedrock_text_model_ids(live_models: list, region: str) -> list[str]:
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock (native Converse API via boto3): verify credentials, pick region, discover models.
     Auth is the AWS SDK default credential chain, so no API key prompt is needed."""
-    from hermes_cli.models import _PROVIDER_MODELS
+    from models.catalog_static import _PROVIDER_MODELS
 
     # 1. Check for AWS credentials
     try:

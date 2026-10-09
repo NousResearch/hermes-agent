@@ -68,8 +68,6 @@ def _run_stream_json_chat(monkeypatch, capsys, run_turn, credentials_ok=True):
                 return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "request_id", "source"]}}
             if method == "session.create":
                 return {"stored_session_id": "session-123", "info": {"model": "test-model"}}
-            if method == "prompt.receipt":  # the settled result the exit code is judged from
-                return {"status": "terminal", "result": {"completed": True, "final_response": "hello"}}
             assert method == "prompt.submit"
             self.emit("message.complete", {**run_turn(self), "admission_id": "adm-1"})
             return {"admission_id": "adm-1"}

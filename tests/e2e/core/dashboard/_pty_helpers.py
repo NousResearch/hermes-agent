@@ -90,7 +90,7 @@ class WsTerm:
                     self.screen.feed(frame)
         except ConnectionClosed as exc:
             self.close_code = exc.rcvd.code if exc.rcvd else None
-        except Exception:
+        except Exception:  # noqa: BLE001 - socket torn down under us by close()
             pass
         finally:
             self._closed.set()
@@ -102,7 +102,7 @@ class WsTerm:
         """Client-side close (a browser tab refresh / transient drop)."""
         try:
             self.ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         self._closed.wait(10)
 

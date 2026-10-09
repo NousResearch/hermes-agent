@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.model_setup_flows_common import _existing_api_key_for_model_flow
 
 

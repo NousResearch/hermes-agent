@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tui_gateway import server
+import tui_gateway.server as server
 from hermes_state import SessionDB
 
 

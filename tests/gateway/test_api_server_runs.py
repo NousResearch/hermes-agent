@@ -1932,7 +1932,7 @@ class TestRunIdempotency:
 
         path = tmp_path / "idem.db"
         scope = hashlib.sha256(
-            b"default\0unauthenticated-test-listener"
+            "default\0unauthenticated-test-listener".encode()
         ).hexdigest()
         store = RunIdempotencyStore(str(path))
         store.reserve(

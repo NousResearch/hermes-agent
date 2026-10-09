@@ -532,20 +532,20 @@ def _kill_process_tree_windows(proc) -> None:
     for child in descendants:
         try:
             child.terminate()
-        except Exception:
+        except Exception:  # noqa: BLE001 - raced away or refused; keep going
             pass
     try:
         proc.terminate()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     try:
         _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
-    except Exception:
+    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
         return
     for survivor in alive:
         try:
             survivor.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 

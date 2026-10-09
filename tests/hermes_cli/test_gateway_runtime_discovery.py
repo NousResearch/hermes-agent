@@ -95,33 +95,3 @@ def test_group_write_is_private_only_when_no_other_account_has_that_primary_grou
         raise OSError('passwd database unavailable')
     monkeypatch.setattr(pwd, 'getpwall', unreadable)
     assert home_mode_unsafe(home.lstat(), home) is True
-
-
-@pytest.mark.platforms("linux", "macos")
-def test_upgraded_same_owner_0644_lock_is_narrowed_not_inaccessible(tmp_path):
-    """Main created gateway.lock with open("a+") under the umask (0644); the inode is never
-    replaced, so discovery and reserve must narrow it in place instead of refusing it forever.
-    A hardlinked lock (another name shares the inode) is never chmodded."""
-    import os
-    import stat
-    from gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli.gateway_runtime_discovery import missing_owner_state
-    home = tmp_path / 'profile'
-    home.mkdir(mode=0o700)
-    lock = home / 'gateway.lock'
-    lock.touch()
-    lock.chmod(0o644)
-    assert missing_owner_state(home) == 'absent'
-    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
-    lock.chmod(0o644)
-    owner = ProfileOwnership()
-    owner.reserve([home])
-    try:
-        assert stat.S_IMODE(lock.stat().st_mode) == 0o600
-        assert missing_owner_state(home) == 'starting'
-    finally:
-        owner.close()
-    lock.chmod(0o644)
-    os.link(lock, tmp_path / 'alias')
-    assert missing_owner_state(home) == 'inaccessible'
-    assert stat.S_IMODE(lock.stat().st_mode) == 0o644

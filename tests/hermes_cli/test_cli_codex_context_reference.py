@@ -34,7 +34,7 @@ def test_at_context_resolution_passes_active_provider():
         warnings=["blocked for test"],
     )
     with patch("agent.context_references.preprocess_context_references", return_value=blocked_result), \
-         patch("agent.model_metadata.get_model_context_length", return_value=372_000) as mock_context, \
+         patch("models.metadata.context.get_model_context_length", return_value=372_000) as mock_context, \
          patch("cli._cprint"):
         result = cli.chat("inspect @file:example.py")
 

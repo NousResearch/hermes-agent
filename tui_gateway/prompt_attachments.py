@@ -232,7 +232,7 @@ def _stage_session_file_attachment(
         import re as _re
         try:
             payload = _b64_payload(
-                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE)
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)

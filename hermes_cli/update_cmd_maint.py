@@ -141,7 +141,7 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
+        needs_upgrade = bool(row) and getattr(db, "_db_needs_fts_storage_upgrade")(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -674,7 +674,7 @@ def _run_quick_snapshots() -> Optional[str]:
             keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
         if _sibling_snaps:
-            print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
+            print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
             _record_update_step(
                 "sibling_profile_snapshots",
                 True,
@@ -1015,8 +1015,10 @@ def _run_post_update_maintenance(
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
+        from hermes_cli.catalog_context import catalog_cache_path
+        from models.catalog_seed import seed_cache_from_checkout
+
+        if seed_cache_from_checkout(_m().PROJECT_ROOT, catalog_cache_path()):
             print("  ✓ Model catalog cache refreshed from checkout")
 
     # Drop the cached live plugin catalog under every profile: the checkout is shared, so a

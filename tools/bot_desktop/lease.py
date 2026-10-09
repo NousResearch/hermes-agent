@@ -53,11 +53,11 @@ class Lease:
     reason: str = ""
     epoch: int = 0
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self) -> Dict[str, object]:
         return asdict(self)
 
 
-def public_view(lease: Lease) -> dict[str, object]:
+def public_view(lease: Lease) -> Dict[str, object]:
     """The lease as anything outside the gateway may see it (RPC results, the ``display.lease`` broadcast,
     the CLI): the holder's viewer id is a capability — whoever presents it co-drives or releases the lease —
     so it is replaced by a short hash the holder can match against its own id to know it is in control."""
@@ -69,7 +69,7 @@ def public_view(lease: Lease) -> dict[str, object]:
 
 
 _lock = threading.Condition()
-_listeners: list[Callable[[str, Lease], None]] = []
+_listeners: List[Callable[[str, Lease], None]] = []
 
 
 def _path(profile_key: Optional[str]) -> Path:
@@ -132,7 +132,7 @@ class _locked:
         if fcntl is None:
             return self
         _private_dir(self._lockfile)
-        self._fh = open(self._lockfile, "a+", encoding="utf-8", opener=_open_private)
+        self._fh = open(self._lockfile, "a+", encoding="utf-8", opener=_open_private)  # noqa: SIM115 — closed in __exit__
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
         return self
 
@@ -161,12 +161,7 @@ def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:
 
 
 def _notify(key: str, lease: Lease) -> None:
-    # Snapshot under the lock: a viewer disconnecting on another thread runs unsubscribe()
-    # concurrently with this loop; removing an entry from the live list mid-iteration skips
-    # the next listener, and a still-connected viewer misses the lease transition.
-    with _lock:
-        listeners = list(_listeners)
-    for cb in listeners:
+    for cb in list(_listeners):
         try:
             cb(key, lease)
         except Exception:  # a broken subscriber must not wedge the handoff

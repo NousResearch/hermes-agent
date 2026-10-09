@@ -76,16 +76,12 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
     try:
-        pending_model = parsed.model_input
+        pending_model = parsed.target
     except Exception:
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        # A bare pick resolves against the live provider at turn start; guard on that same provider
-        # here, or a provider-keyed price check passes now and drops the queued pick later.
-        agent = session.get("agent")
-        guard_provider = pending_provider or (getattr(agent, "provider", "") or "").strip()
-        pending_warning = _pending_switch_selection_warning(pending_model, guard_provider, agent)
+        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -114,16 +110,10 @@ def _set_model(rid, params, key, value, session):
         return _err(rid, 4002, "model value required")
     confirmed = bool(params.get("confirm_expensive_model", False))
     if session:
-        from hermes_cli.model_switch import parse_model_switch_args
+        from application_model_command_request import parse_model_command
         sid = params.get("session_id", "")
-        parsed_flags = parse_model_switch_args(value)
-        # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
-        # the child process — the direct path below would build a SECOND agent in
-        # the server, switch that copy, and leave the child (which handles every
-        # turn) on the old model: checkmark shows the pick, requests keep the old
-        # model. The stash crosses the boundary in the turn frame and the child's
-        # turn thread applies it (_apply_pending_model_switch).
-        if session.get("running") or session.get("_compute_host_active"):
+        parsed_flags = parse_model_command(value)
+        if session.get("running"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
@@ -153,8 +143,8 @@ def _set_model(rid, params, key, value, session):
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:
         # an older Desktop client sent a fresh-draft pick this way).
-        from hermes_cli.model_switch import parse_model_switch_args
-        if parse_model_switch_args(str(value)).is_once:
+        from application_model_command_request import parse_model_command
+        if parse_model_command(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
             # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
@@ -187,8 +177,8 @@ def _set_fast(rid, params, key, value, session):
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
-    if nv in ("fast", "ultrafast"):
-        from hermes_cli.models import resolve_fast_mode_overrides
+    if nv == "fast":
+        from models.metadata.fast_mode import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
         else:  # a pre-build session may carry a picked model (desktop draft): validate against THAT
@@ -276,6 +266,7 @@ def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
+    from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
@@ -285,15 +276,9 @@ def _set_yolo(rid, params, key, value, session):
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        from tools.approval_yolo import toggle_session_yolo
-        # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
-        row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
-
-        def persist(on):
-            with _session_db(session) as db:
-                if db is not None:
-                    db.set_session_yolo(row_id, on)
-        enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
+        skey = session["session_key"]
+        enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
+        (enable_session_yolo if enable else disable_session_yolo)(skey)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

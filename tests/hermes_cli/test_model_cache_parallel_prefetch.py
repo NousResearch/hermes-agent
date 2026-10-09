@@ -97,7 +97,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_skips_all_fresh_entries(self, monkeypatch):
         """When all cache entries are fresh, no fetch is made."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         fresh_cache = {
             "openrouter": {"fp": "fp", "at": time.time(), "models": ["m1"]},
@@ -113,7 +113,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_fetches_only_stale_entries(self, monkeypatch):
         """Only providers with stale/missing cache entries are fetched."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         cache = {
             "fresh_prov": {"fp": "fp_f", "at": time.time(), "models": ["m1"]},
@@ -136,7 +136,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_fetches_in_parallel(self, monkeypatch):
         """Multiple providers are fetched concurrently, not serially."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         # Track overlap: if serial, no two fetches should overlap in time.
         active = []
@@ -164,7 +164,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_swallows_exceptions(self):
         """A failing provider fetch doesn't raise — best-effort."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         def mock_fetch(slug, force_refresh=False):
             raise ConnectionError("simulated network failure")
@@ -178,7 +178,7 @@ class TestPrefetchProviderModelsParallel:
 
     def test_empty_list_is_noop(self):
         """Empty provider list does nothing."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         with patch("hermes_cli.models.cached_provider_model_ids") as fetch:
             _prefetch_provider_models_parallel([])
@@ -194,7 +194,7 @@ class TestPrefetchProviderModelsParallel:
         state every picker open a TTL after the previous one lands in.
         """
         import hermes_cli.models as models_mod
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         expired = time.time() - models_mod._PROVIDER_MODELS_CACHE_TTL - 60
         cache = {"openrouter": {"fp": "fp", "at": expired, "models": ["m1"]}}
@@ -210,7 +210,7 @@ class TestPrefetchProviderModelsParallel:
         """A curated-fallback row is served only for ``_PROVIDER_MODELS_FALLBACK_TTL``
         and never through the stale window, so the serial call blocks on it and the
         parallel prefetch must fetch it."""
-        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+        from application_provider_discovery import _prefetch_provider_models_parallel
 
         cache = {"openrouter": {"fp": "fp", "at": time.time() - 7200, "models": ["m1"],
                                 "fallback": True}}

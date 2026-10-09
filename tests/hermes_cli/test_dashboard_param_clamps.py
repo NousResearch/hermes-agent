@@ -14,7 +14,7 @@ from contextlib import closing
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture()

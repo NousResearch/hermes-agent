@@ -23,22 +23,3 @@ test('acknowledged journal mutations survive reopening with exact payload and or
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
-
-test('a corrupt journal is quarantined with its bytes kept, and the origin can send again', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-journal-'))
-
-  try {
-    const origin = 'http://localhost:5174'
-    preparedJournal(dir, origin).update('kept', { id: 'id-a' })
-    const [file] = fs.readdirSync(dir).map(name => path.join(dir, name))
-    fs.writeFileSync(file, '{"kept":{"id":"id-')
-
-    expect(preparedJournal(dir, origin).read()).toEqual({})
-    preparedJournal(dir, origin).update('next', { id: 'id-b' })
-    expect(preparedJournal(dir, origin).read()).toEqual({ next: { id: 'id-b' } })
-    const aside = fs.readdirSync(dir).filter(name => name.includes('.corrupt-'))
-    expect(aside.map(name => fs.readFileSync(path.join(dir, name), 'utf8'))).toEqual(['{"kept":{"id":"id-'])
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})

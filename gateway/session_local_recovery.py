@@ -1,13 +1,19 @@
 """Restore only private, profile-bound local policy into the existing authority."""
+import hashlib
+import json
 import logging
 from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
-from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+
+def local_identity(profile_id, principal_id, request_id):
+    identity = json.dumps([profile_id, principal_id, request_id], separators=(',', ':'))
+    return 'local-' + hashlib.sha256(identity.encode()).hexdigest()
 
 
 def local_adapter_map(authority):
@@ -112,15 +118,8 @@ def transcript_target(authority, ref):
 
 
 def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root.
-
-    Each row carries its durable ``messages.id`` as ``row_id`` (the ``TranscriptMessage`` field
-    Desktop hydration and the legacy ``session.history`` already use): a ``session.mutate`` rewind
-    addresses its ``target_message_id`` by it, so a snapshot without it leaves no way to undo/retry.
-    """
-    rows = authority.db.get_messages_as_conversation(transcript_target(authority, ref), include_row_ids=True)
-    return [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
-            if '_row_id' in row else row for row in rows]
+    """Display history from the current physical transcript; *ref* stays the logical root."""
+    return authority.db.get_messages_as_conversation(transcript_target(authority, ref))
 
 
 def reopen_local_session(authority, ref):

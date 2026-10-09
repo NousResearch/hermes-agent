@@ -27,8 +27,17 @@ import json
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import hermes_cli.runtime_provider as rp
 from hermes_state import SessionDB
+
+
+@pytest.fixture(autouse=True)
+def _bind_canonical_tui_config_to_mocked_profile(monkeypatch):
+    """Old runtime-provider test stubs must also feed the TUI's new config owner."""
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_load_cfg", lambda: rp.load_config())
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 MIMO_KEY = "sk-mimo-entry-key"
@@ -81,7 +90,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
 
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", dict)
+        monkeypatch.setattr(rp, "load_config", lambda: {})
 
         from tui_gateway.server import _runtime_model_config
 
@@ -112,7 +121,8 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
     # Keep credential-pool resolution off the developer's real HERMES home.
     monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
 
-    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "unused"}}
+    fake_cfg = {**config, "agent": {"system_prompt": ""}}
+    fake_cfg.setdefault("model", {"default": "unused"})
     with (
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),
@@ -424,7 +434,7 @@ class TestStaleProviderNameFallsBack:
         configured default instead of failing the build."""
         config = {"custom_providers": NAMED_CONFIG["custom_providers"]}
         monkeypatch.setattr(rp, "load_config", lambda: config)
-        monkeypatch.setattr(rp, "_get_model_config", dict)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -596,7 +606,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
-        from tui_gateway import server
+        import tui_gateway.server as server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -635,8 +645,8 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
-                patch("hermes_cli.model_switch.switch_model", return_value=result),
+                patch("application_model_command_request.resolve_model_persistence", return_value=False),
+                patch("tui_gateway.model_switch_resolution.resolve_tui_model_switch", return_value=result),
                 server._profile_build_scope(secondary),
             ):
                 server._apply_model_switch("sid-live", live, "glm-5.1")
@@ -671,7 +681,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
         divergence marker (not the launch profile's), the first row write persists it, and the resume read
         under that profile restores model AND provider instead of the ambient fallback (#123805)."""
-        from tui_gateway import server
+        import tui_gateway.server as server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -709,7 +719,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
-        from tui_gateway import server
+        import tui_gateway.server as server
 
         monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
         row = {
@@ -806,13 +816,14 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""
-        from tui_gateway import server
+        import tui_gateway.server as server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
+                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
@@ -831,13 +842,14 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
-        from tui_gateway import server
+        import tui_gateway.server as server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
+                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
@@ -958,5 +970,3 @@ class TestRuntimeModelConfigDropsStaleKeys:
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
-
-

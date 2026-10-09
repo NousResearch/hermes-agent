@@ -179,28 +179,6 @@ async def rpc(connection, name, params):
     return await operation(connection.authority, name, params, connection.actor)
 
 
-def scheduler_execution_id(job_id, request_id):
-    """The scheduler's execution id this admission carries: ``_create`` admits under
-    ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``cron/executions`` row id."""
-    prefix = 'cron:' + job_id + ':'
-    return request_id[len(prefix):] if request_id.startswith(prefix) else request_id
-
-
-def _run_identified(run_job, job, execution_id, **kwargs):
-    """``run_job`` inside this fire's cron identity (``ctx.current_cron_execution()``).
-
-    The scheduler binds it in the FIRING thread, but the owner executes on its own loop, whose
-    context never saw that binding; re-bind it here from the same ledger row, in the profile scope
-    the caller entered (so the row and the profile name are this profile's)."""
-    from cron.execution_identity import enter_cron_execution, exit_cron_execution
-    from cron.executions import get_execution
-    token = enter_cron_execution(job, execution_id, get_execution(execution_id) or {})
-    try:
-        return run_job(job, execution_id=execution_id, **kwargs)
-    finally:
-        exit_cron_execution(token)
-
-
 async def execute(authority, ref, row, policy):
     from cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
@@ -211,14 +189,13 @@ async def execute(authority, ref, row, policy):
         raise RuntimeStoreError('admission_conflict')
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
-    job = data['cron_job']
-    execution_id = scheduler_execution_id(job['id'], row['request_id'])
-    token = _execution.set((authority, ref.session_id, job['id'], execution_id))
+    token = _execution.set((authority, ref.session_id, data['cron_job']['id'], row['admission_id']))
     try:
+        job = data['cron_job']
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
-            result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+            result = await asyncio.to_thread(run_job, job, extra_prompt=data['extra_prompt'],
+                                             execution_id=row['admission_id'], cancel_event=cancel)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

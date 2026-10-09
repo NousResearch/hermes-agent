@@ -1,8 +1,11 @@
-"""Canonical payload identity after authorization and immutable media capture.
+"""Canonical payload identity after authorization and immutable media capture."""
+import hashlib
+import json
 
-The digest is defined storage-side (``hermes_state_keys``) so the canonical store never imports
-``gateway/``; this module keeps the gateway-facing name.
-"""
-from hermes_state_keys import admission_fingerprint
 
-__all__ = ['admission_fingerprint']
+def admission_fingerprint(*, canonical_target: str, payload: dict) -> str:
+    encoded = json.dumps(
+        {'target': canonical_target, 'payload': payload}, ensure_ascii=False,
+        sort_keys=True, separators=(',', ':'), allow_nan=False,
+    ).encode('utf-8', errors='surrogatepass')
+    return hashlib.sha256(encoded).hexdigest()

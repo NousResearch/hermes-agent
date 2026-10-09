@@ -96,6 +96,7 @@ class _HeldRead:
 
     def get_compression_lock_holder(self, session_id):
         self.block()
+        return None  # no compression in flight: the ordinary interrupt-mode path
 
     def release(self):
         self._released.set()

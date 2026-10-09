@@ -20,7 +20,6 @@ from agent.image_eviction_policy import (
     OUTBOUND_IMAGE_FLOOR,
     OUTBOUND_IMAGE_LIMIT,
 )
-import itertools
 
 
 def _image_tool(i: int, *, blob: str = "A" * 80) -> list[dict]:
@@ -140,7 +139,7 @@ class TestOutboundStaleVisionEviction:
         kept = [surviving(n) for n in span]
         assert all(len(k) <= OUTBOUND_IMAGE_LIMIT for k in kept), [len(k) for k in kept]
         frontier = [k[0] for k in kept]
-        moves = sum(a != b for a, b in itertools.pairwise(frontier))
+        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
         assert moves == 3, (
             f"frontier moved {moves} times over {len(span)} images (frontier={frontier}); "
             "each move rewrites a cached row and restarts the prefix"
@@ -193,7 +192,7 @@ class TestOutboundStaleVisionEviction:
         window = OUTBOUND_IMAGE_LIMIT // 3
         span = range(window + 1, window + 1 + 4 * (window - OUTBOUND_IMAGE_FLOOR))
         frontier = [surviving(n)[0] for n in span]
-        moves = sum(a != b for a, b in itertools.pairwise(frontier))
+        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
         assert moves <= len(span) // (window - OUTBOUND_IMAGE_FLOOR), (
             f"frontier moved {moves} times over {len(span)} turns (frontier={frontier}); "
             "a per-image frontier rewrites the cached prefix every turn"

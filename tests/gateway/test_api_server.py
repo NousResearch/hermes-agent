@@ -2579,7 +2579,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
         },
     )
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )
@@ -3027,8 +3027,8 @@ class TestCreateAgentModelRecovery:
         )
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
-            "hermes_cli.models.get_default_model_for_provider",
-            lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
+            "gateway.model_runtime_facts.provider_default_model",
+            lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else "",
         )
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))

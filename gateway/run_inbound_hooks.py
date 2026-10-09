@@ -107,7 +107,7 @@ class GatewayInboundHooksMixin:
                 args_raw=raw_args, session_key=_quick_key, platform=platform,
             )
         except Exception as _pre_cmd_err:
-            logger.debug("pre_command hook dispatch failed (non-fatal): %s", _pre_cmd_err, exc_info=True)
+            logger.debug("pre_command hook dispatch failed (non-fatal): %s", _pre_cmd_err)
 
         # Handlers may return ``{"decision": "deny" | "handled" | "rewrite", ...}`` to intercept
         # dispatch; handlers returning nothing behave as plain observers.
@@ -118,7 +118,7 @@ class GatewayInboundHooksMixin:
         try:
             hook_results = await self.hooks.emit_collect(f"command:{canonical}", hook_ctx)
         except Exception as _hook_err:
-            logger.debug("command:%s hook dispatch failed (non-fatal): %s", canonical, _hook_err, exc_info=True)
+            logger.debug("command:%s hook dispatch failed (non-fatal): %s", canonical, _hook_err)
             hook_results = []
 
         for hook_result in hook_results:
@@ -215,5 +215,5 @@ class GatewayInboundHooksMixin:
                                 result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
+                logger.warning("Plugin command dispatch failed: %s", e)
         return False, None, command

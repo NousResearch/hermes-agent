@@ -21,6 +21,8 @@
  *     persisted by the first launch cold-hydrates exactly once every time.
  */
 
+import * as fs from 'node:fs'
+
 import { expect, test } from '@playwright/test'
 
 import {
@@ -29,6 +31,7 @@ import {
   createCoreSandbox,
   currentSessionId,
   launchCoreApp,
+  type ProcInfo,
   recordWebSockets,
   sandboxProcesses,
   send,
@@ -37,7 +40,6 @@ import {
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
-import { processesTagged } from './process-census'
 import { gate, startScriptedProvider } from './provider'
 
 const nonce = Math.random()
@@ -50,6 +52,30 @@ const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const TOOL_TAG = `core-orphan-${nonce}`
 
+/** Every live process whose command line carries `tag` (tool children may scrub HERMES_HOME). */
+function taggedProcesses(tag: string): ProcInfo[] {
+  const out: ProcInfo[] = []
+
+  for (const entry of fs.readdirSync('/proc')) {
+    const pid = Number(entry)
+
+    if (!Number.isInteger(pid) || pid === process.pid) {
+      continue
+    }
+
+    try {
+      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim()
+
+      if (cmdline.includes(tag)) {
+        out.push({ pid, ppid: 0, cmdline })
+      }
+    } catch {
+      /* exited mid-scan */
+    }
+  }
+
+  return out
+}
 
 test('boot handshake, supervised respawn, and zero orphans on quit', async () => {
   const provider = await startScriptedProvider()
@@ -147,7 +173,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       ])
       await send(page, `${U(3)} long tool`, 'Enter', ws)
       await expect
-        .poll(() => processesTagged(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' })
+        .poll(() => taggedProcesses(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' })
         .toBeGreaterThan(0)
       const [gateway] = backendProcesses(sandbox)
       expect(gateway).toBeTruthy()
@@ -175,7 +201,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       await expect
         .poll(
           () =>
-            [...sandboxProcesses(sandbox), ...processesTagged(TOOL_TAG)].map(
+            [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)].map(
               p => `${p.pid} ${p.cmdline.slice(0, 120)}`
             ),
           { timeout: 60_000, message: 'no sandbox process (gateway, tool child) survives hermes gateway stop' }
@@ -191,7 +217,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
     }
 
     // Never leave a test-made process behind even on failure (only our own tag / sandbox).
-    for (const proc of [...sandboxProcesses(sandbox), ...processesTagged(TOOL_TAG)]) {
+    for (const proc of [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)]) {
       try {
         process.kill(proc.pid, 'SIGKILL')
       } catch {

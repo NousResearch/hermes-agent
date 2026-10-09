@@ -169,8 +169,8 @@ class TestApprovalBridge:
 # Scheduler-failure regression
 # ---------------------------------------------------------------------------
 
-import gc
-import warnings
+import gc  # noqa: E402
+import warnings  # noqa: E402
 
 
 class TestSchedulerFailure:

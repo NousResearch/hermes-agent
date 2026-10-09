@@ -20,13 +20,10 @@ from hermes_state_runtime import RuntimeStoreError
 class SessionAuthorities:
     """Registry of authorities keyed by ``hermes_home_key(home)``."""
 
-    def __init__(self, launch_home, *, multiplexed=False):
+    def __init__(self, launch_home):
         self.launch_key = hermes_home_key(launch_home)
         self._by_key: dict[str, object] = {}
         self._names: dict[str, str | None] = {}
-        # A multiplexing runtime (configured, or one that ever served a second home) keeps the
-        # scoped-lookup contract after its secondaries are removed: an unserved home is None.
-        self.multiplexed = bool(multiplexed)
 
     def add(self, home, authority, name=None) -> None:
         key = hermes_home_key(home)
@@ -34,8 +31,6 @@ class SessionAuthorities:
             raise RuntimeError(f'duplicate session authority for {home}')
         self._by_key[key] = authority
         self._names[key] = name
-        if key != self.launch_key:
-            self.multiplexed = True
 
     def replace(self, home, authority) -> None:
         """Fill the slot reserved by ``add(home, None, name=...)`` once the authority exists."""
@@ -87,11 +82,9 @@ class SessionAuthorities:
 
         Unscoped code (startup, shutdown, background watchers) belongs to the launch profile.
         Scoped code that names a home this process does not serve gets ``None``: a routed
-        profile must never fall back to the launch profile's ledger — including once a removed
-        secondary leaves only the launch slot (a late callback of that profile). Only a runtime
-        that never multiplexed is a map of one that answers every scope with the launch authority.
+        profile must never fall back to the launch profile's ledger.
         """
-        if not self.multiplexed or get_hermes_home_override() is None:
+        if len(self._by_key) == 1 or get_hermes_home_override() is None:
             return self._by_key[self.launch_key]
         return self._by_key.get(hermes_home_key(get_hermes_home()))
 

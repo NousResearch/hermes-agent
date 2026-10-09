@@ -132,7 +132,7 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
             _bind_safe_worker_policy(safe_mode=mode == "safe", ignore_user_config=True, config={"plugins": {"enabled": ["sentinel"]}})
         reads = []
         def audit(event, args):
-            if event == "open" and "plugins" in Path(str(args[0])).parts and args[1] != "w":
+            if event == "open" and "/plugins/" in str(args[0]) and args[1] != "w":
                 reads.append(str(args[0]))
         sys.addaudithook(audit)
         import providers

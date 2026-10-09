@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 _log = logging.getLogger("hermes_cli.web_server")
 
 
-_LOGGED_OUT: dict[str, Any] = {"logged_in": False, "source": None}
+_LOGGED_OUT: Dict[str, Any] = {"logged_in": False, "source": None}
 
 
 def _truncate_token(value: Optional[str], visible: int = 6) -> str:
@@ -32,7 +32,7 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     return s if len(s) <= visible else f"…{s[-visible:]}"
 
 
-def _token_status(source: str, source_label: str, creds: dict[str, Any]) -> dict[str, Any]:
+def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "logged_in": True, "source": source, "source_label": source_label,
         "token_preview": _truncate_token(creds.get("accessToken")),
@@ -40,7 +40,7 @@ def _token_status(source: str, source_label: str, creds: dict[str, Any]) -> dict
     }
 
 
-def _anthropic_oauth_status() -> dict[str, Any]:
+def _anthropic_oauth_status() -> Dict[str, Any]:
     """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
     registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
 
@@ -57,8 +57,10 @@ def _anthropic_oauth_status() -> dict[str, Any]:
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+        from hermes_cli.provider_auth import get_provider_config
+        config = get_provider_config("anthropic")
+        if config is not None:
+            env_var_order = config.api_key_env_vars
     except (ImportError, KeyError):
         pass
     from hermes_cli.config import get_env_value
@@ -73,7 +75,7 @@ def _anthropic_oauth_status() -> dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _claude_code_only_status() -> dict[str, Any]:
+def _claude_code_only_status() -> Dict[str, Any]:
     """Claude Code CLI credentials as their own entry, independent of the Anthropic card.
 
     Connected follows the same local validity gate as Anthropic resolution. A
@@ -92,7 +94,7 @@ def _claude_code_only_status() -> dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _copilot_acp_status() -> dict[str, Any]:
+def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp. ``logged_in`` only on positive evidence (env token or known on-disk
     store); the CLI may hold its session in an OS keychain Hermes can't read, so the unverified
     state reads "managed by the Copilot CLI" — never signed out."""
@@ -120,8 +122,9 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
     (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
-        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        from hermes_cli.auth import get_external_process_provider_status
+        from hermes_cli.provider_auth import get_provider_config
+        pconfig = get_provider_config(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
             return default
         status = get_external_process_provider_status(provider_id) or {}
@@ -141,7 +144,7 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
 # the Anthropic credential-status card and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
-_OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
+_OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     # status_fn None → dispatched via auth.get_<provider>_auth_status.
     {"id": "nous", "name": "Nous Portal", "flow": "device_code", "cli_command": "hermes auth add nous",
      "docs_url": "https://portal.nousresearch.com", "status_fn": None},
@@ -173,7 +176,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
      "flow": "external", "cli_command": "claude setup-token",
      "docs_url": "https://docs.claude.com/en/docs/claude-code", "status_fn": _claude_code_only_status},
 )
-_oauth_sessions: dict[str, dict[str, Any]] = {}
+_oauth_sessions: Dict[str, Dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
 
@@ -218,7 +221,7 @@ def _oauth_poller(label: str):
     return deco
 
 
-def _record_sign_in_state(sess: dict[str, Any], state: Any) -> None:
+def _record_sign_in_state(sess: Dict[str, Any], state: Any) -> None:
     """Write one ``anon_auth.SignInState`` onto the dashboard session, under the sessions lock.
 
     The whole desktop mapping lives here: the state carries its own copy, so nothing below turns a
@@ -273,7 +276,7 @@ def _record_sign_in_state(sess: dict[str, Any], state: Any) -> None:
 
 
 @_oauth_poller("nous")
-def _nous_promotion_poller(session_id: str, sess: dict[str, Any]) -> None:
+def _nous_promotion_poller(session_id: str, sess: Dict[str, Any]) -> None:
     """Drain the sign-in the start route began: one shared flow, rendered onto the session.
 
     The generator was created and advanced to its ``Code`` state by ``_start_nous_device_code``, so
@@ -294,7 +297,7 @@ def _nous_promotion_poller(session_id: str, sess: dict[str, Any]) -> None:
 
 
 @_oauth_poller("nous")
-def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
+def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
     """Background poller for a plain Nous device-code login (no free-tier identity to transfer).
 
     A sign-in that carries the free tier's connectors runs through ``anon_auth.run_sign_in`` and
@@ -360,7 +363,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
 
 
 @_oauth_poller("minimax")
-def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
+def _minimax_poller(session_id: str, sess: Dict[str, Any]) -> None:
     """MiniMax poller: PKCE-style ``code_verifier`` + ``user_code`` instead of Nous's
     ``device_code``. Builds the same auth_state as the CLI's ``_minimax_oauth_login`` and persists
     via ``_minimax_save_auth_state`` so the system ends up as after ``hermes auth add minimax-oauth``.
@@ -408,7 +411,7 @@ def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
 
 
 @_oauth_poller("xai")
-def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
+def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
     """Background poller for xAI's OAuth device-code flow."""
     from hermes_cli.web_server_profiles import _profile_scope
     import httpx

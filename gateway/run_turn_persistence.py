@@ -529,8 +529,7 @@ class GatewayTurnPersistenceMixin:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply
-            from gateway.session_results import record_unexecuted_failure
-            return record_unexecuted_failure(_context_overflow_reply())
+            return _context_overflow_reply()
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -570,10 +569,9 @@ class GatewayTurnPersistenceMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
-        from gateway.session_results import record_unexecuted_failure
-        return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
+        return self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
-        ))
+        )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

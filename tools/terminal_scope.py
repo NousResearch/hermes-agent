@@ -24,7 +24,7 @@ _terminal_scope_var: ContextVar = ContextVar("hermes_terminal_scope", default=No
 
 # Keys whose default lives in terminal_tool.py, not DEFAULT_CONFIG (which wins on overlap);
 # without them the projection is not total.
-_TOOL_LEVEL_DEFAULTS: dict[str, Any] = {
+_TOOL_LEVEL_DEFAULTS: Dict[str, Any] = {
     "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "",
     "docker_orphan_reaper": True, "docker_persist_across_processes": True,
     "sandbox_dir": "", "lifetime_seconds": 300, "docker_shared_container_key": "",
@@ -36,7 +36,7 @@ class TerminalPolicyUnavailable(Exception):
     """The routed profile's ``.env``/``config.yaml`` exists but cannot be read/parsed."""
 
 
-class TerminalPolicyRefusal(dict[str, str]):
+class TerminalPolicyRefusal(Dict[str, str]):
     """Marker scope (empty dict subclass) installed when policy resolution failed."""
 
     def __init__(self, reason: str) -> None:
@@ -44,7 +44,7 @@ class TerminalPolicyRefusal(dict[str, str]):
         self.reason = reason
 
 
-def set_terminal_scope(mapping: Optional[dict[str, str]]) -> Token:
+def set_terminal_scope(mapping: Optional[Dict[str, str]]) -> Token:
     """Install *mapping* as the current context's terminal policy."""
     return _terminal_scope_var.set(mapping)
 
@@ -53,7 +53,7 @@ def reset_terminal_scope(token: Token) -> None:
     _terminal_scope_var.reset(token)
 
 
-def get_terminal_scope() -> Optional[dict[str, str]]:
+def get_terminal_scope() -> Optional[Dict[str, str]]:
     """The active scope mapping/refusal, or ``None`` when no scope is bound."""
     return _terminal_scope_var.get()
 
@@ -86,7 +86,7 @@ def terminal_env(name: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
-def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> None:
+def _apply_terminal_mapping(scope: Dict[str, str], mapping: Dict[str, Any]) -> None:
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
 
     for cfg_key, value in mapping.items():
@@ -101,18 +101,18 @@ def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> N
             scope[env_var] = _terminal_env_value(value)
 
 
-def default_terminal_scope() -> dict[str, str]:
+def default_terminal_scope() -> Dict[str, str]:
     """Code-default ``TERMINAL_*`` policy: what a profile-bypassing session freezes instead of
     reading ``.env``/``config.yaml``. Total like the profile projection, minus the profile."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
-    scope: dict[str, str] = {}
+    scope: Dict[str, str] = {}
     _apply_terminal_mapping(scope, {**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
     return scope
 
 
 def build_profile_terminal_scope(
-    hermes_home: "Any", *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
+    hermes_home: "Any", *, env_overlay: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
     Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
@@ -179,7 +179,7 @@ def build_profile_terminal_scope(
     return scope
 
 
-def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
+def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
     """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
     gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
     workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
@@ -202,7 +202,7 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
 
 
 def install_profile_terminal_scope(
-    hermes_home: "Any", *, env_overlay: Optional[dict[str, str]] = None) -> Token:
+    hermes_home: "Any", *, env_overlay: Optional[Dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
     try:
         return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))

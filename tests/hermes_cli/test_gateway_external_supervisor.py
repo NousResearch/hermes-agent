@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway
+import hermes_cli.gateway as gateway
 
 
 def _clear_native_supervisor_markers(monkeypatch):

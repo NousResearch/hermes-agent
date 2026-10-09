@@ -159,7 +159,7 @@ class TestWorktreeIncludeEncoding:
         secret = git_repo / "секреты.env"
         secret.write_text("SECRET=***\n", encoding="utf-8")
         (git_repo / ".worktreeinclude").write_bytes(
-            "# ключи агента\nсекреты.env\n".encode()
+            "# ключи агента\nсекреты.env\n".encode("utf-8")
         )
 
         info = None

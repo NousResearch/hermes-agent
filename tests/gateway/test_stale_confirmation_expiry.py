@@ -24,7 +24,6 @@ from agent.replay_cleanup import (
     strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
 )
 from gateway.run import _build_gateway_agent_history
-import itertools
 
 
 # High-risk confirmation patterns. A user message matching one of these
@@ -40,7 +39,7 @@ def _make_history_with_confirmation(
     confirmation_message: str,
     confirmation_at: float,
     assistant_action_at: float,
-) -> list[dict]:
+) -> List[Dict]:
     """Build a synthetic conversation history with a confirmation text.
 
     Uses the real gateway's "timestamp" field (epoch seconds, as set in
@@ -133,6 +132,6 @@ def test_redaction_preserves_role_alternation():
     assert "EXPIRED" in redacted["content"]
     # No two consecutive same-role messages anywhere.
     roles = [m["role"] for m in cleaned]
-    assert all(a != b for a, b in itertools.pairwise(roles)), roles
+    assert all(a != b for a, b in zip(roles, roles[1:])), roles
     # Original history object is not mutated.
     assert history[2]["content"] == "confirm forced restart"

@@ -18,13 +18,13 @@ from agent.usage_pricing import (
     _lookup_official_docs_pricing,
     resolve_billing_route,
 )
-from hermes_cli.model_switch import _model_sort_key
+from models import model_alias_sort_key
 
 
 class TestGpt56SortInvariants:
     def test_sol_outranks_terra_and_luna(self):
         models = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
-        models.sort(key=lambda m: _model_sort_key(m, "gpt"))
+        models.sort(key=lambda m: model_alias_sort_key(m, "gpt"))
         assert models[0] == "gpt-5.6-sol"
 
 
@@ -32,7 +32,7 @@ class TestGpt56SortInvariants:
         # "-pro" high-effort variants parse as suffix "sol-pro" (rank 1), so
         # `/model gpt` defaults to base Sol rather than the high-effort mode.
         models = ["gpt-5.6-sol-pro", "gpt-5.6-sol"]
-        models.sort(key=lambda m: _model_sort_key(m, "gpt"))
+        models.sort(key=lambda m: model_alias_sort_key(m, "gpt"))
         assert models[0] == "gpt-5.6-sol"
 
 

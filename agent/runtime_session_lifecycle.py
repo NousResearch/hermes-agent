@@ -66,17 +66,6 @@ class RuntimeSessionLifecycleMixin:
         self._session(session_id)
         return self._apply('session.api_content', {'content': content, 'api_content': api_content})['value']
 
-    # The turn prologue's row-addressed backfills (agent/turn_context.py) for a user row another
-    # writer materialized first (in-place preflight compaction, an early flush, a submit-time row).
-    def set_message_api_content(self, session_id, row_id, content, api_content):
-        self._session(session_id)
-        return self._apply('session.message_api_content',
-                           {'row_id': row_id, 'content': content, 'api_content': api_content})['value']
-
-    def set_user_message_content(self, session_id, row_id, content):
-        self._session(session_id)
-        return self._apply('session.user_content', {'row_id': row_id, 'content': content})['value']
-
     def end_session(self, session_id, end_reason):
         self._session(session_id)
         self._apply('session.end', {'end_reason': end_reason})

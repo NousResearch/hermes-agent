@@ -147,17 +147,15 @@ def test_owner_from_another_home_or_malformed_id_is_refused_before_admission(tmp
     assert authority.calls == []
 
 
-def test_receipt_read_retains_the_immutable_author_without_replaying_admission(tmp_path, monkeypatch):
-    """The owner-published local projection keeps the author; polling never replays admission."""
+def test_receipt_read_forwards_the_immutable_author(tmp_path, monkeypatch):
+    """F10: an authored admission is re-read with its stored author, so the authority sees the same payload."""
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
     delivery_id = "d" * 32
     author = {"kind": "user", "id": "u-1", "display": "Ann"}
     queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id, author=author)
-    polled = mailbox.read_delivery_result(tmp_path, delivery_id)
-    assert all(polled[key] == value for key, value in queued.items())
-    assert polled['author'] == author
-    assert [params.get("author") for _home, params in authority.calls] == [author]
+    assert mailbox.read_delivery_result(tmp_path, delivery_id) == queued
+    assert [params.get("author") for _home, params in authority.calls] == [author, author]
 
 
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
@@ -240,34 +238,3 @@ def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
     assert bad.read_text(encoding="utf-8") == '"oops"'
-
-
-def test_receipt_wait_polls_the_local_receipt_and_outlives_an_unreachable_owner(tmp_path, monkeypatch):
-    """A sender's wait reads the receipt file the owner republishes; it never dials the authority
-    (one fresh websocket per 0.5 s tick for up to 30 min) and an owner restart mid-wait is just a
-    longer pending stretch, not an exception that abandons the reply."""
-    import threading
-
-    dials = []
-
-    def unreachable(home, params):
-        dials.append(params["id"])
-        raise ValueError("profile authority is not ready")
-
-    monkeypatch.setattr(mailbox, "authority_delivery", unreachable)
-    monkeypatch.setattr(mailbox, "_POLL_SECONDS", 0.01)
-    key = "f" * 32
-    admitted = dict(delivery_id=key, profile_home=str(tmp_path.resolve()), session_id="bot", principal_id="owner",
-                    message="hello", admission_id="adm-1", status="canonical")
-    with mailbox._locked(tmp_path) as root:
-        mailbox._write(root / f"{key}.json", admitted)
-    pending = mailbox.await_delivery(tmp_path, key, 0.05)
-    assert pending["status"] == "queued", pending  # admitted, outcome not yet published
-
-    def publish():
-        with mailbox._locked(tmp_path) as root:
-            mailbox._write(root / f"{key}.json", dict(admitted, status="settled", reply="PONG"))
-    threading.Timer(0.1, publish).start()
-    settled = mailbox.await_delivery(tmp_path, key, 5)
-    assert (settled["status"], settled["reply"]) == ("settled", "PONG")
-    assert dials == []

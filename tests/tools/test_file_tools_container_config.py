@@ -1,7 +1,7 @@
 """Tests for docker container_config key propagation in file_tools."""
 
 from unittest.mock import patch, MagicMock
-from tools import file_tools
+import tools.file_tools as file_tools
 
 
 def _make_env_config(**overrides):

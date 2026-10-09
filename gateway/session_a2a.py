@@ -47,25 +47,15 @@ def forward_author(policy):
 
 
 def storage_source(db, source, session_id, fallback):
-    """Retain the owner's creation label when its LOCAL transport refreshes peer metadata."""
+    """Retain the owner's native label when its transport refreshes peer metadata."""
     from gateway.config import Platform
-    if source.platform != Platform.LOCAL:
+    if source.platform != Platform.LOCAL or not str(source.chat_id).startswith('local-'):
         return fallback
-    if not str(source.chat_id).startswith('local-'):
-        # An adopted pre-authority row keeps its historical id as the route (session_local_migration).
-        from hermes_state_local_migration import LEGACY_PREFIX
-        with db._read_ctx() as conn:
-            if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + str(source.chat_id),)).fetchone() is None:
-                return fallback
     from hermes_state_local import local_receipt
     receipt = local_receipt(db, source.chat_id)
     if session_id not in receipt.get('lineage', [receipt['session_id']]):
         raise RuntimeStoreError('admission_conflict')
-    # Producer labels (a2a, cron, kanban, bot_room, ``--source tool``, finite ``oneshot`` runs) survive the
-    # refresh: pickers filter on them (kanban/tool/oneshot hidden, cron in its own section). Interactive
-    # surfaces keep the transport's ``local``, outside the state-owned stale-open sweeps keyed on cli/tui/acp.
-    label = receipt['policy']['source']
-    return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label
+    return 'a2a' if receipt['policy']['source'] == 'a2a' else fallback
 
 
 async def forward(connection, params):
@@ -120,8 +110,7 @@ async def forward(connection, params):
 
 async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout):
     """Transport-only caller; a timeout never cancels or re-identifies accepted work."""
-    from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
-        _session_ticket, gateway_ws_target)
+    from hermes_cli.gateway_client import GatewayClient, GatewayClientError, _session_ticket
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
     from websockets.asyncio.client import connect
     home = await asyncio.to_thread(Path(home).resolve)
@@ -130,37 +119,24 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
         if ready.state != 'ready' or ready.endpoint is None:
             raise GatewayClientError(f'gateway_{ready.state}:{ready.reason_code or "not_ready"}')
         ticket = await asyncio.to_thread(_session_ticket, home, ready.endpoint)
-        url, protocols = gateway_ws_target(ready.endpoint, ticket)
+        url = ready.endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
+        protocols = ['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket]
         # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
         async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
                            proxy=None) as ws:
-            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
+            if ws.subprotocol != protocols[0]:
                 raise GatewayClientError('gateway_protocol_mismatch')
             async with GatewayClient(ws) as client:
                 params = dict(agent=agent, tenant=tenant, peer=peer, context_id=context_id, input_id=input_id, text=text)
-                backoff = .25
                 while True:
                     receipt = await client.rpc('a2a.forward', **params)
                     if receipt['status'] == 'unknown':
                         raise GatewayClientError('unknown_execution')
                     if receipt['status'] == 'terminal':
                         return receipt
-                    # The forward subscribed this socket to the session: wait for the admission's
-                    # completion frame, re-reading the exact durable receipt on a backed-off
-                    # safety tick (a frame lost to a replay gap) instead of a fixed 100 ms poll.
-                    try:
-                        async with asyncio.timeout(backoff):
-                            await _completion(client, receipt['admission_id'])
-                    except TimeoutError:
-                        backoff = min(backoff * 2, 5.0)
-
-
-async def _completion(client, admission_id):
-    """Consume projections until this admission's completion frame; a transport error raises."""
-    while True:
-        event = await client.events.get()
-        if isinstance(event, Exception):
-            raise event
-        frame = event.get('params') or {}
-        if frame.get('type') == 'message.complete' and (frame.get('payload') or {}).get('admission_id') == admission_id:
-            return
+                    # Consume projections while polling the exact durable input receipt.
+                    while not client.events.empty():
+                        event = client.events.get_nowait()
+                        if isinstance(event, Exception):
+                            raise event
+                    await asyncio.sleep(.1)

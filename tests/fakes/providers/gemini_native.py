@@ -38,7 +38,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
-import itertools
 
 GEMINI_HOST = "generativelanguage.googleapis.com"
 MODEL_ID = "gemini-3-flash-preview"
@@ -343,7 +342,7 @@ def validate_generate_request(body: Any, version: str, model: str, issued: set[s
             raise InvalidArgument(f"* GenerateContentRequest.contents[{ci}].parts: contents.parts must not be empty.")
         norm.append({"role": role, "parts": [_validate_part(p, f"contents[{ci}].parts[{pi}]")
                                               for pi, p in enumerate(parts)]})
-    for a, b in itertools.pairwise(norm):
+    for a, b in zip(norm, norm[1:]):
         if a["role"] == b["role"]:
             raise InvalidArgument("Please ensure that multiturn requests alternate between user and model.")
     if norm[-1]["role"] != "user":
@@ -463,7 +462,7 @@ class GeminiFake:
         self._thread.start()
         return self
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(self, *exc: Any) -> None:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=10)
@@ -588,10 +587,10 @@ class GeminiFake:
             protocol_version = "HTTP/1.1"
             tunneled = False
 
-            def log_message(self, format: str, *args: Any) -> None:
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - base signature
                 return
 
-            def do_CONNECT(self) -> None:
+            def do_CONNECT(self) -> None:  # noqa: N802 - http.server naming
                 host = self.path.split(":", 1)[0].lower()
                 if self.tunneled or host != GEMINI_HOST:
                     with fake._lock:
@@ -622,12 +621,12 @@ class GeminiFake:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            def do_GET(self) -> None:
+            def do_GET(self) -> None:  # noqa: N802
                 if not self.tunneled:
                     return self._refuse_plain()
                 fake._handle(self, "GET")
 
-            def do_POST(self) -> None:
+            def do_POST(self) -> None:  # noqa: N802
                 if not self.tunneled:
                     return self._refuse_plain()
                 fake._handle(self, "POST")

@@ -18,7 +18,7 @@ import logging
 
 import pytest
 
-from tools import approval
+import tools.approval as approval
 
 
 @pytest.fixture

@@ -42,26 +42,3 @@ def test_terminal_failure_and_cancel_match_result_and_polling(api, owner, outcom
     assert saved.get('failed' if expected == 'failed' else 'interrupted') is True
     assert settled['outcome'] == ('interrupted' if expected == 'cancelled' else expected)
     assert run_projection(api, 'run')['status'] == expected
-
-
-@pytest.mark.parametrize('result', [
-    {'final_response': 'half', 'partial': True},
-    {'final_response': 'budget', 'completed': False},
-])
-def test_polling_and_run_sse_share_one_terminal_mapping(api, owner, result):
-    """An unfinished turn settles with outcome `completed`; GET /v1/runs/{id} must report the
-    same status the run SSE's ``terminal_run_status`` emits for that receipt, not `completed`."""
-    from gateway.platforms.api_server_authority_runs import run_projection
-    from gateway.platforms.api_server_runs import terminal_run_status
-    from gateway.session_api_turn import admit_api_turn
-    from gateway.session_results import admission_result, finish_result
-    from hermes_state_runtime import claim_session_input
-    _, ref, _ = admit_api_turn(api, session_id='unfinished', active_run_id='run_unfinished',
-                               user_message='x', conversation_history=[])
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
-    settled, _ = finish_result(owner.db, epoch=owner.epoch, row=row, outcome='completed',
-                               response=result['final_response'], result={'result': dict(result), 'usage': {}})
-    assert settled['outcome'] == 'completed'
-    sse_status = terminal_run_status(admission_result(owner.db, row['admission_id'])['result'])[0]
-    assert sse_status == 'failed'
-    assert run_projection(api, 'run_unfinished')['status'] == sse_status

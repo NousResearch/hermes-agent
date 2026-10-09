@@ -37,7 +37,7 @@ def read_streaming_error_body(
     stalls and oversize bodies yield best-effort partial text (or ""), so a read error can't mask the
     original failure.
     """
-    chunks: list[bytes] = []
+    chunks: List[bytes] = []
     state = {"truncated": False}
     done = threading.Event()
 
@@ -55,7 +55,7 @@ def read_streaming_error_body(
                     break
                 chunks.append(chunk)
                 total += len(chunk)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - error path must not raise
             logger.debug("bounded error-body read failed: %s", exc)
         finally:
             done.set()
@@ -69,7 +69,7 @@ def read_streaming_error_body(
     # Closing cancels any in-flight socket read so the worker unwinds. No join (daemon, may be blocked in C).
     try:
         response.close()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     if state["truncated"]:

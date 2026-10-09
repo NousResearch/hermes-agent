@@ -1167,7 +1167,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
-        from hermes_cli.kanban_owner_recovery import bound_interpreter_gone, managed_run_exit_code, owner_reclaim_paused
+        from hermes_cli.kanban_owner_recovery import bound_interpreter_gone, owner_reclaim_paused
         for row in rows:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
@@ -1185,8 +1185,14 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
-            exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
+            # Managed interpreters are children of the authority, not this dispatcher.
+            # Their exact-run result survives a dispatcher restart and cannot be reaped here.
+            run = conn.execute(
+                "SELECT e.payload FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id "
+                "WHERE t.id=? AND e.task_id=t.id AND e.kind='worker_result' ORDER BY e.id DESC LIMIT 1",
+                (row["id"],)).fetchone()
+            result = _kb._json_dict(run["payload"]) if run else {}
+            exit_code = result.get("exit_code") if result.get("claim_lock") == row["claim_lock"] and result.get("pid") == pid else None
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -1369,7 +1375,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int | None = None,
+    failure_limit: int = None,
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
@@ -2926,7 +2932,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
@@ -3010,6 +3016,6 @@ def run_daemon(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
-from hermes_cli import kanban_db_connect as _kbc
-from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
+from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402

@@ -16,7 +16,7 @@ plugins/model-providers/
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` scans this directory (and
+`providers/discovery.py` scans this directory (and
 `$HERMES_HOME/plugins/model-providers/`) the first time anything calls
 `get_provider_profile()` or `list_providers()`. Each `__init__.py` is
 imported and expected to call `providers.register_provider(profile)`.
@@ -39,13 +39,17 @@ bundled plugins of the same name — last-writer-wins in
        display_name="Your Provider",
        description="One-line description shown in the setup picker",
        signup_url="https://your-provider.example.com/keys",
-       env_vars=("YOUR_PROVIDER_API_KEY", "YOUR_PROVIDER_BASE_URL"),
+       env_vars=("YOUR_PROVIDER_API_KEY",),
        base_url="https://api.your-provider.example.com/v1",
+       base_url_env_var="YOUR_PROVIDER_BASE_URL",
        default_aux_model="your-cheap-model",
    )
 
    register_provider(my_provider)
    ```
+
+   `env_vars` contains credential variables only. Endpoint overrides are declared
+   separately with `base_url_env_var`; consumers do not infer roles from variable names.
 
 2. Create `plugins/model-providers/<your_provider>/plugin.yaml`:
 

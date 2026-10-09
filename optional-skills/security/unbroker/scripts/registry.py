@@ -89,7 +89,7 @@ def _norm(s: str) -> str:
 
 
 def slug(name: str, website: str = "") -> str:
-    base = re.sub(r"\.(com|org|net|io|ai|inc|co|us|info|llc)\b", "", (name or "").strip(), flags=re.IGNORECASE)
+    base = re.sub(r"\.(com|org|net|io|ai|inc|co|us|info|llc)\b", "", (name or "").strip(), flags=re.I)
     s = re.sub(r"[^a-z0-9]+", "", base.lower())
     if s:
         return s
@@ -214,7 +214,7 @@ MIN_EXPECTED_CA = 100  # CA registry has ~500+; far fewer => wrong/empty file, w
 
 def fetch(url: str = DEFAULT_URL, timeout: int = 60) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         return resp.read().decode("utf-8", errors="replace")
 
 
@@ -224,7 +224,7 @@ def _fetch_ca_latest() -> tuple[str, list[dict]]:
     for url in ca_candidate_urls():
         try:
             recs = parse(fetch(url), jurisdiction="US-CA", has_drop=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a missing year 404s; fall through to older years
             continue
         if recs:
             return url, recs
@@ -269,7 +269,7 @@ def refresh_all(cache_path: Path, fetched: dict[str, str] | None = None) -> dict
                 used_url, recs = _fetch_ca_latest()   # newest-year-first with fallback
             else:
                 recs = parse(fetch(src["url"]), jurisdiction=src["jurisdiction"], has_drop=src["has_drop"])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - one source failing must not sink the rest
             per_source[key] = {"jurisdiction": src["jurisdiction"], "format": "csv", "error": str(exc)}
             continue
         added = 0

@@ -2823,7 +2823,6 @@ export const ruOverrides = {
     queueDelete: 'Удалить',
     queueLostNote: 'Ход потерян при перезапуске',
     restoreImageDraft: 'Восстановить черновик с изображением',
-    queueCancelFailed: 'Не удалось удалить ход из очереди',
     queueLostDiscard: 'Отбросить',
     queueLostDiscardTip:
       'Шлюз перезапустился посреди хода и не может его завершить. Отбросьте его, чтобы очередь продолжилась.',

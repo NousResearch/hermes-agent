@@ -70,8 +70,7 @@ async def worker_request(connection, ref, params, *, operation):
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
     authority = connection.authority
-    if operation == 'register':
-        authority._require_admission_open()
+    authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
         authority.authorize(connection.actor, ref, 'session:control')
@@ -85,9 +84,5 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)
-    result = await asyncio.to_thread(mutate_worker_execution, authority.db, epoch=params['epoch'],
+    return await asyncio.to_thread(mutate_worker_execution, authority.db, epoch=params['epoch'],
         **scope, sequence=params['sequence'], operation=params['operation'], payload=params['payload'])
-    if params['operation'] == 'execution.finish':
-        # Queued input parked behind this worker; nothing else would restart its FIFO.
-        authority.wake_after_worker(params['session_id'])
-    return result

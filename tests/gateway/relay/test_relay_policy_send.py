@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway import relay
+import gateway.relay as relay
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def _clean_env(monkeypatch):
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
 
 
 # --------------------------------------------------------------------------

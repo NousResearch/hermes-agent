@@ -1,11 +1,18 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
-import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
+import { configureWindowsGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
-configurePythonGatewayTicketClient(createGatewayTicketResolver(
-  async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
+configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
+  const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
+
+  if (backend.kind !== 'python' || backend.shell) {
+    throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
+  }
+
+  return mintGatewayTicketWithPython(backend, resolveHermesCwd(), endpoint, purpose)
+})
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -218,7 +225,6 @@ import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
-import { registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -632,7 +638,7 @@ import {
   registerUpdateRelaunch,
   type RelaunchRegistration
 } from './updater/relaunch'
-import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
+import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -3631,7 +3637,12 @@ function createNativePackagedStrategy(
           // script is staged to a temp dir and resolved absolutely so
           // nothing inherited from the package holds the swap open.
           relaunch: () =>
-            startUpdateRelaunchWaiter(PRODUCT_IDENTITY.msixAppIdWithOrg, process.resourcesPath, rememberLog)
+            startRelaunchWaiter({
+              processId: process.pid,
+              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
+              identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
+              scriptPath: relaunchWaiterScript(process.resourcesPath)
+            })
         })
     }
 
@@ -3657,12 +3668,13 @@ function createNativePackagedStrategy(
       registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
         registerUpdateRelaunch(app, fromVersion, {
           relaunch: () =>
-            startUpdateRelaunchWaiter(
-              PRODUCT_IDENTITY.storeMsix!.identityName,
-              process.resourcesPath,
-              rememberLog,
-              1860
-            )
+            startRelaunchWaiter({
+              processId: process.pid,
+              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
+              identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
+              scriptPath: relaunchWaiterScript(process.resourcesPath),
+              timeoutSeconds: 1860
+            })
         })
     })
   }
@@ -4395,8 +4407,6 @@ function reapOrphanedBackendsOnce() {
 // PM generations can retain live readers. Gateway draining/restart belongs to
 // `hermes update`; neither venv scans nor a second fleet stop belong here.
 async function stopBackendsForUpdate(): Promise<void> {
-  closeGatewayTicketBridges()
-
   if (IS_WINDOWS) {
     await Promise.all([teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')), stopAllPoolBackends()])
   }
@@ -4405,8 +4415,6 @@ async function stopBackendsForUpdate(): Promise<void> {
 // Uninstall still deletes the installation and its historical venv. Unlike
 // generation updates, deletion must wait for those old files to be released.
 async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ unlocked: boolean }> {
-  closeGatewayTicketBridges()
-
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -16450,23 +16458,29 @@ async function handleHermesApiRequest(request) {
 
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    // Main's shared transport for every descriptor: configured headers, a native
-    // gateway grant per attempt, and the OAuth bearer→cookie fallback that
-    // survives refresh failures and login races (requestWithOauthFallback).
-    const send = current => fetchJsonForBackend(current, apiRoute.requestPath, {
-      method: request?.method,
-      body: request?.body,
-      upload: request?.upload,
-      timeoutMs
-    })
-
-    response = connection.gatewayEndpoint
-      ? await redialLocalGateway({
-          ensure: () => ensureBackend(routeProfile),
-          forget: () => forgetLocalGatewayDescriptor(routeProfile),
-          use: send
+    if (connection.gatewayEndpoint) {
+      response = await redialLocalGateway({
+        ensure: () => ensureBackend(routeProfile),
+        forget: () => forgetLocalGatewayDescriptor(routeProfile),
+        use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
+          method: request?.method,
+          body: request?.body,
+          upload: request?.upload,
+          timeoutMs,
+          gatewayDescriptor: current
         })
-      : await send(connection)
+      })
+    } else {
+      // Remote URL / cloud / SSH: main's shared transport — configured remote
+      // headers, and the OAuth bearer→cookie fallback that survives refresh
+      // failures and login races (requestWithOauthFallback).
+      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
+        method: request?.method,
+        body: request?.body,
+        upload: request?.upload,
+        timeoutMs
+      })
+    }
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.
@@ -17035,7 +17049,6 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
-  closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
@@ -18085,10 +18098,21 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
-  registerDeepLinkProtocolWith({
-    app, protocol: HERMES_PROTOCOL, env: process.env, defaultApp: Boolean(process.defaultApp),
-    argv: process.argv, execPath: process.execPath, resolve: entry => path.resolve(entry), log: rememberLog
-  })
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      // Dev: register with the electron exec path + entry script so the OS can
+      // relaunch us with the URL. argv[1] is usually "." when launched via
+      // `electron .` from apps/desktop — resolve against cwd.
+      const entry = path.resolve(process.argv[1])
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [entry])
+    } else {
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+    }
+
+    rememberLog(`[deeplink] registered ${HERMES_PROTOCOL}:// handler`)
+  } catch (err) {
+    rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
+  }
 }
 
 // macOS: register the deep link before the lock. Launch Services relaunches

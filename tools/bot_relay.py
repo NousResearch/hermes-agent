@@ -335,7 +335,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
-    out: list[tuple[tuple[float, str], dict]] = []
+    out: list[dict] = []
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
@@ -345,21 +345,18 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
                 path.unlink()
             continue
         claimed = base / CLAIMED_DIR / path.name
-        order = _queued_at(path)
         with contextlib.suppress(OSError, ValueError):
-            os.replace(path, claimed)  # atomic claim; the rename keeps the enqueue mtime
+            os.replace(path, claimed)  # atomic claim
             envelope = json.loads(claimed.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
-            out.append((order, envelope))
-    seen = {row["id"] for _order, row in out}
-    # One enqueue-ordered list: a claimed-but-unanswered DM (Desktop reconnected before its reply)
-    # is OLDER than mail queued since, so appending replays after fresh rows reversed them.
+            out.append(envelope)
+    seen = {row["id"] for row in out}
     out.extend(_replay_unanswered(root, base, seen, now))
-    return [envelope for _order, envelope in sorted(out, key=lambda item: item[0])]
+    return out
 
 
-def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> list[tuple[tuple[float, str], dict]]:
+def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> list[dict]:
     """``claimed/`` canonical envelopes whose reply has not landed yet, replayed on EVERY drain.
 
     A drained envelope is not "delivered": its stable id is handed out again until the target's
@@ -369,10 +366,9 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
     authority, which admits one turn per id and answers a retry with the existing record — never a
     second turn. Once ``created_at + REPLY_WAIT_SECONDS`` passes with no reply the waiter is gone
     (or about to be): a ``delivery_timeout`` reply is written so it learns, and the envelope is
-    never handed out again. Each envelope comes back with its ``_queued_at`` enqueue key so the
-    drain can merge it with fresh outbox rows in send order.
+    never handed out again.
     """
-    out: list[tuple[tuple[float, str], dict]] = []
+    out: list[dict] = []
     for path in sorted((base / CLAIMED_DIR).glob("*.json"), key=_queued_at):
         if (base / REPLIES_DIR / path.name).exists():
             continue
@@ -380,38 +376,18 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
             envelope = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
-            if envelope.get("id") in seen:
+            if envelope.get("canonical_delivery_v1") is not True or envelope.get("id") in seen:
                 continue
             env_id = str(envelope.get("id") or "")
             label = f"@{envelope.get('target_handle') or '?'} on {envelope.get('target_connection') or '?'}"
-            if envelope.get("canonical_delivery_v1") is not True:
-                _settle_pre_upgrade_claim(root, path, env_id, label, now)
-                continue
             created = float(envelope.get("created_at") or path.stat().st_mtime)
             if now - created > REPLY_WAIT_SECONDS:
                 write_reply(root, env_id, reason="delivery_timeout", error=(
                     f"no reply from {label} within {REPLY_WAIT_SECONDS}s of sending — the Desktop picked "
                     "the message up but never reported a delivery. It will not be retried; resend if it matters."))
                 continue
-            out.append((_queued_at(path), envelope))
+            out.append(envelope)
     return out
-
-
-def _settle_pre_upgrade_claim(root: Path | str, path: Path, env_id: str, label: str, now: float) -> None:
-    """A ``claimed/`` envelope from before canonical delivery (no ``canonical_delivery_v1``) is never
-    replayed: its old lane ran a CLI turn the authority has no record of, so re-admitting the id could
-    run the DM twice. Left alone, though, its sender's waiter watched a reply that never came. Once the
-    old drain's own re-offer point passes (``REOFFER_AFTER_SECONDS`` after its claim — the claim mtime
-    — by which time a live delivery has posted the Desktop's timeout reply) the outcome is settled as
-    ``unknown``: the waiter resolves, the envelope is never offered again, and nothing auto-resends."""
-    from tools.bot_failure_reasons import UNKNOWN
-
-    if now - path.stat().st_mtime < REOFFER_AFTER_SECONDS:
-        return
-    write_reply(root, env_id, reason=UNKNOWN, error=(
-        f"the message to {label} was picked up before this gateway was upgraded and its delivery was "
-        "never reported — it may or may not have been delivered. It will not be retried; check with "
-        "the recipient before resending."))
 
 
 def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
@@ -625,7 +601,7 @@ class TurnBusyError(RuntimeError):
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{round(waited_seconds)}s without it finishing. "
+                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
                          "The message was NOT delivered; retry shortly.")
 
 

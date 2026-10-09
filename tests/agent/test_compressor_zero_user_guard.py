@@ -30,7 +30,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-import itertools
 
 
 @pytest.fixture()
@@ -123,7 +122,7 @@ class TestCompressAlwaysKeepsAUserTurn:
         with patch.object(c, "_generate_summary", return_value=mocked):
             out = c.compress(messages, current_tokens=90_000)
 
-        for prev, cur in itertools.pairwise(out):
+        for prev, cur in zip(out, out[1:]):
             assert not (
                 prev.get("role") == "user" and cur.get("role") == "user"
             ), "compression introduced consecutive user-role messages"

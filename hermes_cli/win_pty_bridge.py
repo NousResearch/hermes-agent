@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - non-Windows or pywinpty missing
 _log = logging.getLogger(__name__)
 
 
-__all__ = ["PtyUnavailableError", "WinPtyBridge"]
+__all__ = ["WinPtyBridge", "PtyUnavailableError"]
 
 
 # Same clamp ceiling as the POSIX bridge so a broken winsize probe never reaches the resize call.

@@ -8,7 +8,7 @@ import pytest
 
 from pm.store import Store
 
-from pm import paths
+import pm.paths as paths
 
 from tests.pm._range_server import RangeHandler as _Handler, url as _url
 from tests.pm._range_server import dl_server as dl_server

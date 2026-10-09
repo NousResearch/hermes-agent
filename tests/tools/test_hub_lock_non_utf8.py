@@ -57,7 +57,7 @@ def test_clean_utf8_lock_still_read(skills_home):
     """A well-formed UTF-8 lock keeps working unchanged."""
     import tools.skill_usage as mod
 
-    raw = b'{"installed": {"alpha": {}, "beta": {}}}'
+    raw = '{"installed": {"alpha": {}, "beta": {}}}'.encode("utf-8")
     _write_hub_lock(skills_home, raw)
 
     names = mod._read_hub_installed_names()

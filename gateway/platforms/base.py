@@ -816,7 +816,7 @@ _ROOT_CREDENTIAL_PATHS = (
     "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
-def _profile_cache_roots() -> list[Path]:
+def _profile_cache_roots() -> List[Path]:
     """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` (the static safe
     roots cover only the active HERMES_HOME). Enumerated at check time so profiles created after
     startup count and are allowlisted BEFORE the ``/root`` denylist (HERMES_HOME symlinked).
@@ -829,7 +829,7 @@ def _profile_cache_roots() -> list[Path]:
     return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
 
 
-def _profile_dirs() -> list[Path]:
+def _profile_dirs() -> List[Path]:
     """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
         return [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
@@ -837,7 +837,7 @@ def _profile_dirs() -> list[Path]:
         return []
 
 
-def _credential_home_roots() -> list[Path]:
+def _credential_home_roots() -> List[Path]:
     """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
     (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
     and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
@@ -851,7 +851,7 @@ def _kanban_root() -> Path:
     return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
 
 
-def _kanban_board_dirs() -> list[Path]:
+def _kanban_board_dirs() -> List[Path]:
     """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
     board whatever its name; the allow side filters further)."""
     with contextlib.suppress(OSError):
@@ -859,7 +859,7 @@ def _kanban_board_dirs() -> list[Path]:
     return []
 
 
-def _kanban_attachment_roots() -> list[Path]:
+def _kanban_attachment_roots() -> List[Path]:
     """Return durable Kanban attachment roots without importing kanban_db."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
@@ -871,7 +871,7 @@ def _kanban_attachment_roots() -> list[Path]:
     return roots
 
 
-def _media_delivery_allowed_roots() -> list[Path]:
+def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     from gateway.media_policy import media_delivery_allow_dirs
     operator_roots = (
@@ -892,13 +892,13 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
-def _kanban_board_db_paths() -> list[Path]:
+def _kanban_board_db_paths() -> List[Path]:
     """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
     ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
     return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
 
 
-def _media_delivery_denied_paths() -> list[Path]:
+def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
@@ -961,7 +961,7 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
+def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
     raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -970,7 +970,7 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
         parsed = _json.loads(raw) if raw else []
     except Exception:
         return []
-    mounts: list[tuple[Path, Path]] = []
+    mounts: List[Tuple[Path, Path]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
         # Prefer the first ':/' so absolute container paths are unambiguous.
@@ -988,7 +988,7 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
     return mounts
 
 
-def _docker_sandbox_dir_candidates(session_key: str = "") -> list[str]:
+def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     """Candidate host sandbox dir names for the delivering session, best first. Mirrors
     ``_resolve_container_task_id`` (tools/terminal_tool.py): containers are PROFILE-scoped
     (``default``, else ``profile:<name>``); legacy ``session:<key>`` sandboxes stay as a fallback.
@@ -1007,7 +1007,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> list[str]:
         profile = get_active_profile_name() or "default"
     except Exception:
         profile = "default"
-    candidates: list[str] = []
+    candidates: List[str] = []
     # Explicit trusted-profiles opt-in: one shared container identity.
     if shared := _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
@@ -1031,7 +1031,7 @@ def _docker_persistent_active() -> bool:
     return _docker_env_active() and _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() in _TRUTHY
 
 
-def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> list[Path]:
+def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> List[Path]:
     """Existing ``<sandbox>/docker/<candidate>/<leaf>`` host dirs in candidate order;
     the translator tries each until the file resolves. Empty unless Docker + persistent."""
     if not _docker_persistent_active():
@@ -1045,7 +1045,7 @@ def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> list[Path]:
         return []
 
 
-def _default_docker_workspace_host_roots(session_key: str = "") -> list[Path]:
+def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     """Existing host candidates for ``/workspace``: the explicit cwd mount
     (``TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE``) if set, else the persistent sandbox layouts."""
     if not _docker_persistent_active():
@@ -1060,7 +1060,7 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> list[Path]:
     return _docker_persistent_sandbox_roots(session_key, "workspace")
 
 
-def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
+def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
     """(host, container) pairs for the auto-mounted Hermes cache dirs (``/root/.hermes/...`` in
     MEDIA tags); longer prefixes than the ``/root`` home mount, so longest-prefix match wins."""
     if not _docker_env_active():
@@ -1177,7 +1177,7 @@ def _log_safe_path(path: str) -> str:
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str,
-                             dropped: Optional[list[dict]] = None) -> Optional[str]:
+                             dropped: Optional[List[dict]] = None) -> Optional[str]:
     """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
     host cannot see is retried against the active remote sandbox (ssh/modal/...; #466). When
     ``dropped`` is a list, a rejected path is appended as ``{"path", "reason"}`` so the caller can
@@ -1248,7 +1248,7 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 # images (inline), video (inline where supported), audio (voice/audio), documents/spreadsheets/presentations
 # (send_document), archives, and rendered web output. The dispatch partition (image vs video vs document)
 # lives in ``gateway/run.py``. ---------------------------------------------------------------------------
-MEDIA_DELIVERY_EXTS: tuple[str, ...] = (
+MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",  # images (embed inline)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",  # video (embed inline where supported)
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",  # audio (voice/audio where supported)
@@ -1324,7 +1324,7 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[tuple[str, int]]:
+def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
     captured path first, then extended across single spaces (max 8 tokens, never past a newline
     or the next ``MEDIA:``).
@@ -1528,7 +1528,7 @@ class CachedMedia:
 
 # MIME -> extension reverse lookup; FIRST match across image, video, document tables wins
 # (built in reverse so the earliest extension is the one that survives).
-_MIME_TO_EXT: dict[str, str] = {
+_MIME_TO_EXT: Dict[str, str] = {
     mime: ext
     for table in (SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES)
     for ext, mime in reversed(table.items())}
@@ -1650,14 +1650,14 @@ class ExecApprovalPrompt:
     chat_id: str
     session_key: str
     text: str
-    actions: list[tuple[str, str, str]]
+    actions: List[Tuple[str, str, str]]
     command: str
     description: str
     smart_denied: bool
-    metadata: Optional[dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
     @property
-    def choices(self) -> list[str]:
+    def choices(self) -> List[str]:
         return [choice for _, choice, _ in self.actions]
 
 
@@ -1714,7 +1714,7 @@ def _any_in(blob: str, *needles: str) -> bool:
 
 
 # Ordered (kind, predicate) table for classify_send_error — first match wins.
-_SEND_ERROR_CLASSIFIERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
+_SEND_ERROR_CLASSIFIERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
     ("too_long", lambda b: _any_in(b, "message_too_long", "too long", "message is too long")),
     ("bad_format", lambda b: (
         _any_in(b, "can't parse entities", "cant parse entities", "can't find end", "unsupported start tag")
@@ -1762,7 +1762,7 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
+def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
@@ -1775,10 +1775,10 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
 
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
+        def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
             flags = list(getattr(msg, "media_text_inlined", []) or [])
             return flags + [None] * (len(msg.media_urls) - len(flags))
-        incoming_inline_flags: list[Optional[bool]] = []
+        incoming_inline_flags: List[Optional[bool]] = []
         if incoming_has_media:
             existing.media_text_inlined = _padded_inline_flags(existing)
             incoming_inline_flags = _padded_inline_flags(event)
@@ -1857,7 +1857,7 @@ def resolve_channel_skills(
     return None
 
 
-def _split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
+def _split_post_delivery_entry(entry: Any) -> Tuple[Optional[int], Any]:
     """``(generation, callback)`` from a post-delivery slot; legacy bare callbacks have no
     generation."""
     return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
@@ -1930,9 +1930,9 @@ class BasePlatformAdapter(ABC):
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
         self._no_message_handler_logged: bool = False
-        self._reaction_handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None
+        self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
-        self._platform_event_handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = None
+        self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
         # Rewrites ``event.source.thread_id`` before session keying (Telegram DM topics).
         self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running, self._fatal_error_retryable = False, True
@@ -1948,14 +1948,14 @@ class BasePlatformAdapter(ABC):
         self._platform_lock_takeover_allowed = self._platform_lock_takeover_attempted = False
         # Per-session interrupt Event + owner Task: without the owner map an old task's finally
         # could drop a newer guard.
-        self._active_sessions: dict[str, asyncio.Event] = {}
-        self._pending_messages: dict[str, MessageEvent] = {}
+        self._active_sessions: Dict[str, asyncio.Event] = {}
+        self._pending_messages: Dict[str, MessageEvent] = {}
         # Consecutive in-band drains per session of the just-dispatched event bouncing straight
         # back into the queue (session busy elsewhere); drives the drain back-off (#123229).
-        self._requeue_counts: dict[str, int] = {}
-        self._pending_text_batches: dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: dict[str, asyncio.Task] = {}
-        self._session_tasks: dict[str, asyncio.Task] = {}
+        self._requeue_counts: Dict[str, int] = {}
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._session_tasks: Dict[str, asyncio.Task] = {}
         # Busy-text policy is a per-profile config decision the runner installs after construction
         # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
         # profile's values into every profile's adapter under multiplexing (#116893). Defaults here
@@ -1971,7 +1971,7 @@ class BasePlatformAdapter(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
         # callback)`` so a stale run can't clear a fresher run's callback.
-        self._post_delivery_callbacks: dict[str, Any] = {}
+        self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
@@ -1992,7 +1992,7 @@ class BasePlatformAdapter(ABC):
         # Chats whose typing indicator is paused (approval waits); _keep_typing skips them.
         self._typing_paused: set = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
-        self._status_text: dict[str, str] = {}
+        self._status_text: Dict[str, str] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2030,14 +2030,14 @@ class BasePlatformAdapter(ABC):
         return False
 
     def supports_draft_streaming(
-        self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+        self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         chat_id: Optional[str] = None) -> bool:
         """Whether native streaming-draft updates (``send_draft``) work for this chat type;
         ``chat_id`` lets the relay adapter answer per negotiated capabilities. Consumers
         fall back to ``send`` + ``edit_message`` when False or ``send_draft`` raises."""
         return False
 
-    def prefers_fresh_final_streaming(self, content: str, metadata: Optional[dict[str, Any]] = None) -> bool:
+    def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Whether the stream consumer should finalize with a *fresh* final message (best-effort
         deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""
         return False
@@ -2049,7 +2049,7 @@ class BasePlatformAdapter(ABC):
         return None
 
     async def send_draft(self, chat_id: str, draft_id: int, content: str,
-                         metadata: Optional[dict[str, Any]] = None) -> SendResult:
+                         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send or update an animated streaming-draft preview. Reuse one non-zero ``draft_id``
         across a response so the platform animates (different responses need different ids). Drafts
         have no message_id (no edit/reply/delete) — the final answer goes out as a regular ``send``.
@@ -2323,7 +2323,7 @@ class BasePlatformAdapter(ABC):
         self._message_handler = handler
 
     def set_platform_event_handler(
-        self, handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]]) -> None:
+        self, handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]]) -> None:
         """Install the gateway-owned normalized platform-event boundary (stable dicts + internal
         ``SessionSource``); the runner owns authorization and plugin dispatch: no callback = fail
         closed."""
@@ -2358,7 +2358,7 @@ class BasePlatformAdapter(ABC):
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
 
-    def set_reaction_handler(self, handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]]) -> None:
+    def set_reaction_handler(self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]) -> None:
         """Set the handler for platform-native emoji-reaction events: a normalised dict
         (``platform``, ``event_name`` "reaction:added"/"reaction:removed", ``reaction``,
         ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``, ``event_ts``, ``raw_event``)
@@ -2380,7 +2380,7 @@ class BasePlatformAdapter(ABC):
         non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
         if not user_id or self._authorization_check is None:
             return None
-        extra: dict[str, Any] = {}
+        extra: Dict[str, Any] = {}
         if is_bot:
             extra["is_bot"] = True
         if thread_id is not None:
@@ -2695,7 +2695,7 @@ class BasePlatformAdapter(ABC):
 
     @abstractmethod
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send ``content`` (may be markdown) to a chat; returns SendResult with message id."""
 
     # Surfaces needing an explicit finalize edit (DingTalk AI Cards): the consumer never skips it.
@@ -2761,15 +2761,15 @@ class BasePlatformAdapter(ABC):
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @property
-    def _EA_HEADER(self) -> str:
+    def _EA_HEADER(self) -> str:  # noqa: N802 — adapter-override contract name
         return f"⚠️ {ea_header_text()}\n\n"
 
     @property
-    def _EA_REASON_LABEL(self) -> str:
+    def _EA_REASON_LABEL(self) -> str:  # noqa: N802
         return f"{ea_reason_label_text()}: "
 
     @property
-    def _EA_SMART_DENY_LINE(self) -> str:
+    def _EA_SMART_DENY_LINE(self) -> str:  # noqa: N802
         return f"\n\n{ea_smart_deny_line_text()}"
 
     @staticmethod
@@ -2828,14 +2828,14 @@ class BasePlatformAdapter(ABC):
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
-    _EA_ACTION_STYLES: dict[str, str] = {"once": "primary", "deny": "danger"}
+    _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
 
     @property
-    def _EA_ACTION_LABELS(self) -> dict[str, str]:
+    def _EA_ACTION_LABELS(self) -> Dict[str, str]:  # noqa: N802 — adapter-override contract name
         return ea_action_labels()
 
     def _exec_approval_actions(
-            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> list[tuple[str, str, str]]:
+            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
         """``(label, choice, style)`` rows for the approval buttons. A smart deny is an owner
         override for one operation only, so it offers neither the session nor the permanent tier;
         the permanent tier is never offered without the session tier."""
@@ -2855,7 +2855,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
+        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
@@ -2876,7 +2876,7 @@ class BasePlatformAdapter(ABC):
         return SendResult(success=False, error="Not supported")
 
     @staticmethod
-    def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, dict[str, Any]]":
+    def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, Dict[str, Any]]":
         """Shared picker pagination: clamp ``page``, slice ``options`` -> ``(page_options, meta)``
         with ``page``/``total_pages``/``start``/``end``/``total``/``page_info`` (`` (N–M of T)``,
         empty for one page)."""
@@ -2885,13 +2885,13 @@ class BasePlatformAdapter(ABC):
         page = max(0, min(page, total_pages - 1))
         start, end = page * per_page, min(page * per_page + per_page, total)
         page_info = t("gateway.picker.page_info", start=start + 1, end=end, total=total) if total_pages > 1 else ""
-        meta: dict[str, Any] = {"page": page, "total_pages": total_pages, "start": start,
+        meta: Dict[str, Any] = {"page": page, "total_pages": total_pages, "start": start,
                    "end": end, "total": total, "page_info": page_info}
         return options[start:end], meta
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Three-option slash-command confirmation (e.g. ``/reload-mcp``). Button adapters render
         Approve Once / Always Approve / Cancel and MUST resolve via
         ``GatewayRunner._resolve_slash_confirm(confirm_id, "once"|"always"|"cancel")``. Default (not
@@ -2901,7 +2901,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
-        session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Clarify prompt; button-capable adapters SHOULD override. Multiple choice (``choices``):
         one button per choice plus "Other"; callbacks MUST resolve via
         ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
@@ -2931,7 +2931,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_private_notice(
         self, chat_id: str, user_id: Optional[str], content: str, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a notice privately when the platform supports it; default is a normal send."""
         return await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
 
@@ -2963,8 +2963,8 @@ class BasePlatformAdapter(ABC):
         await self.stop_typing(chat_id)
 
     async def send_multiple_images(
-        self, chat_id: str, images: list[tuple[str, str]],
-        metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+        self, chat_id: str, images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
         (Signal). Returns success when at least one image was delivered — the outcome
@@ -3000,14 +3000,14 @@ class BasePlatformAdapter(ABC):
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image natively; default falls back to sending the URL as text."""
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a GIF as a native animation (auto-plays inline); default falls back to
         send_image."""
         return await self.send_image(
@@ -3019,7 +3019,7 @@ class BasePlatformAdapter(ABC):
         return url.lower().split('?')[0].endswith('.gif')
 
     @staticmethod
-    def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
+    def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
         returns ``([(url, alt_text), ...], content with those tags removed)``."""
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
@@ -3047,7 +3047,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send audio as a native voice message (Telegram bubble / Discord attachment).
         Default: friendly failure notice."""
         return await self._send_media_fallback_notice(
@@ -3055,7 +3055,7 @@ class BasePlatformAdapter(ABC):
 
     async def _send_media_fallback_notice(
         self, method: str, kind: str, path: str, chat_id: str, caption: Optional[str],
-        reply_to: Optional[str], metadata: Optional[dict[str, Any]], *, file_name: Optional[str] = None,
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]], *, file_name: Optional[str] = None,
     ) -> SendResult:
         """Shared default for send_voice/send_video/send_document/send_image_file. The local path is
         logged but NEVER echoed into chat (host layout leak); only the caller's ``file_name`` is
@@ -3141,7 +3141,7 @@ class BasePlatformAdapter(ABC):
         return False
 
     async def begin_streaming_tts(
-        self, chat_id: str, audio_format: AudioFormat, metadata: Optional[dict[str, Any]] = None,
+        self, chat_id: str, audio_format: AudioFormat, metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[StreamingTTSHandle]:
         """Open a streaming-audio session; returns an opaque handle for the
         write/finish/abort calls, or ``None`` to decline (whole-file fallback)."""
@@ -3171,21 +3171,21 @@ class BasePlatformAdapter(ABC):
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a video natively (inline playable). Default: friendly failure notice."""
         return await self._send_media_fallback_notice(
             "send_video", "video", video_path, chat_id, caption, reply_to, metadata)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None,
-                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+                            metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively. Default: friendly failure notice."""
         return await self._send_media_fallback_notice(
             "send_document", "file", file_path, chat_id, caption, reply_to, metadata, file_name=file_name)
 
     async def _notify_media_delivery_failure(
         self, chat_id: str, media_path: str, *, is_voice: bool = False,
-        metadata: Optional[dict[str, Any]] = None) -> None:
+        metadata: Optional[Dict[str, Any]] = None) -> None:
         """User-visible notice when a MEDIA attachment upload failed: the tag was
         already stripped from the text, so silence would be a silent drop.
 
@@ -3210,7 +3210,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively (send_image takes a URL). Default: friendly notice."""
         return await self._send_media_fallback_notice(
             "send_image_file", "image", image_path, chat_id, caption, reply_to, metadata)
@@ -3222,14 +3222,14 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "",
-                                    dropped: Optional[list[dict]] = None) -> list[tuple[str, bool]]:
+                                    dropped: Optional[List[dict]] = None) -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
         return [
             (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
             if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths, session_key: str = "") -> list[str]:
+    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
         return [p for p in safe_paths if p]
@@ -3278,7 +3278,7 @@ class BasePlatformAdapter(ABC):
         return _blank_spans(content, spans)
 
     @staticmethod
-    def extract_media(content: str) -> tuple[list[tuple[str, bool]], str]:
+    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """Extract ``MEDIA:<path>`` tags and strip ``[[audio_as_voice]]`` / ``[[as_document]]`` ->
         ``([(path, is_voice), ...], cleaned)``. Both directives are message-global;
         ``[[as_document]]`` (unmodified sendDocument for large images) is detected by dispatch sites
@@ -3328,7 +3328,7 @@ class BasePlatformAdapter(ABC):
         return re.sub(r'\n{3,}', '\n\n', _strip_media_tag_directives(text)).rstrip()
 
     @staticmethod
-    def extract_local_files(content: str) -> tuple[list[str], str]:
+    def extract_local_files(content: str) -> Tuple[List[str], str]:
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
@@ -3547,7 +3547,7 @@ class BasePlatformAdapter(ABC):
         lowered = (error or "").lower()
         return any(pat in lowered for pat in ("timed out", "readtimeout", "writetimeout"))
 
-    def _unwrap_ephemeral(self, response: Any) -> tuple[Optional[str], int]:
+    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a str/None/:class:`EphemeralReply` response into ``(text, ttl)``. ``ttl > 0``
         means schedule ``_schedule_ephemeral_delete`` after a successful send; forced to 0 when the
         adapter doesn't override ``delete_message`` so non-supporting platforms degrade to normal
@@ -4173,11 +4173,11 @@ class BasePlatformAdapter(ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> tuple[list[str], Optional[str]]:
+    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
         post-handler."""
-        paths: list[str] = []
+        paths: List[str] = []
         requested_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
@@ -4208,7 +4208,7 @@ class BasePlatformAdapter(ABC):
 
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: dict[str, Any], record_delivery: Callable) -> bool:
+        metadata: Dict[str, Any], record_delivery: Callable) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
         along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
         caption = None
@@ -4286,7 +4286,7 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: dict[str, Any],
+        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
         record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
@@ -4338,7 +4338,7 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
-        self, event: MessageEvent, images: list, metadata: dict[str, Any], human_delay: float,
+        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
         record_delivery: Callable) -> None:
         """Batch-send images; a failure is logged (never raised) so other attachments still go.
         The batch result feeds ``record_delivery`` so media-only turns report their real
@@ -4353,7 +4353,7 @@ class BasePlatformAdapter(ABC):
         record_delivery(result)
 
     async def send_final_ledgered(
-        self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
     ) -> "tuple[SendResult, BasePlatformAdapter]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
@@ -4385,7 +4385,7 @@ class BasePlatformAdapter(ABC):
             await self.gateway_runner._clear_durable_active_turn(event)
 
     async def _send_final_text(
-        self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any],
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
@@ -4418,7 +4418,7 @@ class BasePlatformAdapter(ABC):
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
-                                   metadata: dict[str, Any], *, anything_sent: bool,
+                                   metadata: Dict[str, Any], *, anything_sent: bool,
                                    record_delivery: Callable) -> None:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
         then fail loudly if a non-empty response produced nothing deliverable. Attachment
@@ -4445,7 +4445,7 @@ class BasePlatformAdapter(ABC):
         # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
         if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
             return None
-        kwargs: dict[str, Any] = {"metadata": metadata}
+        kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
@@ -4832,11 +4832,11 @@ class BasePlatformAdapter(ABC):
         return source
 
     @abstractmethod
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a chat/channel; dict with at least ``name``
         and ``type`` ("dm", "group", "channel")."""
 
-    def toolsets_for_source(self, source: "SessionSource") -> Optional[list[str]]:
+    def toolsets_for_source(self, source: "SessionSource") -> Optional[List[str]]:
         """Per-source toolset override REPLACING ``platform_toolsets.<platform>``, or None
         (default); validated via ``_get_platform_tools`` (webhook adapter pins per-route)."""
         return None
@@ -4848,7 +4848,7 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
-                         len_fn: Optional["Callable[[str], int]"] = None) -> list[str]:
+                         len_fn: Optional["Callable[[str], int]"] = None) -> List[str]:
         """Split a long message into chunks preserving code blocks: a split inside a fence closes it
         at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
         ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
@@ -4857,7 +4857,7 @@ class BasePlatformAdapter(ABC):
             return [content]
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
-        chunks: list[str] = []
+        chunks: List[str] = []
         remaining = content
         carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
         while remaining:

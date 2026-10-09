@@ -27,7 +27,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

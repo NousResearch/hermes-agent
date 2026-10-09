@@ -132,7 +132,7 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "models.metadata.context.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
     monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")

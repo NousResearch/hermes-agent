@@ -4,12 +4,11 @@ Deriving the env var from the provider id (``f"{id.upper()}_API_KEY"``) invents 
 ``MINIMAX-OAUTH_API_KEY`` for OAuth ids (#114405, #78996) and ``ALIBABA_API_KEY`` where the registry
 reads ``DASHSCOPE_API_KEY``. Both the auxiliary ladder and main-agent init share one helper.
 """
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 import pytest
 import hermes_yaml as yaml
 
 from agent.auxiliary_unavailable import missing_provider_credentials_message
-from hermes_cli.auth import PROVIDER_REGISTRY
-
 
 @pytest.mark.parametrize("provider, expected, forbidden", [
     ("minimax-oauth", "hermes auth add minimax-oauth", "MINIMAX-OAUTH_API_KEY"),
@@ -45,7 +44,7 @@ def test_main_init_shares_helper_and_no_registry_provider_gets_an_invented_env_v
     with pytest.raises(RuntimeError, match=r"hermes auth add minimax-oauth"):
         _routed_client_kwargs(agent, None, 60)
 
-    for pid, pconfig in PROVIDER_REGISTRY.items():
+    for pid, pconfig in ((config.id, config) for config in iter_provider_configs()):
         invented = f"{pid.upper()}_API_KEY"
         message = missing_provider_credentials_message(pid)
         if invented in message:

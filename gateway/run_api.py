@@ -110,10 +110,7 @@ class GatewayRuntimeAPI:
         descriptor = getattr(self.runner, 'session_runtime_descriptor', None)
         if scope['type'] not in {'http', 'websocket'} or descriptor is None:
             return await self.app(scope, receive, send)
-        draining_socket = (descriptor['state'] in {'ready', 'draining'}
-            and (self.runner._draining or descriptor['state'] == 'draining')
-            and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
-        if (descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket:
+        if descriptor['state'] != 'ready' or self.runner._draining:
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
@@ -124,16 +121,13 @@ class GatewayRuntimeAPI:
         if scope['type'] == 'http':
             # Capture before Uvicorn's proxy middleware rewrites scope.client.
             scope['hermes.gateway_socket_peer'] = scope.get('client')
-        from gateway.run_idle_exit import attached_client, note_client_activity
         if scope['type'] != 'websocket' or scope['path'] != '/api/ws':
-            note_client_activity(self.runner)  # dashboard/API traffic keeps an idle-exit gateway up
             return await self.app(scope, receive, send)
         original_receive = receive
-        allow_draining = False
 
         async def receive_admitted():
             message = await original_receive()
-            if (descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining:
+            if descriptor['state'] != 'ready' or self.runner._draining:
                 return {'type': 'websocket.disconnect', 'code': 1013}
             return message
 
@@ -146,9 +140,6 @@ class GatewayRuntimeAPI:
         ws = WebSocket(scope, receive, send)
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
         if reason == 'none' or ws.headers.get('origin'):
-            if draining_socket:
-                await ws.close(code=1013)
-                return
             return await self.app(scope, receive, send)
         from hermes_cli import web_server as web
         if (reason != 'ok' or not web._DASHBOARD_EMBEDDED_CHAT_ENABLED
@@ -165,14 +156,7 @@ class GatewayRuntimeAPI:
                 grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='worker-adoption')
             except PermissionError:
                 # Browser/OAuth tickets have a separate issuer.
-                if draining_socket:
-                    await ws.close(code=1013)
-                    return
                 return await self.app(scope, receive, send)
-        allow_draining = not operator
-        if (descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining:
-            await ws.close(code=1013)
-            return
         from gateway.session_authorities import authority_for_profile_id
         authority = authority_for_profile_id(self.runner, grant['profile_id'])
         if authority is None:
@@ -183,10 +167,9 @@ class GatewayRuntimeAPI:
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
         from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
-        with owner_scope(authority), attached_client(self.runner):
+        with owner_scope(authority):
             await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
-                                              'profile_scope': grant.get('scope', 'profile')},
+                                              'capabilities': grant['capabilities'], 'native_bootstrap': True},
                             subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

@@ -48,7 +48,7 @@ def isolated_home(tmp_path, monkeypatch):
             id="loopback-base-url-only",
         ),
         # #109397: ``model.provider: openrouter`` is explicit intent like a registry pin, not
-        # "nothing configured" (both ``custom`` and ``openrouter`` are absent from PROVIDER_REGISTRY).
+        # "nothing configured" (both ``custom`` and ``openrouter`` are absent from live provider projection).
         pytest.param(
             "model:\n  default: openrouter/auto\n  provider: openrouter\n",
             "openrouter",
@@ -113,7 +113,7 @@ def test_auto_provider_with_loopback_base_url_resolves_without_recursing(isolate
     def unexpected_provider_resolution(_name):
         raise AssertionError("the bare custom trust check must not resolve model.provider=auto")
 
-    monkeypatch.setattr(runtime_provider, "_resolves_to_custom", unexpected_provider_resolution)
+    monkeypatch.setattr(runtime_provider, "resolves_to_custom_provider", unexpected_provider_resolution)
 
     assert resolve_provider("auto") == "custom"
 

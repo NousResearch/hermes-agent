@@ -1,19 +1,6 @@
 """Concrete worker compression APIs; scope and receipts stay in RuntimeSessionStore."""
 
 
-def _handoff_rows(messages):
-    """Project live compaction dicts onto the owner's closed handoff fields.
-
-    Micro-compaction and proactive prune hand over the live list, whose dicts carry worker-local
-    bookkeeping (``_db_persisted``, ``_micro_compact_marker``, a tool row's wire ``name``, risk tags)
-    that SessionDB's insert simply never reads. The owner's boundary stays closed; sending those keys
-    would fail the receipt and leave the journal stuck pending, refusing every later write.
-    """
-    from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
-    return [{k: v for k, v in m.items() if k in HANDOFF_MESSAGE_FIELDS} if isinstance(m, dict) else m
-            for m in messages]
-
-
 class RuntimeSessionCompressionMixin:
     def _append_compression_messages(self, session_id, messages, compression_lock_holder,
                                      turn_lease_holder, turn_lease_ttl_seconds):
@@ -73,12 +60,12 @@ class RuntimeSessionCompressionMixin:
         # coverage travels the same way: the owner proves it inside the commit transaction.
         carried = [dict(m) for m in carried_messages or [] if isinstance(m, dict)]
         unresolved = None if unresolved_held is None else [dict(m) for m in unresolved_held if isinstance(m, dict)]
-        result = self._apply('compression.archive', dict(messages=_handoff_rows(compacted_messages),
+        result = self._apply('compression.archive', dict(messages=compacted_messages,
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
             tail_count=tail_count, carried_messages=carried, covered_ids=covered_ids,
             unresolved_held=unresolved))
-        from agent.runtime_session_store import apply_row_annotations
-        apply_row_annotations(compacted_messages, result['annotations'])
+        for message, row_id in zip(compacted_messages, result['row_ids'], strict=True):
+            message['_row_id'] = row_id
         return result['value']
 
     def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages,
@@ -87,12 +74,12 @@ class RuntimeSessionCompressionMixin:
             lease_ttl_seconds=300.0, watermark=None, watermark_ceiling=None):
         self._session(parent_session_id)
         result = self._apply('compression.publish', dict(child_session_id=child_session_id, source=source,
-            messages=_handoff_rows(messages), model=model, model_config=model_config, system_prompt=system_prompt,
+            messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
             cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
             require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
             lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling))
-        from agent.runtime_session_store import apply_row_annotations
-        apply_row_annotations(messages, result['annotations'])
+        for message, row_id in zip(messages, result['row_ids'], strict=True):
+            message['_row_id'] = row_id
 
     def _compression_receipt_journal(self, candidate, result):
         assignment = result.get('worker_assignment')

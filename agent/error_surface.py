@@ -116,7 +116,7 @@ def _api_key_env(provider: str) -> str:
 
 def _provider_label(provider: str) -> str:
     try:
-        from hermes_cli.models import provider_label
+        from application_provider_groups import provider_label
 
         return provider_label(provider)
     except Exception:  # pragma: no cover — advisory only

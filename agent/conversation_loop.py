@@ -20,7 +20,8 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
+from agent.model_metadata import _estimate_tools_tokens_rough
+from models.metadata.context import MINIMUM_CONTEXT_LENGTH
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 from agent.prompt_caching import (
@@ -81,7 +82,7 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 
 
 def _midturn_request_pressure_tokens(
-    agent: Any, api_messages: list[dict[str, Any]], effective_system: str, approx_tokens: int
+    agent: Any, api_messages: List[Dict[str, Any]], effective_system: str, approx_tokens: int
 ) -> int:
     """Token figure the mid-turn pre-API compression guard compares: the pruned
     native-Responses estimate when native compaction eligibility is proven (the generic
@@ -121,7 +122,7 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
     return isinstance(used, int) and not isinstance(used, bool) and used >= budget
 
 
-def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) -> bool:
+def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
     Appends to the NEWEST ``role:"tool"`` message (cache-safe, like /steer); latches
@@ -157,7 +158,7 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) 
 
 
 def _restore_user_after_reference_handoff(
-    messages: list[dict[str, Any]], user_message: Any
+    messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
     """Re-append this turn's real user ask when compaction left only a handoff (#80622).
     Returns True when a restore append happened."""
@@ -175,7 +176,7 @@ def _restore_user_after_reference_handoff(
 
 
 def _should_skip_model_call_for_reference_handoff(
-    messages: list[dict[str, Any]], user_message: Any
+    messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
     from agent.context_compressor import reference_handoff_would_drive_next_model_call
@@ -291,7 +292,7 @@ def _continuation_overlap_length(previous: str, continuation: str) -> int:
     return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
 
 
-def _join_truncated_parts(parts: list[tuple[str, bool]]) -> str:
+def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
     """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
     previous_was_partial_stub = False
@@ -319,7 +320,7 @@ def _moa_reference_metrics_for_hook(agent: Any) -> Any:
         return None
 
 
-def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text: str) -> None:
+def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn so role alternation
     holds and cached messages stay byte-identical. INVARIANTS: raw chain-of-thought never enters
     replayable content (inlined CoT reads as a prefill jailbreak and bricks the session with
@@ -468,7 +469,7 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
             getattr(agent, "model", "") or "", base_url=base_url,
             session_tokens=int(request_tokens), current_window=current_window,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — growth must never break a turn
         logger.debug("local window growth check failed: %s", exc)
         return None
 
@@ -939,7 +940,7 @@ _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -996,7 +997,7 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 # each iteration). Sound because canonicalization is pure; malformed strings raise before
 # being stored, so the repair fallback is never memoized. The byte budget exists because
 # argument strings can run 100KB+, so a count bound alone does not bound memory.
-_CANON_ARGS_CACHE: dict[str, str] = {}
+_CANON_ARGS_CACHE: Dict[str, str] = {}
 _CANON_ARGS_CACHE_MAX = 4096
 _CANON_ARGS_CACHE_MAX_BYTES = 32 * 1024 * 1024
 _canon_args_cache_bytes = 0
@@ -1072,8 +1073,8 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
 
 
 def _content_policy_blocked_result(
-    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str
-) -> dict[str, Any]:
+    messages: List[Dict], api_call_count: int, *, final_response: str, error_detail: str
+) -> Dict[str, Any]:
     """Terminal turn result for a content-policy block (deterministic for the unchanged
     prompt, so no retry); shared by the HTTP-200 and exception paths."""
     return {
@@ -1084,8 +1085,8 @@ def _content_policy_blocked_result(
 
 
 def _partial_turn_result(
-    final_response: str, messages: list[dict], api_call_count: int, **flags: Any
-) -> dict[str, Any]:
+    final_response: str, messages: List[Dict], api_call_count: int, **flags: Any
+) -> Dict[str, Any]:
     """Incomplete-turn result whose ``error`` mirrors ``final_response``; ``flags`` add the
     recovery-contract keys (``failed``, ``compression_deferred``, ...)."""
     return {
@@ -1094,7 +1095,7 @@ def _partial_turn_result(
     }
 
 
-def _compression_deferred_result(agent, messages: list[dict], api_call_count: int, reason: str = "lock") -> dict[str, Any]:
+def _compression_deferred_result(agent, messages: List[Dict], api_call_count: int, reason: str = "lock") -> Dict[str, Any]:
     """Soft turn result for a transiently-deferred compression. Both reasons must end as
     ``compression_deferred``, never ``compression_exhausted`` — the gateway wipes the
     session on exhaustion (#9893/#35809). ``failed`` stays False; the turn persists."""
@@ -1130,9 +1131,9 @@ def _compression_deferred_result(agent, messages: list[dict], api_call_count: in
 
 
 def _provider_overflow_exhausted_result(
-    agent, messages: list[dict], conversation_history, api_call_count: int,
+    agent, messages: List[Dict], conversation_history, api_call_count: int,
     request_pressure_tokens: int, max_compression_attempts: int,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Fail closed when a rebuilt request is still too large after recovery."""
     agent._flush_status_buffer()
     logger.error(
@@ -1209,19 +1210,19 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     reconstruct_static_prefix(agent, system_message=system_message, log_label="failover redecoration")
 
 
-def _peel_moa_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
+def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Dict[str, Any]]:
     """Remove MoA reference guidance attached by ``_attach_reference_guidance``."""
     from agent.moa_loop import peel_reference_guidance
     return peel_reference_guidance(messages, guidance)
 
 
 def _redecorate_prompt_cache_for_provider(
-    agent, api_messages: list[dict[str, Any]], *, system_message=None,
-    moa_prepared: Optional[dict[str, Any]] = None, tools_for_api: Optional[list[dict[str, Any]]] = None,
-) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]], list[dict[str, Any]]]:
+    agent, api_messages: List[Dict[str, Any]], *, system_message=None,
+    moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
-    messages: list[dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
+    messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
     prepared = moa_prepared
     guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
     if guidance:
@@ -1283,9 +1284,9 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
 
 
 def _apply_context_engine_selection(
-    agent: Any, api_messages: list[dict[str, Any]], conversation_messages: list[dict[str, Any]],
-    incoming_message: Optional[dict[str, Any]], *, logger: Any,
-) -> list[dict[str, Any]]:
+    agent: Any, api_messages: List[Dict[str, Any]], conversation_messages: List[Dict[str, Any]],
+    incoming_message: Optional[Dict[str, Any]], *, logger: Any,
+) -> List[Dict[str, Any]]:
     """Run the optional per-turn ``ContextEngine.select_context()`` hook, fail-open: any
     exception or invalid return yields ``api_messages`` unchanged; history is never mutated."""
     engine = getattr(agent, "context_compressor", None)
@@ -1333,7 +1334,7 @@ def _apply_context_engine_selection(
 
 
 def _notify_context_engine_turn_complete(
-    agent: Any, messages: list[dict[str, Any]], *, usage: Optional[dict[str, Any]] = None, logger: Any, **meta: Any
+    agent: Any, messages: List[Dict[str, Any]], *, usage: Optional[Dict[str, Any]] = None, logger: Any, **meta: Any
 ) -> None:
     """Notify the active context engine that a user turn has finished (fail-open; the engine
     gets a copy so it cannot mutate the persisted transcript)."""
@@ -1366,7 +1367,7 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     return user_message, None, persist_user_message
 
 
-def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any]:
+def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any]:
     """Typed recovery result when turn-start preflight compression timed out (#98424): no
     provider call was sent, and surfaces would otherwise hide the actionable guidance."""
     logger.warning(
@@ -1428,7 +1429,7 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: list[tuple[str, bool]] = field(default_factory=list)
+    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after
@@ -1475,7 +1476,7 @@ _CTX_FIELDS = frozenset({
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
-_PHASE_PARAMS: dict[Any, tuple] = {}
+_PHASE_PARAMS: Dict[Any, tuple] = {}
 # Verdict fields the loop latches (only ever sets True) instead of copying back:
 # ``handle_api_error`` reports overflow recovery per call and must not clear an earlier arm.
 _LATCHED_VERDICT_FIELDS = {"handle_api_error": frozenset({"_provider_overflow_recovery_pending"})}
@@ -1502,7 +1503,7 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
-def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
+def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
@@ -1534,7 +1535,7 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
-def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
+def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
     codex_result = agent._run_codex_app_server_turn(
@@ -1555,20 +1556,20 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
 def _run_conversation_turn(
     agent,
     user_message: Any,
-    system_message: str | None = None,
-    conversation_history: list[dict[str, Any]] | None = None,
-    task_id: str | None = None,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
-    persist_user_display_metadata: Optional[dict[str, Any]] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
-    turn_author: Optional[dict[str, Any]] = None,
+    turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
@@ -1645,10 +1646,20 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
-    # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
-    # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
-        return codex_result
+    # Opt-in runtime: app_server hands the whole turn to the codex app-server subprocess.
+    if getattr(agent, "runtime_kind", None) == "app_server":
+        codex_result = agent._run_codex_app_server_turn(
+            user_message=s.user_message, original_user_message=s.original_user_message,
+            messages=s.messages, effective_task_id=s.effective_task_id,
+            should_review_memory=s._should_review_memory,
+        )
+        from agent.turn_recovery import activate_codex_app_server_fallback
+        if not activate_codex_app_server_fallback(agent, codex_result):
+            return codex_result
+        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+        s.api_call_count = int(codex_result.get("api_calls") or 0)
+        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
@@ -1717,20 +1728,20 @@ def _run_conversation_turn(
 def run_conversation(
     agent,
     user_message: Any,
-    system_message: str | None = None,
-    conversation_history: list[dict[str, Any]] | None = None,
-    task_id: str | None = None,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
-    persist_user_display_metadata: Optional[dict[str, Any]] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
-    turn_author: Optional[dict[str, Any]] = None,
+    turn_author: Optional[Dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
     Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
@@ -1865,3 +1876,65 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
 
 __all__ = ["run_conversation"]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import os  # noqa: F401,E402
+import random  # noqa: F401,E402
+import ssl  # noqa: F401,E402
+import sys  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE'),
+    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
+    'KawaiiSpinner': ('agent.display', 'KawaiiSpinner'),
+    'PARTIAL_STREAM_STUB_ID': ('hermes_constants', 'PARTIAL_STREAM_STUB_ID'),
+    'PRE_API_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PRE_API_COMPRESSION_STATUS_TEMPLATE'),
+    'adaptive_rate_limit_backoff': ('agent.retry_utils', 'adaptive_rate_limit_backoff'),
+    'anchored_context_tokens': ('agent.usage_anchor', 'anchored_context_tokens'),
+    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
+    'capture_usage_anchor': ('agent.usage_anchor', 'capture_usage_anchor'),
+    'classify_api_error': ('agent.error_classifier', 'classify_api_error'),
+    'close_interrupted_tool_sequence': ('agent.message_sanitization', 'close_interrupted_tool_sequence'),
+    'coalesce_tool_call_id': ('agent.message_sanitization', 'coalesce_tool_call_id'),
+    'compose_user_api_content': ('agent.turn_context', 'compose_user_api_content'),
+    'compression_blocked_transiently': ('agent.conversation_compression', 'compression_blocked_transiently'),
+    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
+    'context_compression_timed_out': ('agent.conversation_compression', 'context_compression_timed_out'),
+    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
+    'env_var_enabled': ('utils', 'env_var_enabled'),
+    'estimate_messages_tokens_rough': ('agent.model_metadata', 'estimate_messages_tokens_rough'),
+    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
+    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
+    'get_context_length_from_provider_error': ('agent.model_metadata', 'get_context_length_from_provider_error'),
+    'has_incomplete_scratchpad': ('agent.trajectory', 'has_incomplete_scratchpad'),
+    'is_output_cap_error': ('agent.model_metadata', 'is_output_cap_error'),
+    'is_repetition_dominated': ('agent.repetition_guard', 'is_repetition_dominated'),
+    'is_zai_coding_overload_error': ('agent.retry_utils', 'is_zai_coding_overload_error'),
+    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
+    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
+    'parse_available_output_tokens_from_error': ('agent.model_metadata', 'parse_available_output_tokens_from_error'),
+    'reanchor_current_turn_user_idx': ('agent.turn_context', 'reanchor_current_turn_user_idx'),
+    'save_context_length': ('models.metadata.context', 'save_context_length'),
+    'serialized_messages_bytes': ('agent.message_sanitization', 'serialized_messages_bytes'),
+    'splice_provider_projection': ('agent.provider_projection', 'splice_provider_projection'),
+    'zai_coding_overload_retry_ceiling': ('agent.retry_utils', 'zai_coding_overload_retry_ceiling'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

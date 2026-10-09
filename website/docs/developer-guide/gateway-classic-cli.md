@@ -18,20 +18,8 @@ and final replies come from the authority. `/quit`, `/exit`, `/detach`, EOF and
 closing the terminal detach only. `/stop` sends an execution-generation-fenced
 interrupt. Pending approvals display `/approve ID once|deny|…`; clarification
 uses `/answer ID TEXT`. The client uses the displayed prompt ID and its captured
-generation, not a locally reconstructed waiter. `/discard ID` acknowledges an
-admission lost across an owner restart (`prompt.resolve_unknown`). `/branch [title]`,
-`/model <model> [--provider name]` and `/compress [here [N] | <focus>] [--preview]`
-are revision-fenced `session.mutate` operations (`hermes_cli/gateway_mutations.py`);
-`/yolo [on|off]` toggles this session's approval bypass on the owner (`config.set`
-key `yolo`). `/title [name]` (`session.mutate rename`), `/undo [N]` and `/retry`
-(`session.mutate rewind`; `/undo` puts the removed message back in the composer),
-`/new [title]` / `/reset` (`session.create` with this session's frozen launch
-request), `/usage` (the owner's report plus the last committed turn) and `/tools`
-(launch toolsets) run in the view (`hermes_cli/gateway_chat_commands.py`). Every
-other command goes to the owner as `slash.exec`: the reviewed reads run there and the
-rest print `/x is not available on the shared gateway yet` with a link to the
-[command parity table](gateway-command-parity.md), which lists what every local
-client does with every command.
+generation, not a locally reconstructed waiter. Other slash commands explicitly
+reject instead of running local mutations.
 
 One-shot stdout contains only the final reply. Exit status is 0 for a completed
 admission, 1 for failed execution/connection, 2 for unsupported frontend options,
@@ -39,51 +27,20 @@ admission, 1 for failed execution/connection, 2 for unsupported frontend options
 keyboard detach. A pending control does not imply cancellation. `-z` no longer
 implicitly bypasses approval policy.
 
-## Launch options
-
-The gateway advertises its accepted creation parameters through `runtime.describe`
-(`session_create.parameters`, from `gateway.session_policy.CREATE_FIELDS`). The client
-sends a creation option only when it is advertised; a requested option an older
-gateway does not advertise is refused (`Gateway does not support creation options:
-…`). Caller cwd is sent when advertised; an old gateway lacking cwd support prints a
-warning that it uses its configured execution directory, while explicit `--in`
-rejects. A resume may repeat the exact creation flags the session was frozen with
-(scripts re-run one command line); any flag that would change the frozen route
-rejects.
-
-**Accepted and frozen into the session at creation** (`_POLICY` in
-`hermes_cli/gateway_chat.py`): `--model`, `--provider`, `--base-url`, `--api-key`
-(memory-only, never persisted), `--reasoning`, `--toolsets`, `--max-turns`,
-`--skills` (rendered once into the frozen prompt), `--checkpoints`, `--yolo`,
-`--accept-hooks` (also `HERMES_ACCEPT_HOOKS=1`), `--pass-session-id`,
-`--ignore-rules`, `--ignore-user-config` and `--safe-mode` (both need an explicit
-`--model`; safe mode runs the turn in an isolated worker that never reads the
-profile). Also accepted: `--source <label>`, `--resume <id-or-title>`, `-c <title>`,
-`-c <title> --create-if-missing`, `--in <dir>`, `--query-file`, `--format
-stream-json`, `-z ... --usage-file`, bare `-c` (this terminal's breadcrumb session,
-else the most recent CLI session), `--resume latest` (most recent CLI session, this
-workspace first; both resolved by the owner, `session.resume latest='cli'`) and
-`--list-tools` / `--list-toolsets` (print the catalog and exit; no session). `chat -q`
-without `-Q` ends with main's `Resume this session with: hermes --resume <id>` block.
-
-**Refused with exit 2** (`_UNSUPPORTED` plus the selection checks in
-`validate_options`); the error names where each capability lives now:
-
-| Option | Why | Use instead |
-|---|---|---|
-| `-w` / `--worktree` | Worktree creation is a launcher-side step the authority does not expose | `hermes --tui -w` |
-| `--image` | No client-side attachment staging on this path | attach in `hermes --tui` or Desktop |
-| `--run-budget` | No per-launch run budget in the creation contract | `agent.run_budget_seconds` in config.yaml |
-| `-v` / `--verbose` | Display-only; the client has no verbose renderer | `hermes logs --follow` (the refusal also names `hermes chat --tui -v`, whose canonical Ink path does not yet carry the flag) |
-| `--no-restore-cwd` | The gateway keeps the session's frozen cwd | `--in <dir>` |
-| `--create-if-missing` without `-c <name>` | Nothing to create by name | `-c <name> --create-if-missing` |
-
-`--compact` is not a `hermes chat` option (argparse rejects it); a direct `cli.main`
-hand-off refuses it and names `display.compact`.
-
 ## Current parity limits — not full classic CLI parity
 
-Full legacy presentation, slash registry parity, interactive
+The gateway advertises its accepted creation parameters through `runtime.describe`.
+Model, provider, reasoning, toolsets and max-turns are sent only when advertised;
+otherwise explicitly requested options reject. Caller cwd is sent when advertised;
+an old gateway lacking cwd support prints a warning that it uses its configured
+execution directory, while explicit `--in` rejects. Resume retains existing
+session policy; creation overrides on resume reject.
+
+Images, skills, worktrees, checkpoints, pass-session-id, safe mode, ignored rules
+or user config, YOLO, hook acceptance, continue/latest/title selection,
+create-if-missing, no-restore-cwd, usage reports, run budgets, direct API credentials,
+verbose/compact display and local tool listing are not implemented in this client
+and reject explicitly. Full legacy presentation, slash registry parity, interactive
 history editing, auto-reconnect, lost-ACK durable client journals, remote login
 bootstrap, cold-owner resume and native Windows/macOS QA remain outstanding.
 The client preserves an explicit remote URL's existing authentication mechanism;

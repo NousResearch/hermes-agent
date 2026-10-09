@@ -34,7 +34,6 @@ from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
-from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
@@ -145,7 +144,7 @@ def _worker_memory_max_bytes() -> int:
                 "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
-    candidates: list[int] = []
+    candidates: List[int] = []
     try:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
             if line.startswith("0::"):
@@ -176,7 +175,7 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> list[str]:
+def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
@@ -209,7 +208,7 @@ def _secure_user_runtime_dir(path: Path) -> bool:
         return False
 
 
-def systemd_user_bus_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
+def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Build an environment that can reach this user's lingering systemd manager.
 
     System-level gateway units run as an unprivileged ``User=`` but normally do
@@ -326,7 +325,7 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:
+def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
 
@@ -389,10 +388,10 @@ class GatewayChildDispatch(NamedTuple):
     """
 
     mode: Literal["in_process", "scoped", "degraded"]
-    argv: list[str]
+    argv: List[str]
 
 
-def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
+def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
     """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
     when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
     cached True verdict is replaced so the next dispatch re-probes and degrades instead of
@@ -414,7 +413,7 @@ def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
 
 
 def restart_safe_gateway_child_argv(
-    command: list[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+    command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
     outlives_parent: bool = False,
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
@@ -567,8 +566,9 @@ class ProcessSession:
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
-    output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
     # Watcher/notification routing (persisted for crash recovery)
+    # systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    # (#70716)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_user_id: str = ""
@@ -581,7 +581,7 @@ class ProcessSession:
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
-    watch_patterns: list[str] = field(default_factory=list)
+    watch_patterns: List[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
@@ -654,7 +654,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -669,7 +669,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -682,11 +682,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     _completions_restored = False
 
     def __init__(self):
-        self._running: dict[str, ProcessSession] = {}
-        self._finished: dict[str, ProcessSession] = {}
+        self._running: Dict[str, ProcessSession] = {}
+        self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
-        self.pending_watchers: list[dict[str, Any]] = []
+        self.pending_watchers: List[Dict[str, Any]] = []
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
@@ -697,7 +697,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # owner replays them explicitly (GatewayRunner._start_recover_previous_run) and the
         # first consumer through restore_completions() (#123265). Importing the module is
         # side-effect free and keeps its import-order contract for later completion writers.
-        import tools.async_delegation
+        import tools.async_delegation  # noqa: F401
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -1002,8 +1002,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         A completion is not queued here: recovery has no waitable handle, so it
         never collected an exit status.
         """
-        if session is None or session.exited or not session.detached or session.pid_scope != "host" or session.output_log:
-            return session  # a log-backed adoption's reader collects the recorded exit itself
+        if session is None or session.exited or not session.detached or session.pid_scope != "host":
+            return session
         fate = self._detached_host_fate(session.pid, session.host_start_time)
         if fate == "running":
             return session
@@ -1105,7 +1105,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return tempfile.gettempdir()
 
-    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
+    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> List[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
@@ -1172,8 +1172,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return session
 
     def spawn_local(
-        self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
-        env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
+        self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
         persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
@@ -1189,9 +1189,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
         pty_scope_attempted = False
-        # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
-        log = worker_output_log(session.id)
-        if use_pty and log is None:
+        if use_pty:
             try:
                 return self._spawn_local_pty(session, safe_command, env_vars)
             except ImportError:
@@ -1209,8 +1207,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, record_exit_command(log, safe_command) if log else safe_command,
-                                      unit_suffix, "Local")
+        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
@@ -1219,20 +1216,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
-        output = open_output_log(log) if log else subprocess.PIPE
-        try:
-            proc = subprocess.Popen(
-                spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-                errors="replace", stdout=output, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True, **_popen_kwargs)
-        finally:
-            if log:
-                os.close(output)
-        session.process, session.output_log = proc, str(log or "")
+        proc = subprocess.Popen(
+            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
+            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True, **_popen_kwargs)
+        session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         try:
-            self._track_started(session, self._log_reader_loop if log else self._reader_loop, f"proc-reader-{session.id}")
+            self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
         except Exception:
             self._reap_untracked(session, proc)
             raise
@@ -1273,7 +1265,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return session
 
     def spawn_via_env(
-        self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
+        self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
         timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
@@ -1320,7 +1312,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         end so EOF never arrives while it lives, which would park this thread and never
         fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
         after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net (#68915, #8340).
+        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
+
+        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
+        poll()/wait() remains the safety net. See #68915, #8340.
         """
         # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
         # reader can wake between them; strip leading noise from every chunk until the
@@ -1328,8 +1323,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # (openclaw/openclaw#112325)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
+        # Incremental decoder: raw pipe reads can split a multibyte UTF-8 character across two read1()
+        # chunks. A stateless per-chunk ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
+        # mojibake. The incremental decoder holds the partial sequence until the continuation bytes arrive —
+        # same treatment the foreground path already has in
+        # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
             nonlocal head_noise
             if head_noise:
@@ -1730,7 +1730,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         try:
             from tools.interrupt import is_interrupted as _is_interrupted
         except Exception:
-            _is_interrupted = lambda: False
+            _is_interrupted = lambda: False  # noqa: E731
         interrupted = False
         for session in pending:
             try:
@@ -2021,7 +2021,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # final drain is partial and must not suppress the full completion.
             if not finalizing:
                 self._poll_observed.add(session_id)
-        if session.detached and not session.output_log:
+        if session.detached:
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result
 
@@ -2057,7 +2057,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int | None = None) -> dict:
+    def wait(self, session_id: str, timeout: int = None) -> dict:
         """Block until the process exits, the timeout elapses, the user interrupts, or a
         mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
@@ -2367,7 +2367,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
-    def list_sessions(self, task_id: str | None = None, session_key: str | None = None, *, include_retained: bool = False) -> list:
+    def list_sessions(self, task_id: str = None, session_key: str = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
@@ -2453,12 +2453,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         delegate child's own background work (#120546)."""
         return self._any_running(lambda s: s.owner_task_id == task_id)
 
-    def running_owned_by(self, owner_task_id: str) -> list[ProcessSession]:
+    def running_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
         with self._lock:
             return [s for s in self._running.values() if s.owner_task_id == owner_task_id and not s.exited]
 
-    def unread_completions_owned_by(self, owner_task_id: str) -> list[ProcessSession]:
+    def unread_completions_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
         A child's completion notice is suppressed in the parent, so an unread exit is otherwise lost silently."""
         with self._lock:

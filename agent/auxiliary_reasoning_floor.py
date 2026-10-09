@@ -40,14 +40,14 @@ def _is_disabled(reasoning_config: Any) -> bool:
     return isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
 
 
-def floor_reasoning_config(reasoning_config: Any) -> dict[str, Any]:
+def floor_reasoning_config(reasoning_config: Any) -> Dict[str, Any]:
     """The caller's disabled ``reasoning_config`` lifted to the floor; anything else returned as-is."""
     if _is_disabled(reasoning_config):
         return {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
     return reasoning_config
 
 
-def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
+def with_reasoning_floor(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Copy of *kwargs* with every thinking-OFF encoding lifted to ``REASONING_FLOOR_EFFORT``:
     top-level ``reasoning_effort``, ``extra_body.reasoning`` (OpenRouter shape) and the adapter's private
     ``_reasoning_config``. ``None`` when nothing was disabled, so the ladder never re-sends an unchanged
@@ -72,7 +72,7 @@ def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def remember_reasoning_floor(
-    provider: Optional[str], base_url: Optional[str], rejected_kwargs: dict[str, Any], error: BaseException,
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any], error: BaseException,
 ) -> None:
     """Record that this route's ``rejected_kwargs["model"]`` refuses to disable reasoning (the ladder
     calls this after the stepped-up retry succeeded)."""
@@ -90,11 +90,16 @@ def _catalog_marks_mandatory(provider: Optional[str], base_url: Optional[str], m
     process."""
     provider_norm = str(provider or "").strip().lower()
     host = (urlparse(base_url or "").hostname or "").lower()
-    from hermes_cli import models_reasoning_caps as caps_mod
+    from models.metadata import (
+        nous_model_reasoning_capabilities,
+        openrouter_model_reasoning_capabilities,
+        warm_nous_reasoning_caps_async,
+        warm_openrouter_reasoning_caps_async,
+    )
     if provider_norm == "openrouter" or host == "openrouter.ai" or host.endswith(".openrouter.ai"):
-        lookup, warm = caps_mod.openrouter_model_reasoning_capabilities, caps_mod.warm_openrouter_reasoning_caps_async
+        lookup, warm = openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
     elif provider_norm in _NOUS_PROVIDERS:
-        lookup, warm = caps_mod.nous_model_reasoning_capabilities, caps_mod.warm_nous_reasoning_caps_async
+        lookup, warm = nous_model_reasoning_capabilities, warm_nous_reasoning_caps_async
     else:
         return False
     try:
@@ -103,7 +108,7 @@ def _catalog_marks_mandatory(provider: Optional[str], base_url: Optional[str], m
             warm()
     except Exception:
         return False
-    return bool(caps and caps.get("mandatory"))
+    return bool(caps and caps.mandatory)
 
 
 def known_reasoning_floor(

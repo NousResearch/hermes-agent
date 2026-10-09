@@ -40,7 +40,7 @@ def _make_record(msg: str, exc: BaseException | None) -> logging.LogRecord:
 def _bake_tb(exc: BaseException) -> BaseException:
     try:
         raise exc
-    except BaseException as e:
+    except BaseException as e:  # noqa: BLE001
         return e
 
 
@@ -74,28 +74,28 @@ def test_filter_allows_different_message_even_for_ping() -> None:
 class _FakeAgent:
     """Minimal acp.Agent stub — we only need the router to build."""
 
-    async def initialize(self, **kwargs):
+    async def initialize(self, **kwargs):  # noqa: ANN003
         from acp.schema import AgentCapabilities, InitializeResponse
 
         return InitializeResponse(protocol_version=1, agent_capabilities=AgentCapabilities())
 
-    async def new_session(self, cwd, mcp_servers=None, **kwargs):
+    async def new_session(self, cwd, mcp_servers=None, **kwargs):  # noqa: ANN001, ANN003
         from acp.schema import NewSessionResponse
 
         return NewSessionResponse(session_id="test")
 
-    async def prompt(self, session_id, prompt, **kwargs):
+    async def prompt(self, session_id, prompt, **kwargs):  # noqa: ANN001, ANN003
         from acp.schema import PromptResponse
 
         return PromptResponse(stop_reason="end_turn")
 
-    async def cancel(self, session_id, **kwargs):
+    async def cancel(self, session_id, **kwargs):  # noqa: ANN001, ANN003
         pass
 
-    async def authenticate(self, **kwargs):
+    async def authenticate(self, **kwargs):  # noqa: ANN003
         pass
 
-    def on_connect(self, conn):
+    def on_connect(self, conn):  # noqa: ANN001
         pass
 
 
@@ -185,7 +185,7 @@ async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
             agent_task.cancel()
             try:
                 await agent_task
-            except BaseException:
+            except BaseException:  # noqa: BLE001
                 pass
     finally:
         root.handlers = prior_handlers

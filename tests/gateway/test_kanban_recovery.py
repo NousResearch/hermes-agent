@@ -2,17 +2,12 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
 
 
-# The probe traces the transport client's opens with strace (Linux-only tool, Linux openat
-# flags); without it the probe cannot prove the client never opens state.db writable.
-@pytest.mark.platforms('linux')
-@pytest.mark.skipif(shutil.which('strace') is None, reason='requires strace on PATH')
 @pytest.mark.parametrize('mode', ['custom', 'cross_profile', 'restart'])
 def test_owner_board_recovery(tmp_path, mode):
     repo = Path(__file__).resolve().parents[2]

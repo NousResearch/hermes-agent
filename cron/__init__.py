@@ -10,7 +10,7 @@ from cron.worker_bootstrap import worker_bootstrap as _boot_external_worker
 
 _boot_external_worker()
 
-from cron.jobs import (
+from cron.jobs import (  # noqa: E402
     create_job,
     get_job,
     list_jobs,
@@ -22,18 +22,18 @@ from cron.jobs import (
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick
+from cron.scheduler import tick  # noqa: E402
 
 __all__ = [
-    "JOBS_FILE",
     "create_job",
     "get_job",
     "list_jobs",
-    "pause_job",
-    "rearm_oneshot",
     "remove_job",
-    "resume_job",
-    "tick",
-    "trigger_job",
     "update_job",
+    "pause_job",
+    "resume_job",
+    "trigger_job",
+    "rearm_oneshot",
+    "tick",
+    "JOBS_FILE",
 ]

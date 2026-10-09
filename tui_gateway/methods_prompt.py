@@ -1361,7 +1361,7 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 def _approval_reply(rid, result_key, call):
     """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
     try:
-        from tools import approval
+        import tools.approval as approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
         return _err(rid, 5004, str(e))

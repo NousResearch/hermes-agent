@@ -7,7 +7,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import plugins_cmd
-from tests.pm.test_plugin_survival_contract import admission_env
+from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
 
 
 @pytest.mark.parametrize('python_surface', [None, 'pyproject', 'legacy'])

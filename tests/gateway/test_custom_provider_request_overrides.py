@@ -153,7 +153,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
     }
 
     with patch(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         return_value={"service_tier": "priority"},
     ):
         route = gateway_run.GatewayRunner._resolve_turn_agent_config(
@@ -171,7 +171,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
 
 @pytest.mark.asyncio
 async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(monkeypatch):
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -188,7 +188,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     )
     _install_fake_agent(monkeypatch)
 
-    from hermes_cli import tools_config
+    import hermes_cli.tools_config as tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
@@ -226,7 +226,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     service_tier ON TOP, and the following normal turn drops only the stale
     fast-mode key while the provider extra_body survives.
     """
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -243,7 +243,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     )
     _install_fake_agent(monkeypatch)
 
-    from hermes_cli import tools_config
+    import hermes_cli.tools_config as tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
@@ -280,7 +280,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     tier_box = {"tier": "priority"}
     runner._resolve_session_service_tier = lambda *a, **k: tier_box["tier"]
     with patch(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         return_value={"service_tier": "priority"},
     ):
         result = await run_turn()

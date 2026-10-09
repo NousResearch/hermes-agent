@@ -243,9 +243,9 @@ async def _start_gateway_start_control_socket(runner):
     try:
         # Started immediately after the PID-file claim: winning that O_EXCL race is the moment this process
         # becomes the authoritative gateway for its HERMES_HOME, so from here on "does a socket answer?" is
-        # a truthful liveness/identity query for updater and fleet consumers. Returns None on failure and
-        # start_gateway aborts startup: the listener mints every local client's attach ticket, so a
-        # gateway without it can serve no local session. See #92091.
+        # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
+        # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
+        # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer, build_identify_payload
         from gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
@@ -261,8 +261,6 @@ async def _start_gateway_start_control_socket(runner):
                 "served_profiles", "parked_profiles", "capabilities") if key in descriptor})
             if getattr(runner, '_draining', False):
                 payload.update(state='draining', capabilities=[])
-            if payload.get('state') == 'draining' and descriptor.get('drain_reason'):
-                payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
             return payload
@@ -330,7 +328,7 @@ async def _start_gateway_start_control_socket(runner):
             # that starts the control socket (not only start_gateway) exposes it.
             runner.session_control_server = _control_server
     except Exception as _cs_exc:
-        logger.error("Control socket startup failed; the gateway cannot start without it: %s", _cs_exc)
+        logger.debug("Control socket startup failed (non-fatal): %s", _cs_exc)
         _control_server = None
     return _control_server
 
@@ -613,26 +611,11 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
     return None
 
 
-def _start_gateway_early_environment_probe() -> None:
-    """Background-start the host toolchain probe the warm-up and first prompt read (idempotent;
-    honours ``agent.environment_probe: false``). Never raises: the warm-up still runs it lazily."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        agent_cfg = load_config_readonly().get("agent")
-        if isinstance(agent_cfg, dict) and not agent_cfg.get("environment_probe", True):
-            return
-        from tools.env_probe import warm_environment_probe_async
-        warm_environment_probe_async()
-    except Exception:
-        logger.debug("early environment probe did not start", exc_info=True)
-
-
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
-                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
-    deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
-    unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
+    deadlocks); ``force`` starts without consulting the host owner at all."""
     from gateway.run import (
         GatewayRunner,
         _best_effort,
@@ -664,9 +647,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
     # gateway for a launch that cannot start.
     resolved_config = config if config is not None else load_gateway_config_for_runner()
-    # The first turn's prompt needs the host toolchain probe (five subprocess calls); start it now
-    # so it runs beside the boot imports instead of serially inside the pre-READY warm-up.
-    _start_gateway_early_environment_probe()
     profile_homes = (_multiplex_profile_homes(resolved_config)
                      if getattr(resolved_config, 'multiplex_profiles', False) else [])
     if profile_homes and not _launch_home_may_multiplex(resolved_config):
@@ -759,8 +739,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             name="planned-stop-watcher")
         _planned_stop_watcher_thread.start()
 
-        # Right after the PID claim (which makes us authoritative). Fatal: local clients attach only
-        # with tickets minted on this listener, so startup aborts without it.
+        # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.
         _control_server = await _start_gateway_start_control_socket(runner)
         if _control_server is None:
             raise RuntimeError("gateway session bootstrap control listener unavailable")
@@ -795,9 +774,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import publish_gateway_runtime_ready
         publish_gateway_runtime_ready(runner)
         runner._start_systemd_watchdog()
-        if idle_exit:
-            from gateway.run_idle_exit import arm_unmanaged_idle_exit
-            arm_unmanaged_idle_exit(runner)
 
         from gateway.run_runtime import wait_gateway_runtime
         try:

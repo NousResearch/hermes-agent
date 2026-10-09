@@ -469,7 +469,7 @@ class HostedRoomService:
         self.prepare_room(binding)
         self.runtime.wakeup()
 
-    def create_room(self, *, room_id: str, name: str, members: Any, admit: Any = None) -> dict[str, Any]:
+    def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
         normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
         room = hosted_rooms.create_room(
             self.db_path, room_id=room_id, name=name,
@@ -479,7 +479,7 @@ class HostedRoomService:
                     "handle": member.handle, "target": dict(member.target or {}),
                     **({"display_name": member.display_name} if member.display_name else {})}
                 for member in normalized],
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id(), admit=admit)
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id())
         self.runtime.wakeup()
         return room
 

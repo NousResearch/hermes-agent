@@ -66,7 +66,7 @@ def _format_latency(seconds: float) -> str:
     """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
     if seconds < 1:
         return "<1s"
-    total = round(seconds)
+    total = int(round(seconds))
     if total < 60:
         return f"{total}s"
     m, sec = divmod(total, 60)

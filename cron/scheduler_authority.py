@@ -21,10 +21,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     from hermes_constants import get_hermes_home
     from utils import atomic_json_write
 
-    request_id = execution_id or job.get('execution_id')
-    if not request_id:
-        request_id = job['execution_id'] = uuid.uuid4().hex
-    params = {'job_id': job['id'], 'request_id': request_id,
+    params = {'job_id': job['id'], 'request_id': execution_id or job.get('execution_id') or uuid.uuid4().hex,
               'extra_prompt': extra_prompt}
     root = get_hermes_home() / 'cron' / 'admissions'
     journal = journal_path(params['job_id'], params['request_id'])
@@ -38,31 +35,15 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
 
     def save():
         root.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+        atomic_json_write(journal, record, mode=0o600)
 
     async def observe(call):
         nonlocal attempted
         attempted = True
         save()
-        try:
-            receipt = await call('submit', params)
-        except Exception as exc:
-            from hermes_cli.gateway_client import GatewayRPCError
-            # A returned owner exception is definite; a transport disconnect is not. Even an
-            # owner error after commit must retain the admitted identity, so verify its absence.
-            if owner is not None or isinstance(exc, GatewayRPCError):
-                state = await call('recover', params)
-                if state['status'] == 'missing':
-                    error = f'{type(exc).__name__}: {exc}'
-                    result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
-                    record['refusal'] = result
-                    record['job'] = dict(job)
-                    save()
-                    return tuple(result)
-            raise
+        receipt = await call('submit', params)
         record['receipt'] = receipt
         save()
-        delay = .1
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
@@ -72,8 +53,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 2.0)
+            await asyncio.sleep(.1)
 
     async def remote():
         async with connect_gateway() as client:
@@ -106,12 +86,9 @@ def reconcile_pending(*, allow_connect=True):
     from gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
-    from cron.executions import execution_owner_live
-    from cron.jobs import pause_job
-    from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
-                                _save_compose_deliver, _finish_completed_run)
-    from cron.scheduler_bookkeeping import fail_empty_response
-    from utils import atomic_json_write
+    from cron.jobs import pause_job, mark_job_run, save_job_output
+    from cron.scheduler import _compose_run_delivery, _is_cron_silence_response
+    from cron.delivery_queue import enqueue
     import logging
 
     root = get_hermes_home() / 'cron' / 'admissions'
@@ -121,44 +98,36 @@ def reconcile_pending(*, allow_connect=True):
             params = record['params']
             if journal != journal_path(params['job_id'], params['request_id']):
                 raise ValueError('cron journal identity conflict')
-            if execution_owner_live(params['request_id'], params['job_id']):
-                # Its firer (this process included) still owns the row and its tail: re-saving the
-                # output or re-marking the job on every tick would duplicate its side effects.
+            owner = owner_for_home(get_hermes_home())
+            if owner is None and not allow_connect:
                 continue
-            if 'refusal' in record:
-                state = {'status': 'terminal', 'result': record['refusal'], 'job': record['job']}
-            else:
-                owner = owner_for_home(get_hermes_home())
-                if owner is None and not allow_connect:
-                    continue
-                async def observe():
-                    if owner is not None:
-                        return await operation(owner[0], 'recover', params)
-                    async with connect_gateway() as client:
-                        return await client.rpc('cron.recover', **params)
+            async def observe():
                 if owner is not None:
-                    state = asyncio.run_coroutine_threadsafe(observe(), owner[1]).result(timeout=20)
-                else:
-                    state = asyncio.run(observe())
+                    return await operation(owner[0], 'recover', params)
+                async with connect_gateway() as client:
+                    return await client.rpc('cron.recover', **params)
+            if owner is not None:
+                state = asyncio.run_coroutine_threadsafe(observe(), owner[1]).result(timeout=20)
+            else:
+                state = asyncio.run(observe())
             if state['status'] != 'terminal':
-                if state['status'] in {'unknown', 'missing'} and not record.get('pause_recorded'):
+                if state['status'] in {'unknown', 'missing'}:
                     pause_job(params['job_id'], reason='Canonical cron ' + state['status'] + '; no automatic re-execution')
-                    record['pause_recorded'] = True
-                    atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
                 continue
             success, output, answer, error = state['result']
-            job = dict(state['job'], **(state.get('job_flags') or {}))
+            job = state['job']
             job['execution_id'] = params['request_id']
-            # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
-            # blank answer are failures, whichever process books them.
-            success, error, declared = _apply_agent_failure_marker(job, success, error, answer)
-            delivery = _RunDelivery(job, success, error, agent_declared=declared)
-            # The canonical receipt supplies the result; a dead scheduler's fire claim does not
-            # authorize replay and must not prevent finishing its durable bookkeeping.
-            fence = _FireOwnership(dict(job, fire_claim=None))
-            _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
-                                 verbose=False, execution_token=None)
-            fail_empty_response(delivery, answer)
-            _finish_completed_run(delivery, None, params['request_id'], recovered=True)
+            output_file = save_job_output(job['id'], output)
+            content, _, silent, _, _ = _compose_run_delivery(
+                job, success=success, error=error, final_response=answer, output_file=output_file)
+            deliver = bool(content.strip()) and not silent and not (success and _is_cron_silence_response(content))
+            if deliver:
+                enqueue(params['request_id'], job, content, for_failure=not success)
+            mark_job_run(job['id'], success, error, status='delivery_queued' if deliver else None,
+                         execution_id=params['request_id'])
+            if deliver:
+                from cron.delivery_outcome import settle_quietly
+                settle_quietly(job['id'], params['request_id'])
+            journal.unlink(missing_ok=True)
         except Exception:
             logging.getLogger(__name__).warning('Cron receipt recovery deferred: %s', journal, exc_info=True)

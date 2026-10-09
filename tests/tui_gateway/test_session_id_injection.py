@@ -16,7 +16,7 @@ from gateway.session_context import (
     _VAR_MAP,
     _UNSET,
 )
-from tui_gateway import server
+import tui_gateway.server as server
 
 
 @pytest.fixture(autouse=True)

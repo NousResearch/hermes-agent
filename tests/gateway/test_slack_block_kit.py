@@ -29,7 +29,7 @@ class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):
         md = "- a\n  - b\n    - c"
         blocks = render_blocks(md)
-        rich = next(b for b in blocks if b["type"] == "rich_text")
+        rich = [b for b in blocks if b["type"] == "rich_text"][0]
         indents = [e["indent"] for e in rich["elements"] if e["type"] == "rich_text_list"]
         # true nesting: indent levels must strictly increase across the run
         assert indents == sorted(indents)
@@ -49,7 +49,7 @@ class TestInlineFormatting:
             "- <https://example.com/x|GitLab #1> — allow `in_progress`"
         )
         assert blocks is not None
-        rich = next(b for b in blocks if b["type"] == "rich_text")
+        rich = [b for b in blocks if b["type"] == "rich_text"][0]
         els = rich["elements"][0]["elements"][0]["elements"]
         links = [e for e in els if e.get("type") == "link"]
         assert len(links) == 1
@@ -77,7 +77,7 @@ class TestInlineFormatting:
         """
         md = "1. alpha\n\n1. beta\n\n1. gamma"
         blocks = render_blocks(md)
-        rich = next(b for b in blocks if b["type"] == "rich_text")
+        rich = [b for b in blocks if b["type"] == "rich_text"][0]
         lists = [e for e in rich["elements"] if e["type"] == "rich_text_list"]
         # Must be ONE list with 3 items, not 3 separate single-item lists
         assert len(lists) == 1

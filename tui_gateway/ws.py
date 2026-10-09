@@ -42,7 +42,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     try:
         from gateway.scale_to_zero import touch_dashboard_client_heartbeat
         touch_dashboard_client_heartbeat()
-    except Exception:
+    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -254,7 +254,7 @@ class WSTransport:
         runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
         try:
             await self._ws.close(code=code)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
             _log.debug("ws close after %s failed peer=%s error=%s", reason, self._peer, exc)
 
 
@@ -311,12 +311,11 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
         return await asyncio.to_thread(server.dispatch, req, transport)
     resp = await authority_connection.dispatch(req)
     actor = authority_connection.actor
-    if (_is_unknown_method(resp) and req_method in server._methods
-            and legacy_fallback_allowed(actor, req_method)):
+    if _is_unknown_method(resp) and req_method in server._methods and legacy_fallback_allowed(actor):
         # Session verbs live on the authority; everything else the sidecar still
-        # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
-        # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
-        # method neither side knows, which is what the client's version-skew notice keys on.
+        # registers (pet, wake word, active-session list, connectors) keeps its
+        # legacy handler. A real -32601 reaches the client only for methods
+        # neither side knows, which is what its version-skew notice keys on.
         resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
     return resp
 
@@ -416,7 +415,6 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
                 "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
-                **({"session_authority": True} if authority_connection is not None else {}),
             }},
         })
         if ready_ok:

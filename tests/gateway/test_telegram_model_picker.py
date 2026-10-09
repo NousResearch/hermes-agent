@@ -98,7 +98,7 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
                 "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
-    import hermes_cli.model_selection_guards as guards
+    import application_model_selection_guards as guards
     monkeypatch.setattr(guards, "combined_selection_warning", lambda *a, **k: None)
 
     adapter = _gateway_wired_adapter()

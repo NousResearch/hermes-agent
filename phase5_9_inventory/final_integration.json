@@ -1,0 +1,58 @@
+{
+  "entry_baseline": "50dc83cfb4",
+  "broad_run": {
+    "files": 249,
+    "passed": 2338,
+    "failed_initially": 14,
+    "skipped": 18
+  },
+  "fixed_and_verified": [
+    "tests/agent/test_credits_cold_start.py::test_bg_seed_reruns_the_policy_when_a_header_beat_it",
+    "tests/agent/test_credits_cold_start.py::test_bg_seed_warms_pricing_so_a_subscription_model_escapes_the_banner",
+    "tests/agent/test_credits_policy.py::TestIsFreeTierModel::test_pricing_cache_peek_zero_priced_model",
+    "tests/hermes_cli/test_model_switch_variant_tags.py::TestVariantTagPreservation::test_slash_format_preserves_variant_tag[anthropic/claude-sonnet-4.6:extended-anthropic/claude-sonnet-4.6:extended]",
+    "tests/hermes_cli/test_model_switch_variant_tags.py::TestVariantTagPreservation::test_slash_format_preserves_variant_tag[meta-llama/llama-4-maverick:fast-meta-llama/llama-4-maverick:fast]",
+    "tests/hermes_cli/test_model_switch_variant_tags.py::TestVariantTagPreservation::test_slash_format_preserves_variant_tag[nvidia/nemotron-3-super-120b-a12b:free-nvidia/nemotron-3-super-120b-a12b:free]",
+    "tests/plugins/model_providers/test_deepseek_profile.py::TestDeepSeekAuxModel::test_consumer_api_matches_profile_aux_model"
+  ],
+  "unchanged_broad_baseline_failures": [
+    "tests/acp_adapter/test_session.py::TestSymlinkAliasNormalization::test_list_sessions_matches_symlink_alias_cwd",
+    "tests/acp_adapter/test_session.py::TestSymlinkAliasNormalization::test_symlink_alias_compares_equal",
+    "tests/hermes_cli/test_compat_manifest_targets.py::test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object",
+    "tests/hermes_cli/test_model_switch_copilot_api_mode.py::test_same_provider_copilot_switch_recomputes_api_mode",
+    "tests/hermes_cli/test_models.py::TestDetectProviderForModel::test_short_alias_resolves_to_static_model",
+    "tests/plugins/model_providers/test_commandcode_profile.py::TestCommandCodeFetchModelsPickerContract::test_resolve_provider_full",
+    "tests/tui_gateway/test_custom_provider_session_persistence.py::TestBareCustomNoBaseUrlHealsFromConfig::test_first_db_row_persists_entry_identity_not_bare_custom"
+  ],
+  "unchanged_server_baseline_failures": [
+    "tests/tui_gateway/test_tui_gateway_server.py::test_model_options_does_not_overwrite_curated_models",
+    "tests/tui_gateway/test_tui_gateway_server.py::test_model_options_preserves_canonical_custom_row_after_agent_init",
+    "tests/tui_gateway/test_tui_gateway_server.py::test_model_options_propagates_list_exception"
+  ],
+  "original_ten_file_failures": [
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_key_reload_keeps_yaml_endpoint",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[auto-aci-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[auto-actual-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[auto-custom-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[auto-custom:actual-relay-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[init-aci-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[init-actual-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[init-custom-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[init-custom:actual-relay-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[restore-aci-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[restore-actual-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[restore-custom-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[restore-custom:actual-relay-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[switch-aci-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[switch-actual-False]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[switch-custom-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_runtime_transitions_reach_chat_completions[switch-custom:actual-relay-True]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[aci-]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[aci-http://127.0.0.1:8081]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[aci-invalid-url]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[actual-]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[actual-http://127.0.0.1:8081]",
+    "tests/agent/test_actual_auxiliary_routing.py::test_actual_setup_keeps_provider_settings_in_yaml[actual-invalid-url]",
+    "tests/hermes_cli/test_models.py::TestDetectProviderForModel::test_short_alias_resolves_to_static_model"
+  ]
+}

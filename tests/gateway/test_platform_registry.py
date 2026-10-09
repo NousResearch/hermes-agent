@@ -356,6 +356,7 @@ class TestApplyYamlConfigFnDispatch:
 
         def _good_hook(yaml_cfg, platform_cfg):
             good_called["count"] += 1
+            return None
 
         from gateway.platform_registry import platform_registry as _reg
         _reg.register(PlatformEntry(

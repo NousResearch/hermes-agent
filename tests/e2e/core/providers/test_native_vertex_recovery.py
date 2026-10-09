@@ -22,7 +22,7 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core.providers._native_helpers import (
+from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult,
     assert_no_duplicate_assistant_text,
     latest_session,
@@ -31,7 +31,7 @@ from tests.e2e.core.providers._native_helpers import (
     run_chat,
     tool_calls_of,
 )
-from tests.fakes.providers.vertex import (
+from tests.fakes.providers.vertex import (  # noqa: E402
     PROJECT,
     REGION,
     SA_EMBEDDED_PROJECT,

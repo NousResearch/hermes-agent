@@ -39,7 +39,7 @@ def _make_agent_with_compressor(provider="copilot", base_url="https://api.github
     return agent
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("models.metadata.context.get_model_context_length", return_value=131_072)
 def test_switch_model_rejects_stale_base_url_on_provider_change(mock_ctx_len):
     """A provider change with no resolved base_url must fail loud instead of
     silently keeping the previous provider's endpoint (#47828)."""

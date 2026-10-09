@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources.base import (
+from agent.secret_sources.base import (  # noqa: E402
     SECRET_SOURCE_API_VERSION,
     ErrorKind,
     FetchResult,
@@ -28,9 +28,9 @@ from agent.secret_sources.base import (
     run_secret_cli,
     scrub_ansi,
 )
-from agent.secret_sources import registry as reg
-from agent.secret_sources.bitwarden import BitwardenSource
-from tests.secret_sources.conformance import SecretSourceConformance
+from agent.secret_sources import registry as reg  # noqa: E402
+from agent.secret_sources.bitwarden import BitwardenSource  # noqa: E402
+from tests.secret_sources.conformance import SecretSourceConformance  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -181,7 +181,7 @@ class TestApplyAll:
             tmp_path, environ=env,
         )
         assert env["K"] == "v"
-        broken = next(s for s in report.sources if s.name == "broken")
+        broken = [s for s in report.sources if s.name == "broken"][0]
         assert broken.result.error_kind is ErrorKind.NETWORK
 
 

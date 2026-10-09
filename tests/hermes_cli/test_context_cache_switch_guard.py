@@ -7,7 +7,7 @@ live session exceeds a configurable token threshold.
 
 from unittest.mock import patch
 
-from hermes_cli.model_selection_guards import (
+from application_model_selection_guards import (
     DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD,
     SelectionContext,
     _context_cache_guard,
@@ -57,33 +57,22 @@ class TestContextCacheGuard:
 
 
 class TestSelectionContextForAgent:
-    def test_uses_measured_prompt_tokens_not_the_lifetime_counter(self):
+    def test_measured_tokens_then_session_counter_fallback(self):
         class _CC:
             last_prompt_tokens = 123_456
 
         class _Measured:
             context_compressor = _CC()
-            session_prompt_tokens = 16_282_033
             model = "current/model"
 
-        class _LifetimeOnly:
+        class _Fallback:
             context_compressor = None
-            session_prompt_tokens = 16_282_033
-            model = "current/model"
-
-        class _Awaiting:
-            class _Stale:
-                last_prompt_tokens = -1
-
-            context_compressor = _Stale()
-            session_prompt_tokens = 16_282_033
+            session_prompt_tokens = 42_000
             model = "current/model"
 
         ctx = selection_context_for_agent(_Measured())
         assert (ctx.context_tokens, ctx.current_model) == (123_456, "current/model")
-        # session_prompt_tokens is a lifetime sum, not live occupancy (#126343).
-        assert selection_context_for_agent(_LifetimeOnly()) is None
-        assert selection_context_for_agent(_Awaiting()) is None
+        assert selection_context_for_agent(_Fallback()).context_tokens == 42_000
 
     def test_no_agent_or_empty_session_returns_none(self):
         class _Empty:

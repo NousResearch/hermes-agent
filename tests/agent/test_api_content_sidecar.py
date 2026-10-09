@@ -281,7 +281,8 @@ class TestPrologueStamping:
         """codex_app_server turns bypass the api_messages build, so the
         injected bytes are never sent — stamping would persist a lie."""
         agent = _FakeAgent()
-        agent.api_mode = "codex_app_server"
+        agent.api_mode = "codex_responses"
+        agent.runtime_kind = "app_server"
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
@@ -392,7 +393,7 @@ class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
 
-    def do_POST(self):
+    def do_POST(self):  # noqa: N802 (http.server API)
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)

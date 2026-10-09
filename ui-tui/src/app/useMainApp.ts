@@ -169,50 +169,20 @@ export async function startPromptLiveSession({
   const requestedModel = modelArg?.trim() ?? ''
 
   if (requestedModel) {
-    const applyModel = async (confirm?: string) => {
-      const mutation = await mutateCanonicalSession({ request: rpc }, sid, 'model', requestedModel, undefined, confirm)
-      const refusal = mutation?.result
+    const mutation = await mutateCanonicalSession({ request: rpc }, sid, 'model', requestedModel)
+    const result = mutation ? { ...mutation.result, value: mutation.result.model } : null
 
-      if (!confirm && refusal?.status === 'confirmation_required' && typeof refusal.confirm === 'string') {
-        // A guarded target (cost / data policy): the same ask as `/model`. The prompt waits for
-        // the answer; "switch anyway" re-sends once with the owner's token, then submits.
-        patchOverlayState({
-          confirm: {
-            cancelLabel: t('slashCmd.session.model.cancel'),
-            confirmLabel: t('slashCmd.session.model.switchAnyway'),
-            danger: true,
-            detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
-            onConfirm: () =>
-              void applyModel(refusal.confirm).catch((error: unknown) =>
-                sys(`error: ${error instanceof Error ? error.message : String(error)}`)
-              ),
-            title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? requestedModel)
-          }
-        })
+    if (!result?.value) {
+      sys(`error: ${t('session.main.invalidModelSwitchResponse')}`)
 
-        return
-      }
-
-      const result = mutation ? { ...mutation.result, value: mutation.result.model } : null
-
-      if (!result?.value) {
-        sys(`error: ${t('session.main.invalidModelSwitchResponse')}`)
-
-        return
-      }
-
-      if (isCurrentDestination(destination)) {
-        sys(t('session.main.modelSwitched', result.value))
-        maybeWarn(result)
-        onModelSwitched?.(result.value, result)
-      }
-
-      dispatchSubmission(trimmed, destination)
+      return sid
     }
 
-    await applyModel()
-
-    return sid
+    if (isCurrentDestination(destination)) {
+      sys(t('session.main.modelSwitched', result.value))
+      maybeWarn(result)
+      onModelSwitched?.(result.value, result)
+    }
   }
 
   dispatchSubmission(trimmed, destination)

@@ -22,7 +22,7 @@ from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
-_OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',
+_OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
                          'info', 'interrupt', 'discard', 'approve'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
@@ -72,8 +72,8 @@ def owner_request(home, verb, params, *, timeout=30):
     response = json.loads(raw)
     if response.get('ok') is not True:
         reason = str(response.get('error', '')).split(': ')[-1]
-        if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
-                          'stale_generation', 'admission_conflict', 'response_too_large'}:
+        if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params',
+                          'unknown_execution', 'stale_generation', 'admission_conflict'}:
             reason = 'runtime_draining'
         raise RuntimeStoreError(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
@@ -327,20 +327,9 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
                     self._monitor = threading.Thread(target=self._watch,
                         args=(params['session_id'],), daemon=True)
                     self._monitor.start()
-        if operation in {'history', 'results'}:
+        if operation == 'history':
             self._deliver(result)
         return result
-
-    def history(self, *, profile, session_id, source):
-        """Driver recovery reads terminal receipts; a transcript past one response line
-        degrades to the bounded receipt rows (all the driver matches on) instead of failing."""
-        try:
-            return super().history(profile=profile, session_id=session_id, source=source)
-        except RuntimeStoreError as exc:
-            if exc.reason != 'response_too_large':
-                raise
-        return [{**receipt, 'role': 'assistant', 'content': receipt['text']}
-                for receipt in self.results(profile=profile, session_id=session_id, source=source)]
 
     def _deliver(self, history):
         for row in history:
@@ -355,10 +344,8 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
                 with self._lock:
                     if not self.callbacks:
                         return
-                    pending = list(self.callbacks)[:256]
-                # Per-admission receipts only: polling never re-reads the transcript.
-                self.results(profile=self.binding['selector']['profile'],
-                             session_id=session_id, source='bot_room', admission_ids=pending)
+                self.history(profile=self.binding['selector']['profile'],
+                             session_id=session_id, source='bot_room')
                 time.sleep(0.25)
         except (OSError, ValueError, RuntimeStoreError):
             # Retain callbacks/input for normal driver history recovery; no retry

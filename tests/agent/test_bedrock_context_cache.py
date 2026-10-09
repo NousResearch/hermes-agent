@@ -17,7 +17,7 @@ import pytest
 import hermes_yaml as yaml
 
 from agent import bedrock_adapter as ba
-from agent import model_metadata as mm
+from models.metadata import context as mm
 from agent.context_compressor import ContextCompressor
 
 
@@ -165,7 +165,10 @@ def test_provider_confirmed_writers_survive_restart(monkeypatch, base_url, write
     assert mm.get_cached_context_length(model, base_url or "bedrock://") == 96_000
     script = '''
 import sys
-from agent import model_metadata as mm, bedrock_adapter as ba
+from models.metadata import context as mm
+from agent import bedrock_adapter as ba
+from agent.model_metadata import install_context_metadata_hooks
+install_context_metadata_hooks()
 ba.probe_bedrock_context_length = lambda *a, **k: (_ for _ in ()).throw(AssertionError("lost provider limit"))
 assert mm.get_model_context_length(sys.argv[1], base_url=sys.argv[2], provider="bedrock") == 96000
 '''

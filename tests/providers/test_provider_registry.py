@@ -6,23 +6,23 @@ import providers
 
 @pytest.fixture(autouse=True)
 def isolate_provider_registry():
-    registry = providers._REGISTRY.copy()
-    aliases = providers._ALIASES.copy()
+    registry = providers.registry._REGISTRY.copy()
+    aliases = providers.registry._ALIASES.copy()
     provider_list_cache = (
         None
-        if providers._PROVIDER_LIST_CACHE is None
-        else list(providers._PROVIDER_LIST_CACHE)
+        if providers.registry._PROVIDER_LIST_CACHE is None
+        else list(providers.registry._PROVIDER_LIST_CACHE)
     )
-    discovered = providers._discovered
+    discovered = providers.discovery._discovered
 
     yield
 
-    providers._REGISTRY.clear()
-    providers._REGISTRY.update(registry)
-    providers._ALIASES.clear()
-    providers._ALIASES.update(aliases)
-    providers._PROVIDER_LIST_CACHE = provider_list_cache
-    providers._discovered = discovered
+    providers.registry._REGISTRY.clear()
+    providers.registry._REGISTRY.update(registry)
+    providers.registry._ALIASES.clear()
+    providers.registry._ALIASES.update(aliases)
+    providers.registry._PROVIDER_LIST_CACHE = provider_list_cache
+    providers.discovery._discovered = discovered
 
 
 def _profile(name: str, *aliases: str) -> ProviderProfile:
@@ -30,10 +30,10 @@ def _profile(name: str, *aliases: str) -> ProviderProfile:
 
 
 def _reset_registry() -> None:
-    providers._REGISTRY.clear()
-    providers._ALIASES.clear()
-    providers._PROVIDER_LIST_CACHE = None
-    providers._discovered = True
+    providers.registry._REGISTRY.clear()
+    providers.registry._ALIASES.clear()
+    providers.registry._PROVIDER_LIST_CACHE = None
+    providers.discovery._discovered = True
 
 
 def test_list_providers_reuses_cached_snapshot_until_registration_changes():
@@ -72,7 +72,7 @@ def test_provider_lookups_reuse_the_home_plugin_stamp_within_its_ttl(tmp_path, m
     profile = _profile("known")
     providers.register_provider(profile)
     stamp_calls = 0
-    original_stamps = providers._plugin_dir_stamps
+    original_stamps = providers.discovery._plugin_dir_stamps
 
     def count_stamps(home):
         nonlocal stamp_calls
@@ -80,9 +80,9 @@ def test_provider_lookups_reuse_the_home_plugin_stamp_within_its_ttl(tmp_path, m
         return original_stamps(home)
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(providers, "_HOME_LAYERS", {})
-    monkeypatch.setattr(providers, "_plugin_dir_stamps", count_stamps)
-    monkeypatch.setattr(providers, "_scan_home_layer", lambda *_: None)
+    monkeypatch.setattr(providers.registry, "_HOME_LAYERS", {})
+    monkeypatch.setattr(providers.discovery, "_plugin_dir_stamps", count_stamps)
+    monkeypatch.setattr(providers.discovery, "_scan_home_layer", lambda *_: None)
 
     assert providers.get_provider_profile("known") is profile
     assert providers.list_providers() == [profile]
@@ -96,11 +96,11 @@ def test_api_key_profiles_declare_their_registry_key_env():
     variable first in ``env_vars``. Surfaces that read the profile (the provider-catalog e2e
     matrix, doctor, setup prompts) otherwise see a keyless provider. Runs on the default lane so
     the gap is caught even when the change classifier skips the e2e lane (#134320 -> #134385)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.provider_auth import get_provider_config
 
     missing = []
     for profile in providers.list_providers():
-        row = PROVIDER_REGISTRY.get(profile.name)
+        row = get_provider_config(profile.name)
         if profile.auth_type != "api_key" or row is None or row.auth_type != "api_key" or not row.api_key_env_vars:
             continue
         keys = [v for v in profile.env_vars if not v.endswith(("_BASE_URL", "_URL"))]

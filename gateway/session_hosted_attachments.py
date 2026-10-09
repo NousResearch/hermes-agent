@@ -6,7 +6,6 @@ from pathlib import Path
 import tempfile
 
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
-from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -94,9 +93,8 @@ def submission_payload(rpc, prompt, attachments=None):
             data = transferred[index][1]
         if len(data) != item['size']:
             raise RuntimeStoreError('permission_denied')
-        # Retained native-inputs are excluded from age-only document cleanup; a live hosted row
-        # holds its documents through the prompt path lines (``hosted_document_references``).
-        # The content-addressed destination is stable on retry and refuses corruption.
+        # Retained native-inputs are excluded from age-only document cleanup. The
+        # content-addressed destination is stable on retry and refuses corruption.
         with tempfile.TemporaryDirectory(prefix='hermes-room-input-') as directory:
             path = Path(directory) / item['name']
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -133,7 +131,7 @@ def submission_payload(rpc, prompt, attachments=None):
             finally:
                 Path(temporary).unlink(missing_ok=True)
         images.append({'path': str(target), 'mime': item['mime']})
-    text = prompt + ''.join(HOSTED_DOCUMENT_LINE + path + '\n' for path in documents)
+    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
     return {'text': text, **({'attachments': images} if images else {})}
 
 
@@ -185,7 +183,7 @@ def attested_submission_payload(prompt, attachments, digests):
             media_types.append(item['mime'])
         else:
             documents.append(reference['path'])
-    text = prompt + ''.join(HOSTED_DOCUMENT_LINE + path + '\n' for path in documents)
+    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
     return {'text': text, **({'attachments_v1': {'media': media, 'media_types': media_types}} if media else {})}
 
 

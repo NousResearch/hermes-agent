@@ -43,7 +43,7 @@ def _make_agent_with_compressor() -> AIAgent:
 
 
 @patch("agent.auxiliary_client.resolve_provider_client")
-@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("models.metadata.context.get_model_context_length", return_value=128_000)
 def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     """After fallback activation, the compressor must reflect the fallback model."""
     agent = _make_agent_with_compressor()

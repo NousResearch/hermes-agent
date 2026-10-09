@@ -222,7 +222,7 @@ class _ConsoleSender:
         self.ws = ws
         self.lock = asyncio.Lock()
 
-    async def send(self, payload: dict[str, Any]) -> None:
+    async def send(self, payload: Dict[str, Any]) -> None:
         async with self.lock:
             await self.ws.send_json(payload)
 
@@ -232,7 +232,7 @@ class _ConsoleSender:
     async def error(self, message: str, *, id: Optional[int] = None, command: Optional[str] = None,
                     prompt: Optional[str] = None) -> None:
         # Key order matches the historical frames: type, id, message, command, prompt.
-        frame: dict[str, Any] = {"type": "error"}
+        frame: Dict[str, Any] = {"type": "error"}
         if id is not None:
             frame["id"] = id
         frame["message"] = message
@@ -722,10 +722,6 @@ async def gateway_ws(ws: WebSocket) -> None:
                     'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
                     'capabilities': ['session:create', 'session:read', 'session:submit',
                                      'session:control', 'session:approve', 'session:respond']}
-    if identity is not None:
-        # The dashboard gate authorizes the whole host (its REST routes take ``?profile=`` for
-        # every profile), so its socket may select any served sibling too.
-        identity = {**identity, 'profile_scope': 'host'}
     await handle_ws(
         ws,
         auth_identity=identity,

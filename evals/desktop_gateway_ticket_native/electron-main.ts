@@ -2,7 +2,7 @@ import { app } from 'electron'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import WebSocket from 'ws'
-import { configurePythonGatewayTicketClient, mintLocalGatewayTicket, nativeGatewayHttpHeaders } from '../../apps/desktop/electron/local-gateway'
+import { configureWindowsGatewayTicketClient, mintLocalGatewayTicket, nativeGatewayHttpHeaders } from '../../apps/desktop/electron/local-gateway'
 import { mintGatewayTicketWithPython } from '../../apps/desktop/electron/local-gateway-python'
 
 const input = JSON.parse(fs.readFileSync(process.env.NATIVE_TICKET_INPUT!, 'utf8'))
@@ -50,7 +50,7 @@ async function describe(ticket: string, replay = false) {
 async function main() {
   assert.ok(process.versions.electron, 'Must execute inside real Electron, not Node')
   assert.equal(process.type, 'browser', 'Must execute in Electron main')
-  configurePythonGatewayTicketClient((endpoint, purpose) =>
+  configureWindowsGatewayTicketClient((endpoint, purpose) =>
     mintGatewayTicketWithPython({ command: input.python, env: { PYTHONPATH: input.repo } }, input.repo, endpoint, purpose))
   const descriptor = { gatewayEndpoint: input.endpoint, baseUrl: input.endpoint.api_origin }
   const configUrl = descriptor.baseUrl + '/api/config'

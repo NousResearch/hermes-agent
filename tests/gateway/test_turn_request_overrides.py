@@ -52,7 +52,7 @@ def test_provider_request_overrides_preserved_without_service_tier():
 def test_provider_request_overrides_merged_under_fast_mode(monkeypatch):
     """/fast active: provider extra_body AND the service-tier marker both survive."""
     monkeypatch.setattr(
-        "hermes_cli.models.resolve_fast_mode_overrides",
+        "models.metadata.fast_mode.resolve_fast_mode_overrides",
         lambda model_id, **_route: {"service_tier": "priority"},
     )
     runner = _runner(service_tier="priority")
@@ -85,7 +85,7 @@ def test_resolve_runtime_agent_kwargs_carries_request_overrides(monkeypatch):
         lambda *a, **k: dict(fake_runtime),
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider._get_model_config", dict
+        "hermes_cli.runtime_provider._get_model_config", lambda: {}
     )
     rk = gateway_run._resolve_runtime_agent_kwargs()
     assert rk["request_overrides"] == PROVIDER_OVERRIDES

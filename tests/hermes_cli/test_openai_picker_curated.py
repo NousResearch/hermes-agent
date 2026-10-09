@@ -10,13 +10,14 @@ Bug 1 — OpenAI picker dumped the raw ``/v1/models`` catalog
     verbatim so discovery still works.
 
 Bug 2 — OpenRouter appeared authenticated whenever OPENAI_API_KEY was set
-    OpenRouter's HermesOverlay carried ``extra_env_vars=("OPENAI_API_KEY",)``.
-    ``list_authenticated_providers`` reads ``extra_env_vars`` to decide whether
-    a provider has credentials, so any OpenAI user saw a phantom OpenRouter
-    row. The overlay entry is removed; runtime credential resolution still
-    falls back to OPENAI_API_KEY for explicitly-selected OpenRouter (handled
-    in runtime_provider.py, independent of the overlay).
+    The picker historically treated ``OPENAI_API_KEY`` as evidence that
+    OpenRouter itself was configured, so any OpenAI user saw a phantom row.
+    The canonical OpenRouter profile now declares only its own credential
+    environment variable; explicit runtime credential fallback is a separate
+    resolution concern.
 """
+
+import models.catalog_static as models_catalog_static
 
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ def test_default_openai_endpoint_filters_to_curated(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    curated = M._PROVIDER_MODELS["openai-api"]
+    curated = models_catalog_static._PROVIDER_MODELS["openai-api"]
     # Live catalog: every curated model PLUS a pile of non-agentic junk.
     live = list(curated) + [
         "text-embedding-3-large", "whisper-1", "tts-1", "dall-e-3",
@@ -51,7 +52,7 @@ def test_default_openai_endpoint_intersects_account_access(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    curated = M._PROVIDER_MODELS["openai-api"]
+    curated = models_catalog_static._PROVIDER_MODELS["openai-api"]
     # Account only serves the first two curated models.
     live = list(curated[:2]) + ["text-embedding-3-large", "whisper-1"]
     with patch.object(M, "fetch_api_models", return_value=live):

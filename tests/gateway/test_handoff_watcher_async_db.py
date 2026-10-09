@@ -20,7 +20,7 @@ import types
 
 import pytest
 
-from gateway import run
+import gateway.run as run
 
 
 class _RecordingSessionDB:

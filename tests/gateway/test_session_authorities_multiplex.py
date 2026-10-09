@@ -113,31 +113,3 @@ def test_single_profile_runtime_is_a_map_of_one(tmp_path, monkeypatch):
     other.mkdir()
     with _profile_runtime_scope(other, {}):
         assert active_authority(runner) is authority
-
-
-@pytest.mark.asyncio
-async def test_removed_last_secondary_never_resolves_to_launch(tmp_path, monkeypatch):
-    """Once a multiplexed runtime unserves its last secondary only the launch slot remains; a late
-    callback scoped to the removed home must get None, not the launch profile's ledger."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime, unserve_profile_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import active_authority
-    root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
-    process_ownership.reserve([home for _, home in homes])
-    alpha = homes[1][1]
-    try:
-        runner = _runner(root, homes)
-        await initialize_gateway_runtime(runner)
-        removed = runner.session_authorities.for_home(alpha)
-        assert await unserve_profile_runtime(runner, alpha) is True
-        removed.db.close()
-        assert len(runner.session_authorities) == 1
-        with _profile_runtime_scope(alpha, {}):
-            assert active_authority(runner) is None
-        assert active_authority(runner) is runner.session_authority  # unscoped = launch profile
-    finally:
-        for authority in list(runner.session_authorities):
-            authority.db.close()
-        for _, home in homes:
-            process_ownership.release(home)

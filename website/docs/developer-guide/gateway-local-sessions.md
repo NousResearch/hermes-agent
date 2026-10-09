@@ -65,14 +65,11 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
 
 ## Deliberately limited compatibility
 
-- `source` accepts `cli` (default), `tui`, `gui`, `acp`, `tool` and `oneshot`
-  (`gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
-  `desktop`, `acp`, `cli` and `cli`; `tool` (third-party integrations) and `oneshot`
-  (finite `chat -q` / `-z` runs) keep their own stored label so human pickers hide them.
-  The native local routing identity remains server-owned `Platform.LOCAL`; source never
-  grants messaging/native trust. Default TUI selection folds in `project`; GUI folds in
-  the client-surface toolsets (`project`, `desktop_ui`, `catalog`). GUI policy is
-  independent of `HERMES_DESKTOP` and of the attaching viewer's identity.
+- `source` accepts `cli` (default), `tui`, or `gui`. These select the existing agent
+  platforms `cli`, `tui`, and `desktop`, respectively. The native local routing identity
+  remains server-owned `Platform.LOCAL`; source never grants messaging/native trust.
+  Default TUI selection folds in `project`; GUI folds in `project` and `desktop_ui`.
+  GUI policy is independent of `HERMES_DESKTOP` and of the attaching viewer's identity.
 - Optional flat creation fields: `cwd` (existing absolute gateway-local directory),
   `model` (nonempty model identifier on the daemon's configured provider), and `toolsets`
   (explicit array of established toolset names, including an empty array). Unknown or
@@ -80,16 +77,11 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
   override the default surface additions; CLI/TUI cannot explicitly request `desktop_ui`.
   `cwd`, model selection, source and effective toolsets are captured at creation; attach
   cannot change them. A conflicting repeat `request_id` returns `invalid_params`.
-- Further frozen launch fields (`CREATE_FIELDS`): `provider`, `base_url` (http(s), no
-  credentials/query/fragment), `api_key` (held in the owner's memory, never persisted),
-  `reasoning`, `max_turns`, `skills` (rendered once into the frozen prompt; refused with a
-  bypass launch), the booleans `yolo`, `checkpoints`, `accept_hooks`, `pass_session_id`,
-  `ignore_rules`, `safe_mode`, `ignore_user_config` (safe mode implies ignore-user-config
-  and runs turns in an isolated worker), `editor` (ACP only), plus `title` (resolve-or-create)
-  and `hidden`. A malformed value returns `invalid_params`. Any other field, cwd worktree
-  creation, seeded history, profile switching and service-tier selection still return
-  `invalid_params`. No supported launch field mutates daemon-wide configuration or process
-  environment.
+- Provider/base URL overrides, reasoning/service-tier, skills, cwd worktree creation,
+  seeded history, profile switching, YOLO, and other launch options still return
+  `invalid_params`. Provider credentials/routing and reasoning/service-tier defaults still
+  use the existing gateway resolution lifecycle; this is not full launch-option parity.
+  No supported launch field mutates daemon-wide configuration or process environment.
 - Fresh creation requires a server-authenticated identity with `session:create`, supplied
   by the gated dashboard or native bootstrap path. The verified legacy `?token=` route
   stamps a session-token identity and also supports creation. Callers cannot provide an
@@ -99,8 +91,7 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
   not the full historical session picker. `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,
-  epoch, capabilities, and the creation contract (`session_create.sources` and
-  `session_create.parameters`, which clients check before sending a launch option). It does not claim full runtime
+  epoch, and the narrow implemented creation contract. It does not claim full runtime
   protocol readiness, reveal credentials/paths, start an agent, or renew a turn lease.
 - Cold restart restores valid private local policies and server-owned routes before execution.
   Creation receipts remain bound to their authenticated creating principal and profile;

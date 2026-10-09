@@ -2548,7 +2548,6 @@ export const jaOverrides = {
     queueDelete: '削除',
     queueLostNote: '再起動中にターンが失われました',
     restoreImageDraft: '画像の下書きを復元',
-    queueCancelFailed: 'キュー内のターンを削除できませんでした',
     queueLostDiscard: '破棄',
     queueLostDiscardTip:
       'ターン中にゲートウェイが再起動したため完了できません。破棄すると後続のキュー済みターンが実行されます。',

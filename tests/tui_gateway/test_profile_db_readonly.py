@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tui_gateway import server
+import tui_gateway.server as server
 from hermes_state import SessionDB
 
 

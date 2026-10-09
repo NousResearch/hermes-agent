@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 
-from hermes_cli import auth
+import hermes_cli.auth as auth
 from agent.credential_pool import CredentialPool
 
 

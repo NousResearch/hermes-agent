@@ -391,7 +391,7 @@ class TurnController {
         }
       } catch (error) {
         if (isActiveTurn()) {
-          sys(t('canonical.submit.interruptFailed', rpcErrorMessage(error)))
+          sys(`interrupt failed: ${rpcErrorMessage(error)}`)
         }
 
         return

@@ -24,7 +24,7 @@ class TestAnthropicTransport:
 
     @pytest.fixture
     def transport(self):
-        import agent.transports.anthropic
+        import agent.transports.anthropic  # noqa: F401
         return get_transport("anthropic_messages")
 
 

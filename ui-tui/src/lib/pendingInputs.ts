@@ -15,7 +15,6 @@ import { join } from 'node:path'
 
 import type { SubmissionDestination } from '../app/submissionDestination.js'
 import type { QueueItem } from '../hooks/useQueue.js'
-import { t } from '../i18n/runtime.js'
 
 const directory = (home?: string) =>
   join(home ?? process.env.HERMES_HOME ?? join(homedir(), '.hermes'), 'tui-pending-inputs')
@@ -165,7 +164,7 @@ export function loadPendingInputs(destination: SubmissionDestination, durableRes
         typeof record.text !== 'string' ||
         typeof record.display !== 'string'
       ) {
-        throw new Error(t('canonical.queue.invalidRecord', name))
+        throw new Error(`Invalid pending input record: ${name}`)
       }
 
       const owner = record.ownerDestination ?? record.destination

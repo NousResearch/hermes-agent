@@ -4,55 +4,14 @@ Desktop and Ink both submit ``skill``/``send`` results with their own input ID.
 Executing those here would double-submit and bypass their retry identity.
 """
 import asyncio
-from contextlib import contextmanager
 from pathlib import Path
-import shlex
 
 from hermes_state_runtime import RuntimeStoreError
 
 
-# Reviewed gateway handlers only: listing a command is not permission to run it. Each read was
-# run through its real handler against a local session (website/docs/developer-guide/
-# gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
-_READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
-                            'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
-                            'suggestions', 'bundles'})
+# Reviewed gateway handlers only: listing a command is not permission to run it.
+_READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami'})
 _CONTROL_COMMANDS = frozenset({'title'})
-
-# Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
-# messaging notifications, and every other verb mutates the board.
-_KANBAN_READS = frozenset({'', 'help', '--help', '-h', '?', 'list', 'ls', 'show', 'stats', 'assignees',
-                           'context', 'runs', 'log', 'diagnostics', 'diag'})
-
-
-def _first_token(arg):
-    tokens = iter(shlex.split(arg) if arg.strip() else [])
-    for token in tokens:
-        if token == '--board':
-            next(tokens, None)
-        elif not token.startswith('--board='):
-            return token.lower()
-    return ''
-
-
-# The read-only argument forms of a read command whose other subcommands write: ``/usage reset``
-# redeems a credit, ``/memory approve|approval`` applies writes / edits config.yaml,
-# ``/suggestions accept|catalog`` schedules cron jobs delivering to this (non-messaging) chat.
-_READ_ARGUMENTS = {
-    'usage': lambda arg: not arg.strip(),
-    'memory': lambda arg: arg.strip().lower() in {'', 'pending'},
-    'suggestions': lambda arg: not arg.strip(),
-    'kanban': lambda arg: _first_token(arg) in _KANBAN_READS,
-}
-
-
-def command_verdict(name, arg=''):
-    """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
-    if name in _CONTROL_COMMANDS:
-        return 'control'
-    if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
-        return 'read'
-    return 'refused'
 
 
 def _parse(params, dispatch):
@@ -103,27 +62,6 @@ def _skill_directive(name, arg, route):
             'display': describe_skill_invocation(message, separator=' ')}
 
 
-@contextmanager
-def _session_workspace(runner, source):
-    """The session's frozen terminal policy (``TERMINAL_CWD`` = its launch cwd), so ``/diff``
-    reads the caller's checkout instead of the gateway process's configured directory."""
-    import json
-    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
-    from gateway.session_policy import policy_for_source
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    policy = policy_for_source(runner, source)
-    if policy is None:
-        yield
-        return
-    cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(json.loads(policy.terminal_json))
-    try:
-        yield
-    finally:
-        reset_terminal_scope(terminal_token)
-        reset_session_cwd(cwd_token)
-
-
 async def execute_command(connection, ref, params, *, dispatch=False):
     authority, actor = connection.authority, connection.actor
     authority.authorize(actor, ref, 'session:read')
@@ -141,11 +79,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     name, arg = await asyncio.to_thread(resolve)
     definition = resolve_command(name)
     canonical = definition.name if definition else name
-    verdict = command_verdict(canonical, arg) if definition else None
-    capability = ('session:read' if verdict == 'read' else
+    capability = ('session:read' if canonical in _READ_COMMANDS else
                   'session:control' if definition else 'session:submit')
     authority.authorize(actor, ref, capability)
-    if verdict == 'refused':
+    if definition and canonical not in _READ_COMMANDS | _CONTROL_COMMANDS:
         raise RuntimeStoreError('unsupported_command')
     from gateway.session_local import authorize_local_source
     live = authority.sessions[ref.session_id]
@@ -162,7 +99,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     from gateway.platforms.base import MessageEvent
     event = MessageEvent(text='/' + canonical + (' ' + arg if arg else ''), source=live.source)
     # Use the registry's existing busy contract, not a local approximation.
-    with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+    with _profile_runtime_scope(home):
         if authority._handle(ref).execution_state != 'idle':
             output = await authority.runner._dispatch_busy_slash_command(event, definition, live.route, live.source)
         else:

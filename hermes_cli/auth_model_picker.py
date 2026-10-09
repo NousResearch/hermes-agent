@@ -20,14 +20,14 @@ _CURRENT_SUFFIX = "  ← currently in use"
 
 def _confirm_selection_guards(
     model_id: str, *, provider: str = "", base_url: str = "", api_key: str = "",
-    include_kinds: Optional[list[str]] = None,
+    include_kinds: Optional[List[str]] = None,
 ) -> bool:
     """Prompt before saving a model that trips any selection guard (cost, data-policy, ...).
 
     Shows one [y/N] confirm listing every warning that fired. Returns True to proceed.
     """
     try:
-        from hermes_cli.model_selection_guards import combined_message, selection_warnings
+        from application_model_selection_guards import combined_message, selection_warnings
         warnings = selection_warnings(
             model_id, provider=provider, base_url=base_url, api_key=api_key, include_kinds=include_kinds,
         )
@@ -56,10 +56,11 @@ class _ModelPickerRows:
     """
 
     def __init__(
-        self, all_models: list[str], pricing: Optional[dict[str, dict[str, str]]], *,
-        current_model: str, sale_chrome: bool, notes: Optional[dict[str, str]] = None,
+        self, all_models: List[str], pricing: Optional[Dict[str, Dict[str, str]]], *,
+        current_model: str, sale_chrome: bool, notes: Optional[Dict[str, str]] = None,
     ) -> None:
-        from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
+        from hermes_cli.models_pricing import _format_price_per_mtok
+        from models.metadata.pricing import compute_sale_discount
         self.current_model = current_model
         # Per-model dim annotation (e.g. "usage credits"); the row stays selectable.
         self.notes = notes or {}
@@ -151,11 +152,11 @@ class _ModelPickerRows:
 
 
 def _prompt_model_selection(
-    model_ids: list[str], current_model: str = "",
-    pricing: Optional[dict[str, dict[str, str]]] = None,
-    unavailable_models: Optional[list[str]] = None, portal_url: str = "",
+    model_ids: List[str], current_model: str = "",
+    pricing: Optional[Dict[str, Dict[str, str]]] = None,
+    unavailable_models: Optional[List[str]] = None, portal_url: str = "",
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
-    confirm_api_key: str = "", notes: Optional[dict[str, str]] = None,
+    confirm_api_key: str = "", notes: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
 
@@ -184,10 +185,13 @@ def _prompt_model_selection(
             return None
         return _confirmed_selection(custom) if custom else None
 
-    # Reorder: current model first, then the rest (deduplicated)
-    ordered = list(dict.fromkeys(
-        ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
-    ))
+    from hermes_cli.model_selection_picker import picker_model_ids
+    ordered = picker_model_ids(
+        confirm_provider,
+        model_ids,
+        base_url=confirm_base_url,
+        current_model=current_model,
+    )
 
     # All models for column-width computation (selectable + unavailable)
     rows = _ModelPickerRows(ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome, notes=notes)
@@ -282,18 +286,9 @@ def _prompt_model_selection(
             return None
 
 
-_model_choice_saves = 0  # bumped per saved pick; `hermes model` reads it to know a pick landed
-
-
-def model_choice_save_count() -> int:
-    return _model_choice_saves
-
-
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
-    global _model_choice_saves
     from hermes_cli.config import save_config, load_config
-    _model_choice_saves += 1
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):

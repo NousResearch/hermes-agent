@@ -20,14 +20,14 @@ _THREAD_HORIZON_MINUTES = 60
 
 
 def _first_fire_within_thread_horizon(
-    schedule: Union[str, dict[str, Any], None],
+    schedule: Union[str, Dict[str, Any], None],
 ) -> bool:
     """True when the job's first fire is close enough that the creating conversation is still
     alive when it happens. Only near one-shots qualify; recurring jobs and one-shots beyond the
     horizon outlive the conversation, which is what the synthetic-drop rule protects."""
     if not schedule:
         return False
-    parsed: Optional[dict[str, Any]]
+    parsed: Optional[Dict[str, Any]]
     if isinstance(schedule, dict):
         parsed = schedule
     else:
@@ -57,8 +57,8 @@ def _first_fire_within_thread_horizon(
 
 
 def _origin_from_env(
-    schedule: Union[str, dict[str, Any], None] = None,
-) -> Optional[dict[str, str]]:
+    schedule: Union[str, Dict[str, Any], None] = None,
+) -> Optional[Dict[str, str]]:
     from gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -107,7 +107,7 @@ def _origin_from_env(
     }
 
 
-def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
+def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
     """Notice when a created job won't deliver anywhere: CLI/TUI sessions have no capturable
     origin, so deliver='origin' (or omitted) saves output but never delivers it. None when the
     user explicitly asked for ``local`` or the job resolves to a real target.
@@ -145,10 +145,10 @@ def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> 
         "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'.")
 
 
-def _mode_guidance_notes(job: dict[str, Any], user_deliver: Optional[str]) -> list[str]:
+def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> List[str]:
     """Mode guidance echoed once in the create/update response (not in the schema, which is
     paid for on every API call)."""
-    notes: list[str] = []
+    notes: List[str] = []
     if job.get("monitor_script") or job.get("monitor_url"):
         notes.append(
             "Monitor mode: the source runs first each tick and its output is "
@@ -207,7 +207,7 @@ def _split_monitor_arg(
     return value, ""
 
 
-def _repeat_display(job: dict[str, Any]) -> str:
+def _repeat_display(job: Dict[str, Any]) -> str:
     rep = job.get("repeat") or {}
     times, completed = rep.get("times"), rep.get("completed", 0)
     if times is None:
@@ -217,7 +217,7 @@ def _repeat_display(job: dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
-def _clean_str_list(items: Any) -> list[str]:
+def _clean_str_list(items: Any) -> List[str]:
     """Stripped, non-empty ``str(item)`` values from a str-or-iterable (order kept)."""
     if items is None:
         return []
@@ -226,7 +226,7 @@ def _clean_str_list(items: Any) -> list[str]:
     return [s for s in (str(i).strip() for i in items) if s]
 
 
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> list[str]:
+def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     if skills is None:
         skills = [skill] if skill else []
     elif isinstance(skills, str):
@@ -380,7 +380,8 @@ def _validate_cron_base_url(
             has_named_custom_provider,
             resolve_requested_provider,
             _get_named_custom_provider)
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.provider_auth import get_provider_config
+        from utils import base_url_host_matches, base_url_hostname
     except Exception:
         return f"Unable to validate base_url override for provider {prov!r}; refused."
 
@@ -402,9 +403,9 @@ def _validate_cron_base_url(
         resolved = resolve_requested_provider(prov)
     except Exception:
         resolved = prov
-    pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
-    known_url = str(getattr(pconfig, "inference_base_url", "") or "") if pconfig else ""
-    if known_url and _same_origin(bu, known_url):
+    pconfig = get_provider_config(resolved) if isinstance(resolved, str) else None
+    known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
+    if known_host and base_url_host_matches(bu, known_host):
         return None
     # Fail closed: named providers with stored credentials AND unknown names we cannot origin-match.
     return _base_url_refused(
@@ -441,8 +442,8 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _apply_continuity(
-    context_from: Optional[Union[str, list[str]]],
-    continuity: bool) -> Optional[list[str]]:
+    context_from: Optional[Union[str, List[str]]],
+    continuity: bool) -> Optional[List[str]]:
     """continuity=True ensures "self" is in context_from; False removes it; others untouched."""
     refs = _clean_str_list(context_from)
     has_self = any(r.lower() == "self" for r in refs)
@@ -453,7 +454,7 @@ def _apply_continuity(
     return refs or None
 
 
-def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
+def _validate_context_from_refs(refs: List[Any]) -> Optional[str]:
     """Error string if any non-"self" ref names a missing job ("self" resolves to the job's
     own id at run time, so it can't be checked — the job doesn't exist yet at create)."""
     from cron.jobs import get_job as _get_job
@@ -473,7 +474,7 @@ _FORMAT_JOB_OPTIONAL_KEYS = (
     "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter")
 
 
-def _format_job(job: dict[str, Any]) -> dict[str, Any]:
+def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     from agent.redact import redact_sensitive_text
 
     prompt = str(job.get("prompt") or "")
@@ -515,7 +516,7 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
     stored_refs = job.get("context_from") or []
     if isinstance(stored_refs, str):
         stored_refs = [stored_refs]
-    is_self = lambda r: str(r).strip().lower() == "self" or r == job.get("id")
+    is_self = lambda r: str(r).strip().lower() == "self" or r == job.get("id")  # noqa: E731
     if any(is_self(r) for r in stored_refs):
         result["continuity"] = True
     external_refs = [r for r in stored_refs if not is_self(r)]

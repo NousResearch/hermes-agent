@@ -76,7 +76,7 @@ import logging
 
 logging.disable(logging.CRITICAL)
 
-import run_agent
+import run_agent  # noqa: E402
 
 _loaded = os.path.normcase(os.path.normpath(run_agent.__file__))
 _want = os.path.normcase(os.path.normpath(WT))
@@ -84,13 +84,13 @@ assert _loaded.startswith(_want), f"wrong tree: {run_agent.__file__}"
 
 if ARM == "prns":
     # Strip the helpers digest from the schema: header-only description.
-    import tools.browser_use_cli as bu
+    import tools.browser_use_cli as bu  # noqa: E402
 
     bu._skill_text_fetched = True
     bu._skill_text_cache = None
     bu.BROWSER_EXEC_SCHEMA["description"] = bu._description_header()
 
-from run_agent import AIAgent
+from run_agent import AIAgent  # noqa: E402
 
 # Provider resolution: default openrouter (original battery), but allow the
 # Nous-subscription path on boxes without an OpenRouter key. Credentials are
@@ -151,7 +151,7 @@ try:
         else str(result)
     )
     messages = result.get("messages", []) if isinstance(result, dict) else []
-except Exception as e:
+except Exception as e:  # noqa: BLE001
     error = f"{type(e).__name__}: {e}"
     messages = getattr(agent, "messages", []) or []
 wall = time.time() - t0

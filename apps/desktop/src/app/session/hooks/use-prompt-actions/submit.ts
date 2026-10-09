@@ -48,10 +48,8 @@ import type { CreateBackendSessionForSend } from '../use-session-actions/create-
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
-  adoptPreparedSubmission,
-  type PreparedSubmission,
   preparedSubmissionKey,
-  preparedSubmissionSlot,
+  readPreparedSubmission,
   removePreparedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
@@ -440,13 +438,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
 
       let startingRouteToken = getRouteToken()
-      let retained: PreparedSubmission | undefined
-      let retainedKey: string | undefined
+      let retained: Awaited<ReturnType<typeof readPreparedSubmission>>
 
       try {
-        const adopted = await adoptPreparedSubmission(retryKeyForTarget())
-        retained = adopted?.entry
-        retainedKey = adopted?.key
+        retained = await readPreparedSubmission(retryKeyForTarget())
 
         // A legacy send has no deduplication identity. After an ambiguous ACK
         // even an upgraded server cannot safely admit it under the saved ID.
@@ -1073,7 +1068,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           params: submitParams(liveSessionId)
         }
 
-        const retryKey = retainedKey ?? (await preparedSubmissionSlot(retryKeyForTarget()))
+        const retryKey = retryKeyForTarget()
         await writePreparedSubmission(retryKey, prepared)
 
         if (sessionDriftReason()) {
@@ -1264,10 +1259,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        // The gateway admitted it: a failed journal retirement (ENOSPC/EIO) must not report a
-        // delivered prompt as failed and invite a resend. The identity is tombstoned first, so the
-        // stale entry is never adopted again — not after a reload either.
-        await removePreparedSubmission(retryKey, prepared.id).catch(error => console.warn('[prepared-submission-retire]', error))
+        await removePreparedSubmission(retryKey)
 
         // The prompt is now accepted. Report the EXACT identity it landed on
         // (recovered id included) so a caller that must prove delivery — the

@@ -24,15 +24,13 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_ollama import _configure_ollama_num_ctx, _clamp_compressor_to_ollama_num_ctx
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
-)
-from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from models.metadata.context import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -40,7 +38,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
+from providers import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -95,22 +93,19 @@ def _provider_default_routes(provider: str) -> set[str]:
             routes.add(route)
 
     with suppress(Exception):
-        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
-        overlay = HERMES_OVERLAYS.get(provider)
-        provider_def = get_provider(provider, allow_network=False)
-        add(getattr(overlay, "base_url_override", ""))
-        add(getattr(provider_def, "base_url", ""))
-
-    with suppress(Exception):
         from providers import get_provider_profile
         add(getattr(get_provider_profile(provider), "base_url", ""))
 
     with suppress(Exception):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
-        for provider_id, config in PROVIDER_REGISTRY.items():
-            if normalize_registry_provider(normalize_model_provider(provider_id)) == provider:
+        from agent.models_dev import get_provider_info
+        add(getattr(get_provider_info(provider, allow_network=False), "api", ""))
+
+    with suppress(Exception):
+        from hermes_cli.provider_auth import iter_provider_configs
+        from providers import normalize_provider
+        for config in iter_provider_configs():
+            provider_id = config.id
+            if normalize_provider(provider_id) == provider:
                 add(getattr(config, "inference_base_url", ""))
 
     if provider == "gemini":
@@ -133,16 +128,12 @@ def _context_route_mismatch(
     if not configured_provider:
         return False
     try:
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        configured_provider = normalize_model_provider(configured_provider)
-        active_provider = normalize_model_provider(active_provider)
+        from providers import normalize_provider
+        configured_provider = normalize_provider(configured_provider)
+        active_provider = normalize_provider(active_provider)
     except Exception:
         configured_provider = configured_provider.lower()
         active_provider = active_provider.lower()
-    with suppress(Exception):
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
-        configured_provider = normalize_registry_provider(configured_provider)
-        active_provider = normalize_registry_provider(active_provider)
 
     if active_route:
         configured_routes = _provider_default_routes(configured_provider)
@@ -171,7 +162,7 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
 
 
 def _build_codex_gpt5_autoraise_notice(
-    autoraise: dict[str, Any], context_length: Optional[int] = None
+    autoraise: Dict[str, Any], context_length: Optional[int] = None
 ) -> str:
     """One-time notice when Codex gpt-5.x raises compaction (``autoraise``: model/from/to).
 
@@ -185,8 +176,8 @@ def _build_codex_gpt5_autoraise_notice(
     else:
         # Static fallback: codex-spark is natively 128K; gpt-5.4/5.5/5.6 are capped at 272K.
         cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = round(autoraise["from"] * 100)
-    to_pct = round(autoraise["to"] * 100)
+    from_pct = int(round(autoraise["from"] * 100))
+    to_pct = int(round(autoraise["to"] * 100))
     return (
         f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
@@ -198,7 +189,7 @@ def _build_codex_gpt5_autoraise_notice(
 def _resolve_compression_threshold(
     global_threshold: float, model_cthresh: Optional[float], *, model: Optional[str] = None,
     is_codex_autoraise: bool,
-) -> tuple[float, Optional[dict[str, Any]]]:
+) -> tuple[float, Optional[Dict[str, Any]]]:
     """Global compaction threshold merged with a per-model override.
 
     Returns ``(threshold, autoraise_notice)``; the notice is set only when a Codex autoraise
@@ -219,19 +210,19 @@ def _codex_gpt55_autoraise_notice_marker():
     return get_hermes_home() / ".codex_gpt55_autoraise_notice"
 
 
-def _codex_gpt55_autoraise_notice_state(autoraise: dict[str, Any]) -> str:
+def _codex_gpt55_autoraise_notice_state(autoraise: Dict[str, Any]) -> str:
     """Notice identity keyed on what it displays (model + from→to percentages).
 
     An unchanged threshold stays silent across restarts; a changed global threshold or a
     different autoraised Codex model re-notifies once.
     """
     model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = round(float(autoraise["from"]) * 100)
-    to_pct = round(float(autoraise["to"]) * 100)
+    from_pct = int(round(float(autoraise["from"]) * 100))
+    to_pct = int(round(float(autoraise["to"]) * 100))
     return f"{model}:{from_pct}:{to_pct}"
 
 
-def _codex_gpt55_autoraise_notice_seen(autoraise: dict[str, Any]) -> bool:
+def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, Any]) -> bool:
     """True if this exact notice was already shown for this profile (unreadable = unseen)."""
     try:
         current = _codex_gpt55_autoraise_notice_state(autoraise)
@@ -242,7 +233,7 @@ def _codex_gpt55_autoraise_notice_seen(autoraise: dict[str, Any]) -> bool:
         return False
 
 
-def _record_codex_gpt55_autoraise_notice(autoraise: dict[str, Any]) -> None:
+def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
     """Persist that the notice was shown. Best-effort: a failure only re-shows it later."""
     with suppress(OSError, KeyError, TypeError, ValueError):
         marker = _codex_gpt55_autoraise_notice_marker()
@@ -256,7 +247,7 @@ def _normalized_custom_base_url(value: Any) -> str:
     return value.strip().rstrip("/")
 
 
-def _custom_provider_model_matches(agent_model: str, entry: dict[str, Any]) -> bool:
+def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
     agent_model_norm = str(agent_model or "").strip().lower()
     # Multi-model entries (`providers.<name>.models` mapping / legacy `models:` list):
     # matching ANY catalog entry counts, else a provider whose `model` differs from the
@@ -270,8 +261,8 @@ def _custom_provider_model_matches(agent_model: str, entry: dict[str, Any]) -> b
 
 
 def _custom_provider_extra_body_for_agent(
-    *, provider: str, model: str, base_url: str, custom_providers: list[dict[str, Any]]
-) -> Optional[dict[str, Any]]:
+    *, provider: str, model: str, base_url: str, custom_providers: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
     provider_norm = (provider or "").strip().lower()
     if provider_norm != "custom" and not provider_norm.startswith("custom:"):
         return None
@@ -280,7 +271,7 @@ def _custom_provider_extra_body_for_agent(
     if not target_url:
         return None
 
-    fallback: Optional[dict[str, Any]] = None
+    fallback: Optional[Dict[str, Any]] = None
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
@@ -303,7 +294,7 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
-def _merge_custom_provider_extra_body(agent, custom_providers: list[dict[str, Any]]) -> None:
+def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider, model=agent.model, base_url=agent.base_url,
         custom_providers=custom_providers,
@@ -332,15 +323,15 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 
 def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
+    checkpoint_required: bool, runtime_kind: Optional[str]
 ) -> None:
     """Fail closed at init: the codex app-server compacts its own thread without a truthful
     pre-compaction boundary (default "native" mode), so a required checkpoint can't be
     guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
+    if checkpoint_required and runtime_kind == "app_server":
         raise RuntimeError(
             "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
+            "is incompatible with the codex_app_server runtime: the codex "
             "agent compacts its own thread without a truthful pre-compaction "
             "transcript boundary, so a required pre-compress checkpoint "
             "cannot be guaranteed. Disable compression.checkpoint_required "
@@ -362,12 +353,12 @@ def _parse_config_int(raw: Any, default: int) -> int:
         return default
 
 
-def _cfg_flag(cfg: dict[str, Any], key: str, default: bool) -> bool:
+def _cfg_flag(cfg: Dict[str, Any], key: str, default: bool) -> bool:
     """Legacy string-set truthiness used by the ``compression`` section."""
     return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
 
 
-def _cfg_dict(cfg: dict[str, Any], key: str) -> dict[str, Any]:
+def _cfg_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
     section = cfg.get(key, {})
     return section if isinstance(section, dict) else {}
@@ -377,65 +368,7 @@ class CompressionSettings(SimpleNamespace):
     """Parsed ``compression`` config section (see ``_parse_compression_config``)."""
 
 
-_EXPLICIT_API_MODES = {
-    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
-}
-
-
-def _resolve_api_mode(agent, api_mode, provider_name, base_url):
-    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
-    from agent.transports import registered_api_modes
-    host, url = agent._base_url_hostname, agent._base_url_lower
-    if is_actual_route(agent.provider, base_url):
-        agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
-        # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
-        # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
-        agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
-        agent.api_mode = "codex_responses"
-    elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif provider_name is None and host == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and host == "api.anthropic.com"):
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-    elif url.rstrip("/").endswith("/anthropic"):
-        # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
-        agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
-        # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
-        agent.api_mode = nous_api_mode(agent.model)
-    else:
-        # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
-        # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
-        # URL-driven, not provider-name-driven: `providers.meta` may point anywhere.
-        try:
-            # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai base_url)
-            # intentionally falls through to chat_completions here. The wire protocol for Meta is URL-driven
-            # BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
-            # OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
-            # break custom endpoints named "meta" that do not host the Responses API. See #63425.
-            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
-            _mandated = _host_mandated_api_mode(base_url or "")
-        except Exception:
-            _mandated = None
-        agent.api_mode = _mandated if _mandated is not None else "chat_completions"
-
-
-def _finalize_routing(agent, api_mode, credential_pool):
-    from hermes_cli.providers import is_actual_route
+def _finalize_routing(agent, route, credential_pool):
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -466,49 +399,22 @@ def _finalize_routing(agent, api_mode, credential_pool):
             start_nous_auth_keepalive()
 
     with suppress(Exception):
-        from hermes_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-        )
+        from models.catalog_static import static_provider_model_ids
+        from models import normalize_model_id
+        from providers import is_aggregator
 
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        if not is_aggregator(agent.provider):
+            agent.model = normalize_model_id(
+                agent.provider,
+                agent.model,
+                known_ids=static_provider_model_ids(agent.provider),
+            )
 
     # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
     # swap can change the route later, so ``_swap_credential`` applies the same helper again.
     from hermes_cli.anon_auth import pin_model_for_route
     agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
-    # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
-    # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
-    # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
-    # exceptions live in _provider_model_requires_responses_api.
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
-
-    _base_lower = str(agent.base_url or "").lower()
-    if (
-        # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
-        # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
-        # client handles its own routing and does not implement the Responses API surface. Keyed on the
-        # `acp://` scheme AND the profile's external_process auth_type (an `<X>_ACP_BASE_URL` override
-        # can carry an https marker), not one vendor, so every ACP client is covered. When api_mode was explicitly
-        # provided, respect it — the user knows what their endpoint supports (#10473). Exception: Azure
-        # OpenAI serves gpt-5.x on /chat/completions and does NOT support the Responses API — skip the
-        # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
-        api_mode is None
-        and agent.api_mode == "chat_completions"
-        and not is_actual_route(agent.provider, agent.base_url)
-        and not _base_lower.startswith(("acp://", "acp+tcp://"))
-        and not _is_external_process_provider(agent.provider)
-        and not agent._is_azure_openai_url()
-        and (
-            agent._is_direct_openai_url()
-            or agent._provider_model_requires_responses_api(agent.model, provider=agent.provider)
-        )
-    ):
-        agent.api_mode = "codex_responses"
-        # Invalidate the eager-warmed transport cache — api_mode changed after the warm.
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
 
     # Pre-warm the OpenRouter metadata cache (1h TTL) off-thread so the first pricing estimate
     # doesn't block. Process-level Event guard: an unguarded spawn leaks a thread per message.
@@ -520,14 +426,14 @@ def _finalize_routing(agent, api_mode, credential_pool):
         ).start()
 
 
-def _set_defaults(agent, table: dict[str, Any]) -> None:
+def _set_defaults(agent, table: Dict[str, Any]) -> None:
     """Assign each ``name -> value`` on ``agent``; callables are factories (fresh per agent)."""
     for name, value in table.items():
         setattr(agent, name, value() if callable(value) else value)
 
 
 # Control-flow state (interrupts / steer / redirect / delegation / background review).
-_CONTROL_STATE: dict[str, Any] = {
+_CONTROL_STATE: Dict[str, Any] = {
     "_executing_tools": False,  # lets _vprint print while tools run with stream consumers on
     "_trim_after_tool_batch": False,  # a >=1 MB tool result was committed; trim once the batch unwinds
     "_tool_guardrails": ToolCallGuardrailController,
@@ -566,7 +472,7 @@ _CONTROL_STATE: dict[str, Any] = {
 }
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.
-_TURN_STATE: dict[str, Any] = {
+_TURN_STATE: Dict[str, Any] = {
     # Intermediate pressure warnings made models give up early; ordinary conversations
     # remain opt-in. Dispatcher workers receive a bounded completion checkpoint.
     "_iteration_budget_warning_injected": False,
@@ -596,7 +502,7 @@ _TURN_STATE: dict[str, Any] = {
 }
 
 # Session persistence state.
-_SESSION_STATE: dict[str, Any] = {
+_SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
     # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
     # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
@@ -637,7 +543,7 @@ _SESSION_STATE: dict[str, Any] = {
 }
 
 # Streaming delivery state.
-_STREAM_STATE: dict[str, Any] = {
+_STREAM_STATE: Dict[str, Any] = {
     "_stream_callback": None,  # streaming TTS; set early so _vprint can reference it
     "_stream_needs_break": False,  # one "\n\n" before the next real text delta after tools
     # Stateful scrubbers: <memory-context> / thinking spans split across deltas defeat
@@ -766,7 +672,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
         try:
             from hermes_cli.auth import build_minimax_oauth_token_provider
             effective_key = build_minimax_oauth_token_provider()
-        except Exception as _mm_exc:
+        except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
             logging.getLogger(__name__).warning(
                 "MiniMax OAuth: failed to install per-request token provider "
                 "(%s); falling back to static bearer that will expire ~15min in.",
@@ -814,7 +720,7 @@ def _init_bedrock_client(agent, base_url):
         print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
 
 
-def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict[str, Any]:
+def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs from explicit CLI/gateway credentials (auth already resolved)."""
     _parsed_url = urlparse(base_url)
     client_kwargs = {"api_key": api_key, "base_url": base_url}
@@ -826,9 +732,9 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
     # provider profile's auth_type, not one vendor slug, so out-of-tree external_process
     # plugin providers get the same launch path as the built-in copilot-acp (#102421).
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from providers import is_external_process_provider
 
-    if _is_external_process_provider(agent.provider):
+    if is_external_process_provider(agent.provider, base_url):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
     _headers_for = _host_default_headers_factory(base_url)
@@ -845,7 +751,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     return client_kwargs
 
 
-def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[dict[str, Any]]:
+def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
     Falls through to the init-time fallback chain, then raises with the missing-key /
@@ -856,7 +762,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
-        from hermes_cli.providers import is_actual_route, normalize_provider
+        from providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
         if is_actual_route(effective_provider):
             agent.provider = normalize_provider(effective_provider)
@@ -954,7 +860,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     )
 
 
-def _apply_openai_header_policy(agent, client_kwargs: dict[str, Any]) -> None:
+def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     """Mutate ``client_kwargs`` (== ``agent._client_kwargs``) with header/TLS policy, in order:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
@@ -996,7 +902,7 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
             return
-    from hermes_cli.providers import is_actual_route
+    from providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
@@ -1055,12 +961,12 @@ def _lazy_headers(module: str, name: str, pass_key: bool = False, pass_base: boo
 
 # Host → default_headers factory for explicit base_url client construction. Ordered: first
 # host match wins; no match falls back to the provider profile's declared headers.
-_HOST_DEFAULT_HEADERS: list[tuple[str, Callable[[Any, str], dict[str, str]]]] = [
+_HOST_DEFAULT_HEADERS: List[tuple[str, Callable[[Any, str], Dict[str, str]]]] = [
     ("openrouter.ai", _lazy_headers("agent.auxiliary_client", "build_or_headers")),
     ("integrate.api.nvidia.com",
      _lazy_headers("agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
     ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
-    ("githubcopilot.com", _lazy_headers("hermes_cli.models", "copilot_default_headers")),
+    ("githubcopilot.com", _lazy_headers("providers.github", "copilot_request_headers")),
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
     ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
     ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
@@ -1075,7 +981,7 @@ def _host_default_headers_factory(base_url: str):
     return None
 
 
-def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
+def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs mirroring a router-resolved client, keeping its provider headers
     (SDK stores them in ``_custom_headers``; older/mocked clients expose ``default_headers``)."""
     kwargs = {"api_key": client.api_key, "base_url": str(client.base_url)}
@@ -1256,7 +1162,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
-def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
+def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
     kwargs = {
@@ -1462,7 +1368,7 @@ def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
-def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
+def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
     Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
     restores the global value, and the notice has its own display gate."""
@@ -1493,7 +1399,7 @@ def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     return threshold, notice_enabled
 
 
-def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optional[int]]:
+def _compression_codex_settings(cfg: Dict[str, Any]) -> tuple[str, bool, Optional[int]]:
     """``codex_app_server_auto`` / ``codex_responses_native`` / ``codex_responses_compact_threshold``."""
     app_server_auto = str(cfg.get("codex_app_server_auto", "native") or "native").lower()
     if app_server_auto not in {"native", "hermes", "off"}:
@@ -1541,7 +1447,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
     _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
+        checkpoint_required, getattr(agent, "runtime_kind", None)
     )
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
@@ -1720,11 +1626,16 @@ def _scope_context_length_to_default_runtime(
     _active_runtime_model = agent.model
     if _configured_default_model:
         with suppress(Exception):
-            from hermes_cli.model_normalize import normalize_model_for_provider
-            _configured_default_runtime_model = normalize_model_for_provider(
-                _configured_default_model, agent.provider
+            from models.catalog_static import static_provider_model_ids
+            from models import normalize_model_id
+
+            _known_model_ids = static_provider_model_ids(agent.provider)
+            _configured_default_runtime_model = normalize_model_id(
+                agent.provider, _configured_default_model, known_ids=_known_model_ids
             )
-            _active_runtime_model = normalize_model_for_provider(agent.model, agent.provider)
+            _active_runtime_model = normalize_model_id(
+                agent.provider, agent.model, known_ids=_known_model_ids
+            )
     _configured_base_url = _configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers)
     _active_base_url = _active_route_url(agent, base_url)
     _route_mismatch = _context_route_mismatch(
@@ -1979,7 +1890,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # External engines own compaction policy: the host compression threshold (including the Codex
         # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
         # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
-        from agent.model_metadata import get_model_context_length
+        from models.metadata.context import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
@@ -2096,8 +2007,8 @@ def _warn_nonagentic_hermes_model(agent):
     if agent.quiet_mode or (agent.platform or "cli") == "cli":
         return
     with suppress(Exception):
-        from hermes_cli.model_switch import _check_hermes_model_warning
-        _hermes_warn = _check_hermes_model_warning(agent.model or "")
+        from agent.model_warnings import nous_hermes_non_agentic_warning
+        _hermes_warn = nous_hermes_non_agentic_warning(agent.model or "")
         if _hermes_warn:
             _user_msg = (
                 "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
@@ -2249,7 +2160,7 @@ def _init_usage_state(agent):
 
 
 # Per-session usage accounting.
-_USAGE_STATE: dict[str, Any] = {
+_USAGE_STATE: Dict[str, Any] = {
     "_user_turn_count": 0,
     "_is_user_initiated_turn": False,  # Copilot x-initiator: first call of a user turn = "user"
     # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
@@ -2308,40 +2219,41 @@ _CALLBACK_PARAMS = (
 
 
 def init_agent(
-    agent, base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
-    acp_command: str | None = None, acp_args: list[str] | None = None, command: str | None = None,
+    agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
+    runtime_kind: str = None,
+    acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
-    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+    enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
-    tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
-    log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: list[str] | None = None,
-    providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
-    provider_sort: str | None = None, provider_require_parameters: bool = False,
-    provider_data_collection: str | None = None, openrouter_min_coding_score: Optional[float] = None,
-    session_id: str | None = None, tool_progress_callback: Callable[..., Any] | None = None,
-    tool_start_callback: Callable[..., Any] | None = None, tool_complete_callback: Callable[..., Any] | None = None,
-    thinking_callback: Callable[..., Any] | None = None, reasoning_callback: Callable[..., Any] | None = None,
-    clarify_callback: Callable[..., Any] | None = None, read_terminal_callback: Callable[..., Any] | None = None,
-    read_preview_callback: Callable[..., Any] | None = None, drive_preview_callback: Callable[..., Any] | None = None,
-    read_window_below_callback: Callable[..., Any] | None = None, connection_callback: Callable[..., Any] | None = None,
-    tour_callback: Callable[..., Any] | None = None, setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
-    stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
-    tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
-    notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
+    tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
+    log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: List[str] = None,
+    providers_ignored: List[str] = None, providers_order: List[str] = None,
+    provider_sort: str = None, provider_require_parameters: bool = False,
+    provider_data_collection: str = None, openrouter_min_coding_score: Optional[float] = None,
+    session_id: str = None, tool_progress_callback: callable = None,
+    tool_start_callback: callable = None, tool_complete_callback: callable = None,
+    thinking_callback: callable = None, reasoning_callback: callable = None,
+    clarify_callback: callable = None, read_terminal_callback: callable = None,
+    read_preview_callback: callable = None, drive_preview_callback: callable = None,
+    read_window_below_callback: callable = None, connection_callback: callable = None,
+    tour_callback: callable = None, setup_choose_callback: callable = None, step_callback: callable = None,
+    stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
+    tool_gen_callback: callable = None, status_callback: callable = None,
+    notice_callback: callable = None, notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
-    reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int | None = None,
-    reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
-    request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
-    platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
-    chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
-    gateway_session_key: str | None = None, skip_context_files: bool = False,
+    reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
+    reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+    request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
+    platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
+    chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
+    gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
+    skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-    fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
+    fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
@@ -2370,19 +2282,34 @@ def init_agent(
     # Skips the end-of-turn review fork (~30K tokens/event); one switch for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Effective base URL for feature detection (prompt caching, reasoning, etc.)
-    from hermes_cli.providers import is_actual_route
-    if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
-        base_url = normalize_actual_base_url(base_url)
-    agent.base_url = base_url or ""
+    # Route identity and wire mode are resolved once, before any client or transport is built.
+    from providers.routing import InvocationRequest, resolve_invocation_route
+
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-    agent.provider = provider_name or ""
-    agent.requested_provider = (
+    requested_provider_name = (
         requested_provider.strip().lower()
         if isinstance(requested_provider, str) and requested_provider.strip()
-        else agent.provider
+        else provider_name or ""
     )
+    route = resolve_invocation_route(InvocationRequest(
+        provider=provider_name or "",
+        model=agent.model,
+        base_url=base_url or "",
+        explicit_api_mode=api_mode,
+        configured_api_mode=None,
+        configured_provider=provider_name,
+        openai_runtime="codex_app_server" if runtime_kind == "app_server" else None,
+        requested_provider=requested_provider_name,
+    ))
+    agent._invocation_route = route
+    agent.provider = route.provider
+    agent.model = route.model
+    agent.base_url = route.base_url
+    agent.api_mode = route.api_mode
+    agent.runtime_kind = route.runtime_kind
+    agent.is_routing_aggregator = route.is_routing_aggregator
+    agent._route_source = route.source
+    agent.requested_provider = requested_provider_name
     agent.capabilities = {
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
@@ -2390,8 +2317,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    _resolve_api_mode(agent, api_mode, provider_name, base_url)
-    _finalize_routing(agent, api_mode, credential_pool)
+    _finalize_routing(agent, route, credential_pool)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:
@@ -2416,7 +2342,7 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
-    _build_client(agent, api_key, base_url, fallback_model)
+    _build_client(agent, api_key, agent.base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(

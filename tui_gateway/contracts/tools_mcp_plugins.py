@@ -267,7 +267,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str
+    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
     meta: str
     body: str
     style: str

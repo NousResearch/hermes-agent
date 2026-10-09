@@ -124,7 +124,7 @@ def _prune_sessions(body: SessionPrune):
 _ACTIVE_WINDOW_S = 300
 
 
-def _csv(value: Optional[str]) -> list[str]:
+def _csv(value: Optional[str]) -> List[str]:
     """Split a comma-separated query param into stripped, non-empty items."""
     return [s.strip() for s in (value or "").split(",") if s.strip()]
 
@@ -182,8 +182,8 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
 @list_router.get("/api/sessions")
 def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
-    archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
-    exclude_sources: str | None = None, cwd_prefix: str | None = None, full: bool = False,
+    archived: str = "exclude", order: str = "created", source: str = None, sources: str = None,
+    exclude_sources: str = None, cwd_prefix: str = None, full: bool = False,
     profile: Optional[str] = None):
     """List sessions.
 
@@ -285,8 +285,8 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 
 @search_router.get("/api/sessions/search")
 async def search_sessions(
-    q: str = "", limit: int = 20, profile: Optional[str] = None, source: str | None = None,
-    sources: str | None = None, exclude_sources: str | None = None):
+    q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
+    sources: str = None, exclude_sources: str = None):
     """Search sessions by ID (first) plus FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:
@@ -584,10 +584,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 async def get_session_mutation_snapshot(session_id: str, request: Request, profile: Optional[str] = None):
     from hermes_cli.web_server_sessions import _session_mutation_context
     authority, _actor = _session_mutation_context(request, profile)
-    if authority is None:  # standalone serve: the counters the offline receipt checks
-        row = await asyncio.to_thread(_with_db, profile, lambda db: db.get_session(session_id), read_only=True)
-    else:
-        row = authority.db.get_session(session_id)
+    row = authority.db.get_session(session_id)
     # An absent import anchor has revision zero by the owner's storage contract,
     # not by a client guessing after a failed or stale detail request.
     return {'session_id': session_id, 'exists': row is not None,

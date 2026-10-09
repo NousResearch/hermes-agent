@@ -22,7 +22,7 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     import json
 
     import hermes_constants
-    from gateway import status
+    import gateway.status as status
 
     (tmp_path / "profiles" / "beta").mkdir(parents=True)
     # A profile dir needs an identity marker to be listed/served (bare dirs are side-effect shells).

@@ -167,13 +167,13 @@ class TestMacosProxyProbeCache:
 
     @pytest.fixture(autouse=True)
     def _isolate(self):
-        from gateway.platforms import base
+        import gateway.platforms.base as base
         base.reset_macos_proxy_cache()
         yield
         base.reset_macos_proxy_cache()
 
     def _count_forks(self, monkeypatch):
-        from gateway.platforms import base
+        import gateway.platforms.base as base
         calls = []
 
         def fake(*a, **kw):

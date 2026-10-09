@@ -34,12 +34,13 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.fallback_routing import resolve_fallback_invocation_route as _fallback_invocation_route
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
-from agent.model_metadata import is_local_endpoint
+from models.metadata.context import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
@@ -371,7 +372,7 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
-def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:
+def _image_part_chars(part: Dict[str, Any], image_cost: int) -> int:
     """Char-equivalent of one image content part: the per-image cost learned from provider usage
     (x4 chars/token), never the base64 payload length. A single native screenshot priced as text
     read as ~100K+ tokens and selected the giant-conversation watchdog tiers (#63871, #76411)."""
@@ -466,7 +467,7 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     return None
 
 
-def _provider_preferences_for_agent(agent) -> dict[str, Any]:
+def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     """Build the validated provider-routing object shared by request paths.
 
     ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
@@ -510,7 +511,7 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
         if nous_profile is not None:
             anthropic_kwargs.setdefault("extra_body", {}).update(
                 nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
         logger.debug("Nous Portal extra_body merge failed: %s", exc)
     return anthropic_kwargs
 
@@ -861,7 +862,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
         return "⚙ processing prompt"
-    except Exception:
+    except Exception:  # noqa: BLE001 — a status nicety must never break a call
         return None
 
 
@@ -1831,66 +1832,6 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
 
 
-def _is_anthropic_wire_url(url: str) -> bool:
-    """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
-    a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
-    from hermes_cli.providers import host_mandated_api_mode
-    return host_mandated_api_mode(url) == "anthropic_messages"
-
-
-def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Optional[str]) -> tuple[bool, str]:
-    """(explicit, api_mode) for a fallback entry from its ORIGINAL base_url: resolve_provider_client()
-    rewrites a dual-surface /anthropic base to /v1, losing the Anthropic wire signal. An explicit
-    ``api_mode`` always wins (even "chat_completions") and suppresses later re-detection;
-    ``provider: anthropic`` without a base_url still resolves to anthropic_messages."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider, _parse_api_mode
-    # Entries accept the same ``api_mode`` / ``transport`` spellings as ``providers.<name>``.
-    explicit = _parse_api_mode(fb.get("api_mode") or fb.get("transport"))
-    if explicit:
-        return True, explicit
-    # A named ``providers.<name>`` block declares its wire once (``api_mode``/``transport``); a
-    # fallback entry naming that provider inherits it instead of being re-detected from the host
-    # (#33062, #81932: an Anthropic-Messages or Responses-only relay on a plain host was downgraded
-    # to chat_completions while resolve_provider_client had already built the declared client).
-    if fb_provider and fb_provider not in {"custom", "moa"}:
-        declared = (_get_named_custom_provider(fb_provider) or {}).get("api_mode")
-        if declared:
-            return True, declared
-    if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
-        return False, "anthropic_messages"
-    return False, "chat_completions"
-
-
-def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
-    """Re-detect api_mode from provider / resolved base URL / model when the hint pass
-    landed on the chat_completions default (never called for an explicit api_mode)."""
-    if fb_provider == "openai-codex":
-        return "codex_responses"
-    from hermes_cli.models import opencode_model_api_mode
-    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
-    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
-    if opencode_family is not None:
-        # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
-        # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
-        # already re-derives per model — the fallback wire must agree (#102148).
-        return opencode_model_api_mode(opencode_family, fb_model)
-    if fb_provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
-        from hermes_cli.providers import nous_api_mode
-        return nous_api_mode(fb_model)
-    if _is_anthropic_wire_url(fb_base_url):
-        # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
-        return "anthropic_messages"
-    if agent._is_azure_openai_url(fb_base_url):
-        return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
-    # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
-    if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
-        return "codex_responses"
-    host = base_url_hostname(fb_base_url)
-    if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
-        return "bedrock_converse"
-    return "chat_completions"
-
 
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
@@ -2001,7 +1942,7 @@ def _update_fallback_context_compressor(agent) -> None:
     compressor = getattr(agent, "context_compressor", None)
     if not compressor:
         return
-    from agent.model_metadata import get_model_context_length
+    from models.metadata.context import get_model_context_length
     fb_context_length = get_model_context_length(
         agent.model, base_url=agent.base_url,
         api_key=agent.api_key if isinstance(agent.api_key, str) else "",  # callable (Entra ID) → probes need str
@@ -2093,14 +2034,106 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             continue
 
         try:
-            from agent.route_binding import bind_route_entry
-            bound = bind_route_entry(agent, fb, fb_provider, fb_model)
-            if bound is None:
+            from agent.auxiliary_client import resolve_provider_client
+            from hermes_cli.fallback_config import resolve_entry_api_key
+            # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
+            # of falling through to OpenRouter defaults.
+            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+            fb_api_key_hint = resolve_entry_api_key(fb)
+            entry_api_mode = str(fb.get("api_mode") or fb.get("transport") or "").strip() or None
+            initial_route = _fallback_invocation_route(
+                fb_provider,
+                fb_model,
+                fb_base_url_hint or "",
+                explicit_api_mode=entry_api_mode,
+                route_base_url_hint=fb_base_url_hint or "",
+            )
+            fb_provider = initial_route.provider or fb_provider
+            fb_model = initial_route.model or fb_model
+            fb_api_mode = initial_route.api_mode
+            fb_base_url_for_client = initial_route.base_url or fb_base_url_hint
+            # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
+            # substring — GHSA-76xc-57q6-vm5m.
+            if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
+                from agent.secret_scope import get_secret
+                fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
+            # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+            fb_client, _resolved_fb_model = resolve_provider_client(
+                fb_provider, model=fb_model, raw_codex=True,
+                explicit_base_url=fb_base_url_for_client, explicit_api_key=fb_api_key_hint,
+                api_mode=fb_api_mode)
+            if fb_client is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
                 continue
-            old_model, old_provider = bound
-            fb_model = agent.model  # normalized by the binder
+            if fb_provider == "moa":
+                # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
+                # ``/model <preset> --provider moa``. The chokepoint's client is the preset's
+                # aggregator: it only proves the preset resolves and the aggregator has credentials.
+                # Installing it as the acting client with the virtual identity is a hybrid nobody
+                # handles (#112525: preset name sent as model id → 404; #112623: every
+                # ``provider == "moa"`` guard and key misfires and the next rebuild swaps in the
+                # facade anyway). Bind the facade with the same pins every other MoA build site uses.
+                fb_base_url, fb_api_mode = "moa://local", "chat_completions"
+            else:
+                try:
+                    from models.catalog_static import static_provider_model_ids
+                    from models import normalize_model_id
+
+                    fb_model = normalize_model_id(
+                        fb_provider,
+                        fb_model,
+                        known_ids=static_provider_model_ids(fb_provider),
+                    )
+                except Exception as _norm_err:
+                    logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
+
+                fb_base_url = str(fb_client.base_url)
+                route = _fallback_invocation_route(
+                    fb_provider,
+                    fb_model,
+                    fb_base_url,
+                    explicit_api_mode=entry_api_mode,
+                    route_base_url_hint=fb_base_url_hint or "",
+                )
+                fb_provider = route.provider or fb_provider
+                fb_model = route.model or fb_model
+                fb_base_url = route.base_url or fb_base_url
+                fb_api_mode = route.api_mode
+                fb_runtime_kind = route.runtime_kind
+
+            old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+
+            # Clear the per-config context_length override so the fallback model's own context
+            # window is resolved instead of the previous model's stale value.
+            # See #22387.
+            agent._config_context_length = None
+            agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
+            agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
+            agent.runtime_kind = "http" if fb_provider == "moa" else fb_runtime_kind
+            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
+            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+            if hasattr(agent, "_transport_cache"):
+                agent._transport_cache.clear()
+            agent._fallback_activated = True
+
+            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
+            if fb_provider == "moa":
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, fb_model)
+            else:
+                from agent.client_lifecycle import _swap_fallback_clients
+                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+            sync_credential_pool_entry_id(agent)
+
+            agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
+                provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
+            agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
+            _update_fallback_context_compressor(agent)
+            _reresolve_fallback_reasoning_config(agent)
+            _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (
@@ -4050,12 +4083,5 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
-__all__ = [
-    "build_api_kwargs",
-    "build_assistant_message",
-    "cleanup_task_resources",
-    "handle_max_iterations",
-    "interruptible_api_call",
-    "interruptible_streaming_api_call",
-    "try_activate_fallback",
-]
+__all__ = ["interruptible_api_call", "build_api_kwargs", "build_assistant_message", "try_activate_fallback",
+    "handle_max_iterations", "cleanup_task_resources", "interruptible_streaming_api_call"]

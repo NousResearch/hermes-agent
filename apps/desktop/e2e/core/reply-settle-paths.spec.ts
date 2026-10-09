@@ -37,7 +37,6 @@ import {
   type WsRecorder
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
-import { shellQuote } from './process-census'
 import { gate, type ScriptedProvider, startScriptedProvider } from './provider'
 
 // Review after every turn, so a review fork is in flight during the next one.
@@ -309,7 +308,7 @@ test('a steer at every point of a tool turn, then reload and switch back', async
           toolCalls: [
             {
               name: 'terminal',
-              args: { command: `touch ${shellQuote(ready)}; while [ ! -e ${shellQuote(release)} ]; do sleep 0.05; done; echo core-ran` }
+              args: { command: `touch ${ready}; while [ ! -e ${release} ]; do sleep 0.05; done; echo core-ran` }
             }
           ]
         },

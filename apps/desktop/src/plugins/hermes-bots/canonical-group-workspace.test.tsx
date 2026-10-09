@@ -69,12 +69,10 @@ it('blocks Send until journal restore and durable preparation complete', async (
   const native = {
     read: vi.fn().mockImplementationOnce(() => new Promise<string>(resolve => { releaseRead = resolve }))
       .mockImplementation(async () => JSON.stringify(journal)),
-    compareAndSet: vi.fn(async (key: string, _expected: string | null, value: string | null) => {
+    update: vi.fn(async (key: string, value: string | null) => {
       await new Promise<void>(resolve => { releaseWrite = resolve })
 
       if (value === null) {delete journal[key]} else {journal[key] = JSON.parse(value)}
-
-      return { applied: true, current: value }
     })
   }
 
@@ -89,11 +87,11 @@ it('blocks Send until journal restore and durable preparation complete', async (
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New text' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await waitFor(() => expect(native.compareAndSet).toHaveBeenCalled())
+  await waitFor(() => expect(native.update).toHaveBeenCalled())
   expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
   releaseWrite()
   await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(true))
-  await waitFor(() => expect(native.compareAndSet).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(native.update).toHaveBeenCalledTimes(2))
   releaseWrite()
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
 })

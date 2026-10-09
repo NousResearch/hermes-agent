@@ -27,7 +27,7 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
+# DeepInfra base URL is resolved from the shared application profile facts.
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 
 
@@ -79,11 +79,11 @@ def _has_openai_audio_backend() -> bool:
         return False
 
 
-def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
+def _openai_extra_body(oai_config: Dict[str, Any]) -> Dict[str, Any]:
     """Optional ``tts.openai`` fields OpenAI-compatible servers read from the JSON body: ``language``
     (sent as ``lang_code``) and ``consent_attestation`` (cloned voices). Unset keys are omitted so
     the official API and strict servers never see unknown fields."""
-    extra_body: dict[str, Any] = {}
+    extra_body: Dict[str, Any] = {}
     if oai_config.get("language"):
         extra_body["lang_code"] = oai_config["language"]
     if oai_config.get("consent_attestation"):
@@ -92,7 +92,7 @@ def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generate_openai_tts(
-    text: str, output_path: str, tts_config: dict[str, Any], *, api_key: Optional[str] = None,
+    text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
     speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
@@ -126,7 +126,7 @@ def _generate_openai_tts(
             "to use %r directly.",
             model, DEFAULT_OPENAI_MODEL, model)
         model = DEFAULT_OPENAI_MODEL
-    create_kwargs: dict[str, Any] = {
+    create_kwargs: Dict[str, Any] = {
         "model": model, "voice": voice, "input": text,
         "response_format": _tts_response_format_from_path(output_path),
         "extra_headers": {"x-idempotency-key": str(uuid.uuid4())}}
@@ -146,14 +146,14 @@ def _generate_openai_tts(
             close()
 
 
-def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
+def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Resolve DeepInfra credentials/model (live ``hermes_cli.models`` catalog, no hardcoded ids), then
     delegate to the OpenAI-compatible handler."""
     api_key = _origin()._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         raise ValueError("DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
     di_config = _section(tts_config, "deepinfra")
-    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+    from application_deepinfra_catalog import deepinfra_base_url, deepinfra_model_ids
     model = di_config.get("model")
     if not isinstance(model, str) or not model.strip():
         candidates = deepinfra_model_ids("tts")

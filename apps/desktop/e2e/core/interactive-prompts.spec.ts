@@ -30,7 +30,6 @@ import {
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
-import { shellQuote } from './process-census'
 import { type RecordedCompletion, startScriptedProvider } from './provider'
 
 const nonce = Math.random()
@@ -122,7 +121,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       provider.script(U(2), [
         {
           text: [`${AI(2)} `, 'needs ', 'approval'],
-          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${shellQuote(victim)}` } }]
+          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${victim}` } }]
         },
         { text: [`${A(2)} `, 'deleted ', 'it'] }
       ])
@@ -144,7 +143,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       provider.script(U(3), [
         {
           text: [`${AI(3)} `, 'needs ', 'approval'],
-          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${shellQuote(victim)}` } }]
+          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${victim}` } }]
         },
         { text: [`${A(3)} `, 'left ', 'it ', 'alone'] }
       ])

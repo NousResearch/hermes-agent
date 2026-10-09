@@ -1,5 +1,4 @@
 import json
-import os
 
 import pytest
 
@@ -32,20 +31,12 @@ def test_outbox_freezes_failed_payload_and_reopens_exclusively(tmp_path):
         return {'count': 1, 'annotations': [{'_row_id': 42}]}
     restored = RuntimeSessionStore(commit, scope, tmp_path / 'private')
     try:
-        assert restored.retry_pending() == []  # reopening already reconciled the acknowledged journal
+        assert restored.retry_pending()[0]['count'] == 1
         assert seen[0]['payload']['messages'][0]['content'] == 'frozen'
         assert json.loads(restored.path.read_text())['pending'] == []
+        assert restored.path.stat().st_mode & 0o077 == 0
     finally:
         restored.close()
-
-
-@pytest.mark.platforms('posix')
-def test_outbox_has_private_posix_mode(tmp_path):
-    store = RuntimeSessionStore(lambda *a, **k: {}, {'session_id': 's'}, tmp_path / 'private')
-    try:
-        assert store.path.stat().st_mode & 0o077 == 0
-    finally:
-        store.close()
 
 
 def test_outbox_capacity_failure_does_not_advance_or_discard(tmp_path):
@@ -88,28 +79,6 @@ def test_outbox_filesystem_failure_is_sticky(tmp_path, monkeypatch):
         with pytest.raises(OSError, match='disk unavailable'):
             store.queue_token_counts('s', input_tokens=1)
         assert store.failure == 'disk unavailable'
-    finally:
-        store._outbox_owner.close()
-
-
-def test_outbox_journal_survives_a_cross_device_rename(tmp_path, monkeypatch):
-    """The journal publishes through utils.atomic_replace: a bind-mounted outbox whose rename
-    fails EXDEV falls back to copy+fsync instead of failing every worker write, and the
-    journal stays owner-only."""
-    import errno
-    import stat
-    real_replace = os.replace
-    def exdev_replace(src, dst):
-        if str(dst).endswith('pending.json'):
-            raise OSError(errno.EXDEV, 'cross-device link')
-        return real_replace(src, dst)
-    monkeypatch.setattr(os, 'replace', exdev_replace)
-    store = RuntimeSessionStore(lambda *a, **k: {}, {'session_id': 's'}, tmp_path / 'private')
-    try:
-        journal = store.path
-        assert json.loads(journal.read_text())['scope'] == {'session_id': 's'}
-        assert stat.S_IMODE(journal.stat().st_mode) == 0o600
-        assert [p.name for p in journal.parent.iterdir() if p.name.startswith('.pending-')] == []
     finally:
         store._outbox_owner.close()
 

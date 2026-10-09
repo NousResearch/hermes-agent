@@ -416,7 +416,7 @@ def _staged_venv_dir() -> "Path | None":
     doctor must not read an empty directory as staged dependencies.
     """
     try:
-        import pm
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
         from pm.packages import Venv
 
         venv_dir = Venv().venv_dir()

@@ -83,7 +83,7 @@ def _portalocker_probe() -> bool:
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
     if _portalocker_probe():
-        from concurrent_log_handler import (
+        from concurrent_log_handler import (  # noqa: E402
             ConcurrentRotatingFileHandler as RotatingFileHandler,
         )
     else:
@@ -94,11 +94,11 @@ if sys.platform == "win32":
         # below; fall back to stdlib rotation instead. Rollover is disabled in
         # the fallback: multi-process appends make Windows renames fail with
         # WinError 32, the exact #44873 trap CLH exists to avoid.
-        from logging.handlers import RotatingFileHandler
+        from logging.handlers import RotatingFileHandler  # noqa: E402
 
         _WINDOWS_CLH_FALLBACK = True
 else:
-    from logging.handlers import RotatingFileHandler
+    from logging.handlers import RotatingFileHandler  # noqa: E402
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -929,7 +929,7 @@ def _reset_queued_handlers() -> None:
         for h in list(root.handlers):
             if getattr(h, "_hermes_queue", False):
                 root.removeHandler(h)
-        for h in _queued_file_handlers:
+        for h in list(_queued_file_handlers):
             _quietly(h.close)
         _queued_file_handlers.clear()
         _log_queue = None

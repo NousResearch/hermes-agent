@@ -19,7 +19,6 @@ import { applyDelegationStatus, getDelegationState } from '../../delegationStore
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
 import { noSkillsInstalled } from '../../userMessages.js'
-import { canonicalTools } from '../canonicalSessionCommands.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -752,10 +751,6 @@ export const opsCommands: SlashCommand[] = [
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
     run: (arg, ctx, cmd) => {
-      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
-        return canonicalTools(ctx)
-      }
-
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {

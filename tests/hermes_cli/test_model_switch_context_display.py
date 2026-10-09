@@ -7,7 +7,7 @@ of the provider-aware resolver. The agent was actually running at 272K — Codex
 OAuth's enforced cap — so the display was lying to the user.
 
 Fix: ``resolve_display_context_length()`` prefers
-``agent.model_metadata.get_model_context_length`` (which knows about Codex OAuth,
+``models.metadata.context.get_model_context_length`` (which knows about Codex OAuth,
 Copilot, Nous, etc.) and falls back to models.dev only if that returns nothing.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ class TestResolveDisplayContextLength:
         """gpt-5.5 on openai-codex must show Codex's 272K cap, not models.dev's 1.05M."""
         fake_mi = _FakeModelInfo(1_050_000)  # what models.dev reports
         with patch(
-            "agent.model_metadata.get_model_context_length",
+            "models.metadata.context.get_model_context_length",
             return_value=272_000,  # what Codex OAuth actually enforces
         ):
             ctx = resolve_display_context_length(
@@ -54,9 +54,9 @@ class TestResolveDisplayContextLength:
             }
         ]
         # Real resolver call — no mock — so the override path is exercised
-        # through agent.model_metadata.get_model_context_length.
+        # through models.metadata.context.get_model_context_length.
         from unittest.mock import patch as _p
-        from agent import model_metadata as _mm
+        import models.metadata.context as _mm
         with _p.object(_mm, "get_cached_context_length", return_value=None), \
              _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
              _p.object(_mm, "fetch_model_metadata", return_value={}), \

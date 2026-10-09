@@ -45,7 +45,6 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
-import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +417,7 @@ def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
     from hermes_cli.update_lock import _git_common_dir
 
     cwd = kwargs.get("cwd")
-    for flag, value in itertools.pairwise(git_cmd):
+    for flag, value in zip(git_cmd, git_cmd[1:]):
         if flag == "-C":
             cwd = Path(cwd or ".") / value
     common = _git_common_dir(Path(cwd or "."))

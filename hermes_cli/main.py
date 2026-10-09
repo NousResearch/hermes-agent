@@ -13,7 +13,7 @@ Usage:
 # ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
-    import hermes_bootstrap
+    import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -44,8 +44,7 @@ import sys
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
-from hermes_cli import _startup_fast
-import itertools
+from hermes_cli import _startup_fast  # noqa: E402
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
 # before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
@@ -61,7 +60,7 @@ _startup_fast.normalize_hermes_home_env()
 # too — a pre-loop wedge is just as dead without a supervisor; GatewayRunner
 # disarms once the event loop is live.
 def _argv_is_gateway_run(argv: list) -> bool:
-    return any(a == "gateway" and b == "run" for a, b in itertools.pairwise(argv))
+    return any(a == "gateway" and b == "run" for a, b in zip(argv, argv[1:]))
 
 
 if _argv_is_gateway_run(sys.argv[1:]):
@@ -829,7 +828,6 @@ from hermes_cli.main_provider_setup import (
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
-    _model_choice_save_count,
     _named_custom_provider_map,
     _offer_reasoning_after_pick,
     _prompt_main_reasoning_effort,
@@ -1072,16 +1070,17 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
     return False
 
 
-def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:
+def _auth_store_logged_in(auth_file: Path, strict_profile_scope: bool) -> bool:
     """True if auth.json's active provider is logged in (api_key providers ignored under strict scope)."""
     from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_auth import get_provider_config
 
     if not auth_file.exists():
         return False
     try:
         auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
         active = auth.get("active_provider")
-        active_config = registry.get(str(active or "").strip().lower())
+        active_config = get_provider_config(str(active or "").strip().lower())
         if active and not (
             strict_profile_scope and active_config and active_config.auth_type == "api_key"
         ):
@@ -1102,7 +1101,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_auth import iter_provider_configs
 
     cfg = load_config()
     model_cfg = cfg.get("model")
@@ -1126,7 +1126,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         "ANTHROPIC_TOKEN",
         "OPENAI_BASE_URL",
     }
-    for pconfig in PROVIDER_REGISTRY.values():
+    for pconfig in iter_provider_configs():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
     if strict_profile_scope:
@@ -1140,10 +1140,10 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     if _dotenv_has_provider_key(get_env_path(), provider_env_vars):
         return True
 
-    # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
+    # Cheap on-disk checks (auth.json, config.yaml) first: the provider-config
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    if _auth_store_logged_in(get_hermes_home() / "auth.json", strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh
@@ -1159,7 +1159,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
             if any(
                 (status := get_auth_status(pid)).get("logged_in")
                 and status.get("key_source") != "keyless"
-                for pid, pconfig in PROVIDER_REGISTRY.items()
+                for pconfig in iter_provider_configs()
+                for pid in (pconfig.id,)
                 if pconfig.auth_type == "api_key"
             ):
                 return True
@@ -1198,7 +1199,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
 
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.model_selection_guards import (
+        from application_model_selection_guards import (
             combined_message,
             selection_warnings,
         )
@@ -1211,7 +1212,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
     except Exception as exc:
         logger.warning("startup model cost guard could not load config: %s", exc)
         config = {}
-    _dict = lambda v: v if isinstance(v, dict) else {}
+    _dict = lambda v: v if isinstance(v, dict) else {}  # noqa: E731
     config = _dict(config)
     model_cfg = _dict(config.get("model"))
     security_cfg = _dict(config.get("security"))
@@ -1929,7 +1930,8 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
     """
     from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
     from hermes_cli.config import get_compatible_custom_providers, get_env_value
-    from hermes_cli.providers import custom_provider_aliases, resolve_provider_full
+    from providers import custom_provider_aliases
+    from hermes_cli.providers import resolve_provider_full
 
     active = ""
     if effective_provider == "custom" and isinstance(model_cfg, dict):
@@ -2030,9 +2032,9 @@ def select_provider_and_model(args=None):
     _custom_provider_map = _named_custom_provider_map(config)
     active = _resolve_active_provider(config, model_cfg, effective_provider, _custom_provider_map)
 
-    from hermes_cli.models import _PROVIDER_LABELS
+    from hermes_cli.provider_catalog import provider_catalog
 
-    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
+    provider_labels = {descriptor.slug: descriptor.label for descriptor in provider_catalog()}
     if active and active in _custom_provider_map:
         active_label = _custom_provider_map[active]["name"]
     else:
@@ -2058,13 +2060,12 @@ def select_provider_and_model(args=None):
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
-    saves_before = _model_choice_save_count()
     from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
     with cli_provider_setup(selected_provider):
         flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
         if flow is None and _is_profile_plugin_flow_provider(selected_provider):
             # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
-            flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)
+            flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
         if flow is not None:
             flow(config, current_model, args)
         elif (
@@ -2087,7 +2088,9 @@ def select_provider_and_model(args=None):
         ):
             _model_flow_api_key_provider(config, selected_provider, current_model)
 
-    _offer_reasoning_after_pick(current_model, saves_before)
+    # Every flow persists through _save_model_choice; a changed model.default means a pick
+    # landed, so offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(current_model)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons
@@ -2586,8 +2589,8 @@ def _require_dashboard_web_deps() -> None:
     embedded runtime gets the policy guidance instead, so users stop looping on
     repair for a block repair can never lift (#63796)."""
     try:
-        import fastapi
-        import uvicorn
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
     except ImportError as e:
         from hermes_cli.main_dep_hints import (
             missing_optional_deps_message,
@@ -2885,7 +2888,7 @@ def _is_tui_chat_launch(args) -> bool:
 def _bypass_chat_launch(args) -> bool:
     """--safe-mode / --ignore-user-config chat: the gateway owner freezes code defaults and runs
     the turn out of process, so the profile's display.interface must not pick a surface and the
-    client performs no discovery. Explicit --tui forwards the flags in its session.create policy."""
+    client performs no discovery. Explicit --tui is refused later by the TUI's own option gate."""
     return bool(getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False)) \
         and not getattr(args, "tui", False)
 
@@ -2905,14 +2908,6 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 
 def _should_background_mcp_startup(args) -> bool:
     return not _is_tui_chat_launch(args) and args.command in {None, "chat", "rl"}
-
-
-def _chat_runs_at_gateway(args) -> bool:
-    """Every ``hermes`` / ``hermes chat`` turn (classic view, ``-q``, ``-z``, TUI) executes in the
-    gateway, which discovers and owns MCP servers itself. Discovery in this client only spawns a
-    second copy of every server and holds the cross-process discovery lock the cold-starting gateway
-    then waits on (measured 2.0 s with one stdio server) for tools nothing here ever calls."""
-    return args.command in {None, "chat"}
 
 
 def _prepare_agent_startup(args) -> None:
@@ -2963,11 +2958,9 @@ def _prepare_agent_startup(args) -> None:
         logger.debug("MCP server filter setup failed", exc_info=True)
 
     # TUI launches hand off to a startup path that backgrounds MCP discovery
-    # with a bounded join; acp/gateway/cron do their own on the runtime path;
-    # chat turns run in the gateway, which owns MCP for them.
+    # with a bounded join; acp/gateway/cron do their own on the runtime path.
     _run_inline_mcp_discovery = not (
         _is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args)
-        or _chat_runs_at_gateway(args)
     )
     if _run_inline_mcp_discovery and _should_background_mcp_startup(args):
         try:
@@ -3059,7 +3052,7 @@ def _guard_noninteractive_user_config(args) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
-    args._noninteractive_config_validated = True
+    setattr(args, "_noninteractive_config_validated", True)
 
 
 def _set_chat_arg_defaults(args) -> None:
@@ -3372,7 +3365,7 @@ def _build_cli_parser():
     try:
         from agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
-    except Exception as _lsp_err:
+    except Exception as _lsp_err:  # noqa: BLE001
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     build_setup_parser(subparsers, cmd_setup=cmd_setup)

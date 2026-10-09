@@ -1,4 +1,4 @@
-import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
@@ -10,7 +10,7 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { createSessionMutationClient, type SessionMutationIdentity, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
 import {
   ambientOwnerConnectionId,
@@ -374,27 +374,6 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
 const runSessionMutation = createSessionMutationClient()
 
-class MissingMutationSnapshotRoute extends Error {}
-
-/** Run one fenced session edit. The fencing protocol is a backend capability: an older
- *  standalone runtime has no snapshot route and keeps its base write. Only that route-level
- *  verdict on the read, before any write was attempted, selects it; a session/profile 404,
- *  refusal, conflict, timeout or failed write keeps the canonical CAS path and its retained
- *  identity. */
-export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
-  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
-  return runSessionMutation(key, () => read().catch(error => {
-    // The prepared read is shared by equal concurrent edits; its verdict must
-    // travel with that rejection, rather than one caller's local closure.
-    if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
-    throw error
-  }), send).catch(error => {
-    if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
-
-    return send({})
-  })
-}
-
 function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
@@ -404,20 +383,20 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
   const suffix = query.size ? `?${query}` : ''
   const key = JSON.stringify([scope, id, method, payload])
 
-  const send = (identity: Partial<SessionMutationIdentity>) => {
-    if (method === 'DELETE') {
-      const params = new URLSearchParams(query)
+  return runSessionMutation(key,
+    () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }),
+    identity => {
+      if (method === 'DELETE') {
+        const params = new URLSearchParams(query)
 
-      for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
+        for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
 
-      return hermesApi<T>({ ...scope, path: params.size ? `${path}?${params}` : path, method })
-    }
+        return hermesApi<T>({ ...scope, path: `${path}?${params}`, method })
+      }
 
-    return hermesApi<T>({ ...scope, path, method,
-      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
-  }
-
-  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+      return hermesApi<T>({ ...scope, path, method,
+        body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
+    })
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {

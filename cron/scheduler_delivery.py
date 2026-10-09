@@ -855,7 +855,7 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
-def _expand_routing_tokens(part: str) -> list[str]:
+def _expand_routing_tokens(part: str) -> List[str]:
     """Expand ``all`` to every home-target platform with a configured chat_id; non-tokens pass
     through as a single-element list."""
     if part.lower() not in _ROUTING_TOKENS:
@@ -874,7 +874,7 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
     return job.get("deliver", "local")
 
 
-def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> list[dict]:
+def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
@@ -1923,7 +1923,7 @@ def _deliver_result(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery_origin as _origin
-from cron import scheduler_preflight as _preflight
-from cron import scheduler_script as _script
+from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler_delivery_origin as _origin  # noqa: E402
+from cron import scheduler_preflight as _preflight  # noqa: E402
+from cron import scheduler_script as _script  # noqa: E402

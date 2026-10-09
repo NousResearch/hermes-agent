@@ -522,26 +522,6 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 
 If the title is already in use by another session, an error is shown.
 
-### Discard a Turn Lost in a Gateway Crash
-
-If the gateway stops in the middle of a turn, that turn's outcome is unknown and it is never replayed. It blocks
-the session until you acknowledge it. Interactive `hermes chat --resume <id>` lists it and accepts
-`/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` refuses with exit code 3 and submits nothing.
-To clear it from a script:
-
-```bash
-# Acknowledge every unknown (lost) turn on the session, then continue it
-hermes sessions discard 20250305_091523_a1b2c3d4 --yes
-hermes chat --resume 20250305_091523_a1b2c3d4 -q "next question"
-
-# Only one specific admission (repeatable); the session may also be named by title
-hermes sessions discard "debugging auth flow" --admission a9b59ad3ee914d75967def2a33435c88 --yes
-```
-
-Without `--yes` the command asks for confirmation, and it refuses (exit code 2) when stdin is not a terminal.
-The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
-you resend it. Inputs queued behind it run once it is discarded.
-
 ### Pin a Session
 
 Pinning sets a durable "keep" flag: pinned sessions are exempt from the

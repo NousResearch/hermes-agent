@@ -1,19 +1,15 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
-from contextlib import contextmanager
-from collections import deque
 from dataclasses import asdict, replace
 import json
-import os
 import queue
 import threading
 from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 import sys
-import time
 
-from agent.managed_worker import accept_result, encode_frame, read_frame
+from agent.managed_worker import encode_frame, read_frame
 from gateway.session_worker_reservation import reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -23,10 +19,6 @@ HELLO_SECONDS = 60
 # After Stop the child interrupts its agent and emits its result; the owner terminates a
 # child that has not acknowledged within this window instead of waiting on the pipe forever.
 STOP_ACK_SECONDS = 30
-
-
-class ManagedExecutionUnknown(RuntimeError):
-    """The committed unknown verdict stops the FIFO without forging failed settlement."""
 
 
 def managed_policy(authority, ref):
@@ -44,7 +36,7 @@ def managed_policy(authority, ref):
     if policy.config().get('gateway', {}).get('managed_workers') is not True:
         return None
     request = json.loads(policy.request_json)
-    if policy.platform != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):
+    if policy.source != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):
         raise RuntimeStoreError('unsupported_managed_policy')
     return policy
 
@@ -58,18 +50,9 @@ def _bootstrap(authority, ref, row, policy, scope):
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
-    live = authority.sessions[ref.session_id]
-    # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
-    # the admission's one-shot flags, the route's YOLO as of now (never the frozen launch flag) and
-    # the committed surface (HUD / live voice / voice turn) when admission recorded one.
-    request = dict(json.loads(policy.request_json), turn_v1={
-        'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
-        'yolo': _session_yolo(authority, live.route, policy),
-        **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {})})
-    from gateway.session_worker_construct import construct_inputs
-    request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
-    hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
+    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
+    live = authority.sessions[ref.session_id]
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
             'text': row['payload']['text'], 'route': live.route,
@@ -77,62 +60,6 @@ def _bootstrap(authority, ref, row, policy, scope):
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
-
-
-def _worker_config(authority, policy):
-    """The frozen session config the child binds as its only config (``bind_worker_policy``).
-    ``command_allowlist`` is approval state rather than launch policy: an ``always`` grant an
-    earlier worker of an ordinary session persisted, or one the operator removed by hand, comes
-    from the live profile file, as it did before the child's config was frozen. Bypass sessions
-    never read the profile."""
-    config = policy.config(authority)
-    home = Path(str(authority.profile_id))
-    if policy.ignore_user_config or not home.is_absolute():
-        return config
-    from gateway.run import _load_gateway_config
-    live = _load_gateway_config(home / 'config.yaml')
-    config.pop('command_allowlist', None)
-    if live.get('command_allowlist') is not None:
-        config['command_allowlist'] = live['command_allowlist']
-    return config
-
-
-def _session_yolo(authority, route, policy):
-    """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
-    is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
-    from tools.approval import is_session_yolo_enabled
-    from tools.approval_yolo import restore_gateway_yolo
-    store = getattr(authority.runner, 'session_store', None)
-    entry = store.lookup_by_session_key(route) if store is not None else None
-    restore_gateway_yolo(route, getattr(entry, 'yolo', None), launch=bool(policy.yolo))
-    return is_session_yolo_enabled(route)
-
-
-@contextmanager
-def worker_turn_scope(frame):
-    """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
-    (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
-    never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
-    voice turn reaches the model as it does in process. Frames without it bind nothing."""
-    from gateway.session_finite import finite_turn_scope
-    from gateway.session_surface import restore_surface, surface_turn_scope
-    turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
-    if turn is None:
-        yield
-        return
-    flags = {k: v for k, v in turn.items() if k != 'surface_v1'} if isinstance(turn, dict) else None
-    if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
-            or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
-        raise ValueError('invalid_managed_worker_bootstrap')
-    try:
-        surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
-    except RuntimeStoreError as exc:
-        raise ValueError('invalid_managed_worker_bootstrap') from exc
-    if turn['yolo']:
-        from tools.approval import enable_session_yolo
-        enable_session_yolo(frame['route'])
-    with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface):
-        yield
 
 
 class ManagedWorker:
@@ -146,21 +73,7 @@ class ManagedWorker:
         # Latched the moment Stop is admitted, before any pipe write: the owner's read loop
         # supervises it even while the child has not yet said hello or read its bootstrap.
         self.stop = asyncio.Event()
-        # Monotonic instant of the FIRST Stop: one acknowledgment budget runs from here, never
-        # renewed by the child's later output or by a repeated Stop.
-        self.stopped_at = None
         self.writer = threading.Thread(target=self._write_controls, name='managed-control-writer', daemon=True)
-        # One dedicated reader thread per worker (never the loop's shared default executor, which
-        # parked pipe reads would exhaust). It reads one frame per demand, so the pipe keeps its
-        # backpressure, and posts it here; a cancelled next_frame leaves the frame for the next.
-        self.reader = None
-        self._demand = threading.Semaphore(0)
-        self._requested = False
-        self._frames = deque()
-        self._arrived = None
-        self.stderr_drain = None
-        # Exact secrets this worker was handed; the stderr sink scrubs them besides the patterns.
-        self.secrets = []
 
     def _write_controls(self):
         try:
@@ -173,97 +86,32 @@ class ManagedWorker:
         except (OSError, ValueError):
             self.closed.set()
 
-    def _read_frames(self, loop):
-        """Reader thread body. It owns ``stdout``: no other thread closes it under a blocked read."""
-        try:
-            while self._demand.acquire() and not self.closed.is_set():
-                try:
-                    item = read_frame(self.process.stdout)
-                except (EOFError, ValueError, OSError, RecursionError) as exc:
-                    item = exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
-                try:
-                    loop.call_soon_threadsafe(self._deliver, item)
-                except RuntimeError:
-                    return  # the owner loop has closed; nobody is left to read for
-                if isinstance(item, Exception):
-                    return
-        finally:
-            self.process.stdout.close()
-
-    def _deliver(self, item):
-        self._frames.append(item)
-        self._arrived.set()
-
-    def _take(self):
-        item = self._frames[0]
-        if isinstance(item, Exception):
-            raise item  # stays queued: the reader has exited, every later read fails the same way
-        self._frames.popleft()
-        self._requested = False
-        if not self._frames:
-            self._arrived.clear()
-        return item
-
-    def drain_stderr(self, path):
-        """Route the child's stderr (its tracebacks and redirected prints) into the profile's
-        bounded, redacted, private log instead of discarding it."""
-        from agent.memory_provider import spawn_context_thread
-        from gateway.session_managed_worker_log import drain_worker_stderr
-        self.stderr_drain = spawn_context_thread(drain_worker_stderr, name='managed-stderr-drain',
-                                                 args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
-        self.stderr_drain.start()
-
     def control(self, frame):
         if self.closed.is_set():
             raise RuntimeStoreError('managed_worker_lost')
         if frame == {'type': 'stop'}:
-            if self.stopped_at is None:
-                self.stopped_at = time.monotonic()
             self.stop.set()
         try:
             self.commands.put_nowait(frame)
         except queue.Full as exc:
             raise RuntimeStoreError('worker_control_backpressure') from exc
 
-    def _stop_budget(self, ack):
-        """Seconds left of the ``ack`` window that opened at the first Stop (zero before the
-        child can receive controls)."""
-        if self.stopped_at is None:
-            self.stopped_at = time.monotonic()
-        return self.stopped_at + ack - time.monotonic()
-
     async def next_frame(self, timeout, ack):
-        """Read one frame. A requested Stop bounds supervision to ``ack`` seconds TOTAL from the
-        first Stop: a child that keeps emitting valid frames is escalated on the same deadline as a
-        silent one, instead of leaving the turn started behind it."""
-        if self.reader is None:
-            self._arrived = asyncio.Event()
-            from agent.memory_provider import spawn_context_thread
-            self.reader = spawn_context_thread(self._read_frames, name='managed-frame-reader',
-                                               args=(asyncio.get_running_loop(),))
-            self.reader.start()
-        if not self._frames and not self._requested:
-            self._requested = True
-            self._demand.release()
-        arrived = asyncio.ensure_future(self._arrived.wait())
+        """Read one frame. A requested Stop bounds the wait to ``ack`` seconds (zero before the
+        child can receive controls) and, unanswered, escalates instead of leaving the turn
+        started behind a silent-but-alive child."""
+        reader = asyncio.ensure_future(asyncio.to_thread(read_frame, self.process.stdout))
         stopper = asyncio.ensure_future(self.stop.wait())
         try:
-            if not self._frames and not self.stop.is_set():
-                await asyncio.wait({arrived, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-                if not self._frames and not self.stop.is_set():
-                    raise RuntimeStoreError('managed_worker_hello_timeout')
-            remaining = self._stop_budget(ack)
-            if not self._frames and remaining > 0:
-                await asyncio.wait({arrived}, timeout=remaining)
-            if not self._frames:
-                raise RuntimeStoreError('managed_worker_stopped')
-            return self._take()
+            done, _ = await asyncio.wait({reader, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if reader not in done and stopper in done and ack:
+                done, _ = await asyncio.wait({reader}, timeout=ack)
+            if reader in done:
+                return reader.result()
+            raise RuntimeStoreError('managed_worker_stopped' if self.stop.is_set() else 'managed_worker_hello_timeout')
         finally:
             stopper.cancel()
-            arrived.cancel()
-
-    def interrupt(self):
-        self.control({'type': 'stop'})
+            reader.cancel()
 
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})
@@ -288,7 +136,6 @@ class ManagedWorker:
 
     def close(self):
         self.closed.set()
-        self._demand.release()  # a reader parked between frames exits; one mid-read ends at EOF
         if self.process.poll() is None:
             self._signal_worker(kill=False)
             self.process.terminate()
@@ -303,14 +150,7 @@ class ManagedWorker:
         if self.writer.ident is not None:
             self.writer.join(timeout=5)
         self.process.stdin.close()
-        if self.reader is None:
-            self.process.stdout.close()
-        else:
-            self.reader.join(timeout=5)
-        if self.stderr_drain is not None:
-            self.stderr_drain.join(timeout=5)  # EOF once the child is gone; the thread closes it
-        elif self.process.stderr is not None:
-            self.process.stderr.close()
+        self.process.stdout.close()
 
 
 def interrupt_managed(authority, actor, ref, generation):
@@ -366,9 +206,8 @@ def _prompt_frame(authority, ref, row, worker, frame):
 def _worker_env(authority):
     """Child env for the OWNING profile under multiplex: its HERMES_HOME plus its ``.env``
     secrets over a scrubbed base, never the launch profile's process environment (the same
-    rule MCP stdio children and shell hooks follow) — except for the launch profile's own
-    worker, whose scope legitimately includes its frozen launch env. Single-profile gateways
-    inherit the process env byte-for-byte, exactly as before."""
+    rule MCP stdio children and shell hooks follow). Single-profile gateways inherit the
+    process env byte-for-byte, exactly as before."""
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home
@@ -384,86 +223,40 @@ def _worker_env(authority):
     from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
-    # Strip the RAW environ before the constructor injects this turn's own session/bridge context:
-    # a launch ``.env`` name (HERMES_SESSION_ID...) must not erase a value derived for this turn.
-    env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home), scrub_secrets=True)
-    secrets = build_profile_secret_scope(home)
+    env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
     if routed:
         # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
         # forward launch-process provider credentials that no .env or source snapshot recorded.
         _scrub_credentials(env, inherit_credentials=False)
-    else:
-        secrets = {**_launch_env_only_credentials(home, env), **secrets}
-    env.update({k: v for k, v in secrets.items() if v is not None})
+    env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env
 
 
-def _launch_env_only_credentials(home, env):
-    """Credentials the LAUNCH profile's owner resolves from its frozen launch env
-    (``launch_secret_scope``: systemd ``Environment=`` / ``op run`` keys with no ``.env`` line) that
-    the scrub removed from *env* — the same mapping the owner's own ``get_secret`` reads for this
-    profile. Credential names only: non-credential names the constructor removed on purpose
-    (unbound session context, venv markers) stay removed, and Hermes-internal secrets
-    (``AUXILIARY_*_API_KEY``, relay auth) never reach a child. Only the launch home's worker calls
-    this; a routed home's worker sees its own files only."""
-    from tools.environments.local import _scrub_credentials
-    from tools.environments.local_env_policy import _is_hermes_internal_secret
-    from tui_gateway.launch_profile_policy import launch_secret_scope
-    missing = {k: v for k, v in launch_secret_scope(home).items()
-               if k not in env and not _is_hermes_internal_secret(k)}
-    plain = _scrub_credentials(dict(missing), inherit_credentials=False)
-    return {k: v for k, v in missing.items() if k not in plain}
-
-
-def _interrupted_before_bootstrap(authority, row):
-    authority.pending_results[row['admission_id']] = {
-        'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
-    return ''
-
-
 async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
-    try:
-        env = await asyncio.to_thread(_worker_env, authority)
-        cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
-        from gateway.session_worker_spawn import acquire_process
-        from gateway.session_managed_worker_log import worker_log_path
-        log_path = worker_log_path(authority.profile_id)
-        process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-            cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, close_fds=True)
-    except asyncio.CancelledError:
-        # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
-        return _interrupted_before_bootstrap(authority, row)
+    env = await asyncio.to_thread(_worker_env, authority)
+    cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
+    process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
+        cwd=cwd, stdin=subprocess.PIPE, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
     worker = ManagedWorker(process)
-    if log_path is not None:
-        worker.drain_stderr(log_path)
     workers = getattr(authority, '_managed_workers', None)
     if workers is None:
         workers = authority._managed_workers = {}
     workers[ref.session_id] = worker
-    # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
-    # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
-    authority.adopt_agent(ref.session_id, row['generation'], worker)
-    accepted = usage = None
+    accepted = None
     scope = None
     try:
         # The interpreter behind the handle introduces itself first; the owner verifies that
         # identity (alive, same birth, descends from the handle) before reserving for it.
         hello = await worker.next_frame(HELLO_SECONDS, ack=0)
-        if worker.stop.is_set():
-            # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
-            raise RuntimeStoreError('managed_worker_stopped')
         scope = reserve_admission_worker(authority, admission_id=row['admission_id'],
                     process=process, principal_id=row['principal_id'], hello=hello)
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
-        worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
-        await asyncio.to_thread(worker.send, frame)
+        await asyncio.to_thread(worker.send, _bootstrap(authority, ref, row, policy, scope))
         worker.writer.start()
         while True:
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
@@ -479,13 +272,17 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
-            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
+            if (kind in {'tool.start', 'tool.complete'} and set(frame) == {'type', 'tool_call_id', 'name'}
+                    and isinstance(frame['tool_call_id'], str) and isinstance(frame['name'], str)):
+                authority.publish_execution(ref.session_id, row['generation'], kind,
+                    {'tool_call_id': frame['tool_call_id'], 'name': frame['name']})
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
-                try:
-                    accepted, usage = accept_result(frame['result'])
-                except ValueError as exc:
-                    raise RuntimeStoreError('invalid_worker_result') from exc
+                result = frame['result']
+                if (not isinstance(result, dict) or set(result) - {'final_response', 'failed', 'interrupted'}
+                        or not isinstance(result.get('final_response'), str)):
+                    raise RuntimeStoreError('invalid_worker_result')
+                accepted = result
                 authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
@@ -495,7 +292,7 @@ async def execute_managed(authority, ref, row, policy):
                     raise RuntimeStoreError('managed_worker_lost')
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 # The worker must acknowledge its durable finish before that boundary.
-                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
+                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': {}}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:
@@ -503,11 +300,12 @@ async def execute_managed(authority, ref, row, policy):
         logging.getLogger(__name__).warning('Managed worker lost: %s',
             exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__)
         if scope is None:
-            if isinstance(exc, asyncio.CancelledError) or (
-                    isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
+            if isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped':
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
-                return _interrupted_before_bootstrap(authority, row)
+                authority.pending_results[row['admission_id']] = {
+                    'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
+                return ''
             raise
         from gateway.session_worker_reservation import lose_admission_worker
         lose_admission_worker(authority, row, scope)
@@ -522,7 +320,7 @@ async def execute_managed(authority, ref, row, policy):
             waiter.set_result('Worker execution is unknown.')
         # Stop this drain without its ordinary Exception→failed settlement. The
         # committed unknown row deliberately pauses every accepted follower.
-        raise ManagedExecutionUnknown('managed_worker_unknown') from exc
+        raise asyncio.CancelledError('managed_worker_unknown') from exc
     finally:
         workers.pop(ref.session_id, None)
         await asyncio.to_thread(worker.close)

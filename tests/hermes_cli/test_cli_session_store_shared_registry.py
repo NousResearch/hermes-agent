@@ -9,7 +9,7 @@ threads) — which showed up as the post-banner freeze before the first prompt.
 
 from types import SimpleNamespace
 
-from hermes_cli import goals
+import hermes_cli.goals as goals
 from cli import HermesCLI
 
 

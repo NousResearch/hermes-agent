@@ -40,17 +40,17 @@ class _FakeSession:
 
     def __init__(
         self,
-        out: dict[str, Any],
+        out: Dict[str, Any],
         capabilities: Optional[set] = None,
-        input_properties: Optional[dict[str, set]] = None,
+        input_properties: Optional[Dict[str, set]] = None,
     ):
         self._out = out
         self._caps = capabilities or set()
         self._input_properties = input_properties or {}
-        self.last_args: dict[str, Any] = {}
+        self.last_args: Dict[str, Any] = {}
         self.calls = []
 
-    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0):
+    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0):
         self.last_args = args
         self.calls.append((name, dict(args)))
         return self._out

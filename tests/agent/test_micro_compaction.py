@@ -28,7 +28,6 @@ from agent.context_compressor import (
     ContextCompressor,
     _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES,
 )
-import itertools
 
 
 def _compressor(summary="ROLLING SUMMARY") -> ContextCompressor:
@@ -573,7 +572,7 @@ class TestMicroCompaction:
 
         for _ in range(4):
             msgs = cc._micro_compact(msgs)
-            for a, b in itertools.pairwise(msgs):
+            for a, b in zip(msgs, msgs[1:]):
                 ra, rb = a.get("role"), b.get("role")
                 assert not (ra == rb and ra in ("user", "assistant")), (
                     f"consecutive {ra} messages after micro-compaction"

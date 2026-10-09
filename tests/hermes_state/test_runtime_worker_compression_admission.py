@@ -54,34 +54,3 @@ def test_rotation_preserves_admission_identity_and_lost_ack_fifo(tmp_path):
         store.journal['pending'] = []
         store.close()
         db.close()
-
-
-def test_fifo_stays_blocked_while_its_worker_lives_on_a_compression_child(tmp_path):
-    """Compression moves a live worker onto the physical child while the FIFO stays keyed on the
-    logical root. The root's queued input must not be claimed until that worker ends, or two
-    writers run in one lineage."""
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('root', 'cli', system_prompt='PREFIX')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
-    scope = dict(epoch=epoch, execution_id='worker', session_id='root', generation=0)
-    register_worker_execution(db, **scope, kind='compute', adoption_secret='private', require_idle=True)
-    store = RuntimeSessionStore(lambda method, **params: mutate_worker_execution(db, **params),
-                                scope, tmp_path / 'outbox')
-    try:
-        messages = [{'role': 'user', 'content': 'kept'}]
-        store.append_messages_batch('root', messages)
-        assert store.try_acquire_compression_lock('root', 'holder')
-        store.publish_compression_child(parent_session_id='root', child_session_id='child', source='cli',
-                                        messages=messages, system_prompt='PREFIX', compression_lock_holder='holder')
-        assert store.scope['session_id'] == 'child'
-        follower = admit_session_input(db, epoch=epoch, principal_id='human', session_id='root',
-                                       request_id='follower', payload={'text': 'next'})
-        assert claim_session_input(db, epoch=epoch, session_id='root') is None
-        store.finish()
-        claimed = claim_session_input(db, epoch=epoch, session_id='root')
-        assert claimed is not None and claimed['admission_id'] == follower['admission_id']
-    finally:
-        store.failure = None
-        store.journal['pending'] = []
-        store.close()
-        db.close()

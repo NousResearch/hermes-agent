@@ -46,23 +46,23 @@ def _client_direct_enabled() -> bool:
     return True
 
 
-def _relay(reason: str) -> dict[str, Any]:
+def _relay(reason: str) -> Dict[str, Any]:
     """A relay verdict that tells the client WHY, without secrets."""
     return {"mode": "relay", "reason": reason}
 
 
-def _section(config: Any, provider: str) -> dict[str, Any]:
+def _section(config: Any, provider: str) -> Dict[str, Any]:
     """The provider's own sub-dict of an STT/TTS config, shape-guarded."""
     section = config.get(provider) if isinstance(config, dict) else None
     return section if isinstance(section, dict) else {}
 
 
-def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> dict[str, Any]:
+def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> Dict[str, Any]:
     return {"mode": "direct", "wire": wire, "provider": provider, "base_url": base_url,
             "api_key": api_key, "model": model, **extra}
 
 
-def stt_hallucination_filter() -> dict[str, Any]:
+def stt_hallucination_filter() -> Dict[str, Any]:
     """The Whisper-silence hallucination contract the relay path applies
     (``transcribe_recording`` → ``is_whisper_hallucination``), shipped to the
     client so a client-direct transcription agrees with a relayed one instead
@@ -77,22 +77,22 @@ def stt_hallucination_filter() -> dict[str, Any]:
     }
 
 
-def _deepinfra_model(section: dict[str, Any], kind: str) -> Optional[str]:
+def _deepinfra_model(section: Dict[str, Any], kind: str) -> Optional[str]:
     """Configured model, else the first catalog model of ``kind`` (stt/tts)."""
-    from hermes_cli.models import deepinfra_model_ids
+    from application_deepinfra_catalog import deepinfra_model_ids
     return section.get("model") or next(iter(deepinfra_model_ids(kind)), None)
 
 
 # ── STT ──
 # provider -> (env var, default-model attr on transcription_common, base_url).
 # ``base_url`` is a transcription_common attr name or a literal URL.
-_STT_KEYED: dict[str, tuple[str, str, str]] = {
+_STT_KEYED: Dict[str, tuple[str, str, str]] = {
     "groq": ("GROQ_API_KEY", "DEFAULT_GROQ_STT_MODEL", "GROQ_BASE_URL"),
     "mistral": ("MISTRAL_API_KEY", "DEFAULT_MISTRAL_STT_MODEL", "https://api.mistral.ai/v1"),
 }
 
 
-def _resolve_stt_client_config() -> dict[str, Any]:
+def _resolve_stt_client_config() -> Dict[str, Any]:
     from tools import transcription_common as tc
     from tools import transcription_tools as tt
 
@@ -115,7 +115,7 @@ def _resolve_stt_client_config() -> dict[str, Any]:
     # slow endpoint fails the Desktop's direct request instead of hanging it.
     timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
-    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> dict[str, Any]:
+    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
         return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s,
                        hallucination_filter=stt_hallucination_filter())
 
@@ -157,7 +157,7 @@ def _resolve_stt_client_config() -> dict[str, Any]:
         api_key = tt._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
             return _relay("no credentials")
-        from hermes_cli.models import deepinfra_base_url
+        from application_deepinfra_catalog import deepinfra_base_url
         model = _deepinfra_model(section, "stt")
         if not model:
             return _relay("no deepinfra stt model")
@@ -166,7 +166,7 @@ def _resolve_stt_client_config() -> dict[str, Any]:
 
 
 # ── TTS ──
-def _resolve_tts_client_config() -> dict[str, Any]:
+def _resolve_tts_client_config() -> Dict[str, Any]:
     from tools import tts_tool as tts
     from tools import tts_tool_openai, tts_tool_providers
 
@@ -216,7 +216,7 @@ def _resolve_tts_client_config() -> dict[str, Any]:
         api_key = tts._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
             return _relay("no credentials")
-        from hermes_cli.models import deepinfra_base_url
+        from application_deepinfra_catalog import deepinfra_base_url
         di = _section(tts_config, "deepinfra")
         model = _deepinfra_model(di, "tts")
         if not model:
@@ -228,14 +228,14 @@ def _resolve_tts_client_config() -> dict[str, Any]:
     return _relay(f"provider {provider!r} has no client wire")
 
 
-def resolve_client_voice_config() -> dict[str, Any]:
+def resolve_client_voice_config() -> Dict[str, Any]:
     """Resolve both directions for the CURRENT profile scope.
 
     Callers scope the profile via ``hermes_constants.set_hermes_home_override``
     (the web server's ``_config_profile_scope``) before calling — identical to
     how ``/api/audio/transcribe`` scopes ``transcribe_recording``.
     """
-    out: dict[str, Any] = {}
+    out: Dict[str, Any] = {}
     if not _client_direct_enabled():
         out = {"stt": _relay("voice.client_direct disabled"), "tts": _relay("voice.client_direct disabled")}
     else:

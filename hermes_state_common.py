@@ -537,10 +537,6 @@ CREATE TABLE IF NOT EXISTS worker_executions (
     adoption_digest TEXT NOT NULL,
     last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)
 );
--- Lineage-wide worker exclusion (claim/register/reset) probes every row of a conversation's lineage
--- inside the write transaction; without this each probe scanned the whole (only-growing) table.
-CREATE INDEX IF NOT EXISTS idx_worker_executions_session_status
-    ON worker_executions(session_id, status);
 CREATE TABLE IF NOT EXISTS worker_receipts (
     execution_id TEXT NOT NULL REFERENCES worker_executions(execution_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
@@ -682,20 +678,7 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
-# sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
-# (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
-# gateway runtime reaches it. Such a release (schema_version 31 too, and it never refuses a newer schema)
-# otherwise dies on the bare FK with no hint. It prints the RAISE text verbatim and buckets errors by phrase,
-# so the text must stay free of the words it reads as storage damage, lock contention or disk trouble.
 DEFERRED_INDEX_SQL = """
-DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard;
-CREATE TRIGGER IF NOT EXISTS sessions_runtime_ledger_delete_guard
-BEFORE DELETE ON sessions
-WHEN EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = old.id)
-  OR EXISTS (SELECT 1 FROM worker_executions WHERE session_id = old.id)
-BEGIN
-    SELECT RAISE(ABORT, 'Refused to delete a session that has gateway runtime history: state.db was upgraded by a newer Hermes, and this older Hermes cannot delete such sessions. Downgrading is unsupported. Run hermes update to go back to the newer release, or restore the pre-update snapshot: https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release');
-END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page

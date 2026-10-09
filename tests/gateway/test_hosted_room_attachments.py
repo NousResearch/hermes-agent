@@ -519,28 +519,3 @@ def test_restart_reconciles_event_commit_and_expires_abandoned_commit(tmp_path):
             attachment_id=abandoned["attachment_id"],
             recipient_member_id="research",
         )
-
-
-def test_attachment_reads_take_no_write_lock_and_repeat_no_startup(tmp_path):
-    """Hosted transfer builds a store per chunk. Schema setup, event reconciliation and the
-    orphan prune belong to startup; a read must not queue behind another state.db writer
-    (rollback-journal fallback: RESERVED still admits readers) nor fail as 'locked'."""
-    import time
-
-    db = tmp_path / "state.db"
-    store = HostedRoomAttachmentStore(db)
-    item = _put(store)
-    store.commit_message(room_id="room-1", event_id="event-1", manifest=_manifest(item),
-                         recipient_member_ids=("research",))
-    writer = sqlite3.connect(db, isolation_level=None, timeout=0)
-    writer.execute("BEGIN IMMEDIATE")
-    try:
-        started = time.monotonic()
-        saved = HostedRoomAttachmentStore(db).read_range(
-            room_id="room-1", attachment_id=item["attachment_id"], event_id="event-1",
-            recipient_member_id="research", offset=0, length=4)
-        assert saved.data == PNG[:4]
-        assert time.monotonic() - started < 2
-    finally:
-        writer.rollback()
-        writer.close()

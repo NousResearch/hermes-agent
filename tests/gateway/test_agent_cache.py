@@ -98,7 +98,7 @@ class TestAgentConfigSignature:
                 },
             },
         )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
+        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
 
         runtime = _resolve_runtime_agent_kwargs()
 
@@ -156,7 +156,7 @@ class TestExtractCacheBustingConfig:
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
         other_cap = (default_cap or 0) + 100_000
-        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
         assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 

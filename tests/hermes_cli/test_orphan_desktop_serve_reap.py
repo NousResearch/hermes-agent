@@ -57,16 +57,16 @@ def test_reap_only_kills_ppid1_local_serves():
     def fake_kill(pid, sig):
         if sig == 0:
             if pid in live:
-                return
+                return None
             raise ProcessLookupError()
         if sig == 15:
             terms.append(pid)
             live.discard(pid)
-            return
+            return None
         if sig == 9:
             live.discard(pid)
-            return
-        return
+            return None
+        return None
 
     with (
         patch(
@@ -205,7 +205,7 @@ def test_valid_lockfile_payload_rejects_wrong_owner_and_shape():
     assert _valid_lockfile_payload(bad_nonce, oid) is False
     # logPath not ending in <oid>/<nonce>.log.
     bad_log = _valid_lock_payload(1, oid, nonce)
-    bad_log["logPath"] = f"~/.hermes/desktop-ssh/{oid}/other.log"
+    bad_log["logPath"] = "~/.hermes/desktop-ssh/{oid}/other.log".format(oid=oid)
     assert _valid_lockfile_payload(bad_log, oid) is False
 
 
@@ -224,16 +224,16 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
     def fake_kill(pid, sig):
         if sig == 0:
             if pid in live:
-                return
+                return None
             raise ProcessLookupError()
         if sig == 15:
             terms.append(pid)
             live.discard(pid)
-            return
+            return None
         if sig == 9:
             live.discard(pid)
-            return
-        return
+            return None
+        return None
 
     # 555 is claimed by a valid backend.lock.json; 666 is not.
     lock_owned = {555}
@@ -272,10 +272,10 @@ def test_reap_spares_young_backend_until_desktop_can_write_lock():
 
     def fake_kill(pid, sig):
         if sig == 0:
-            return
+            return None
         if sig == 15:
             terms.append(pid)
-        return
+        return None
 
     with (
         patch(
@@ -335,12 +335,12 @@ def test_reap_age_boundary_makes_180_second_orphan_eligible():
     def fake_kill(pid, sig):
         if sig == 0:
             if pid in live:
-                return
+                return None
             raise ProcessLookupError()
         if sig == 15:
             terms.append(pid)
             live.discard(pid)
-        return
+        return None
 
     ages = {779: 179.999, 780: 180.0}
     with (
@@ -381,6 +381,7 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
     def fake_kill(pid, sig):
         if sig == 15:
             terms.append(pid)
+        return None
 
     with (
         patch(

@@ -3,7 +3,7 @@ the SAME provider universe as ``hermes model`` (the CLI/TUI picker).
 
 This is the single load-bearing invariant of the unified provider catalog:
 
-    keys(/api/env provider rows) ∪ ids(/api/providers/oauth) ⊇ CANONICAL_PROVIDERS
+    keys(/api/env provider rows) ∪ ids(/api/providers/oauth) ⊇ live provider catalog
 
 i.e. every provider the CLI picker offers is configurable from the desktop app,
 on one of the two Providers sub-tabs (API keys or Accounts). It is asserted as
@@ -13,7 +13,6 @@ can never silently drift again when a provider plugin is added.
 
 from fastapi.testclient import TestClient
 
-from hermes_cli.models import CANONICAL_PROVIDERS
 from hermes_cli.provider_catalog import provider_catalog
 from hermes_cli.web_server import _SESSION_TOKEN, app
 
@@ -66,21 +65,16 @@ def _accounts_tab_providers() -> set[str]:
 def test_every_hermes_model_provider_is_configurable_in_desktop():
     """PARITY CONTRACT: GUI (keys ∪ accounts) == the `hermes model` universe (listed providers):
     every listed provider is configurable, and an unlisted pre-release one is on neither tab."""
-    from hermes_cli.models_catalog_static import listed_canonical_providers
-
     gui = _keys_tab_providers() | _accounts_tab_providers()
-    listed = {e.slug for e in listed_canonical_providers()}
     missing = [
-        slug
-        for slug in sorted(listed)
-        if slug not in _EXEMPT and slug not in gui
+        descriptor.slug
+        for descriptor in provider_catalog()
+        if descriptor.slug not in _EXEMPT and descriptor.slug not in gui
     ]
     assert not missing, (
         "providers shown in `hermes model` but not configurable in the desktop "
         f"Providers tabs: {missing}"
     )
-    leaked = sorted(gui & ({e.slug for e in CANONICAL_PROVIDERS} - listed))
-    assert not leaked, f"unlisted pre-release providers on the desktop Providers tabs: {leaked}"
 
 
 def test_each_provider_lands_on_the_tab_its_auth_type_dictates():

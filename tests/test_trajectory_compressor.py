@@ -222,7 +222,7 @@ class TestFindProtectedIndices:
             {"from": "gpt", "value": "result"},
             {"from": "human", "value": "thanks"},
         ]
-        protected, _start, _end = tc._find_protected_indices(trajectory)
+        protected, start, end = tc._find_protected_indices(trajectory)
         assert 0 in protected  # first human
 
     def test_disable_protect_first_system(self):

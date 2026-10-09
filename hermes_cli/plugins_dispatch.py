@@ -39,7 +39,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # dispatcher/worker processes; kanban has its own heartbeat/stale reclaim. Abandon-without-join also leaves
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
-_HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
@@ -48,9 +48,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
-_HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
+_HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
@@ -58,7 +58,7 @@ _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 
-def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
+def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> Dict[str, str]:
     """Block directive for a fail-closed hook whose callback raised: names the callback and the
     error (truncated — a hook that embeds tool args in its exception must not grow the tool
     result) so the operator can tell a crashing guard from a slow one."""
@@ -141,7 +141,7 @@ class _QueuedPluginEvent:
     """Immutable dispatch envelope consumed by the event worker."""
 
     event: str
-    payload: dict[str, Any]
+    payload: Dict[str, Any]
     subscriptions: tuple[_EventSubscription, ...]
     depth: int
     generation: int
@@ -157,7 +157,7 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
+def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
     Concurrent invocations of the same tool in one session must not collapse into one
@@ -193,8 +193,8 @@ def resolve_plugin_command_result(result: Any) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(result)
-    outcome: dict[str, Any] = {}
-    failure: dict[str, BaseException] = {}
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
     done = threading.Event()
 
     def _runner() -> None:
@@ -219,7 +219,7 @@ def resolve_plugin_command_result(result: Any) -> Any:
 
 class PluginDispatchMixin:
     @staticmethod
-    def _hook_callback_kwargs(callback: Callable, payload: dict[str, Any]) -> dict[str, Any]:
+    def _hook_callback_kwargs(callback: Callable, payload: Dict[str, Any]) -> Dict[str, Any]:
         """The slice of *payload* a callback accepts: everything for ``**kwargs`` (or
         un-introspectable) callbacks, only declared names for narrow legacy signatures."""
         try:
@@ -235,7 +235,7 @@ class PluginDispatchMixin:
         }
 
     @classmethod
-    def _invoke_hook_callback(cls, callback: Callable, payload: dict[str, Any]) -> Any:
+    def _invoke_hook_callback(cls, callback: Callable, payload: Dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks.
 
         An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
@@ -244,7 +244,7 @@ class PluginDispatchMixin:
         """
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
+    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
@@ -262,7 +262,7 @@ class PluginDispatchMixin:
         # unrelated adapter payloads into one monolithic compatibility contract.
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        results: list[Any] = []
+        results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
@@ -285,7 +285,7 @@ class PluginDispatchMixin:
         return results
 
     def _report_hook_failure(
-        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], exc: BaseException, *, surface: str = "Hook"
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: BaseException, *, surface: str = "Hook"
     ) -> None:
         """One WARNING per distinct (hook, callback, error); identical repeats at DEBUG.
 
@@ -309,7 +309,7 @@ class PluginDispatchMixin:
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running for this call id, over the abandoned-worker cap, timed out
@@ -348,8 +348,8 @@ class PluginDispatchMixin:
 
         context = contextvars.copy_context()
         done = threading.Event()
-        outcome: dict[str, Any] = {}
-        failure: dict[str, BaseException] = {}
+        outcome: Dict[str, Any] = {}
+        failure: Dict[str, BaseException] = {}
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
@@ -486,7 +486,7 @@ class PluginDispatchMixin:
             return self._event_idle.wait_for(
                 lambda: self._event_pending_by_generation.get(generation, 0) == 0, timeout=timeout)
 
-    def _dispatch_event(self, event: str, payload: dict[str, Any]) -> int:
+    def _dispatch_event(self, event: str, payload: Dict[str, Any]) -> int:
         """Queue *event* without blocking; return the subscriber count scheduled. Pending work is
         bounded per generation so a blocking subscriber costs one worker and later emits drop."""
         depth = getattr(self._emit_depth, "value", 0)
@@ -525,7 +525,7 @@ class PluginDispatchMixin:
             return False
         return bool(self._hooks.get(hook_name))
 
-    async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
+    async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 
         Same payload narrowing, per-callback isolation and result contract. The difference is
@@ -539,7 +539,7 @@ class PluginDispatchMixin:
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        results: list[Any] = []
+        results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
@@ -573,14 +573,14 @@ class PluginDispatchMixin:
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
-    ) -> list[RenderedPluginSystemPromptSection]:
+    ) -> List[RenderedPluginSystemPromptSection]:
         """Render all registered sections deterministically and fail open."""
         from agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return []
         frozen_info = types.MappingProxyType(dict(session_info))
-        rendered: list[RenderedPluginSystemPromptSection] = []
+        rendered: List[RenderedPluginSystemPromptSection] = []
         total_chars = len(PLUGIN_SECTIONS_START) + len(PLUGIN_SECTIONS_END) + 2
         for _section_id, section in sorted(self._system_prompt_sections.items()):
             if len(rendered) >= MAX_SYSTEM_PROMPT_SECTIONS:
@@ -647,7 +647,7 @@ class PluginDispatchMixin:
 
     def invoke_middleware(
         self, kind: str, *, _payload_key: Optional[str] = None, **kwargs: Any
-    ) -> list[Any]:
+    ) -> List[Any]:
         """Call middleware callbacks for *kind* (each isolated); return non-``None`` results.
 
         Request middleware passes ``_payload_key``: a dict returned under it becomes the payload the
@@ -659,7 +659,7 @@ class PluginDispatchMixin:
 
         if safe_worker_enabled():
             return []
-        results: list[Any] = []
+        results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             call_kwargs = kwargs
             if _payload_key:

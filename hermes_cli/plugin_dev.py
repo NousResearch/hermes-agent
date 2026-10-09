@@ -4,7 +4,6 @@ check routes through the real runtime contracts instead of a parallel scanner.""
 from __future__ import annotations
 
 import inspect
-import json
 import os
 import shutil
 import socket
@@ -132,36 +131,14 @@ def _is_plugin_module(name: str) -> bool:
 
 @contextmanager
 def _load_model_provider(copied: Path, manifest):
-    """Doctor path for ``kind: model-provider``: those register a ProviderProfile at import through
-    providers/ discovery (PluginManager skips the kind), so demanding ``register(ctx)`` would fail
-    every valid provider plugin. Registry additions are undone on exit."""
-    import providers
+    """Doctor path for ``kind: model-provider`` using the real provider discovery loader."""
+    from providers.discovery import isolated_plugin_import
 
-    # The live install may already have imported this very plugin (same directory name) during
-    # startup discovery; import the copy fresh and put the live module/profiles back afterwards.
-    module_name = providers._user_module_name(copied, "")
-    prior_module = sys.modules.pop(module_name, None)
-    before = dict(providers._REGISTRY)
-    before_aliases = dict(providers._ALIASES)
-    try:
-        providers._import_plugin_dir(copied, "user")
-        registered = tuple(sorted(
-            name for name, profile in providers._REGISTRY.items() if before.get(name) is not profile))
+    with isolated_plugin_import(copied, "user") as registered:
         if not registered:
             raise _DoctorLoadError(
                 "model-provider plugin registered no ProviderProfile at import (see the warning above)")
         yield registered
-    finally:
-        for name in [n for n, p in providers._REGISTRY.items() if before.get(n) is not p]:
-            providers._REGISTRY.pop(name)
-            providers._SOURCES.pop(name, None)
-        providers._REGISTRY.update(before)
-        providers._ALIASES.clear()
-        providers._ALIASES.update(before_aliases)
-        providers._PROVIDER_LIST_CACHE = None
-        sys.modules.pop(module_name, None)
-        if prior_module is not None:
-            sys.modules[module_name] = prior_module
 
 
 @dataclass(frozen=True)
@@ -333,40 +310,6 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
                 report.warning(f"config_schema key {skey!r} declares unknown type {stype!r}")
 
 
-def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
-    """Warn when the Desktop app runs a stale copy of this package's ``desktop/plugin.js``.
-
-    Electron copies a unified package's desktop half to ``<root>/desktop-plugins/<name>/`` and loads
-    THAT copy, so editing the package in place changes nothing on screen until the copy is refreshed.
-    The copy carries a ``.hermes-package.json`` marker whose ``source`` names the folder it came from.
-    """
-    source = path / "desktop" / "plugin.js"
-    if not source.is_file():
-        return
-    from hermes_constants import get_default_hermes_root
-
-    app_root = get_default_hermes_root() / "desktop-plugins"
-    try:
-        copies = sorted(app_root.glob("*/.hermes-package.json"))
-    except OSError:
-        return
-    for marker_file in copies:
-        try:
-            marker = json.loads(marker_file.read_text(encoding="utf-8-sig"))
-            if Path(marker["source"]).resolve() != source.parent.resolve():
-                continue
-            if (marker_file.parent / "plugin.js").read_bytes() == source.read_bytes():
-                return
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        report.warning(
-            f"Desktop runs a stale copy of desktop/plugin.js ({marker_file.parent}); your edits are not "
-            "loaded. Refresh it with Capabilities → Plugins → Rescan in the Desktop app (or restart it). "
-            "To develop in place, symlink the checkout into plugins/ instead: the Desktop then re-syncs "
-            "the copy on every save.")
-        return
-
-
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
     """Validate one plugin through Hermes' real scanner and registration path."""
     try:
@@ -427,8 +370,6 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
         report.error(str(exc))
     except Exception as exc:
         report.error(f"unexpected validation failure: {type(exc).__name__}: {exc}")
-    # Outside the runtime sandbox: it swaps HERMES_HOME for a temp dir, and the copy lives in the real one.
-    _check_desktop_half_copy(report, path)
     return report
 
 

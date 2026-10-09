@@ -145,10 +145,9 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
-            messages = await self._finalize_session_off_loop(
+            await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
                 old_session_id=old_sid, new_session_id=new_sid)
-            await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
@@ -540,7 +539,7 @@ class GatewaySessionCommandsMixin:
         # the original conversation, not a default "cli" host.
         platform_key = _platform_config_key(source.platform) if source.platform else None
         model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, session_key=session_key)
-        if str(runtime_kwargs.get("api_mode") or "").lower() == "codex_app_server":
+        if str(runtime_kwargs.get("runtime_kind") or "").lower() == "app_server":
             # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
             # has none (and finally-eviction would destroy the real context).
             return await self._compress_codex_app_server_session(session_key, session_entry.session_id)

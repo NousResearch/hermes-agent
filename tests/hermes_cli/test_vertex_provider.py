@@ -6,6 +6,7 @@ AuthError when credentials can't be resolved. No network calls.
 """
 
 from __future__ import annotations
+from hermes_cli.provider_auth import get_provider_config, iter_provider_configs
 
 import pytest
 
@@ -21,15 +22,14 @@ def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
 
 
 def test_vertex_registered_in_provider_registry():
-    """PROVIDER_REGISTRY (hermes_cli.auth) is what agent/auxiliary_client.py's
+    """live provider projection (hermes_cli.auth) is what agent/auxiliary_client.py's
     resolve_provider_client() looks up before dispatching on auth_type. Without
     an entry here, the ``elif pconfig.auth_type == "vertex":`` branch there is
     unreachable dead code — every auxiliary Vertex call (vision, title
     generation, MoA reference/aggregator slots, ...) fails at the
     ``pconfig is None`` guard before ever reaching it."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
 
-    cfg = PROVIDER_REGISTRY.get("vertex")
+    cfg = get_provider_config("vertex")
     assert cfg is not None
     assert cfg.auth_type == "vertex"
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tui_gateway import server
+import tui_gateway.server as server
 
 _SECRETS = {"FAKE_TTS_KEY": "tts-FAKE-111", "FAKE_STT_KEY": "stt-FAKE-222", "FAKE_MCP_TOKEN": "mcp-FAKE-333"}
 

@@ -5,8 +5,8 @@ Covers the three paths changed by fix/bedrock-provider-model-ids-live-discovery:
   1. provider_model_ids("bedrock") — uses live discover_bedrock_models() instead
      of the static _PROVIDER_MODELS table, with curated fallback.
 
-  2. list_authenticated_providers() Section 2 (HERMES_OVERLAYS) — bedrock
-     appears when AWS credentials are present; model list comes from live
+  2. list_authenticated_providers() profile rows — bedrock appears when AWS
+     credentials are present; model list comes from live
      discovery keyed by the resolved region, NOT the static us.* table.
 
   3. Region resolution — resolve_bedrock_region() reads from botocore profile
@@ -129,7 +129,7 @@ class TestProviderModelIdsBedrock:
 
 
 # ---------------------------------------------------------------------------
-# 2. list_authenticated_providers() — bedrock via HERMES_OVERLAYS (Section 2)
+# 2. list_authenticated_providers() — bedrock via registered provider profile
 # ---------------------------------------------------------------------------
 
 class TestListAuthenticatedProvidersBedrock:
@@ -226,17 +226,19 @@ class TestBedrockRegionRouting:
 
 
 # ---------------------------------------------------------------------------
-# 4. providers.py overlay registration
+# 4. provider profile registration
 # ---------------------------------------------------------------------------
 
-class TestBedrockOverlayRegistration:
-    """bedrock entry in HERMES_OVERLAYS is correctly configured."""
+class TestBedrockProfileRegistration:
+    """The Bedrock profile owns its identity and protocol declarations."""
 
+    def test_bedrock_profile_and_aliases(self):
+        from providers import get_provider_profile, normalize_provider
 
-
-
-    def test_bedrock_aliases_resolve(self):
-        from hermes_cli.providers import normalize_provider
+        profile = get_provider_profile("bedrock")
+        assert profile is not None
+        assert profile.auth_type == "aws_sdk"
+        assert profile.api_mode == "bedrock_converse"
         for alias in ("aws", "aws-bedrock", "amazon-bedrock", "amazon"):
             assert normalize_provider(alias) == "bedrock", \
                 f"alias {alias!r} should normalize to 'bedrock'"

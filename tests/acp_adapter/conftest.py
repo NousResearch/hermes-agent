@@ -30,7 +30,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _offline_model_inventory(monkeypatch):
     """Stub the shared model inventory so ACP tests never hit the network."""
-    from hermes_cli import inventory
+    import hermes_cli.inventory as inventory
 
     class _StubPickerContext:
         def with_overrides(self, **_kwargs):

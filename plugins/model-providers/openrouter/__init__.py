@@ -9,6 +9,7 @@ from agent.reasoning_effort import codex_supported_efforts
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
+from providers.model_normalizers import VendorQualifiedModelIdsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
-class OpenRouterProfile(ProviderProfile):
+class OpenRouterProfile(VendorQualifiedModelIdsMixin, ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
 
     @staticmethod
@@ -79,11 +80,11 @@ class OpenRouterProfile(ProviderProfile):
         if not effort and not disabled:
             return cfg
         try:
-            from hermes_cli.models import clamp_reasoning_effort_to_supported
-            from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+            from models.metadata.reasoning import clamp_reasoning_effort_to_supported
+            from models.metadata.reasoning import openrouter_model_reasoning_capabilities
 
             caps = openrouter_model_reasoning_capabilities(model)
-            if not caps or not caps.get("supports_reasoning"):
+            if not caps or not caps.supported:
                 return cfg
             # A reasoning-mandatory route 400s on a disable ("Reasoning is
             # mandatory for this endpoint and cannot be disabled") — omit
@@ -91,17 +92,16 @@ class OpenRouterProfile(ProviderProfile):
             # OpenRouter's catalog lists ``none`` for openai/gpt-6.1-sol, but upstream 400s on it
             # (live 2026-09-29), so the OpenAI ladder in agent.reasoning_effort wins over the catalog.
             if disabled:
-                no_disable = (model or "").startswith("openai/") and "none" not in codex_supported_efforts(model)
-                return None if caps.get("mandatory") or no_disable else cfg
+                return None if caps.mandatory else cfg
             clamped = clamp_reasoning_effort_to_supported(
-                effort, caps.get("supported_efforts")
+                effort, caps.supported_efforts
             )
         except Exception:
             return cfg
         if clamped and clamped != effort:
             logger.debug(
                 "openrouter: clamped reasoning effort %r → %r for %s (catalog supported_efforts=%s)",
-                effort, clamped, model, caps.get("supported_efforts"),
+                effort, clamped, model, caps.supported_efforts,
             )
             cfg = {**cfg, "effort": clamped}
         return cfg
@@ -111,7 +111,7 @@ class OpenRouterProfile(ProviderProfile):
     ) -> list[str] | None:
         """Public OpenRouter catalog (no auth), cached per process. Tool-call
         filtering happens in hermes_cli/models.py, which the picker reaches first."""
-        global _CACHE
+        global _CACHE  # noqa: PLW0603
         if _CACHE is not None:
             return _CACHE
         try:
@@ -205,9 +205,12 @@ class OpenRouterProfile(ProviderProfile):
 
 
 openrouter = OpenRouterProfile(
-    name="openrouter", aliases=("or",), env_vars=("OPENROUTER_API_KEY",), display_name="OpenRouter",
+    name="openrouter", aliases=("or", "open-router"), env_vars=("OPENROUTER_API_KEY",), display_name="OpenRouter",
+    is_aggregator=True,
     description="OpenRouter — unified API for 200+ models", signup_url="https://openrouter.ai/keys",
-    base_url="https://openrouter.ai/api/v1", models_url="https://openrouter.ai/api/v1/models",
+    base_url="https://openrouter.ai/api/v1", base_url_env_var="OPENROUTER_BASE_URL",
+    models_url="https://openrouter.ai/api/v1/models",
+    fallback_aux_model="nvidia/nemotron-3-ultra-550b-a55b:free",
     fallback_models=(
         "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "deepseek/deepseek-chat", "google/gemini-3.8-flash",
         "google/gemini-3.7-flash", "qwen/qwen3-plus",

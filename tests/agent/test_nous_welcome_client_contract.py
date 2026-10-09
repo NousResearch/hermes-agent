@@ -29,26 +29,27 @@ class TestAuxiliaryOnWelcomeHost:
         import agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client") as create, \
-             patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
+             patch.object(ac, "get_provider_profile") as profile_lookup:
             client, model = ac._try_nous()
         assert (client, model) == ("client", anon_auth.GUEST_MODEL)
         assert create.call_args.kwargs["base_url"] == WELCOME
-        recommended.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
+        profile_lookup.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
         assert ac.auxiliary_is_nous is True
 
     def test_vision_aux_on_welcome_host_uses_the_same_model(self):
         import agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
-             patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
+             patch.object(ac, "get_provider_profile") as profile_lookup:
             assert ac._try_nous(vision=True) == ("client", anon_auth.GUEST_MODEL)
-        recommended.assert_not_called()
+        profile_lookup.assert_not_called()
 
     def test_paid_host_keeps_the_portal_recommendation(self):
         import agent.auxiliary_client as ac
+        profile = SimpleNamespace(resolve_aux_model=lambda **_kw: "some/free-model")
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", PAID)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
-             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="some/free-model"):
+             patch.object(ac, "get_provider_profile", return_value=profile):
             client, model = ac._try_nous()
         assert (client, model) == ("client", "some/free-model")
 

@@ -54,10 +54,10 @@ class FakeOpenRouter(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):
+    def log_message(self, *a):  # noqa: A003
         return
 
-    def do_POST(self):
+    def do_POST(self):  # noqa: N802
         srv: FakeOpenRouter = self.server  # type: ignore[assignment]
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0")) or 0) or b"{}")
         srv.exchanges.append(body)

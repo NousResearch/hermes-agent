@@ -459,7 +459,7 @@ class TestSameNameUserMcpTable:
         hermes_cli/main.py stays pinned, and honour ``CODEX_HOME`` like every codex sibling."""
         import json
 
-        from hermes_cli import main
+        import hermes_cli.main as main
 
         codex_home = tmp_path / "alt-codex"
         codex_home.mkdir()

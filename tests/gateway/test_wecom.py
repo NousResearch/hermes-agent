@@ -976,7 +976,7 @@ class TestSendStreamFrame:
         assert adapter._send_json.await_count == 1
 
         # accumulated_text still updated in StreamTurn despite skip.
-        turn = next(iter(adapter._stream_turns.values()))
+        turn = list(adapter._stream_turns.values())[0]
         assert turn.accumulated_text == "alpha beta"
 
 

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from scripts.termux.deb_version import channel_for_tag, deb_version_for_tag
-import itertools
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/termux/deb_version.py"
 
@@ -85,5 +84,5 @@ def test_cli_dispatch(args, status, output):
 def test_dpkg_orders_canary_and_numeric_versions():
     tags = ["v1.2.3+canary.20260831T000000Z", "v1.2.3+canary.20260831T235959Z", "v1.2.3", "v1.2.10"]
     versions = list(map(deb_version_for_tag, tags))
-    for earlier, later in itertools.pairwise(versions):
+    for earlier, later in zip(versions, versions[1:]):
         subprocess.run(["dpkg", "--compare-versions", earlier, "lt", later], check=True)

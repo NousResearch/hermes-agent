@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tests.scripts.test_release_tags import release, release_repo
+from tests.scripts.test_release_tags import release, release_repo  # noqa: F401
 
 
 @pytest.fixture

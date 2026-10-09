@@ -2098,8 +2098,8 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-        "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
-        # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
+        # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
+        # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the

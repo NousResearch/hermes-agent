@@ -7,6 +7,8 @@ from headers).
 
 from __future__ import annotations
 
+import application_model_pricing
+
 
 from agent.credits_tracker import (
     CREDITS_NOTICE_KIND,
@@ -109,7 +111,7 @@ class TestWarn90RecoveryReCross:
         evaluate_credits_notices(state_with_fraction(0.10), latch)
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         # Recovery: uf drops back below ALL bands → usage notice clears entirely
-        _to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
+        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
         assert "credits.usage" in to_clear
         assert "credits.usage" not in latch["active"]
 
@@ -119,7 +121,7 @@ class TestWarn90RecoveryReCross:
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         evaluate_credits_notices(state_with_fraction(0.10), latch)  # recovery
         # Re-cross: uf >= 0.9 again — should fire again because the band is clearable
-        to_show, _to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
+        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
         keys = [n.key for n in to_show]
         assert "credits.usage" in keys
 
@@ -183,7 +185,7 @@ class TestGrantSpent:
         crossing to >= 1.0 with top-up remaining announces once."""
         latch = fresh_latch()
         evaluate_credits_notices(state_with_fraction(0.75), latch)
-        to_show, _to_clear = evaluate_credits_notices(self._grant_state(), latch)
+        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert "credits.grant_spent" in [n.key for n in to_show]
 
     def test_grant_spent_no_refire(self):
@@ -213,7 +215,7 @@ class TestGrantSpent:
         )
         assert s.used_fraction is not None and s.used_fraction < 1.0
         evaluate_credits_notices(s, latch)
-        to_show, _to_clear = evaluate_credits_notices(self._grant_state(), latch)
+        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
 
 
@@ -225,7 +227,7 @@ class TestDepleted:
     def test_depleted_fires_level_error_kind_sticky(self):
         latch = fresh_latch()
         s = CreditsState(paid_access=False)
-        to_show, _to_clear = evaluate_credits_notices(s, latch)
+        to_show, to_clear = evaluate_credits_notices(s, latch)
         depleted_notices = [n for n in to_show if n.key == "credits.depleted"]
         assert len(depleted_notices) == 1
         n = depleted_notices[0]
@@ -251,7 +253,7 @@ class TestDepleted:
         evaluate_credits_notices(CreditsState(paid_access=False), latch)
         evaluate_credits_notices(CreditsState(paid_access=True), latch)
         # Goes depleted again
-        to_show, _to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        to_show, to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
         keys = [n.key for n in to_show]
         assert "credits.depleted" in keys
 
@@ -293,13 +295,13 @@ class TestIsFreeTierModel:
 
     def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        import application_model_pricing as models_pricing
 
         # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
         # strips a trailing /v1 before fetch_models_with_pricing).
-        monkeypatch.setattr(models_pricing, "_pricing_cache",
+        monkeypatch.setattr(application_model_pricing, "_pricing_cache",
             {
-                "https://inference-api.nousresearch.com": {
+                application_model_pricing._pricing_scope_key("https://inference-api.nousresearch.com"): {
                     "some/zero-priced": {"prompt": "0", "completion": "0"},
                     "some/paid": {"prompt": "0.000001", "completion": "0.000002"},
                     "some/subscription": {"prompt": "0.000001", "completion": "0.000002", "billing_mode": "subscription"},
@@ -322,9 +324,9 @@ class TestIsFreeTierModel:
         paid_access=False for a free-tier identity ($0 by design), and that must never raise
         credits.depleted ("run /topup") on a surface that cannot top up."""
         from agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        import application_model_pricing as models_pricing
 
-        monkeypatch.setattr(models_pricing, "_pricing_cache", {})
+        monkeypatch.setattr(application_model_pricing, "_pricing_cache", {})
         assert is_free_tier_model("nous/welcome", "https://welcome-api.nousresearch.com/v1") is True
         assert is_free_tier_model("some/other", "https://welcome-api.nousresearch.com") is True
 
@@ -332,22 +334,22 @@ class TestIsFreeTierModel:
         """The free-tier rule is the host, not the model name: the paid inference host can serve
         nous/welcome to a named account, and a depleted named account still sees the notice."""
         from agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        import application_model_pricing as models_pricing
 
-        monkeypatch.setattr(models_pricing, "_pricing_cache", {})
+        monkeypatch.setattr(application_model_pricing, "_pricing_cache", {})
         assert is_free_tier_model("nous/welcome", "https://inference-api.nousresearch.com/v1") is False
         assert is_free_tier_model("some/paid", "https://inference-api.nousresearch.com/v1") is False
         assert is_free_tier_model("nous/welcome", "") is False
 
     def test_exception_fails_open_to_false(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        import application_model_pricing as models_pricing
 
         class _Exploding:
             def get(self, *_a, **_kw):
                 raise RuntimeError("boom")
 
-        monkeypatch.setattr(models_pricing, "_pricing_cache", _Exploding())
+        monkeypatch.setattr(application_model_pricing, "_pricing_cache", _Exploding())
         assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
 
     def test_stealth_prefix_detected_as_free(self):
@@ -379,7 +381,7 @@ class TestDenominatorNone:
         assert "credits.usage" in latch["active"]
         # Now uf becomes None (denominator changed to "none")
         s_none = state_with_fraction(None)
-        _to_show, to_clear = evaluate_credits_notices(s_none, latch)
+        to_show, to_clear = evaluate_credits_notices(s_none, latch)
         assert "credits.usage" in to_clear
         assert "credits.usage" not in latch["active"]
 

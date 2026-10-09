@@ -618,11 +618,8 @@ export class JsonRpcGatewayClient {
       // next reconnect believe nothing was missed; drop it and tell the
       // consumer to re-resume for a snapshot. A legacy backend reports a
       // bare `truncated` instead; that skips the window below (#100122).
-      // The session's epoch goes with its cursor: it only ever qualifies that cursor, and the
-      // re-resumed session's next live frame re-establishes both. Keeping it leaked one entry per
-      // session ever observed on this client.
+      this.adoptSessionReplayEpoch(sid, sessionEpoch)
       this.lastSeenSeq.delete(sid)
-      this.replayEpochBySession.delete(sid)
       this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: result.latest_seq } })
 
       return true
@@ -698,7 +695,6 @@ export class JsonRpcGatewayClient {
       for (const sid of this.lastSeenSeq.keys()) {
         if (!this.replayEpochBySession.has(sid)) { this.lastSeenSeq.delete(sid) }
       }
-
       // Revoke requests/cursors from the old numbering, but retain live
       // frames already received on this still-open socket. The socket is
       // still ours and no replay can cover the old numbering, so waiting

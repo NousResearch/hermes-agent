@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -11,7 +11,6 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useComposerState } from '../app/useComposerState.js'
 import { useSubmission } from '../app/useSubmission.js'
-import * as pendingInputs from '../lib/pendingInputs.js'
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 
@@ -239,72 +238,4 @@ it('keeps the caption and its image token in the composer when the pending-input
     await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
     expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
   } finally { chmodSync(journal, 0o700); h.close() }
-})
-
-it('keeps `/queue` text in the composer until the pending-input journal holds it', async () => {
-  const h = mount(true)
-  const journal = join(h.home, 'tui-pending-inputs')
-  mkdirSync(journal, { recursive: true })
-
-  try {
-    chmodSync(journal, 0o500)
-    await h.submit('/queue later please')
-    expect(h.composer.state.input).toBe('/queue later please')
-    expect(h.composer.refs.queueRef.current).toEqual([])
-    expect(getUiState().status).toBe('input not saved')
-    chmodSync(journal, 0o700)
-    await h.submit('/queue later please')
-    expect(h.composer.state.input).toBe('')
-    expect(h.composer.refs.queueRef.current.map(item => item.text)).toEqual(['later please'])
-  } finally { chmodSync(journal, 0o700); h.close() }
-})
-
-it('a failed attempt write leaves the queue head claimable instead of wedged in flight', async () => {
-  const h = mount(true)
-  const journal = join(h.home, 'tui-pending-inputs')
-
-  try {
-    h.composer.actions.enqueue('later please')
-    chmodSync(journal, 0o500)
-    expect(h.composer.actions.dequeue()).toBeUndefined()
-    expect(h.composer.refs.queueRef.current[0]).toMatchObject({ text: 'later please' })
-    expect(h.composer.refs.queueRef.current[0]!.inFlight).toBeFalsy()
-    chmodSync(journal, 0o700)
-    const claimed = h.composer.actions.dequeue()
-    expect(claimed).toMatchObject({ text: 'later please', inFlight: true })
-    expect(typeof claimed!.settle).toBe('function')
-  } finally { chmodSync(journal, 0o700); h.close() }
-})
-
-it('`/queue` with an image journals its attachment in the first durable write', async () => {
-  // A second (attachments) write that fails must never leave a queued row whose durable retry lacks
-  // the image while the composer also keeps the input (a duplicate send on the next Enter).
-  const h = mount(true, method => method === 'prompt.submit' ? new Promise(() => {}) : undefined)
-  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
-  const path = join(h.home, 'shot.png')
-  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
-  const real = pendingInputs.savePendingInput
-  let writes = 0
-
-  const save = vi.spyOn(pendingInputs, 'savePendingInput').mockImplementation(item => {
-    writes += 1
-
-    if (writes === 2) { throw new Error('disk full') }
-
-    return real(item)
-  })
-
-  try {
-    await h.submit(`/image ${path}`)
-    await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
-    patchUiState({ busy: true })
-    await h.submit('/queue caption [[ Image 1 ]]')
-    const queued = h.composer.refs.queueRef.current
-    expect(h.composer.state.input !== '' && queued.length > 0).toBe(false)
-    expect(queued).toHaveLength(1)
-    const journal = join(h.home, 'tui-pending-inputs')
-    const entries = readdirSync(journal, { recursive: true }).map(String).filter(name => name.endsWith('.json'))
-    expect(entries.map(name => JSON.parse(readFileSync(join(journal, name), 'utf8')).attachments)).toEqual([
-      [expect.objectContaining({ mime: 'image/png' })]])
-  } finally { save.mockRestore(); h.close() }
 })

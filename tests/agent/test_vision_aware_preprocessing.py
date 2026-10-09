@@ -151,7 +151,7 @@ class TestModelSupportsVision:
 
     def test_none_caps_returns_false(self):
         agent = _make_agent()
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.models_dev.query_model_metadata", return_value=None):
             assert agent._model_supports_vision() is False
 
 
@@ -160,7 +160,7 @@ class TestModelSupportsVision:
         agent.provider = "custom"
         agent.model = "my-llava"
         with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}), \
-             patch("agent.models_dev.get_model_capabilities", return_value=None):
+             patch("agent.models_dev.query_model_metadata", return_value=None):
             assert agent._model_supports_vision() is True
 
 
@@ -176,6 +176,6 @@ class TestModelSupportsVision:
             "providers": {"my-vllm": {"models": {"my-llava": {"supports_vision": True}}}},
         }
         with patch("hermes_cli.config.load_config", return_value=cfg), \
-             patch("agent.models_dev.get_model_capabilities", return_value=None):
+             patch("agent.models_dev.query_model_metadata", return_value=None):
             assert agent._model_supports_vision() is True
 

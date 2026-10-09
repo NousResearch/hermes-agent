@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-from tui_gateway import server
+import tui_gateway.server as server
 
 
 def _write_cfg(home: Path, busy: str, approvals: str) -> None:

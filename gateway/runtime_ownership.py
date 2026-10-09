@@ -20,27 +20,6 @@ def canonical_home(home: Path) -> Path:
     return Path(os.path.normcase(str(Path(home).expanduser().resolve())))
 
 
-def tighten_lock_mode(fd: int) -> None:
-    """Validate an open ``gateway.lock`` descriptor and narrow an upgraded lock to 0600.
-
-    Main's ``acquire_gateway_runtime_lock`` created the inode with ``open(path, "a+")`` under the
-    umask (0644 on most hosts), and lock inodes are never replaced, so an upgraded home keeps that
-    mode forever and discovery refuses it. Only a regular, single-link inode this user owns is
-    chmodded, through the already-open NOFOLLOW descriptor (no path race); anything else is refused.
-    """
-    info = os.fstat(fd)
-    if os.name == 'nt':
-        if not stat.S_ISREG(info.st_mode):
-            raise PermissionError('unsafe gateway lock owner or type')
-        return
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():  # windows-footgun: ok — POSIX branch
-        raise PermissionError('unsafe gateway lock owner or type')
-    if stat.S_IMODE(info.st_mode) & 0o077:
-        if info.st_nlink != 1:
-            raise PermissionError('unsafe gateway lock link count')
-        os.fchmod(fd, 0o600)  # windows-footgun: ok — POSIX branch
-
-
 class ProfileOwnership:
     def __init__(self):
         self._handles: dict[Path, object] = {}
@@ -66,7 +45,9 @@ class ProfileOwnership:
                     fd = os.open(path, flags, 0o600)
                     handle = os.fdopen(fd, 'r+', encoding='utf-8')
                     try:
-                        tighten_lock_mode(handle.fileno())
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or (os.name != 'nt' and info.st_uid != os.getuid()):  # windows-footgun: ok — guarded UID
+                            raise PermissionError('unsafe gateway lock owner or type')
                         if not _try_acquire_file_lock(handle):
                             raise OwnershipConflict(f'Gateway runtime already owns profile {home}')
                         record = {**_build_pid_record(), 'hermes_home': str(home)}

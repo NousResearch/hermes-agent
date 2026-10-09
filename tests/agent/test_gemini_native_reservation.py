@@ -35,7 +35,7 @@ def _build_agent(model, base_url, provider="", max_tokens=None, window=131072):
         patch("hermes_cli.config.load_config", return_value=CFG),
         patch("hermes_cli.config.load_config_readonly", return_value=CFG),
         patch(
-            "agent.model_metadata.get_model_context_length", return_value=window,
+            "models.metadata.context.get_model_context_length", return_value=window,
         ),
         patch.object(cc_mod, "get_model_context_length", return_value=window),
     ):

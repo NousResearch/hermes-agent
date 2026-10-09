@@ -33,7 +33,7 @@ def _routed_scope(runner: Any, source: Any):
 
 async def run_post_admission_hook(
     runner: Any, event: Any, source: Any, session_key: str
-) -> tuple[bool, Optional[str]]:
+) -> Tuple[bool, Optional[str]]:
     """Return ``(handled, reply)``; ``handled=False`` means run the ordinary agent turn."""
     try:
         async with _routed_scope(runner, source):

@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from tools import terminal_tool
+import tools.terminal_tool as terminal_tool
 from hermes_constants import get_hermes_home
 
 

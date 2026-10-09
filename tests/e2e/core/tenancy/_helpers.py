@@ -388,7 +388,7 @@ class TuiBackend:
         import queue
         import threading
 
-        self._log = open(log_path, "a", encoding="utf-8")
+        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, extra_env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log, text=True, bufsize=1,
@@ -478,7 +478,7 @@ class ServeBackend(TuiBackend):
         from websockets.sync.client import connect  # ``websockets`` is a core dependency
 
         self.token = secrets.token_urlsafe(24)
-        self._log = open(log_path, "a", encoding="utf-8")
+        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
         env = {"HERMES_DASHBOARD_SESSION_TOKEN": self.token, "HERMES_DESKTOP": "1", **(extra_env or {})}
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"],

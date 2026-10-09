@@ -7,6 +7,8 @@ persisted over the guest singleton) is exercised rather than mocked away.
 
 from __future__ import annotations
 
+import application_model_pricing
+
 import base64
 import json
 import time
@@ -184,12 +186,12 @@ def free_account(monkeypatch):
     """The signed-in account is a $0 (free-plan) account: the Portal's tier read and its recommended
     free list are the only network egress the default pick has, stubbed at their seams."""
     from hermes_cli import models as m
-    from hermes_cli import models_pricing as mp
+    import application_model_pricing as mp
     monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: True)
-    monkeypatch.setattr(m, "fetch_nous_recommended_models", lambda *a, **kw: {
+    monkeypatch.setattr("application_nous_recommendations.fetch_recommended_models", lambda *a, **kw: {
         "freeRecommendedModels": [{"modelName": FREE_PICK}]})
-    monkeypatch.setattr(mp, "get_pricing_for_provider", lambda *a, **kw: {})
-    monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+    monkeypatch.setattr(application_model_pricing, "get_pricing_for_provider", lambda *a, **kw: {})
+    monkeypatch.setattr(application_model_pricing, "nous_policy_allowed_ids", lambda **kw: None)
 
 
 def _write_model_config(model_cfg: dict) -> None:
@@ -227,12 +229,12 @@ class TestSignInCompletionSettlesTheModel:
 
     def test_no_eligible_recommendation_leaves_no_default_rather_than_a_model_the_account_may_not_use(
             self, portal, free_account, monkeypatch, capsys):
-        from hermes_cli import models as m
+        import application_model_selection_defaults as defaults
         anon_auth.ensure_portal_identity(explicit=True)
         _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
         def _portal_down():
             raise RuntimeError("recommended models unavailable")
-        monkeypatch.setattr(m, "recommended_nous_default_model", _portal_down)
+        monkeypatch.setattr(defaults, "select_nous_recommended_default", _portal_down)
         assert anon_auth.upgrade_guest(_args()) == 0
         model_cfg = _model_config()
         assert "default" not in model_cfg

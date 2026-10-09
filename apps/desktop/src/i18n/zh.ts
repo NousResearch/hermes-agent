@@ -3480,7 +3480,6 @@ export const zhOverrides = {
     queueDelete: '删除',
     queueLostNote: '重启期间该轮次已丢失',
     restoreImageDraft: '恢复图片草稿',
-    queueCancelFailed: '无法移除排队的轮次',
     queueLostDiscard: '丢弃',
     queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',

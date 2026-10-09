@@ -816,6 +816,7 @@ class TestSlackReactionAuthorizationGate:
 
             async def handle(self, event):
                 self.handled.append(event)
+                return None
 
             def _is_user_authorized(self, source):
                 self.auth_checked.append(source.user_id)

@@ -30,7 +30,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.releases.authors import resolve_author
+from scripts.releases.authors import resolve_author  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # AI assistants, bots, and machine accounts to exclude from contributor lists

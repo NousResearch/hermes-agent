@@ -57,10 +57,7 @@ async def prepare_crash(runner, adapter, source, peer):
     async with asyncio.timeout(5):
         while not any(r['request_id'] == 'unknown-follower' for r in rows(authority, sid)):
             await asyncio.sleep(0.01)
-    # The receive coroutine is released at durable commit (serial IRC/Signal loops keep
-    # reading); the follower itself stays queued behind the started head until the crash.
-    await asyncio.wait_for(follower, 5)
-    assert [r['status'] for r in rows(authority, sid) if r['request_id'] == 'unknown-follower'] == ['queued']
+    assert not follower.done()
     # Production trusted ingress commits synchronously before its first execution
     # yield. Freeze THIS scheduling boundary, not a claim/storage predicate.
     safe_source = replace(source, chat_id='recover-chat', thread_id='recover-thread')

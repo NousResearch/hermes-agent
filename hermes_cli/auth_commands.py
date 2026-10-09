@@ -20,9 +20,10 @@ from agent.credential_pool import (
     load_pool)
 from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
     dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
+from hermes_cli.provider_auth import (
+    AUTH_COMMAND_EXCLUDED_PROVIDER_IDS, get_provider_config, iter_provider_configs)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -80,15 +81,13 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     return None
 
 
-_PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
-
-
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
-            or auth_mod._plugin_aliases().get(normalized) or normalized)
+    custom = _resolve_custom_provider_input(normalized)
+    if custom:
+        return custom
+    from providers import normalize_provider
+    return normalize_provider(normalized)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -129,20 +128,27 @@ def _provider_base_url(provider: str) -> str:
     configured = _configured_provider_entry(provider)
     if configured is not None:
         return str(configured.get("base_url") or "").strip()
-    pconfig = PROVIDER_REGISTRY.get(provider)
+    pconfig = get_provider_config(provider)
     return pconfig.inference_base_url if pconfig else ""
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
-    return (provider in PROVIDER_REGISTRY or provider == "openrouter"
-            or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+    config = get_provider_config(provider)
+    return (
+        (config is not None and config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS)
+        or provider.startswith(CUSTOM_POOL_PREFIX)
+        or configured_provider is not None
+    )
 
 
 def _unknown_provider_exit(provider: str) -> SystemExit:
     """Did-you-mean over the known provider ids plus the two commands that list/pick them."""
     import difflib
-    known = sorted(set(PROVIDER_REGISTRY) | {"openrouter"}
-                   | {entry["name"] for entry in _get_custom_provider_entries()})
+    known = sorted(
+        {config.id for config in iter_provider_configs()
+         if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS}
+        | {entry["name"] for entry in _get_custom_provider_entries()}
+    )
     close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
     hint = f" Did you mean {', '.join(close)}?" if close else ""
     return SystemExit(
@@ -188,7 +194,7 @@ def _format_exhausted_status(entry) -> str:
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
         return head
-    remaining = max(0, math.ceil(exhausted_until - time.time()))
+    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
     if remaining <= 0:
         return f"{head} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
@@ -491,7 +497,7 @@ def auth_priority_command(args) -> None:
     index, matched, error = pool.resolve_target(getattr(args, "target", None))
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
-    requested = int(args.priority)
+    requested = int(getattr(args, "priority"))
     moved = pool.move_entry(matched.id, requested)
     if moved is None:
         raise SystemExit(f'No credential matching "{getattr(args, "target", None)}" for provider {provider}.')
@@ -516,7 +522,9 @@ def auth_list_command(args) -> None:
     else:
         credential_pool = auth_mod._load_auth_store().get("credential_pool")
         providers = sorted({
-            *PROVIDER_REGISTRY.keys(), "openrouter", *list_custom_pool_providers(),
+            *(config.id for config in iter_provider_configs()
+              if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS),
+            *list_custom_pool_providers(),
             *(e["provider_key"] for e in _get_custom_provider_entries() if e["provider_key"]),
             *(credential_pool.keys() if isinstance(credential_pool, dict) else ())})
     for provider in providers:
@@ -650,7 +658,8 @@ def auth_refresh_command(args) -> None:
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
         after = next((e for e in pool.entries() if e.id == matched.id), None)
-        label = PROVIDER_REGISTRY[provider].name if provider in PROVIDER_REGISTRY else provider
+        config = get_provider_config(provider)
+        label = config.name if config is not None else provider
         state = ("it was removed from the pool" if after is None
                  else "the saved session is no longer valid")
         raise SystemExit(
@@ -665,20 +674,12 @@ def auth_refresh_command(args) -> None:
               f"status still: {status}")
 
 
-def _moved_auth_hint(action: str, provider: str) -> str:
-    """``hermes auth status|logout spotify`` after Spotify left core for its plugin's own command."""
-    from hermes_cli.left_core_migration import moved_command_hint
-    return moved_command_hint("hermes auth", provider, action)
-
-
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
-        raise SystemExit("Provider is required. Example: `hermes auth status nous`.")
+        raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if dispatch_plugin_auth("status", args, provider):
         return
-    if moved := _moved_auth_hint("status", provider):
-        raise SystemExit(moved)
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
         load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
@@ -708,9 +709,18 @@ def auth_logout_command(args) -> None:
     raw_provider = getattr(args, "provider", None)
     if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
         return
-    if moved := _moved_auth_hint("logout", _normalize_provider(raw_provider or "")):
-        raise SystemExit(moved)
     auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
+
+
+def auth_spotify_command(args) -> None:
+    action = str(getattr(args, "spotify_action", "") or "login").strip().lower()
+    if action in {"", "login"}:
+        auth_mod.login_spotify_command(args)
+        return
+    handler = {"status": auth_status_command, "logout": auth_logout_command}.get(action)
+    if handler is None:
+        raise SystemExit(f"Unknown Spotify auth action: {action}")
+    handler(SimpleNamespace(provider="spotify"))
 
 
 def _print_bedrock_status() -> None:
@@ -796,8 +806,10 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    from providers import unlisted_provider_names
-    known = sorted((set(PROVIDER_REGISTRY) - unlisted_provider_names()) | {"openrouter"})
+    known = sorted(
+        config.id for config in iter_provider_configs()
+        if config.id not in AUTH_COMMAND_EXCLUDED_PROVIDER_IDS
+    )
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:
@@ -900,7 +912,8 @@ def auth_upgrade_command(args) -> None:
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
     "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
-    "logout": auth_logout_command, "upgrade": auth_upgrade_command}
+    "logout": auth_logout_command, "upgrade": auth_upgrade_command,
+    "spotify": auth_spotify_command}
 
 
 def auth_command(args) -> None:

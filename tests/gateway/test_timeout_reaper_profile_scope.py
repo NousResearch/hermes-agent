@@ -92,7 +92,7 @@ def test_inactivity_watchdog_keeps_turn_profile_context(tmp_path, monkeypatch):
 
     home_token = set_hermes_home_override(served_home)
     secret_token = set_secret_scope(
-        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
+        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}
     )
     try:
         asyncio.run(_exercise())
@@ -151,7 +151,7 @@ def test_asyncio_timeout_reaper_keeps_turn_profile_context(tmp_path, monkeypatch
 
     home_token = set_hermes_home_override(served_home)
     secret_token = set_secret_scope(
-        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
+        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}
     )
     try:
         asyncio.run(_exercise())

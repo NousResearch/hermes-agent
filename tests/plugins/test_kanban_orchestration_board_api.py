@@ -110,6 +110,27 @@ def test_get_board_and_global_unknown_resolves_to_active(client, home, monkeypat
     assert data["resolved_default_assignee"] == "default"
 
 
+def test_get_pin_collapsed_board_suppresses_override(client, home, monkeypatch):
+    """With HERMES_KANBAN_DB pinned to this board's own db the boards are
+    indistinguishable (design R1): the GET must report no board override and
+    resolve through the global, matching the dispatcher/decomposer readers."""
+    from hermes_cli import kanban_db
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    _make_board("tsa-mgmt")
+    # Point the pin at this board's own kanban.db — the pin-collapse topology.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kanban_db.kanban_db_path(board="tsa-mgmt")))
+    _write_config(
+        home,
+        "kanban:\n  default_assignee: worker\n"
+        "  boards:\n    tsa-mgmt:\n      default_assignee: planner\n",
+    )
+    data = client.get("/api/plugins/kanban/orchestration?board=tsa-mgmt").json()
+    assert data["board"] == "tsa-mgmt"  # requested slug still echoed
+    assert data["board_default_assignee"] == ""  # override suppressed
+    assert data["resolved_default_assignee"] == "worker"  # global instead
+
+
 def test_put_board_writes_board_scope(client, home):
     _make_board("tsa-mgmt")
     r = client.put(

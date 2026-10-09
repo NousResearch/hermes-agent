@@ -1645,10 +1645,16 @@ def get_orchestration_settings(board: Optional[str] = Query(None)):
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
     global_explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
-    board_explicit = {
-        k: (board_settings.board_override(kanban_cfg, k, board_slug) or "")
-        for k in _PROFILE_SETTINGS
-    }
+    # A pin-collapsed board is indistinguishable from every sibling (design R1):
+    # the resolving readers suppress its override, so the panel must too, or it
+    # would show "overridden here" while dispatch actually uses the global.
+    if board_slug and board_settings.board_pin_suppressed(board_slug):
+        board_explicit = {k: "" for k in _PROFILE_SETTINGS}
+    else:
+        board_explicit = {
+            k: (board_settings.board_override(kanban_cfg, k, board_slug) or "")
+            for k in _PROFILE_SETTINGS
+        }
     explicit = {k: (board_explicit[k] or global_explicit[k]) for k in _PROFILE_SETTINGS}
     resolved = dict(explicit)
     try:

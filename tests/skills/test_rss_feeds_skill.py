@@ -46,6 +46,41 @@ def test_all_three_formats_normalise_to_the_same_entry_shape_and_utc_dates():
     assert [e["title"] for e in newest] == ["Newer"]
 
 
+def test_lenient_iso_dates_parse_and_unparseable_dates_become_none():
+    """Space-separated dates with a colon-less offset (36kr's pubDate dialect) parse
+    instead of aborting ``--since`` runs, and an unparseable date yields None (entry
+    dropped) rather than the raw string that crashed datetime.fromisoformat
+    downstream (#133300). RFC 822 dates keep going through parsedate untouched."""
+    assert feed.parse_date("2026-10-05 16:36:43  +0800") == "2026-10-05T08:36:43+00:00"
+    assert feed.parse_date("2026-10-05 08:00:00+0800") == "2026-10-05T00:00:00+00:00"
+    assert feed.parse_date("2026-10-05 16:36:43 -0500") == "2026-10-05T21:36:43+00:00"
+    # no regression: strict ISO, RFC 822 with a colon-less offset, date-only
+    assert feed.parse_date("2026-10-05T10:37:01+00:00") == "2026-10-05T10:37:01+00:00"
+    assert (
+        feed.parse_date("Sun, 04 Oct 2026 06:12:31 +0000")
+        == "2026-10-04T06:12:31+00:00"
+    )
+    assert (
+        feed.parse_date("Sun, 04 Oct 2026 08:30:00 +0200")
+        == "2026-10-04T06:30:00+00:00"
+    )
+    assert feed.parse_date("2026-10-05") == "2026-10-05T00:00:00+00:00"
+    assert feed.parse_date("garbage") is None
+    assert feed.parse_date("") is None
+    assert feed.parse_date(None) is None
+    # the reported failure path: --since no longer crashes on a bad pubDate
+    rss = feed.parse_feed(
+        b'<rss version="2.0"><channel><title>t</title>'
+        b'<item><title>bad</title><pubDate>2026-10-05 16:36:43  +0800</pubDate></item>'
+        b'<item><title>worse</title><pubDate>not a date</pubDate></item>'
+        b"</channel></rss>"
+    )
+    assert [
+        e["title"]
+        for e in feed.filter_entries(rss["entries"], limit=10, since="2026-10-03")
+    ] == ["bad"]
+
+
 def test_page_url_discovers_advertised_feed_then_reads_it():
     """A non-feed page falls through to <link rel=alternate> discovery (resolved against the page URL)
     and `read` returns the parsed feed tagged with where it was discovered from."""

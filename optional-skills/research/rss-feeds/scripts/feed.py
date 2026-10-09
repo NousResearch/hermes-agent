@@ -49,18 +49,40 @@ def strip_html(text: str | None) -> str:
     return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", text))).strip()
 
 
+_OFFSET_NO_COLON_RE = re.compile(r"([+-]\d{2})(\d{2})\s*$")
+_SPACE_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)")
+_INNER_WS_RE = re.compile(r"\s{2,}")
+
+
+def _iso_fallback(value: str) -> datetime | None:
+    """Parse the near-ISO dialects feeds emit, e.g. 36kr's ``2026-10-05 16:36:43  +0800``:
+    a space where ISO 8601 wants ``T`` and a UTC offset without the colon. Normalising
+    here only — RFC 822 dates must reach ``parsedate_to_datetime`` untouched, because
+    rewriting their colon-less offset (``+0200`` → ``+02:00``) makes it drop the tz."""
+    value = _OFFSET_NO_COLON_RE.sub(r"\1:\2", value)
+    value = _SPACE_DATE_RE.sub(r"\1T\2", value)
+    try:
+        return datetime.fromisoformat(
+            _INNER_WS_RE.sub(" ", value).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+
+
 def parse_date(value: str | None) -> str | None:
-    """Normalise RFC 822 (RSS) and ISO 8601 (Atom/JSON Feed) dates to UTC ISO."""
+    """Normalise RFC 822 (RSS) and ISO 8601 (Atom/JSON Feed) dates to UTC ISO.
+
+    Unparseable dates return ``None`` so callers drop the entry instead of
+    tripping over the raw string downstream (#133300)."""
     if not value:
         return None
     value = value.strip()
     try:
         dt = parsedate_to_datetime(value)
     except (TypeError, ValueError):
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return value
+        dt = _iso_fallback(value)
+        if dt is None:
+            return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()

@@ -120,8 +120,8 @@ def _duration_ms(value: Any) -> Optional[int]:
 
 def _make_activity_event(*, hook_event_name: str, session_id: Any, status: str = "ok", tool_name: Any = None,
                          tool_input: Any = None, tool_output: Any = None, error_class: Any = None,
-                         duration_ms: Any = None) -> Dict[str, Any]:
-    event: Dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
+                         duration_ms: Any = None) -> dict[str, Any]:
+    event: dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
                              "sessionId": _safe_scalar(session_id, "unknown") or "unknown",
                              "hookEventName": hook_event_name, "status": "error" if status == "error" else "ok",
                              "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
@@ -144,7 +144,7 @@ _OPTIONAL_FIELD_RULES = (  # checked in this order; first failure wins
     (("truncated", "toolInputTruncated", "toolOutputTruncated"), lambda v: isinstance(v, bool), "a boolean"))
 
 
-def _validate_activity_event(value: Any) -> Dict[str, Any]:
+def _validate_activity_event(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("activity event must be an object")
     if value.get("schema") != ACTIVITY_EVENT_SCHEMA:
@@ -178,11 +178,11 @@ class ActivityQueue:
 
     def __init__(self, cap: int = DEFAULT_ACTIVITY_QUEUE_CAP):
         self._cap = max(1, int(cap or DEFAULT_ACTIVITY_QUEUE_CAP))
-        self._events: Deque[Dict[str, Any]] = deque()
+        self._events: deque[dict[str, Any]] = deque()
         self._dropped_since_drain = 0
         self._lock = threading.Lock()
 
-    def push(self, event: Dict[str, Any]) -> None:
+    def push(self, event: dict[str, Any]) -> None:
         validated = _validate_activity_event(event)
         with self._lock:
             self._events.append(validated)
@@ -190,7 +190,7 @@ class ActivityQueue:
                 self._events.popleft()
                 self._dropped_since_drain += 1
 
-    def drain(self, max_events: int = 200) -> Dict[str, Any]:
+    def drain(self, max_events: int = 200) -> dict[str, Any]:
         limit = max(1, int(max_events or 200))
         with self._lock:
             events = [self._events.popleft() for _ in range(min(limit, len(self._events)))]
@@ -228,7 +228,7 @@ def _is_raft_context(**kwargs: Any) -> bool:
                     or (safe_session_id and safe_session_id in _RAFT_SESSION_IDS))
 
 
-def _emit(hook_event_name: str, kwargs: Dict[str, Any], **fields: Any) -> None:
+def _emit(hook_event_name: str, kwargs: dict[str, Any], **fields: Any) -> None:
     """Build an activity event for the hook's session and fan it out to every live adapter."""
     event = _make_activity_event(hook_event_name=hook_event_name, session_id=kwargs.get("session_id"), **fields)
     with _ACTIVE_ADAPTERS_LOCK:
@@ -313,7 +313,8 @@ class RaftAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         path = str(extra.get("path", DEFAULT_PATH) or DEFAULT_PATH).strip() or DEFAULT_PATH
         self._path: str = path if path.startswith("/") else f"/{path}"
-        self._bridge_token: str = str(extra.get("bridge_token", ""))
+        # `or ""`: a null YAML value must reach connect()'s auto-generated token, not become "None".
+        self._bridge_token: str = str(extra.get("bridge_token") or "").strip()
         self._runtime_session: str = str(extra.get("runtime_session", DEFAULT_RUNTIME_SESSION) or DEFAULT_RUNTIME_SESSION)
         self._max_body_bytes: int = int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
         self._runner = None
@@ -373,7 +374,7 @@ class RaftAdapter(BasePlatformAdapter):
             logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
             return
         endpoint = f"http://{self._host}:{port}{self._path}"
-        cmd: List[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
+        cmd: list[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
                           "--wake-channel-endpoint", endpoint]
         from tools.environments.local import hermes_subprocess_env
         # The raft CLI needs its own profile and channel token, never Hermes' credentials.
@@ -400,11 +401,11 @@ class RaftAdapter(BasePlatformAdapter):
             logger.exception("[raft] Error stopping bridge")
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         logger.debug("[raft] adapter send is a no-op; agent delivers via raft CLI")
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"raft/{chat_id}", "type": "raft"}
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
@@ -500,7 +501,7 @@ class RaftAdapter(BasePlatformAdapter):
             return
         await super().handle_message(event)
 
-    def report_activity(self, event: Dict[str, Any]) -> None:
+    def report_activity(self, event: dict[str, Any]) -> None:
         try:
             self._activity_queue.push(event)
         except Exception:

@@ -48,7 +48,7 @@ def _legacy_login(email: str) -> str | None:
     """Look the email up in the frozen legacy AUTHOR_MAP in scripts/releases/authors_legacy.py."""
     try:
         sys.path.insert(0, str(REPO_ROOT))
-        from scripts.releases.authors_legacy import LEGACY_AUTHOR_MAP  # noqa: PLC0415
+        from scripts.releases.authors_legacy import LEGACY_AUTHOR_MAP
 
         return LEGACY_AUTHOR_MAP.get(email)
     except Exception:

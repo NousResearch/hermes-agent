@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -188,7 +189,7 @@ class TestA2AClientToolsInCliProcess:
     def test_a2a_appears_in_the_hermes_tools_checklist(self):
         """`a2a` is in _DEFAULT_OFF_TOOLSETS, so it must be tickable.
 
-        Every other member of that set (homeassistant, spotify, video_gen,
+        Every other member of that set (video_gen,
         x_search, ...) renders a checkbox; a2a rendered nothing, so the
         documented opt-in path had nothing to tick.
         """
@@ -430,6 +431,50 @@ class TestDeferredPlatformToolPreregistration:
         assert loaded.error
         # The bookkeeping entry must not outlive the failed load attempt.
         assert "probeplat-platform" not in mgr._predeclared_tools
+
+    def test_failed_load_is_rearmed_and_heals_on_next_lookup(self, tmp_path, probe, clean_registry, monkeypatch):
+        """A platform whose first deferred load raises (e.g. a load-deadline overrun under startup I/O) is
+        re-armed by the reconnect watcher's hook, so the next lookup imports it again and the platform
+        registers, without a forced re-discovery (#126356)."""
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import PluginManager
+
+        manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=False)
+        (Path(manifest.path) / "__init__.py").write_text(
+            "import _deferred_probe\n"
+            "def register(ctx):\n"
+            "    _deferred_probe.adapter_imports += 1\n"
+            "    if _deferred_probe.adapter_imports == 1:\n"
+            "        raise TimeoutError('load deadline overrun')\n"
+            "    ctx.register_platform('probeplat', 'Probe', lambda cfg: object(), lambda: True)\n",
+            encoding="utf-8",
+        )
+        mgr = PluginManager()
+        mgr._register_deferred_platform(manifest)
+        assert platform_registry.get("probeplat") is None
+        assert platform_registry.get("probeplat") is None  # a failed load is never retried by a lookup
+        with monkeypatch.context() as m:  # a placeholder the user disabled is never imported by a re-arm
+            m.setattr("hermes_cli.plugins_discovery._get_disabled_plugins", lambda: {"probeplat-platform"})
+            mgr._gate_manifest(manifest, {"probeplat-platform"}, None)
+            assert mgr.rearm_failed_platform("probeplat") is False
+        with monkeypatch.context() as m:  # nor one built for another Hermes version
+            m.setattr("hermes_cli.plugins_manifest.requires_hermes_error", lambda _manifest: "needs newer hermes")
+            assert mgr.rearm_failed_platform("probeplat") is False
+
+        from hermes_cli import plugins_loader
+        release = threading.Event()
+        hung = threading.Thread(target=release.wait, name=f"{plugins_loader._LOADER_THREAD_PREFIX}probeplat-platform",
+                                daemon=True)
+        hung.start()
+        monkeypatch.setattr(plugins_loader, "_ABANDONED_LOADERS", [hung])
+        assert mgr.rearm_failed_platform("probeplat") is False  # its hung load is still running
+        release.set()
+        hung.join()
+        monkeypatch.setattr("hermes_cli.plugins_loader._ABANDONED_LOADERS", [])
+        assert mgr.rearm_failed_platform("probeplat") is True
+        assert platform_registry.get("probeplat") is not None
+        assert probe.adapter_imports == 2
+        assert mgr.rearm_failed_platform("probeplat") is False  # loaded: nothing left to re-arm
 
     def test_declared_tools_with_no_tools_module_warns(
         self, tmp_path, probe, clean_registry, caplog

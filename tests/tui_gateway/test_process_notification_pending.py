@@ -339,3 +339,37 @@ def test_watch_pending_bridges_first_hit_until_each_notice_is_settled(delivery, 
                                    set(), registry, format_process_notification, [])
     assert rows()[proc.id]["notification_pending"] is False
     assert any(event[0] == "message.start" for event in events)
+
+
+@pytest.mark.parametrize("pruning", ["ttl", "capacity"])
+@pytest.mark.parametrize("first_settled", ["notification", "scope"])
+def test_pruning_waits_for_each_independent_obligation(delivery, monkeypatch, pruning, first_settled):
+    registry, _session, _events, rows, spawn = delivery
+    proc = spawn()
+    proc.notify_on_complete = True
+    registry.submit_stdin(proc.id)
+    assert proc._completion_event.wait(5)
+    assert proc.exit_code == 0
+    event = registry.completion_queue.get(timeout=5)
+    proc._scope_stop_pending = True
+    if pruning == "ttl":
+        proc.started_at -= processes.FINISHED_TTL_SECONDS + 1
+    else:
+        monkeypatch.setattr(processes, "MAX_PROCESSES", 1)
+
+    def prune():
+        with registry._lock:
+            registry._prune_if_needed()
+
+    prune()
+    assert proc.id in rows()
+    if first_settled == "notification":
+        registry.settle_notification(event)
+    else:
+        proc._scope_stop_pending = False
+    prune()
+    assert proc.id in rows(), "settling one obligation must not discard the other"
+    registry.settle_notification(event)
+    proc._scope_stop_pending = False
+    prune()
+    assert proc.id not in rows()

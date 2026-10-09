@@ -385,7 +385,7 @@ async def test_recordless_flag_with_dead_transport_leaves_normal_send(
             # fails, like a dropped Discord WebSocket.
             self.adapter.fail_edits = True
 
-    adapter, result = await _run_turn(
+    _adapter, result = await _run_turn(
         monkeypatch,
         tmp_path,
         consumer_cls=_DeadEditRecordlessConsumer,

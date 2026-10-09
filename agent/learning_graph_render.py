@@ -27,7 +27,7 @@ Row = list  # of runs ``[text, style, alpha, hex?]``; a grid is a list of rows
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -191,7 +191,7 @@ def _skill_category_counts(nodes: Iterable[dict[str, Any]]) -> Counter:
 # ── Timeline chart frame ─────────────────────────────────────────────────────
 
 class _ChartBucket:
-    __slots__ = ("label", "ts", "nodes", "rec")
+    __slots__ = ("label", "nodes", "rec", "ts")
 
     def __init__(self, label: str, ts: float):
         self.label, self.ts, self.rec = label, ts, 1.0

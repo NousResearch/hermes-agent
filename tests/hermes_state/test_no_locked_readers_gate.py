@@ -180,9 +180,7 @@ def _scan_locked_readers(
                         # how 5 readers hid from the first version of this
                         # gate.
                         unknown += 1
-                    elif _PRAGMA_WRITE_RE.match(word_full or ""):
-                        writes += 1
-                    elif _WRITE_RE.match(word):
+                    elif _PRAGMA_WRITE_RE.match(word_full or "") or _WRITE_RE.match(word):
                         writes += 1
                     elif _READ_RE.match(word):
                         reads += 1

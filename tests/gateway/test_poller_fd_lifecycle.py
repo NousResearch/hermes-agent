@@ -82,7 +82,7 @@ class TestFetchClosesSocketOnBrokenLogout(unittest.TestCase):
         mock_imap.logout.side_effect = imaplib.IMAP4.abort("EOF")
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            results = adapter._fetch_new_messages()
+            results = adapter._fetch_new_messages(lambda _c: True)
 
         self.assertEqual(results, [])
         mock_imap.shutdown.assert_called_once()

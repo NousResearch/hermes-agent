@@ -55,7 +55,7 @@ def test_clamp_collision_emits_warning_naming_both_skills(
     with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"), (
         patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds)
     ), patch("tools.skills_tool.SKILLS_DIR", skills_dir):
-        categories, uncategorized, hidden = discord_skill_commands_by_category(
+        categories, _uncategorized, hidden = discord_skill_commands_by_category(
             reserved_names=set(),
         )
 
@@ -123,7 +123,7 @@ def test_long_skill_name_preserves_cmd_key_through_by_category(
 
     with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds), \
          patch("tools.skills_tool.SKILLS_DIR", skills_dir):
-        categories, uncategorized, hidden = discord_skill_commands_by_category(
+        categories, uncategorized, _hidden = discord_skill_commands_by_category(
             reserved_names=set(),
         )
 
@@ -139,7 +139,7 @@ def test_long_skill_name_preserves_cmd_key_through_by_category(
     long_entry = [e for e in entries if e[2] == cmd_key]
     assert len(long_entry) == 1, f"Long skill should appear once, got: {long_entry}"
 
-    display_name, desc, key = long_entry[0]
+    display_name, _desc, key = long_entry[0]
     assert len(display_name) <= 32, (
         f"Display name should be clamped to 32 chars, got {len(display_name)}"
     )

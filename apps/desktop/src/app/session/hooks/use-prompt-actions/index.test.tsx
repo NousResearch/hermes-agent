@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
-import { textPart, toChatMessages } from '@/lib/chat-messages'
+import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -15,6 +15,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $cronRunReadOnlyVerdicts } from '@/store/read-only-transcript'
 import {
   $busy,
   $connection,
@@ -334,6 +335,44 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions /browser use', () => {
+  beforeEach(() => setSessions(() => [sessionInfo()]))
+
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  // `use` is offered by the subcommand picker; it once fell to the usage line. It writes the
+  // profile's browser.backend, so it runs on remote backends too (connect stays local-only).
+  it.each([
+    ['/browser use', true],
+    ['/browser use off', false]
+  ])('%s switches Browser Use mode through browser.manage, remote backends included', async (text, enabled) => {
+    $connection.set({ connectionId: 'hermes01', mode: 'remote' } as never)
+    const requestGateway = vi.fn(async () => ({ browser_use: enabled, connected: false }) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={vi.fn(async () => undefined)}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText(text)
+
+    expect(requestGateway).toHaveBeenCalledWith('browser.manage', {
+      action: 'use',
+      enabled,
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 })
 
@@ -6218,15 +6257,19 @@ describe('usePromptActions live-owner refusal (#106217)', () => {
   })
 })
 
-describe('usePromptActions stale multi-window guard (#65047)', () => {
+describe('usePromptActions send from a window behind the stored transcript', () => {
   afterEach(() => {
     cleanup()
     $notifications.set([])
     setSessions(() => [])
   })
 
-  it('refuses prompt.submit when the local transcript is behind and refreshes it', async () => {
-    const storedId = 'stored-stale-submit'
+  it('sends without a pre-send transcript read or a warning, even when another view is ahead (#65047)', async () => {
+    // The backend owns the model's context: a second window shares the live
+    // session, and each turn folds rows other surfaces wrote into the model
+    // history before it runs. The window being behind is only a stale view,
+    // so the send goes out as typed.
+    const storedId = 'stored-behind-submit'
     setSessions(() => [sessionInfo({ id: storedId, profile: 'work-vps', title: 'Remote chat' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -6239,13 +6282,11 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     })
 
     const requestGateway = vi.fn(async () => ({}) as never)
-    const seeds: Record<string, unknown>[] = []
     let handle: HarnessHandle | null = null
 
     await actRender(
       <Harness
         onReady={h => (handle = h)}
-        onSeedState={state => seeds.push(state)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         seedMessages={[
@@ -6256,118 +6297,14 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       />
     )
 
-    expect(await handle!.submitText('stale send from secondary window')).toBe(false)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-
-    const last = seeds.at(-1) as { awaitingResponse?: boolean; busy?: boolean; messages?: unknown[] } | undefined
-    expect(last?.busy).toBe(false)
-    expect(last?.awaitingResponse).toBe(false)
-    expect(last?.messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
-  })
-
-  it('allows prompt.submit when the authoritative transcript is not ahead', async () => {
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: RUNTIME_SESSION_ID,
-      messages: [
-        { content: 'a', role: 'user', timestamp: 1 },
-        { content: 'b', role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={[
-          { id: 'u1', role: 'user', parts: [textPart('a')] },
-          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
-        ]}
-      />
-    )
-
-    expect(await handle!.submitText('fresh enough')).toBe(true)
+    expect(await handle!.submitText('send from a window that missed a turn')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough' },
+      expect.objectContaining({ text: 'send from a window that missed a turn' }),
       1_800_000
     )
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
-  })
-
-  it('does not refuse when raw session rows are longer only because tools fold into chat messages', async () => {
-    const remoteSessionMessages = [
-      { content: 'check the repo', role: 'user' as const, timestamp: 1 },
-      {
-        content: 'Looking.',
-        role: 'assistant' as const,
-        timestamp: 2,
-        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{"command":"ls"}' } }]
-      },
-      {
-        content: '{"output":"ok"}',
-        role: 'tool' as const,
-        tool_call_id: 'tc-1',
-        tool_name: 'terminal',
-        timestamp: 3
-      },
-      { content: 'Done.', role: 'assistant' as const, timestamp: 4 }
-    ]
-
-    const localChat = toChatMessages(remoteSessionMessages)
-
-    expect(remoteSessionMessages.length).toBeGreaterThan(localChat.length)
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: RUNTIME_SESSION_ID,
-      messages: remoteSessionMessages
-    })
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={localChat}
-      />
-    )
-
-    expect(await handle!.submitText('follow-up after tools')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' },
-      1_800_000
-    )
-  })
-
-  it('does not refuse when the authoritative transcript read fails', async () => {
-    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('wrong backend'))
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={[{ id: 'u1', role: 'user', parts: [textPart('a')] }]}
-      />
-    )
-
-    expect(await handle!.submitText('send anyway')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
-      1_800_000
-    )
   })
 
   it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {
@@ -6575,6 +6512,66 @@ describe('usePromptActions derives plans from the runtime slice ($sessionStates)
       'prompt.submit',
       expect.objectContaining({ text: 'stale mirror prompt' }),
       expect.anything()
+    )
+  })
+})
+
+describe('usePromptActions cron run write gate (#88443)', () => {
+  const storedId = 'cron_job-1_20260929_120000'
+
+  afterEach(() => {
+    cleanup()
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+    setSessions(() => [])
+    vi.mocked(getSession).mockReset()
+  })
+
+  const renderRestoredRun = async (requestGateway: ReturnType<typeof vi.fn>) => {
+    let handle: HarnessHandle | null = null
+
+    // A route/tab restored after an app restart: no Cron surface evaluated the
+    // run, so there is no verdict yet — the send itself must gate it.
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway as never}
+        storedSessionId={storedId}
+      />
+    )
+
+    return handle!
+  }
+
+  it('refuses a send into a restored never-closed run the scheduler does not own', async () => {
+    vi.mocked(getSession).mockResolvedValue(
+      sessionInfo({ ended_at: null, id: storedId, scheduler_owned: false, source: 'cron' })
+    )
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const handle = await renderRestoredRun(requestGateway)
+
+    expect(await handle.submitText('into the dead cron session')).toBe(false)
+    expect(getSession).toHaveBeenCalledWith(storedId, expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(true)
+  })
+
+  it('sends into a run past the activity window while the scheduler still owns it', async () => {
+    $cronRunReadOnlyVerdicts.set(new Map([[storedId, true]])) // looked idle earlier
+    vi.mocked(getSession).mockResolvedValue(
+      sessionInfo({ ended_at: null, id: storedId, is_active: false, scheduler_owned: true, source: 'cron' })
+    )
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const handle = await renderRestoredRun(requestGateway)
+
+    expect(await handle.submitText('still running')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: 'still running' }),
+      1_800_000
     )
   })
 })

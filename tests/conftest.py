@@ -320,8 +320,8 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     # Relay normally discovers the user's XDG plugins.toml and merges the machine
-    # policy above it. Select a per-test user file that denies dynamic plugins so
-    # tests cannot activate a developer's or machine policy's worker/native plugins,
+    # policy above it. Select a per-test user file with a deny-by-default dynamic
+    # plugin policy so ordinary tests do not activate ambient worker/native plugins,
     # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
     # Outside tmp_path: tests that list or git-status their tmp dir must not see it.
     relay_plugins = tmp_path_factory.getbasetemp() / "relay-plugins.toml"

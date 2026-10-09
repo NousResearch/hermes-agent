@@ -39,7 +39,10 @@ Relay 0.10 requires observability configuration `version = 4`. Custom Python
 LLM execution intercepts receive `(name, request, context, next_call)`; the
 context exposes the selected request codec and, for non-streaming execution,
 the response codec. Native plugins must be rebuilt for Relay 0.10's ABI v7 and
-declare a `compat.relay` range that excludes Relay 0.9.
+set their `compat.relay` lower bound to `0.10.0`. Workers that register LLM
+execution intercepts must update their callbacks and regenerate their protocol
+bindings. See Relay's [0.10 migration guide](https://docs.nvidia.com/nemo/relay/reference/migration-guides)
+for the complete upgrade checklist.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can

@@ -46,4 +46,22 @@ describe('MermaidRenderer', () => {
     ])
     expect(decodeURIComponent(images[0]?.src.split(',')[1] ?? '')).toContain('marker-end="url(#arrow)"')
   })
+
+  it('keeps a <br/> label rendering as a loadable XML image (#133089)', async () => {
+    // Mermaid serialises the label's <br/> as a bare HTML <br>, which fails
+    // XML parsing inside the data: URI and shows a broken image.
+    renderMermaid.mockImplementationOnce(async () => ({
+      svg: '<svg id="br-label" xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260 70"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><p>ice point<br>limit-up</p></div></foreignObject></svg>'
+    }))
+
+    const { container } = render(<MermaidRenderer code="graph LR; A-->B" />)
+
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+
+    const payload = decodeURIComponent(container.querySelector('img')?.src.split(',')[1] ?? '')
+
+    expect(payload).toMatch(/<br\s*\/>/)
+    expect(payload).not.toMatch(/<br\b(?![^>]*\/)>/)
+    expect(new DOMParser().parseFromString(payload, 'image/svg+xml').documentElement.tagName).toBe('svg')
+  })
 })

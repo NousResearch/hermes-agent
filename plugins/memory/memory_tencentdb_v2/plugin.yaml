@@ -1,0 +1,9 @@
+name: memory_tencentdb_v2
+display_name: memory-tencentdb-v2
+version: 1.0.0
+description: "memory-tencentdb v2 API adapter — connects Hermes to a remote TDAI Memory Service via the official Python SDK. Supports multi-tenant, multi-space deployments."
+hooks:
+  - on_session_end
+aliases:
+  - memory-tencentdb-v2
+  - tdai-v2

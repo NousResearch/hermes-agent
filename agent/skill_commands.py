@@ -347,7 +347,8 @@ def _build_skill_message(
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
         parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
-    _inject_skill_config(loaded_skill, parts)
+    if not loaded_skill.get("remote"):
+        _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:
         parts += ["", f"[Skill setup note: {setup_note}]"]
@@ -391,8 +392,9 @@ def _render_skill_block(
         # Track active usage for Curator lifecycle management (#17782)
         # Track active usage for Curator lifecycle management (#17782)
         # Track active usage for Curator lifecycle management (#17782)
-        from tools.skill_usage import bump_use
-        bump_use(skill_name, task_id=task_id)
+        if not loaded_skill.get("remote"):
+            from tools.skill_usage import bump_use
+            bump_use(skill_name, task_id=task_id)
     except Exception:
         pass
     return _build_skill_message(loaded_skill, skill_dir, activation_note, session_id=task_id, **message_kwargs)
@@ -511,7 +513,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     # (file I/O, deferred imports) stays outside it (#14536, #74574).
     with _publish_lock:
         _skill_commands_by_key[key] = commands
-    return _with_skill_source_commands(commands)
+    return commands
 
 
 def _with_skill_source_commands(commands: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -521,7 +523,7 @@ def _with_skill_source_commands(commands: Dict[str, Dict[str, Any]]) -> Dict[str
         from hermes_cli.plugins import get_plugin_manager
         for key, info in get_plugin_manager().list_skill_source_commands().items():
             result.setdefault(key, info)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- sanitize plugin boundary errors without leaking secrets
         logger.warning("Remote skill source catalog unavailable")
     return result
 
@@ -548,7 +550,7 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
     if cached is not None:
-        return _with_skill_source_commands(cached)
+        return cached
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return scan_skill_commands()
@@ -656,7 +658,8 @@ def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
-    commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
+    commands = _with_skill_source_commands(_merge_interactive_skill_commands(
+        get_skill_commands(), get_plugin_skill_commands()))
     with _publish_lock:
         _last_interactive_skill_commands_by_key[identity] = dict(commands)
     return commands
@@ -706,7 +709,8 @@ def reload_skills() -> dict[str, Any]:
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()
     new_commands = scan_skill_commands()
-    effective_commands = _merge_interactive_skill_commands(new_commands, get_plugin_skill_commands())
+    effective_commands = _with_skill_source_commands(_merge_interactive_skill_commands(
+        new_commands, get_plugin_skill_commands()))
     after = command_snapshot(effective_commands)
     result = diff_command_snapshots(before, after)
     with _publish_lock:

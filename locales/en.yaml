@@ -702,7 +702,7 @@ gateway:
     stacked_disabled: "The **{names}** skill(s) in this stacked invocation are disabled for {platform}.\nEnable them with: `hermes skills config`"
     stacked_load_failed: "Failed to load stacked skills for /{command}."
     gate_off: "Skill write approval is off (skills.write_approval). Enable it with /skills approval on, then review staged writes here with /skills pending."
-    unknown_subcommand: "Unknown /skills subcommand on this platform. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Search/install are CLI-only.)"
+    unknown_subcommand: "Unknown /skills subcommand on this platform. Use: pending, approve <id> <review-token>, reject <id>, diff <id>, approval <on|off>. (Search/install are CLI-only.)"
     diff_truncated: "\n… (truncated — full diff in ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "restarting"
@@ -921,7 +921,7 @@ gateway:
     invoke_hint: "Invoke a bundle with `/<slug>` to load all its skills."
 
   memory:
-    unknown_subcommand: "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Unknown /memory subcommand. Use: pending, approve <id> <review-token>, approve all, reject <id>, approval <on|off>."
 
   approvals:
     admin_only: "Only gateway admins can change the persistent approval mode."
@@ -3012,7 +3012,7 @@ cli:
     kanban:
       failed: "(._.) kanban error: {error}"
     memory:
-      unknown_subcommand: "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Unknown /memory subcommand. Use: pending, approve <id> <review-token>, approve all, reject <id>, approval <on|off>."
     learn:
       from_description: "⚡ Learning a skill from what you described..."
       from_conversation: "⚡ Learning a skill from this conversation..."

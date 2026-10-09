@@ -207,7 +207,8 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
     assert json.loads(memory_tool(action="replace", old_text="pg-staging-2", content=newer, store=store))["success"]
 
-    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+    token = wa.payload_sha256(wa.get_pending(wa.MEMORY, pid)["payload"])
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid, token], memory_store=load_on_disk_store())
 
     assert load_on_disk_store().memory_entries == [_KEPT, newer], out
     assert "changed since it was staged" in out
@@ -223,7 +224,8 @@ def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape):
     from tools.memory_tool import load_on_disk_store
     from tools import write_approval as wa
     _store, pid = _review_stages_remove(shape)
-    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+    token = wa.payload_sha256(wa.get_pending(wa.MEMORY, pid)["payload"])
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid, token], memory_store=load_on_disk_store())
     assert _REVIEWED not in load_on_disk_store().memory_entries, out
     assert _REVIEWED in out
 
@@ -241,7 +243,8 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
     path.write_text(json.dumps(record), encoding="utf-8")
     assert "unpinned legacy target" in handle_pending_subcommand(wa.MEMORY, ["pending"])
 
-    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
+    token = wa.payload_sha256(wa.get_pending(wa.MEMORY, pid)["payload"])
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", pid, token], memory_store=load_on_disk_store())
 
     assert "Approved 0" in out and "predates entry pinning" in out, out
     assert _REVIEWED in load_on_disk_store().memory_entries

@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageType
+from plugins.platforms.telegram.telegram_guest_media import TelegramGuestMediaMixin, guest_delivery_note
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
@@ -61,10 +62,15 @@ def guest_edit_intercept(edit_message):
     return wrapper
 
 
-class TelegramGuestModeMixin:
+class TelegramGuestModeMixin(TelegramGuestMediaMixin):
     """Guest-mode state and delivery for :class:`TelegramAdapter`."""
 
+    # The guest reply is one answer, not every inter-tool segment: the stream consumer delivers only the
+    # last segment and tags its first chunk ``guest_segment_start`` so the reply buffer is replaced.
+    GUEST_MODE_DROPS_PRIOR_SEGMENTS: bool = True
+
     def _init_guest_state(self) -> None:
+        self._init_guest_media_state()
         # Bot API 10.0 guest mode: chat_id → guest_query_id for answerGuestQuery
         self._pending_guest_queries: dict[str, str] = {}
         # chat IDs that are guest-mode only (bot not a member)
@@ -94,6 +100,10 @@ class TelegramGuestModeMixin:
         """
         _cid_str = str(chat_id)
         return self._pending_guest_queries.get(_cid_str) is not None or _cid_str in self._guest_only_chats
+
+    def buffers_stream_replies(self, chat_id: Any) -> bool:
+        """True when stream sends to *chat_id* land in the guest reply buffer rather than the chat."""
+        return self._is_guest_chat(chat_id)
 
     def exec_approval_unanswerable(self, source: Any) -> Optional[str]:
         """A guest chat can't show an approval prompt: the card's sendMessage is rejected, the guest
@@ -245,6 +255,7 @@ class TelegramGuestModeMixin:
         _guest_imi_raw = self._guest_inline_message_ids.pop(_gc_id, False)
         _guest_imi = _guest_imi_raw if isinstance(_guest_imi_raw, str) else None
         _buffered = self._guest_reply_buffer.pop(_gc_id, "")
+        _turn_media = self._guest_turn_media.pop(_gc_id, None)
         self._guest_only_chats.discard(_gc_id)
         if not ((_guest_qid or _guest_imi) and self._bot):
             return
@@ -262,7 +273,9 @@ class TelegramGuestModeMixin:
         logger.warning("[%s] guest OPC flush (chat=%s buffered_len=%d imi=%s)",
                        self.name, _gc_id, len(_buffered), _guest_imi)
         try:
-            if _guest_imi:
+            if _turn_media and _guest_imi:
+                await self._guest_edit_ready_button(_guest_imi, _plain, _turn_media, _gc_id)
+            elif _guest_imi:
                 await self._guest_typewriter(_guest_imi, _reply_text)
                 await self._bot.edit_message_text(text=_reply_text, inline_message_id=_guest_imi)
                 logger.warning("[%s] guest OPC text edit (chat=%s imi=%s)", self.name, _gc_id, _guest_imi)
@@ -478,6 +491,14 @@ class TelegramGuestModeMixin:
             )
             return
 
+        # deliver_<token> (the stub's "tap to send" button): answered at once with the staged media,
+        # no LLM pass, and independent of any turn in flight for this chat. Sits behind the caller
+        # gate above, so a leaked token can't be redeemed by an unauthorized caller.
+        _query_text = self._clean_bot_trigger_text(text.strip()).strip()
+        if _query_text.startswith("deliver_"):
+            await self._guest_answer_deliver_query(guest_query_id, _query_text[len("deliver_"):], chat_id_str)
+            return
+
         # Guest state (_pending_guest_queries, _guest_reply_buffer,
         # _guest_inline_message_ids) is keyed by chat_id, not guest_query_id —
         # a second @mention from the same chat while a turn is still in flight
@@ -522,15 +543,8 @@ class TelegramGuestModeMixin:
         # if the operator deliberately turned that off.
 
         # Inject delivery constraint so the LLM knows direct Bot API calls to this
-        # chat will fail (bot is not a member).
-        _guest_delivery_note = (
-            "**Delivery constraint (this session only):** You are responding to "
-            "a @mention in a group chat where the bot is not a member. "
-            "Direct Bot API calls (sendVideo, sendPhoto, sendDocument, sendAudio, "
-            "curl to api.telegram.org, etc.) to this chat will fail with "
-            "\"Forbidden: bot is not a member\" — do NOT attempt them. Media "
-            "delivery is not yet supported in this context; respond with text only."
-        )
+        # chat will fail (bot is not a member) and media goes through MEDIA: staging.
+        _guest_delivery_note = guest_delivery_note()
         if event.channel_prompt:
             event.channel_prompt = event.channel_prompt + "\n\n" + _guest_delivery_note
         else:

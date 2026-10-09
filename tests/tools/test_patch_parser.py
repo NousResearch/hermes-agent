@@ -1203,6 +1203,103 @@ class TestHunkTargetIdentity:
         assert final == "def first():\n    return True\ndef second():\n    return 1\n"
 
 
+class TestHunkTargetPrecedence:
+    """What decides a hunk's site when the patch says it more than one way: a unique @@ hint @@
+    over hunk position, the scope after an anchor over an earlier match, and never text an
+    earlier hunk of the same patch has just written."""
+
+    @pytest.mark.parametrize("gap", [600, 1200, 3000])
+    @pytest.mark.parametrize("footer", [False, True], ids=["alone", "with-footer-hunk"])
+    def test_a_unique_hint_keeps_its_site_whatever_hunks_follow(self, tmp_path, gap, footer):
+        source = "value = old\n# " + "x" * gap + "\n# target\nvalue = old\n# footer\nfooter = old\n"
+        body = "@@ target @@\n-value = old\n+value = patched"
+        body += "\n@@ footer @@\n-footer = old\n+footer = new" if footer else ""
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == source.replace("# target\nvalue = old", "# target\nvalue = patched").replace(
+            "footer = old", "footer = new" if footer else "footer = old")
+
+    def test_a_hint_naming_a_site_behind_the_anchor_refuses(self, tmp_path):
+        source = "# target\nvalue = old\n# " + "x" * 3000 + "\n# anchor\nvalue = old\n"
+        body = "@@\n # anchor\n@@ target @@\n-value = old\n+value = new"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "target" in (result.error or "")
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("later", [
+        "    active  = False", "    active\t= False", "    active =  False",
+    ], ids=["two-space", "tab", "double-right-space"])
+    def test_a_fuzzy_match_after_the_anchor_wins_over_an_exact_one_before_it(self, tmp_path, later):
+        source = "def first():\n    active = False\n# " + "x" * 1000 + "\ndef second():\n" + later + "\n"
+        body = "@@\n def second():\n@@\n-    active = False\n+    active = True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == source.replace(later, "    active = True")
+
+    def test_a_unicode_variant_after_the_anchor_wins_too(self, tmp_path):
+        source = 'def first():\n    label = "x"\ndef second():\n    label = \u201cx\u201d\n'
+        body = '@@\n def second():\n@@\n-    label = "x"\n+    label = "y"'
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final.startswith('def first():\n    label = "x"\n')
+        assert "\u201cx\u201d" not in final
+
+    def test_two_fuzzy_sites_after_the_anchor_refuse(self, tmp_path):
+        source = ("def first():\n    active = False\ndef second():\n"
+                  "    active  = False\n    active\t= False\n")
+        body = "@@\n def second():\n@@\n-    active = False\n+    active = True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("old, first, second", [
+        ("value = 1", "value = 10", "value = 20"),
+        ("tag = on", "tag = one", "tag = only"),
+    ], ids=["number-prefix", "word-prefix"])
+    def test_a_repeated_hunk_never_re_edits_what_the_one_before_it_wrote(
+            self, tmp_path, old, first, second):
+        source = f"head = 0\n{old}\ntail = 0\n"
+        body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("old, first, second", [
+        ("value = 1", "value = 10", "value = 20"),
+        ("tag = on", "tag = one", "tag = only"),
+    ], ids=["number-prefix", "word-prefix"])
+    def test_a_repeated_hunk_with_enough_sites_edits_each_once(self, tmp_path, old, first, second):
+        source = f"{old}\nmid = 0\n{old}\n"
+        body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == f"{first}\nmid = 0\n{second}\n"
+
+    def test_neighbouring_hunks_may_share_a_context_line(self, tmp_path):
+        source = "a = 0\nb = 0\nc = 0\nd = 0\ne = 0\n"
+        body = "@@\n a = 0\n-b = 0\n+b = 1\n c = 0\n@@\n c = 0\n-d = 0\n+d = 1\n e = 0"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "a = 0\nb = 1\nc = 0\nd = 1\ne = 0\n"
+
+
 class TestMoveThenUpdateSameFile:
     """A rename-then-edit patch must validate and apply (was rejected).
 

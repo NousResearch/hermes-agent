@@ -19,6 +19,7 @@ export { SidebarWorkspaceGroup } from './workspace-group'
 export {
   excludeProjectSessions,
   liveSessionProjectId,
+  liveSessionsForProject,
   overlayLiveLanes,
   overlayLivePreviews,
   projectOwnerBySessionId,

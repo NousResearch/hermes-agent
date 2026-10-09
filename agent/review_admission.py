@@ -73,6 +73,10 @@ REASON_DROPPED_AFTER_LEASE_YIELD = "review_dropped_after_lease_yield"
 # reclaiming foreground, and by the fork's next renewal tick.
 REASON_LEASE_EXPIRED_RECLAIMED = "review_lease_expired_reclaimed"
 REASON_LEASE_LOST = "review_lease_lost"
+# state.db stayed write-locked until no renewal could land before the review's row expired: the
+# fork is stopped before a successor can reclaim the row beside it. Not a yield — the transcript
+# did not move — so a deferred review is requeued, not dropped.
+REASON_LEASE_RENEWAL_LOCKED = "review_lease_renewal_locked"
 # The gateway's post-delivery completion raised before the captured candidate could spawn.
 REASON_COMPLETION_ERROR = "review_completion_error"
 # The fork's FIRST provider request was refused by its aggregate input budget: zero provider

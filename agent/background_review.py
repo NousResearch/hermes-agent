@@ -1527,6 +1527,7 @@ def _try_acquire_durable_review_lease(
         f"pid={os.getpid()}{holder_namespace_token()}"
         f"{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}{uuid.uuid4().hex}"
     )
+    floor = time.time()  # before the acquire: never later than the row's committed expiry
     try:
         acquired = db.try_acquire_session_turn_lease(
             session_id, holder, ttl_seconds=REVIEW_LEASE_TTL_SECONDS
@@ -1539,6 +1540,7 @@ def _try_acquire_durable_review_lease(
     lease = _ReviewTurnLease(
         review_agent, db, session_id, holder, review_run,
         _review_owner_tag(review_run, None, session_id),
+        expires_at=floor + REVIEW_LEASE_TTL_SECONDS,
     )
     review_agent._active_session_turn_lease_holder = holder
     review_agent._active_session_turn_lease_ttl_seconds = REVIEW_LEASE_TTL_SECONDS

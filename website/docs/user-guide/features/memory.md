@@ -423,7 +423,13 @@ lease until it exits, so the user's turn starts the moment the fork is gone —
 never beside it — and the turn never waits for the review to finish its work.
 The lease is reclaimed from a review only when its process is dead or its
 renewals stopped for a full TTL, and both sides log that
-(`review_lease_expired_reclaimed`, `review_lease_lost`). A review holder never
+(`review_lease_expired_reclaimed`, `review_lease_lost`). A `state.db` write
+lock held by another writer (a compaction publish, a maintenance sweep, another
+session's flush) is a missed renewal, not a loss: the fork keeps running while
+its next renewal can still land before the row expires, and only a lock that
+outlasts the row's whole lifetime stops it (`review_lease_renewal_locked`) —
+without the yield mark, so a deferred review stopped that way is requeued, since
+the transcript did not move. A review holder never
 refuses a transcript write: `/undo`, `/retry` and an edited-and-resubmitted
 prompt land at once and ask the review to yield the same way — the fork logs the
 cause that stamped it (`review_preempted_by_transcript_edit`), never a
@@ -443,6 +449,7 @@ hashed owner tag and a stable reason (`live_turn_active`,
 `review_candidate_superseded`, `review_preempted_cross_process`,
 `review_preempted_by_transcript_edit`,
 `review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
+`review_lease_renewal_locked`,
 `review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`,
 `review_input_budget_refused`, …), never the session id or any message text.
 

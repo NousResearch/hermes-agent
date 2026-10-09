@@ -252,13 +252,15 @@ def _filter_secret_env(
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
+    from hermes_cli.private_child_env import private_env_keys
+    private_keys = private_env_keys()
     registered = _registered_adapter_secret_env()
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
                 continue
             key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
+            if not _is_hermes_internal_secret(key) and key.upper() not in private_keys:
                 out[key] = value
             continue
         if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
@@ -289,6 +291,8 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
+    from hermes_cli.private_child_env import private_env_keys
+    plugin_strip = plugin_strip | private_env_keys()
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
         _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
@@ -297,7 +301,8 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
     # declared secret again (#114209); _scrub_child_env calls it the same way.
     from tools.env_passthrough import scoped_passthrough_additions
-    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
+    strip_folded = {k.upper() for k in plugin_strip}
+    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k.upper() not in strip_folded)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment

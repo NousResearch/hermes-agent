@@ -24,7 +24,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -48,7 +48,7 @@ from hermes_cli.plugins_discovery import (
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
-    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
+    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker, _ignore_after_abandoned_load,
 )
 from hermes_cli.plugins_dispatch import (
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
@@ -941,6 +941,16 @@ class PluginContext:
             "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
+    def register_private_env_keys(self, names: list[str]) -> PluginRegistration:
+        """Keep plugin control credentials out of children, including forced extras.
+
+        Only names are registered, within this profile. The normal registration
+        ledger removes this declaration on unload without removing other owners.
+        """
+        from hermes_cli.private_child_env import register_private_env_keys
+        release = register_private_env_keys(self._manager.scope_key, names)
+        return self._track("private_env_keys", "child_environment", release)
+
     def _track_callback(
         self, kind: str, key: str, callback: Callable, mapping: dict[str, list[Callable]],
         valid: set[str],
@@ -1095,23 +1105,6 @@ def _make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, l
 for _row in _SCOPED_PROVIDER_REGISTRARS:
     setattr(PluginContext, _row[0], _make_scoped_provider_registrar(*_row))
 del _row
-
-
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
 
 
 # Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the

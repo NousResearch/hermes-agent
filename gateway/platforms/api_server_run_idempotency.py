@@ -224,6 +224,37 @@ class RunIdempotencyStore:
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
 
+    def release(self, scope: str, key: str, fingerprint: str, run_id: str) -> bool:
+        """Compensating delete for a pre-launch rejection: remove the reservation
+        this key made for ``run_id`` (fingerprint-checked, non-terminal only).
+
+        A 409-admission refusal must not leave a durable "queued" receipt behind
+        — a later retry of the same key would 202-replay a run that never
+        launched. Only the row this exact reservation created qualifies: same
+        scope/key/fingerprint AND run_id, still non-terminal. A terminal status
+        means the run really executed, so the receipt is legitimate and stays.
+        """
+        with self._immediate_txn():
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            if row is None or row[1] != run_id:
+                self._conn.commit()
+                return False
+            if not hmac.compare_digest(row[0], fingerprint):
+                self._conn.commit()
+                return False
+            try:
+                terminal = json.loads(row[2]).get("status") in TERMINAL_STATUSES
+            except Exception:
+                terminal = False
+            if terminal:
+                self._conn.commit()
+                return False
+            self._conn.execute(
+                "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=? AND run_id=?",
+                (scope, key, run_id))
+            self._conn.commit()
+            return True
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

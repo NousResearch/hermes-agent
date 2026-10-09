@@ -21,6 +21,8 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import re
+import subprocess
 import sys
 import time
 import threading
@@ -36,6 +38,31 @@ def _redact_terminal_error_text(value: Any) -> str:
     from agent.redact import redact_sensitive_text
 
     return redact_sensitive_text("" if value is None else str(value), force=True)
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a timeout from any terminal backend.
+
+    Python's timeout exception texts vary across backends:
+    - concurrent.futures.TimeoutError / asyncio.TimeoutError / builtins.TimeoutError: str() is empty
+    - subprocess.TimeoutExpired: "Command ... timed out after N seconds"
+    Some third-party backends include "timeout" or "timed out" in their message.
+    """
+    # Check the exception type first: built-in, asyncio, and concurrent.futures
+    # timeout exceptions commonly stringify to an empty message.
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+        return True
+    error_str = str(exc).lower()
+    return bool(
+        re.search(
+            r"\btimed out\b|"
+            r"\b(?:connection|command|execution|operation|process|read|request|"
+            r"rpc|socket|ssh|sandbox|session|subprocess|wait)\s+timeout\b|"
+            r"\btimeout\s+(?:occurred|expired|while|during|after|waiting)\b|"
+            r"\btimeout\s*[:=]\s*\d",
+            error_str,
+        )
+    )
 
 
 from tools.registry import tool_error
@@ -1277,7 +1304,7 @@ def _run_foreground(
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
             # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
-            if "timeout" in str(e).lower():
+            if _is_timeout_error(e):
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
             if retry_count < max_retries:

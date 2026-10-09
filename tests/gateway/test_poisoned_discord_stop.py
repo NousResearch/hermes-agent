@@ -76,6 +76,11 @@ def _clear_delegations():
 
 @pytest.mark.asyncio
 async def test_native_stop_escapes_poisoned_route_and_next_inbound_restores_owner(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
     config = PlatformConfig(enabled=True, token="test-token")
     runner = GatewayRunner(GatewayConfig(

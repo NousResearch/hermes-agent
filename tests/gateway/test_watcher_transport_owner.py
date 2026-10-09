@@ -24,6 +24,7 @@ def _profile_home(monkeypatch, tmp_path):
     import hermes_cli.profiles as profiles
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     research_home = tmp_path / "profiles" / "research"
     research_home.mkdir(parents=True)
     (research_home / "config.yaml").write_text("{}\n", encoding="utf-8")

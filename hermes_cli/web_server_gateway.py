@@ -516,11 +516,27 @@ def _spawn_hermes_action(
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
+    # CREATE_BREAKAWAY_FROM_JOB is rejected with ERROR_ACCESS_DENIED when the parent's job object
+    # forbids breakaway (Task Scheduler, some service runners) — the documented contract in
+    # _subprocess_compat.windows_detach_flags is to catch OSError and retry without it, as
+    # gateway.py / gateway_windows.py / main_desktop.py already do (#135179).
+    if sys.platform == "win32":
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                env=action_env, creationflags=windows_detach_flags(),
+            )
+        except OSError:
+            from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                env=action_env, creationflags=windows_detach_flags_without_breakaway(),
+            )
+    else:
+        proc = subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, start_new_session=True,
+        )
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)

@@ -282,10 +282,6 @@ def _ssh_runtime_intact() -> bool:
 # share one testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
-# Desktop file.attach sends a whole base64 data URL in one JSON-RPC frame;
-# uvicorn's 16 MiB default rejects files under the 256 MiB raw attach cap.
-_DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
-
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
@@ -340,36 +336,16 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# Accepted Host values for loopback binds. DNS rebinding TTL-flips an attacker
-# hostname to 127.0.0.1 so the browser treats it as same-origin; validating Host
-# at the app layer rejects it. See GHSA-ppp5-vxwm-4cf7.
-_LOOPBACK_HOST_VALUES: frozenset = frozenset({"localhost", "127.0.0.1", "::1"})
-
-
-def _dashboard_public_hosts() -> frozenset[str]:
-    """Return the exact hostname declared by ``dashboard.public_url``.
-
-    One source of truth for OAuth redirects, Host and WS Origin validation.
-    Malformed or unset values fail closed as an empty set.
-    """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
-
-    public_url = resolve_public_url()
-    try:
-        hostname = urllib.parse.urlparse(public_url).hostname if public_url else None
-    except ValueError:
-        hostname = None
-    return frozenset({hostname.lower()}) if hostname else frozenset()
-
-
-def should_require_auth(host: str, allow_public: bool = False) -> bool:
-    """True iff the auth gate must be active: any non-loopback bind.
-
-    RFC1918 / CGNAT / link-local are deliberately PUBLIC — a hostile LAN device
-    is the threat model. ``allow_public`` (legacy ``--insecure``) is accepted for
-    old launch scripts but IGNORED since the June 2026 hermes-0day campaign.
-    """
-    return host not in _LOOPBACK_HOST_VALUES
+from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> stays the public seam
+    _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+    _LOOPBACK_HOST_VALUES,
+    _dashboard_public_hosts,
+    _desktop_loopback_auth_exempt,
+    _host_header_hostname,
+    _is_accepted_host,
+    public_hosts_engage_gate,
+    should_require_auth,
+)
 
 
 def should_require_dashboard_auth(
@@ -383,90 +359,7 @@ def should_require_dashboard_auth(
     """
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
-    return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES for h in trusted_public_hosts)
-
-
-def _desktop_loopback_auth_exempt(
-    host: str,
-    ssh_session_token: Optional[str] = None,
-    ssh_owner_nonce: Optional[str] = None,
-) -> bool:
-    """True for a Desktop-owned loopback backend (#96490).
-
-    A non-loopback ``dashboard.public_url`` would otherwise engage the
-    ticket-only gate for the private loopback backends Desktop spawns, whose
-    per-spawn session token the gate's WS path refuses — Desktop could not boot.
-    The public dashboard is a separate non-loopback process that stays gated, so
-    this never opens the public surface. Requires ALL of: loopback bind,
-    ``HERMES_DESKTOP=1``, and an operator-minted credential (env token, SSH
-    session token, or owner nonce).
-    """
-    return (
-        host in _LOOPBACK_HOST_VALUES
-        and os.environ.get("HERMES_DESKTOP") == "1"
-        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or ssh_session_token or ssh_owner_nonce)
-    )
-
-
-def _host_header_hostname(host_header: str) -> str:
-    """Return a normalized hostname from a valid HTTP Host authority.
-
-    Host headers are authorities, not full URLs. Reject ambiguous ports,
-    malformed IPv6 brackets, and URL syntax so validation always fails closed.
-    """
-    value = (host_header or "").strip()
-    if not value or "://" in value or any(c in value for c in '"\'<> \n\r\t/?#@'):
-        return ""
-
-    if value.startswith("["):
-        close = value.find("]")
-        if close == -1:
-            return ""
-        hostname = value[1:close]
-        # Bracket notation is reserved for IPv6 literals.
-        if ":" not in hostname:
-            return ""
-        suffix = value[close + 1:]
-        if suffix and not re.fullmatch(r":\d+", suffix):
-            return ""
-        return hostname.lower()
-
-    # Unbracketed IPv6 authorities are ambiguous with a port separator.
-    if value.count(":") > 1:
-        return ""
-    if ":" in value:
-        hostname, port = value.rsplit(":", 1)
-        if not hostname or not port.isdigit():
-            return ""
-        return hostname.lower()
-    return value.lower()
-
-
-def _is_accepted_host(
-    host_header: str,
-    bound_host: str,
-    trusted_public_hosts: frozenset[str] = frozenset(),
-) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Exact operator-declared public hosts (with or without port suffix)
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
-    host_only = _host_header_hostname(host_header)
-    if not host_only:
-        return False
-    # All-interfaces bind: no Host-layer defence is possible; rely on operator
-    # network controls.
-    if host_only in trusted_public_hosts or bound_host in {"0.0.0.0", "::"}:
-        return True
-    bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
-    return host_only == bound_lc
+    return should_require_auth(host) or public_hosts_engage_gate(trusted_public_hosts)
 
 
 @app.middleware("http")

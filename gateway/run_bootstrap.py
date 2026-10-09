@@ -798,6 +798,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if idle_exit:
             from gateway.run_idle_exit import arm_unmanaged_idle_exit
             arm_unmanaged_idle_exit(runner)
+        else:
+            # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
+            # dashboard routes right away: mount them now, after READY. A client's own idle-exit
+            # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
+            from gateway.run_api import warm_gateway_dashboard
+            warm_gateway_dashboard(runner)
 
         from gateway.run_runtime import wait_gateway_runtime
         try:

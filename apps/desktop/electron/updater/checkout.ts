@@ -697,7 +697,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // only a binary the rebuild replaced with a launchable sandbox helper —
     // replaying the original launch context (filtered args, cwd, sandbox
     // opt-out) so a deep-link or --no-sandbox launch survives the update.
-    const targetApp = deps.isMac ? deps.runningAppBundle() : process.execPath
+    // The AppImage lives at its stable APPIMAGE path; process.execPath points
+    // into its temporary mount and cannot be replaced during the update.
+    const targetApp = deps.isMac
+      ? deps.runningAppBundle()
+      : process.platform === 'linux' && process.env.APPIMAGE
+        ? process.env.APPIMAGE
+        : process.execPath
 
     if (targetApp) {
       args.push('--relaunch-target', targetApp)

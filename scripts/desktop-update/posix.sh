@@ -315,6 +315,15 @@ json_escape() { # JSON string escape: \ " \n \r \t, every other control char (< 
   printf '%s' "$s"
 }
 
+appimage_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo x64 ;;
+    aarch64|arm64) echo arm64 ;;
+    armv7l|armv7|armhf) echo armv7l ;;
+    *) return 1 ;;
+  esac
+}
+
 notify_fallback() { # status message — renderer-free recovery surface.
   # Fires only when there is no shim window. BEST-EFFORT immediate channel:
   # each rung requires EXECUTION acceptance, not existence — notify-send's
@@ -524,6 +533,11 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="" sb arg cand
+  if [ "$(uname)" = "Linux" ] && [ -n "${APPIMAGE:-}" ] \
+      && [ "$RELAUNCH_TARGET" = "$APPIMAGE" ] && [ -x "$RELAUNCH_TARGET" ]; then
+    GATE=relaunch
+    return
+  fi
   # Canonicalise both sides before the prefix compare. On some distros
   # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
   # target is read from /proc/<pid>/exe, which the kernel canonicalises
@@ -1105,6 +1119,11 @@ fi
 sleep 1
 start_ui
 
+APPIMAGE_MODE=0
+if [ "$(uname)" = "Linux" ] && [ -n "${APPIMAGE:-}" ] && [ -x "$APPIMAGE" ]; then
+  APPIMAGE_MODE=1
+fi
+
 # Current installs publish an installation-bound launcher. Only pre-PM
 # checkouts use the old shim/TCC rescue; a damaged PM install must not retarget.
 LEGACY_INSTALL=0
@@ -1184,6 +1203,9 @@ if [ "$NO_GATEWAY" -eq 1 ]; then
   GATEWAY_FLAG=""
   log "update requested without --gateway (remote-served Desktop)"
 fi
+if [ "$APPIMAGE_MODE" -eq 1 ]; then
+  export HERMES_APPIMAGE_UPDATE=1
+fi
 
 run_update() { # streams straight into the log (a killed run keeps its output);
   # OUT = this run's slice of the log. TERM goes back to default for the child
@@ -1253,6 +1275,39 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM
+
+if [ "$CODE" -eq 0 ] && [ "$APPIMAGE_MODE" -eq 1 ]; then
+  APPIMAGE_PYTHON=""
+  for candidate in "${HERMES_PYTHON:-}" "$INSTALL_ROOT/.hermes/bin/python" \
+      "$INSTALL_ROOT/venv/bin/python3" "$INSTALL_ROOT/venv/bin/python" /usr/bin/python3; do
+    [ -n "$candidate" ] || continue
+    if tcc_probe_python "$candidate"; then
+      APPIMAGE_PYTHON="$candidate"
+      break
+    fi
+  done
+  if [ -z "$APPIMAGE_PYTHON" ] || [ ! -f "$SCRIPT_DIR/appimage_update.py" ]; then
+    FINAL_CODE=7 FINAL_MSG="Code updated, but the AppImage updater is unavailable. The existing desktop app was kept."
+    log "$FINAL_MSG"
+    exit 7
+  fi
+  APPIMAGE_ARCH="$(appimage_arch 2>/dev/null || true)"
+  if [ -z "$APPIMAGE_ARCH" ]; then
+    FINAL_CODE=7 FINAL_MSG="Code updated, but this Linux architecture has no AppImage release. The existing desktop app was kept."
+    log "$FINAL_MSG"
+    exit 7
+  fi
+  publish_stage "Installing the latest desktop AppImage"
+  APPIMAGE_ARGS=("--target" "$APPIMAGE" "--arch" "$APPIMAGE_ARCH")
+  if [ -n "${HERMES_APPIMAGE_RELEASE_API:-}" ]; then
+    APPIMAGE_ARGS+=("--release-api" "$HERMES_APPIMAGE_RELEASE_API")
+  fi
+  if ! "$APPIMAGE_PYTHON" "$SCRIPT_DIR/appimage_update.py" "${APPIMAGE_ARGS[@]}" >> "$LOG" 2>&1; then
+    FINAL_CODE=7 FINAL_MSG="Code updated, but the latest AppImage could not be downloaded or verified. The existing desktop app was kept."
+    log "$FINAL_MSG"
+    exit 7
+  fi
+fi
 
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMMITTED=1
   # Contract C3: a Desktop build that fails after the code committed is an owed

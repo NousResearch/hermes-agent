@@ -127,6 +127,11 @@ def _failure_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
+def appimage_update_owns_desktop_build(platform: str, appimage: str | None, request: str | None) -> bool:
+    """The POSIX hand-off installs an AppImage itself; don't build a sibling desktop app."""
+    return platform == "linux" and bool(appimage) and request == "1"
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once, attempting every independent product.
 
@@ -211,6 +216,12 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
+    if appimage_update_owns_desktop_build(
+        sys.platform, os.environ.get("APPIMAGE"), os.environ.get("HERMES_APPIMAGE_UPDATE"),
+    ):
+        print("→ Desktop AppImage update is handled separately")
+        return
+
     from hermes_cli.main_desktop import (
         _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
 

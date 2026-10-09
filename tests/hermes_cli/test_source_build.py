@@ -77,6 +77,15 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     assert intent == [False]
 
 
+def test_appimage_update_owns_desktop_build_only_for_linux_handoff():
+    from hermes_cli.source_build import appimage_update_owns_desktop_build
+
+    assert appimage_update_owns_desktop_build("linux", "/tmp/Hermes.AppImage", "1")
+    assert not appimage_update_owns_desktop_build("linux", "", "1")
+    assert not appimage_update_owns_desktop_build("darwin", "/tmp/Hermes.AppImage", "1")
+    assert not appimage_update_owns_desktop_build("linux", "/tmp/Hermes.AppImage", "0")
+
+
 def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
 

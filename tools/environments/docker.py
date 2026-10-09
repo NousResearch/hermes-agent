@@ -678,7 +678,8 @@ class DockerEnvironment(BaseEnvironment):
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
         snap_compat: bool = False,
-        image_pinned: bool = False):
+        image_pinned: bool = False,
+        expected_container_id: Optional[str] = None):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -688,6 +689,7 @@ class DockerEnvironment(BaseEnvironment):
         # (docker + container_persistent: false): removed at session close/idle timeout.
         self._session_scoped = False
         self._task_id = task_id
+        self._expected_container_id = expected_container_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
@@ -774,7 +776,8 @@ class DockerEnvironment(BaseEnvironment):
         self._all_run_args = all_run_args
 
         reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, network)
+            task_label, profile_name, egress_label, network,
+            candidate=self._verified_expected_container(profile_name) if expected_container_id else None)
         if not reused:
             self._container_id = self._docker_run(cwd)
         else:  # it never stopped, so no teardown stripped what it left
@@ -928,13 +931,22 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
-    def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
+    def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool,
+                                   *, candidate: Optional[tuple[str, str]] = None) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
-        ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        ``--network=none`` in extra args doesn't churn containers every startup.
+
+        *candidate* lets a caller that already knows which container it wants (verified alive
+        and labeled for this profile by :meth:`_verified_expected_container`) skip the label
+        search entirely: a container's reuse key can legitimately drift from what THIS process
+        would compute right now (a profile migrating from a standalone to a multiplexed
+        gateway changes persistent-Docker's task-id key; any other config/session-context change
+        does the same), and a caller holding an out-of-band pointer to a still-running container
+        (Bot Desktop's sandbox.json marker) must not be defeated by that drift (#t_2ca05370)."""
+        existing = candidate or self._find_reusable_container(task_label, profile_name, egress_label)
         if existing is None:
             return False
         container_id, state = existing
@@ -1278,6 +1290,31 @@ class DockerEnvironment(BaseEnvironment):
             if state == "running" and running is None:
                 running = (cid, state)
         return running or first
+
+    def _verified_expected_container(self, profile_name: str) -> Optional[tuple[str, str]]:
+        """``(container_id, state)`` for ``self._expected_container_id`` iff it is still a live
+        hermes container labeled for THIS profile; ``None`` otherwise, which falls back to the
+        normal label search (and ultimately a fresh container) exactly as if no hint had been
+        given. A caller-supplied id is trusted only after confirming it still carries our own
+        safety labels, so a stale/reused id from a caller's stale marker can never attach to an
+        unrelated or cross-profile container."""
+        cid = self._expected_container_id
+        if not cid:
+            return None
+        result = _docker_query(
+            [self._docker_exe, "inspect", cid, "--format",
+             "{{.State.Status}}\t{{index .Config.Labels \"hermes-agent\"}}\t{{index .Config.Labels \"hermes-profile\"}}"],
+            timeout=10, fail="docker inspect of expected container %s failed: %s", fail_args=(cid[:12],),
+            nonzero="docker inspect of expected container %s returned %d: %s")
+        if result is None:
+            return None
+        parts = result.stdout.strip().split("\t")
+        if len(parts) != 3:
+            return None
+        state, agent_label, profile_label = (p.strip() for p in parts)
+        if agent_label != "1" or profile_label != profile_name:
+            return None
+        return cid, state.lower()
 
     def _remove_bind_dirs(self) -> None:
         for d in (self._workspace_dir, self._home_dir):

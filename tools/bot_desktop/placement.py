@@ -66,7 +66,15 @@ def resolve() -> Placement:
 
 def terminal_environment(*, create: bool = True) -> Optional[Any]:
     """This profile's terminal environment object (the one ``terminal`` runs commands in). ``create=False``
-    only returns an already-running one."""
+    only returns an already-running one.
+
+    On a cache-miss create, a Bot Desktop marker naming a still-alive container rides along as a
+    one-shot hint (:func:`_marker_container_hint`) so the planner tries THAT exact container before
+    its own label search: a persistent container's reuse key can legitimately drift from what this
+    process would compute right now (a profile migrating from a standalone to a multiplexed
+    gateway changes persistent Docker's task-id key; any other config/session-context change can
+    too), and a restart must not orphan a container the marker proves is still running (#t_2ca05370).
+    """
     from tools import terminal_tool as tt
     task_id = tt._resolve_container_task_id(None)
     with tt._env_lock:
@@ -75,6 +83,20 @@ def terminal_environment(*, create: bool = True) -> Optional[Any]:
         return env
     # Acquire through the same planner the terminal tool uses so the container carries the same mounts,
     # limits and identity label; a trivial command warms it.
-    tt.terminal_tool("true", task_id=None)
+    tt.terminal_tool("true", task_id=None, _docker_expected_container_id=_marker_container_hint())
     with tt._env_lock:
         return tt._lookup_active_env(task_id, None)
+
+
+def _marker_container_hint() -> Optional[str]:
+    """The Bot Desktop sandbox marker's recorded container id, when it names a Docker-hosted
+    screen that is still alive; None otherwise (the planner falls back to its normal behaviour,
+    unchanged)."""
+    from tools.bot_desktop import sandbox_host
+    marker = sandbox_host._read_marker()
+    if not marker or marker.get("backend") != "DockerEnvironment":
+        return None
+    container = marker.get("container")
+    if container and sandbox_host.marker_sandbox_alive(marker):
+        return container
+    return None

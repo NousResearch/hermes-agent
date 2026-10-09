@@ -335,3 +335,55 @@ def test_sandbox_cdp_endpoint_is_rewritten_to_the_forwarded_local_port(monkeypat
     assert buc._reach_sandbox_cdp("wss://cloud.example/session/1") == "wss://cloud.example/session/1"
     monkeypatch.setattr(bts, "_browser_in_sandbox", lambda: False)
     assert buc._reach_sandbox_cdp("ws://127.0.0.1:9223/x") == "ws://127.0.0.1:9223/x"
+
+
+def test_marker_container_hint_reads_a_live_docker_marker(monkeypatch, isolated_home):
+    """The hint is the vehicle that lets a reconnect attach to the EXACT container the marker
+    names instead of trusting a fresh label search that can miss it (#t_2ca05370)."""
+    from tools.bot_desktop import sandbox_host
+
+    assert placement._marker_container_hint() is None  # no marker yet
+
+    sandbox_host._marker().parent.mkdir(parents=True)
+    sandbox_host._marker().write_text(
+        '{"display": ":20", "backend": "DockerEnvironment", "container": "c0ffee00", "docker": "docker"}')
+    monkeypatch.setattr(sandbox_host, "marker_sandbox_alive", lambda marker: True)
+    assert placement._marker_container_hint() == "c0ffee00"
+
+    monkeypatch.setattr(sandbox_host, "marker_sandbox_alive", lambda marker: False)
+    assert placement._marker_container_hint() is None  # named container is gone: no hint
+
+    sandbox_host._marker().write_text(
+        '{"display": ":20", "backend": "SshEnvironment", "container": "irrelevant"}')
+    assert placement._marker_container_hint() is None  # non-docker backend: container id is meaningless
+
+
+def test_terminal_environment_passes_the_marker_hint_through_on_a_cache_miss(monkeypatch, isolated_home):
+    """A restart leaves the process-local env cache empty; reconnecting must offer the marker's
+    container id to the planner instead of letting it search by label alone."""
+    from tools import terminal_tool as tt
+    from tools.bot_desktop import sandbox_host
+
+    sandbox_host._marker().parent.mkdir(parents=True)
+    sandbox_host._marker().write_text(
+        '{"display": ":20", "backend": "DockerEnvironment", "container": "c0ffee00", "docker": "docker"}')
+    monkeypatch.setattr(sandbox_host, "marker_sandbox_alive", lambda marker: True)
+    monkeypatch.setattr(tt, "_resolve_container_task_id", lambda task_id: "default")
+    with tt._env_lock:
+        tt._active_environments.pop("default", None)
+
+    seen_hints: list = []
+
+    def _fake_terminal_tool(command, *, task_id=None, _docker_expected_container_id=None):
+        seen_hints.append(_docker_expected_container_id)
+        with tt._env_lock:
+            tt._active_environments["default"] = _FakeDocker()
+
+    monkeypatch.setattr(tt, "terminal_tool", _fake_terminal_tool)
+    try:
+        env = placement.terminal_environment(create=True)
+        assert isinstance(env, _FakeDocker)
+        assert seen_hints == ["c0ffee00"]
+    finally:
+        with tt._env_lock:
+            tt._active_environments.pop("default", None)

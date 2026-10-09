@@ -25,6 +25,10 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_route import (
+    CompressorRouteTarget,
+    ContextCompressorRouteMixin,
+)
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -1974,7 +1978,9 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngine):
+class ContextCompressor(
+    ContextCompressorRouteMixin, SummaryDispatchMixin, MicroCompactionMixin, ContextEngine
+):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -2496,7 +2502,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
-    def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
+    def _derive_trigger_for_max_tokens(
+        self, model: str, context_length: int, provider: str, max_tokens: int | None,
+    ) -> tuple[float, float, int]:
         """``(base_percent, effective_percent, threshold_tokens)`` for a model/window, from the raw config
         value so a switch away from an overridden model falls back correctly. Pure: the one place the
         trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
@@ -2504,11 +2512,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         ceiling, which the feasibility probe re-derives per runtime."""
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
-        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
+        threshold = self._compute_threshold_tokens(context_length, effective_percent, max_tokens)
         cap = self._effective_threshold_cap(context_length)
         if cap is not None:
             threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
+
+    def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
+        return self._derive_trigger_for_max_tokens(
+            model, context_length, provider, self.max_tokens
+        )
 
     def _effective_threshold_cap(self, context_length: int) -> int | None:
         """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
@@ -2524,41 +2537,107 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         api_mode: str = "", max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
+        ticket = self._prepare_route_update(
+            model,
+            context_length,
+            base_url,
+            api_key,
+            provider,
+            api_mode,
+            max_tokens,
+            require_atomic=False,
+        )
+        ticket.commit()
+
+    def _build_compressor_route_target(
+        self,
+        model: str,
+        context_length: int,
+        base_url: str,
+        api_key: Any,
+        provider: str,
+        api_mode: str,
+        max_tokens: int | None,
+    ) -> CompressorRouteTarget:
+        """Derive a complete route target without setters, logging or persistence."""
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
-        self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
-        self.context_length = context_length
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
-        if max_tokens is not None:
-            self.max_tokens = self._coerce_max_tokens(max_tokens)
-        if runtime_changed:
-            # The aux ceiling was probed against the previous main runtime (an "auto" aux route follows the
-            # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
-            # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
-            self._aux_context_ceiling = None
-        self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
-            model, context_length, provider)
-        self._apply_threshold_tokens_cap()
-        # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
-        self._tail_token_budget = None
-        _ = self.tail_token_budget  # eager recompute, same timing as before
-        self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
-        # Old usage cannot price a new model. Clear it without arming the post-compaction
-        # latch: the next response supplies usage or enables the usage-less fallback.
-        self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
-        self._reset_real_usage_pairing()
-        # Strikes were judged against the previous threshold; void them durably too.
-        self._record_ineffective_compression_verdict(0)
-        self._prellm_skip_count = 0
-        if runtime_changed:
-            self._fallback_compression_streak = 0
-            self._persist_fallback_compression_streak()
-            # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
-            self._clear_compression_failure_cooldown()
-        self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
-        # Runway was computed against the previous model's trigger; clear the durable copy too.
-        self._reset_proactive_prune_rearm()
-        self._clear_durable_proactive_prune_rearm()
+        effective_max_tokens = (
+            self.max_tokens if max_tokens is None else self._coerce_max_tokens(max_tokens)
+        )
+        base_percent, effective_percent, threshold_tokens = self._derive_trigger_for_max_tokens(
+            model, context_length, provider, effective_max_tokens
+        )
+        aux_context_ceiling = None if runtime_changed else self._aux_context_ceiling
+        if (
+            isinstance(aux_context_ceiling, int)
+            and 0 < aux_context_ceiling < threshold_tokens
+        ):
+            threshold_tokens = aux_context_ceiling
+        if getattr(self, "tail_mode", "lean") == "lean":
+            tail_token_budget = max(
+                LEAN_TAIL_FLOOR_TOKENS,
+                min(LEAN_TAIL_CAP_TOKENS, int(context_length * 0.025)),
+            )
+        else:
+            tail_token_budget = int(threshold_tokens * self.summary_target_ratio)
+        if context_length > 0:
+            tail_token_budget = min(
+                tail_token_budget, int(context_length * TAIL_MAX_CONTEXT_FRACTION)
+            )
+        tail_token_budget = max(1, tail_token_budget)
+
+        live_values = (
+            ("model", model),
+            ("base_url", base_url),
+            ("api_key", api_key),
+            ("provider", provider),
+            ("api_mode", api_mode),
+            ("_resolved_context_length", context_length),
+            ("max_tokens", effective_max_tokens),
+            ("_aux_context_ceiling", aux_context_ceiling),
+            ("_base_threshold_percent", base_percent),
+            ("threshold_percent", effective_percent),
+            ("_threshold_tokens", threshold_tokens),
+            ("_tail_token_budget", tail_token_budget),
+            ("_max_summary_tokens", min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)),
+            ("last_prompt_tokens", 0),
+            ("last_completion_tokens", 0),
+            ("last_total_tokens", 0),
+            ("last_real_prompt_tokens", 0),
+            ("last_compression_rough_tokens", 0),
+            ("awaiting_real_usage_after_compression", False),
+            ("_provider_omits_usage", False),
+            ("_ineffective_compression_count", 0),
+            ("_prellm_skip_count", 0),
+            (
+                "_fallback_compression_streak",
+                0 if runtime_changed else self._fallback_compression_streak,
+            ),
+            (
+                "_summary_failure_cooldown_until",
+                0.0 if runtime_changed else self._summary_failure_cooldown_until,
+            ),
+            ("_last_summary_error", None if runtime_changed else self._last_summary_error),
+            (
+                "_consecutive_timeout_failures",
+                0 if runtime_changed else self._consecutive_timeout_failures,
+            ),
+            (
+                "_consecutive_truncation_failures",
+                0 if runtime_changed else self._consecutive_truncation_failures,
+            ),
+            (
+                "_cooldown_persist_failed",
+                False if runtime_changed else self._cooldown_persist_failed,
+            ),
+            ("_verify_compaction_cleared_threshold", False),
+            ("_last_compression_made_progress", False),
+            ("_proactive_prune_rearm_tokens", 0),
+            ("_last_reclaim_block_warn", None),
+        )
+        return CompressorRouteTarget(live_values=live_values, runtime_changed=runtime_changed)
 
     # When the MINIMUM_CONTEXT_LENGTH floor binds on a small window, trigger near the top instead.
     _MIN_CTX_TRIGGER_RATIO = 0.85
@@ -2652,6 +2731,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self._route_generation = 0
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred

@@ -690,6 +690,20 @@ def test_exception_rollback_restores_slotted_compressor_state(monkeypatch, opera
             self.threshold_tokens = 697_600
             self.slot_state = {"origin": ["primary"]}
 
+        def prepare_route_update(self, *_args, **_kwargs):
+            owner = self
+            slot_snapshot = copy.deepcopy(self.slot_state)
+
+            class Ticket:
+                def commit(self):
+                    return None
+
+                def abort(self):
+                    owner.slot_state.clear()
+                    owner.slot_state.update(copy.deepcopy(slot_snapshot))
+
+            return Ticket()
+
     agent = object.__new__(AIAgent)
     compressor = SlottedCompressor()
     _install_runtime(agent, compressor)
@@ -719,7 +733,7 @@ def test_exception_rollback_restores_slotted_compressor_state(monkeypatch, opera
     assert agent.context_compressor is compressor
     assert compressor.context_length == 872_000
     assert compressor.threshold_tokens == 697_600
-    assert compressor.slot_state == {"origin": ["primary", "mutated"]}
+    assert compressor.slot_state == {"origin": ["primary"]}
 
 
 def test_rollback_keeps_slotted_client_atomic_and_survives_replacement_close_failure(

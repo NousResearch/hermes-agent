@@ -222,6 +222,45 @@ class TestAtomicCompressorRouteReset:
         assert model_config["_compressor_route_revision"] == 2
         assert model_config["unrelated_key"] == "preserve"
 
+    def test_apply_compressor_route_reset_returns_exact_transaction_predecessor(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """Ticket opt-in receives the row observed inside the reset transaction."""
+        db = refresh_state_db
+        session_id = "ATOMIC_COMPRESSOR_ROUTE_RESET_PREDECESSOR"
+        db.create_session(
+            session_id,
+            source="telegram",
+            model_config={
+                "_proactive_prune_rearm_tokens": 2048,
+                "unrelated_key": "predecessor",
+            },
+        )
+        db.set_compression_ineffective_count(session_id, 5)
+        db.set_compression_fallback_streak(session_id, 7)
+        db.record_compression_failure_cooldown(session_id, 1234.5, "predecessor error")
+        columns = (
+            "compression_ineffective_count, compression_fallback_streak, "
+            "compression_failure_cooldown_until, compression_failure_error, model_config"
+        )
+        before = dict(db._conn.execute(
+            f"SELECT {columns} FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone())
+
+        revision, predecessor = db.apply_compressor_route_reset(
+            session_id,
+            ineffective_count=0,
+            fallback_streak=0,
+            clear_failure_cooldown=True,
+            clear_proactive_prune_rearm=True,
+            advance_route_revision=True,
+            return_route_predecessor=True,
+        )
+
+        assert revision == 1
+        assert predecessor == before
+
     def test_apply_compressor_route_reset_rolls_back_the_whole_row_on_failure(
         self,
         refresh_state_db: SessionDB,

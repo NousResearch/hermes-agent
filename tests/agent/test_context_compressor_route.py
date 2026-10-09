@@ -268,6 +268,40 @@ def test_abort_does_not_overwrite_equal_valued_newer_commit_from_another_instanc
         db.close()
 
 
+def test_abort_restores_transaction_local_predecessor_after_interleaved_commit(tmp_path):
+    """Abort must restore B when B commits after A's early read but before A's reset."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        older = _new_compressor()
+        newer = _new_compressor()
+        session_id = "CROSS_INSTANCE_PREDECESSOR"
+        _seed_bound_route_state(db, older, session_id)
+        newer.bind_session_state(db, session_id)
+
+        older_ticket = older.prepare_route_update(
+            "older/replacement", 64_000, provider="older-route", max_tokens=8_000
+        )
+        newer_ticket = newer.prepare_route_update(
+            "newer/replacement", 96_000, provider="newer-route", max_tokens=12_000
+        )
+        original_reset = db.apply_compressor_route_reset
+        interleaving = {}
+
+        def reset_after_newer_commit(*args, **kwargs):
+            db.apply_compressor_route_reset = original_reset
+            newer_ticket.commit()
+            interleaving["newer_commit"] = _durable_snapshot(db, session_id)
+            return original_reset(*args, **kwargs)
+
+        db.apply_compressor_route_reset = reset_after_newer_commit
+        older_ticket.commit()
+        older_ticket.abort()
+
+        assert _durable_snapshot(db, session_id) == interleaving["newer_commit"]
+    finally:
+        db.close()
+
+
 def test_same_route_ticket_preserves_route_scoped_guards(tmp_path):
     """A window/output recalibration is not a route change and keeps route guards."""
     db = SessionDB(db_path=tmp_path / "state.db")

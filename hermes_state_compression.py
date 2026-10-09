@@ -23,6 +23,11 @@ _COOLDOWN_ROW_SQL = (
 )
 
 _COMPRESSOR_ROUTE_REVISION_KEY = "_compressor_route_revision"
+_COMPRESSOR_ROUTE_ROW_SQL = (
+    "SELECT compression_ineffective_count, compression_fallback_streak, "
+    "compression_failure_cooldown_until, compression_failure_error, model_config "
+    "FROM sessions WHERE id = ?"
+)
 
 # One forward step of get_compression_chain: the preferred continuation child of ``?``. A reset
 # fork is a separate user-visible conversation (_LISTABLE_CHILD_SQL already surfaces it as its
@@ -427,7 +432,8 @@ class SessionCompressionMixin:
         clear_failure_cooldown: bool = False,
         clear_proactive_prune_rearm: bool = False,
         advance_route_revision: bool = False,
-    ) -> Optional[int]:
+        return_route_predecessor: bool = False,
+    ) -> Optional[int] | Tuple[Optional[int], Dict[str, Any]]:
         """Atomically persist a compressor route's owned healthy-reset state.
 
         ``fallback_streak=None`` and false clear flags intentionally leave their
@@ -436,7 +442,8 @@ class SessionCompressionMixin:
         healthy state to a concurrently rebuilt compressor. Transactional route
         tickets may also advance an internal revision in this same write; legacy
         callers leave that marker untouched and retain the original ``None``
-        return value.
+        return value. ``return_route_predecessor`` is an internal ticket opt-in
+        that returns the exact pre-write row captured inside this transaction.
         """
         if not session_id:
             return
@@ -449,6 +456,7 @@ class SessionCompressionMixin:
             assignments = ["compression_ineffective_count = ?"]
             params = [normalized_ineffective_count]
             route_revision = None
+            route_predecessor = None
             if normalized_fallback_streak is not None:
                 assignments.append("compression_fallback_streak = ?")
                 params.append(normalized_fallback_streak)
@@ -457,12 +465,22 @@ class SessionCompressionMixin:
                     "compression_failure_cooldown_until = NULL",
                     "compression_failure_error = NULL",
                 ))
-            if clear_proactive_prune_rearm or advance_route_revision:
+            row = None
+            if (
+                clear_proactive_prune_rearm
+                or advance_route_revision
+                or return_route_predecessor
+            ):
                 row = conn.execute(
-                    "SELECT model_config FROM sessions WHERE id = ?", (session_id,)
+                    _COMPRESSOR_ROUTE_ROW_SQL if return_route_predecessor
+                    else "SELECT model_config FROM sessions WHERE id = ?",
+                    (session_id,),
                 ).fetchone()
                 if row is None:
                     return
+                if return_route_predecessor:
+                    route_predecessor = dict(row)
+            if clear_proactive_prune_rearm or advance_route_revision:
                 raw_model_config = row["model_config"]
                 try:
                     model_config = json.loads(raw_model_config) if raw_model_config else {}
@@ -488,7 +506,11 @@ class SessionCompressionMixin:
                 f"UPDATE sessions SET {', '.join(assignments)} WHERE id = ?",
                 params,
             )
-            return route_revision if cursor.rowcount == 1 else None
+            if cursor.rowcount != 1:
+                return None
+            if return_route_predecessor:
+                return route_revision, route_predecessor
+            return route_revision
 
         return self._execute_write(_do)
 

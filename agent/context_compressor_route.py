@@ -8,11 +8,6 @@ from enum import Enum, auto
 from typing import Any
 
 
-_DURABLE_ROUTE_SQL = (
-    "SELECT compression_ineffective_count, compression_fallback_streak, "
-    "compression_failure_cooldown_until, compression_failure_error, model_config "
-    "FROM sessions WHERE id = ?"
-)
 _COMPRESSOR_ROUTE_REVISION_KEY = "_compressor_route_revision"
 
 
@@ -145,21 +140,28 @@ class ContextCompressorRouteMixin:
         )
 
     @staticmethod
-    def _capture_durable_route_snapshot(store: Any, session_id: str) -> _DurableRouteSnapshot | None:
-        reader = getattr(store, "_read_one", None)
-        if not session_id or not callable(reader):
+    def _snapshot_from_reset_predecessor(
+        store: Any, session_id: str, predecessor: Any,
+    ) -> _DurableRouteSnapshot | None:
+        if not isinstance(predecessor, dict):
             return None
-        row = reader(_DURABLE_ROUTE_SQL, (session_id,))
-        if row is None:
+        required = (
+            "compression_ineffective_count",
+            "compression_fallback_streak",
+            "compression_failure_cooldown_until",
+            "compression_failure_error",
+            "model_config",
+        )
+        if any(column not in predecessor for column in required):
             return None
         return _DurableRouteSnapshot(
             store=store,
             session_id=session_id,
-            ineffective_count=row["compression_ineffective_count"],
-            fallback_streak=row["compression_fallback_streak"],
-            cooldown_until=row["compression_failure_cooldown_until"],
-            cooldown_error=row["compression_failure_error"],
-            model_config=row["model_config"],
+            ineffective_count=predecessor["compression_ineffective_count"],
+            fallback_streak=predecessor["compression_fallback_streak"],
+            cooldown_until=predecessor["compression_failure_cooldown_until"],
+            cooldown_error=predecessor["compression_failure_error"],
+            model_config=predecessor["model_config"],
         )
 
     @staticmethod
@@ -268,23 +270,29 @@ class ContextCompressorRouteMixin:
             raise RuntimeError("bound durable store lacks atomic compressor route reset")
 
         ticket._commit_started = True
-        ticket._durable_snapshot = self._capture_durable_route_snapshot(
-            ticket._store, ticket._session_id
-        )
         try:
             for name, value in ticket.target.live_values:
                 setattr(self, name, value)
             if bound and callable(atomic_reset):
-                route_revision = atomic_reset(
+                reset_result = atomic_reset(
                     ticket._session_id,
                     ineffective_count=0,
                     fallback_streak=0 if ticket.target.runtime_changed else None,
                     clear_failure_cooldown=ticket.target.runtime_changed,
                     clear_proactive_prune_rearm=True,
                     advance_route_revision=True,
+                    return_route_predecessor=True,
                 )
+                if not isinstance(reset_result, tuple) or len(reset_result) != 2:
+                    raise RuntimeError("atomic compressor route reset did not return predecessor")
+                route_revision, predecessor = reset_result
                 if type(route_revision) is not int:
                     raise RuntimeError("atomic compressor route reset did not advance revision")
+                ticket._durable_snapshot = self._snapshot_from_reset_predecessor(
+                    ticket._store, ticket._session_id, predecessor
+                )
+                if ticket._durable_snapshot is None:
+                    raise RuntimeError("atomic compressor route reset returned invalid predecessor")
                 ticket._committed_durable_snapshot = self._derive_committed_durable_snapshot(
                     ticket._durable_snapshot,
                     runtime_changed=ticket.target.runtime_changed,

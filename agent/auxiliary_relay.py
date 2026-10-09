@@ -221,8 +221,10 @@ def _relay_sync_completion(
     relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
-    callback = create or (lambda request: _create_with_progress(client, request, task))
-    _notify_relay_auxiliary_route(client, kwargs, provider)
+    def callback(request: dict[str, Any]) -> Any:
+        # Relay has already applied managed interceptors to this request.
+        _notify_relay_auxiliary_route(client, request, provider)
+        return create(request) if create else _create_with_progress(client, request, task)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -256,7 +258,10 @@ async def _relay_async_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
-    callback = create or (lambda request: _acreate_with_progress(client, request))
+    async def callback(request: dict[str, Any]) -> Any:
+        _notify_relay_auxiliary_route(client, request, provider)
+        return await (create(request) if create else _acreate_with_progress(client, request))
+
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -287,8 +292,10 @@ def _relay_sync_stream(
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
-    _notify_relay_auxiliary_route(client, kwargs, provider)
+    def create(request: dict[str, Any]) -> Any:
+        _notify_relay_auxiliary_route(client, request, provider)
+        return client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
+
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)

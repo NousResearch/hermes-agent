@@ -10,7 +10,8 @@ import {
   type McpTestResult,
   type ProfileScope,
   profileScopeKey,
-  saveMcpServers
+  saveMcpServers,
+  setMcpServerEnabledFor
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
@@ -313,7 +314,46 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
   }
 
   const setServerEnabled = async (serverName: string, enabled: boolean) => {
-    if ((await writeEntry(serverName, entry => withEnabled(entry, enabled))) && enabled) {
+    const base = servers[serverName]
+
+    if (!base || profilePending) {
+      return
+    }
+
+    const epoch = profileEpoch.current
+
+    try {
+      const outcome = await setMcpServerEnabledFor(serverName, enabled, profile ?? undefined)
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      // The per-server endpoint, not a whole-map `saveMcpServers`: one invalid
+      // entry anywhere in `mcp_servers` 400s the replace, which used to leave
+      // every toggle a silent no-op. Both failure shapes land in the notify.
+      if (outcome.ok !== true) {
+        throw new Error(`server '${serverName}' rejected the ${enabled ? 'enable' : 'disable'}`)
+      }
+    } catch (err) {
+      notifyError(err, m.saveFailed)
+
+      return
+    }
+
+    // Paint only after the backend accepted the write. The optimistic paint
+    // flipped the switch and reverted on the next config refetch, reading as
+    // "the toggle does nothing".
+    const nextServers = { ...servers, [serverName]: withEnabled(base, enabled) }
+
+    setConfig(current => (current ? { ...current, mcp_servers: nextServers } : current))
+    mirror(nextServers, doc =>
+      doc[serverName] ? { ...doc, [serverName]: withEnabled(doc[serverName], enabled) } : doc
+    )
+
+    void silentReload()
+
+    if (enabled) {
       void fleet.runProbe(serverName)
     }
   }

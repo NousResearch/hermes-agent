@@ -126,6 +126,10 @@ def get_packet_approval(conn: sqlite3.Connection, task_id: str) -> dict[str, Any
     ).fetchone()
     if row is None:
         return None
+    return _gate_from_row(row)
+
+
+def _gate_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "task_id": row["task_id"],
         "packet_sha256": row["packet_sha256"],
@@ -259,11 +263,16 @@ def require_packet_approval(
     execution_identity: dict[str, Any],
 ) -> dict[str, Any]:
     """Permanent fail-closed check for the controlled-write entry point."""
-    gate = get_packet_approval(conn, task_id)
+    # A single statement gives approval and lifecycle status one snapshot.
+    # Separate reads could accept an approval retired by concurrent renewal.
+    row = conn.execute(
+        """SELECT g.*, t.status AS task_status FROM packet_approval_gates g
+           JOIN tasks t ON t.id = g.task_id WHERE g.task_id = ?""", (task_id,),
+    ).fetchone()
+    gate = _gate_from_row(row) if row is not None else None
     if gate is None or gate["approved_at"] is None:
         raise PacketApprovalRequired("exact packet approval is absent")
-    task = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if task is None or task["status"] != "done":
+    if row['task_status'] != "done":
         raise PacketApprovalRequired("approval card is not complete")
     _assert_exact(
         gate,

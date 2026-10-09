@@ -282,3 +282,27 @@ def test_read_only_checker_runs_in_hermes_interpreter_and_preserves_state(tmp_pa
     assert json.loads(checked.stdout)["approved_at"] > 0
     with kbc.connect_closing(board="default") as verified:
         assert _database_state(verified) == before
+
+
+def test_entrypoint_reads_approval_and_lifecycle_in_one_snapshot(conn):
+    gate, _child = _gate_and_child(conn)
+    kpa.approve_packet(conn, gate, packet_sha256=PACKET_SHA,
+                       execution_identity=IDENTITY, actor=ACTOR)
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        approved = kpa.require_packet_approval(
+            conn, gate, packet_sha256=PACKET_SHA, execution_identity=IDENTITY)
+    finally:
+        conn.set_trace_callback(None)
+    reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    assert len(reads) == 1, "approval and lifecycle must share one SQLite snapshot"
+    assert "JOIN tasks" in reads[0]
+    assert approved["approved_packet_sha256"] == PACKET_SHA
+    # A lifecycle withdrawal must refuse even while the exact approval row
+    # remains intact: the joined read must inspect both values together.
+    conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (gate,))
+    conn.commit()
+    with pytest.raises(kpa.PacketApprovalRequired, match="not complete"):
+        kpa.require_packet_approval(
+            conn, gate, packet_sha256=PACKET_SHA, execution_identity=IDENTITY)

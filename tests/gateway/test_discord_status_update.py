@@ -90,6 +90,22 @@ def _make_adapter_with(channels: dict[int, FakeChannel]):
     return adapter
 
 
+def _make_forum_adapter():
+    channels = {}
+    threads = {}
+
+    async def create_thread(*, name, content):
+        thread_id = 900 + len(threads)
+        thread = FakeChannel(thread_id)
+        threads[thread_id] = thread
+        channels[thread_id] = thread
+        return SimpleNamespace(thread=thread, message=SimpleNamespace(id=thread_id * 10 + 1))
+
+    forum = SimpleNamespace(id=555, type=15, create_thread=AsyncMock(side_effect=create_thread))
+    channels[555] = forum
+    return _make_adapter_with(channels), forum, threads
+
+
 @pytest.mark.asyncio
 async def test_first_call_sends_then_repeats_edit_in_place():
     channel = FakeChannel(555)
@@ -273,3 +289,36 @@ async def test_thread_status_edits_in_thread_channel():
     assert len(thread.edits) == 1
     assert thread.edits[0][0] == int(first.message_id)
     assert parent.sends == [] and parent.edits == []
+
+
+@pytest.mark.asyncio
+async def test_forum_parent_status_edits_the_created_thread_starter():
+    adapter, forum, threads = _make_forum_adapter()
+
+    first = await adapter.send_or_update_status("555", "lease_wait", "waiting")
+    assert first.success
+    assert first.raw_response["thread_id"] == "900"
+    assert forum.create_thread.await_count == 1
+
+    second = await adapter.send_or_update_status("555", "lease_wait", "still waiting")
+    assert second.success
+    assert forum.create_thread.await_count == 1
+    assert list(threads) == [900]
+    assert threads[900].edits == [(int(first.message_id), "still waiting")]
+
+
+@pytest.mark.asyncio
+async def test_forum_parent_status_rebinds_after_deleted_starter():
+    adapter, forum, threads = _make_forum_adapter()
+
+    first = await adapter.send_or_update_status("555", "lease_wait", "waiting")
+    threads[900].deleted.add(int(first.message_id))
+    second = await adapter.send_or_update_status("555", "lease_wait", "still waiting")
+    assert second.success
+    assert second.raw_response["thread_id"] == "901"
+    assert forum.create_thread.await_count == 2
+
+    third = await adapter.send_or_update_status("555", "lease_wait", "still waiting (15s)")
+    assert third.success
+    assert forum.create_thread.await_count == 2
+    assert threads[901].edits == [(int(second.message_id), "still waiting (15s)")]

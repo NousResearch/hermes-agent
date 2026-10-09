@@ -1393,6 +1393,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # send_or_update_status() bookkeeping: {(target_id, status_key) -> bot message_id} so repeat
         # status callbacks edit one bubble in place instead of appending (issue #134288, cf. #30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Forum parent sends create a thread; retain that actual edit destination with the cached ID.
+        self._status_message_targets: Dict[tuple, str] = {}
         # A lock survives only while one status update is running or queued for this destination.
         self._status_message_locks: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
 
@@ -3560,7 +3562,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         async with lock:
             cached_id = self._status_message_ids.get(key)
             if cached_id is not None:
-                result = await self.edit_message(target_id, cached_id, content, finalize=False, metadata=metadata)
+                edit_target = self._status_message_targets.get(key, target_id)
+                result = await self.edit_message(edit_target, cached_id, content, finalize=False, metadata=metadata)
                 if result.success:
                     # A different destination may evict this entry while the edit awaits.
                     if result.message_id and self._status_message_ids.get(key) == cached_id:
@@ -3569,13 +3572,21 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 # A failed edit cannot remove an id replaced during the await.
                 if self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids.pop(key, None)
+                    self._status_message_targets.pop(key, None)
             result = await self.send(chat_id, content, metadata=metadata)
             if result.success and result.message_id:
                 if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
                     # FIFO trim: drop the oldest half to bound memory (mirrors the Telegram/Slack adapters).
                     for stale in list(self._status_message_ids)[: self._STATUS_MESSAGE_IDS_MAX // 2]:
                         self._status_message_ids.pop(stale, None)
+                        self._status_message_targets.pop(stale, None)
                 self._status_message_ids[key] = str(result.message_id)
+                response = result.raw_response if isinstance(result.raw_response, dict) else {}
+                forum_thread_id = response.get("thread_id")
+                if forum_thread_id:
+                    self._status_message_targets[key] = str(forum_thread_id)
+                else:
+                    self._status_message_targets.pop(key, None)
             return result
 
     @staticmethod

@@ -109,8 +109,32 @@ export function registerNativeNotifications({
     })
     notifications.retain(notification)
 
-    // Peers share the actual outcome, including pending/failed Linux delivery.
-    const delivery = Promise.resolve(notification.show()).then(result => result !== false)
+    // macOS reports native delivery asynchronously. Electron 42 emits `failed`
+    // for unsigned development builds after show() has already returned void.
+    const delivery = platform === 'darwin'
+      ? new Promise<boolean>(resolve => {
+          const finish = (result: boolean) => {
+            clearTimeout(timeout)
+            notification.off('show', onShow)
+            notification.off('failed', onFailed)
+            resolve(result)
+          }
+
+          const onShow = () => finish(true)
+          const onFailed = () => finish(false)
+          const timeout = setTimeout(() => finish(false), 5000)
+          timeout.unref()
+          notification.once('show', onShow)
+          notification.once('failed', onFailed)
+
+          try {
+            notification.show()
+          } catch {
+            finish(false)
+          }
+        })
+      : Promise.resolve(notification.show()).then(result => result !== false)
+
     deliveries.set(key, delivery)
     setTimeout(() => {
       if (deliveries.get(key) === delivery) {

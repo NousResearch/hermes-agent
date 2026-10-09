@@ -28,14 +28,8 @@ class AuxRouteAttributionMixin:
         self._last_aux_call_provider: str = ""
         self._last_aux_call_model: str = ""
         self._last_aux_call_base_url: str = ""
-        # The CONFIG-layer auxiliary identity (provider/model/base_url as
-        # declared under auxiliary.compression), captured per attempt. Used
-        # only when no physical request was dispatched (e.g. an explicit
-        # provider whose API key is missing fails before the client is
-        # built) to distinguish "configured but pre-dispatch failure" from
-        # "auxiliary.compression not set at all" — the latter is the only
-        # case where the diagnostic may fall back to the main-model
-        # identity (#72636).
+        # Effective pre-dispatch identity: task config plus explicit call overrides
+        # (stall pin or main fallback). Used only if no physical request was sent.
         self._last_aux_config_provider: str = ""
         self._last_aux_config_model: str = ""
         self._last_aux_config_base_url: str = ""
@@ -47,22 +41,14 @@ class AuxRouteAttributionMixin:
         # CURRENT attempt's failure mode, not a stale prior one (#72636).
         self._last_attempt_failure_class: Optional[str] = None
 
-    def _prepare_aux_route_attribution(self) -> None:
-        """Reset the per-attempt attribution state; capture the config identity pre-dispatch.
+    def _prepare_aux_route_attribution(self, call_kwargs: Dict[str, Any]) -> None:
+        """Reset the attempt and capture its effective route before client construction.
 
-        Auth errors that abort the call pre-dispatch never populate the wire route, so
-        callers attributing the failure need the resolved provider/model/base_url rather
-        than the main-model identity. These differ whenever
-        ``auxiliary.compression.{provider,model,base_url}`` is configured separately from
-        the main runtime. Attribution-only: never fed back into ``call_kwargs`` — the wire
-        route stays whatever ``call_llm`` selects and records via ``_record_aux_route``.
+        Resolve the same arguments dispatch consumes, AFTER stall pins and main-runtime
+        fallback are applied. A missing credential must name that selected route, not
+        the primary compression config it replaced. Physical callbacks supersede this
+        snapshot once a request reaches the provider.
         """
-        # Per-attempt reset: this attempt's failure classification must reflect THIS
-        # attempt's outcome, not a sticky prior one (#72636). The wire snapshot is reset
-        # the same way — the authoritative version is written by call_llm's
-        # route_callback before each physical request (auto-detection, retries, fallback
-        # chains, client.base_url); the config-layer resolution below is a guess that
-        # call_llm may override, so it is NOT persisted as the wire identity.
         self._last_attempt_failure_class = None
         self._last_aux_call_provider = ""
         self._last_aux_call_model = ""
@@ -71,15 +57,15 @@ class AuxRouteAttributionMixin:
         self._last_aux_config_model = ""
         self._last_aux_config_base_url = ""
         _aux_provider = ""
-        _aux_model = self.summary_model or ""
+        _aux_model = call_kwargs.get("model") or ""
         _resolved_base = None
         try:
             from agent.auxiliary_client import _resolve_task_provider_model
 
             _resolved_provider, _resolved_model, _resolved_base, _, _ = (
                 _resolve_task_provider_model(
-                    "compression",
-                    model=(self.summary_model or ""),
+                    call_kwargs.get("task"),
+                    **{key: call_kwargs.get(key) for key in ("provider", "model", "base_url", "api_key")},
                 )
             )
             _aux_provider = _resolved_provider or ""
@@ -88,13 +74,8 @@ class AuxRouteAttributionMixin:
             # Best-effort pre-resolution only: the diagnostic falls back to the
             # static identity fields when config resolution itself fails.
             logger.debug("compression aux identity pre-resolution failed", exc_info=True)
-        # Config-layer identity: what auxiliary.compression is DECLARED to use, captured
-        # before dispatch. Populated only when an explicit provider is configured — when
-        # the task is unset the resolution returns "auto" and the summary call inherits
-        # the main-model identity. Used when no physical request was dispatched (e.g.
-        # the explicit provider's API key is missing) so the abort diagnostic reports the
-        # configured auxiliary identity as a pre-dispatch failure instead of substituting
-        # the main endpoint (#72636).
+        # Auto remains unresolved until client selection. Explicit routes can be
+        # named even when missing credentials prevent constructing their client.
         if _aux_provider not in ("", "auto", None):
             _cfg_base = str(_resolved_base or "")
             if _cfg_base:

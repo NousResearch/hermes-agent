@@ -128,7 +128,11 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     _headline = (
         "⚠ Compression auxiliary provider could not start its request "
         if _pre_dispatch
-        else "⚠ Compression auxiliary endpoint could not be reached "
+        else {
+            "network": "⚠ Compression auxiliary endpoint could not be reached ",
+            "auth": "⚠ Compression auxiliary endpoint rejected the request ",
+            "other": "⚠ Compression auxiliary endpoint returned an unusable response or request error ",
+        }[_cls]
     )
     # Sanitize at the SINK, regardless of which producer filled _aux_base.
     # The route_callback and config-layer captures strip the query at their

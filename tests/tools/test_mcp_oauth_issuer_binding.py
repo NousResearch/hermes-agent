@@ -12,10 +12,10 @@ import pytest
 
 pytest.importorskip("mcp")
 
-from mcp.shared.auth import OAuthToken  # noqa: E402
+from mcp.shared.auth import OAuthToken
 
-from tools.mcp_oauth import HermesTokenStorage  # noqa: E402
-from tools.mcp_oauth_provider import bind_issuer_from_context, enforce_refresh_token_issuer  # noqa: E402
+from tools.mcp_oauth import HermesTokenStorage
+from tools.mcp_oauth_provider import bind_issuer_from_context, enforce_refresh_token_issuer
 
 
 def _token_file(tmp_path):

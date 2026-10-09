@@ -272,7 +272,7 @@ def _harness_site_dir() -> Optional[str]:
     return str(Path(spec.origin).resolve().parent.parent)
 
 
-def _find_cli() -> Optional[List[str]]:
+def _find_cli() -> Optional[list[str]]:
     """The Browser Use CLI's engine (browser-harness) is a core dependency of Hermes's own venv,
     so every install, the Desktop bundle included, runs it on the current interpreter."""
     if _harness_site_dir() is None:
@@ -306,7 +306,7 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
     return None
 
 
-def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
+def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
         from tools.vision_tools import (_EMBED_MAX_DIMENSION,
@@ -670,7 +670,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
 
-    def dispatch() -> Dict[str, Any]:
+    def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
             _driven_daemons.add(env.get("BU_NAME", "default"))

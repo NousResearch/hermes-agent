@@ -26,7 +26,7 @@ class TranscriptionProvider(CatalogProviderBase):
     @abc.abstractmethod
     def transcribe(
         self, file_path: str, *, model: Optional[str] = None, language: Optional[str] = None, **extra: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Transcribe ``file_path`` (existence + size already validated) into the module envelope.
 
         Must NOT raise — convert exceptions to the error envelope. ``model`` None →
@@ -58,7 +58,7 @@ class TranscriptionStreamSession(abc.ABC):
         """Feed one chunk of 16 kHz mono s16le PCM."""
 
     @abc.abstractmethod
-    def finalize(self) -> Dict[str, Any]:
+    def finalize(self) -> dict[str, Any]:
         """End the session and return the transcription envelope (blocks until final)."""
 
     def partial_transcript(self) -> str:

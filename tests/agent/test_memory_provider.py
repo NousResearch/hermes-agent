@@ -953,7 +953,7 @@ class TestMemoryToolToolsetGate:
     def test_memory_in_toolsets_injects(self):
         """enabled_toolsets including 'memory' injects memory tools."""
         mgr = self._mgr_with_tools("fact_store")
-        tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
+        _tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
 
     def test_composite_toolset_with_memory_injects(self):
@@ -991,7 +991,7 @@ class TestMemoryToolToolsetGate:
 
     def test_no_memory_manager_no_injection(self):
         """Gate is moot without a memory manager."""
-        tools, names = self._run_memory_injection(None, None)
+        tools, _names = self._run_memory_injection(None, None)
         assert tools == []
 
 

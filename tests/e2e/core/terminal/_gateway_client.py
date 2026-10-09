@@ -52,7 +52,7 @@ def poll_until(fn: Callable[[], Any], *, timeout: float, interval: float = 0.05,
                 return value
         except AssertionError:
             raise
-        except Exception as exc:  # noqa: BLE001 - surfaced in the timeout message
+        except Exception as exc:
             last_exc = exc
         if time.monotonic() >= deadline:
             raise AssertionError(f"timed out after {timeout:.0f}s waiting for {what}"
@@ -210,7 +210,7 @@ class WSClient:
             self._reading.wait()
             try:
                 raw = self._ws.recv()
-            except Exception:  # noqa: BLE001 - closed/dropped socket ends the reader
+            except Exception:
                 break
             for line in str(raw).splitlines():
                 if line.strip():
@@ -299,7 +299,7 @@ class WSClient:
         self._reading.set()
         try:
             self._ws.close()
-        except Exception:  # noqa: BLE001 - already dropped
+        except Exception:
             pass
 
 

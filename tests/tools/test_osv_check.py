@@ -71,7 +71,7 @@ class TestParsePackageFromArgs:
         assert ver == "1.0"
 
     def test_pypi_skips_flags(self):
-        name, ver = _parse_package_from_args(["--from", "mcp[cli]"], "PyPI")
+        name, _ver = _parse_package_from_args(["--from", "mcp[cli]"], "PyPI")
         # --from is a flag, mcp[cli] is the package
         # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"

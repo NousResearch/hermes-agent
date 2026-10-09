@@ -227,7 +227,7 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
     starve gateway.ping — the client's 45s heartbeat deadline would otherwise tear down a busy but healthy
     backend. Non-ping RPCs keep their serial arrival order."""
     ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
-    ids = lambda: [f.get("id") for f in sent if "id" in f]  # noqa: E731
+    ids = lambda: [f.get("id") for f in sent if "id" in f]
 
     async def scenario():
         task = asyncio.create_task(ws_mod.handle_ws(ws))
@@ -251,7 +251,7 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
 def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
     """A client that drops while a handler runs must not have its sessions torn down under that handler, and
     frames it sent before dropping are still dispatched (as the serial read loop did)."""
-    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ws, inbound, _sent, log, release = _slow_dispatch_harness(monkeypatch)
 
     async def scenario():
         task = asyncio.create_task(ws_mod.handle_ws(ws))
@@ -270,7 +270,7 @@ def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
 
 def test_ws_failed_reply_from_dispatcher_ends_the_connection(monkeypatch):
     """A response the dispatcher cannot send ends the connection even while the reader waits on the socket."""
-    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ws, inbound, _sent, log, _release = _slow_dispatch_harness(monkeypatch)
     real_send = type(ws).send_text
 
     async def send_text(self, line):

@@ -4,8 +4,9 @@ One record per ``compress_context`` attempt (built from the attempt telemetry se
 micro-compaction pass, per committed proactive tool-result prune, and per Codex-native thread
 compaction Hermes observes. A persistence-detached fork (background review) shares the live session id
 but rewrites only its own throwaway transcript, so it publishes nothing. The payload is flat because OpenTelemetry exporters flatten only top-level
-keys; every categorical field comes from a closed set with an ``other`` fallback; no field carries
-message, summary, focus-topic, error or path text. Publishing never raises into compaction.
+keys; every categorical field except the free-form ``summarizer_provider`` / ``summarizer_model`` identifiers
+comes from a closed set with an ``other`` fallback; no field carries message, summary, focus-topic, error or
+path text. Publishing never raises into compaction.
 """
 
 from __future__ import annotations

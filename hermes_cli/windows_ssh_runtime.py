@@ -380,6 +380,22 @@ def _resolve_direct_command(hermes_path: str) -> list[str]:
     return command
 
 
+def _desktop_child_env() -> dict[str, str]:
+    """The detached backend's env: the SSH shell's, minus interpreter scoping, plus
+    ``HERMES_DESKTOP=1``.
+
+    The marker is the leg of the #96490 loopback exemption the argv cannot carry: without
+    it a non-loopback ``dashboard.public_url`` gates the child's own session-token calls
+    (401 ``no_cookie``, #135784). The POSIX spawn injects the same marker via
+    ``exec env HERMES_DESKTOP=1``.
+    """
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONPATH", None)
+    env["HERMES_DESKTOP"] = "1"
+    return env
+
+
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     ownership_id = _ownership(str(payload["ownershipId"]))
     spawn_nonce = _nonce(str(payload["spawnNonce"]))
@@ -396,9 +412,7 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
-    env = dict(os.environ)
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONPATH", None)
+    env = _desktop_child_env()
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)
     win32con = _win32().win32con

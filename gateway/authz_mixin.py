@@ -386,7 +386,13 @@ class GatewayAuthorizationMixin:
         source = getattr(entry, "origin", None)
         if source is None:
             return None
-        from gateway.session_identity import restore_identity
+        from gateway.session_identity import replace_source, restore_identity
+        if not source.profile:
+            from gateway.run import _parse_session_key
+            # Older producers stored the runtime only in the key, not in the origin.
+            profile = (_parse_session_key(getattr(entry, "session_key", "")) or {}).get("profile")
+            if profile:
+                source = replace_source(source, profile=profile)
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
         return source
 

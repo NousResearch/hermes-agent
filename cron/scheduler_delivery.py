@@ -282,12 +282,12 @@ def _seed_cron_session(
     chat_type: str, user_id: Optional[str], user_name: Optional[str] = None,
     chat_name: Optional[str], scope_id: Optional[str], discord_keys_on_thread: bool = False,
 ) -> bool:
-    """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
-    The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
-    scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
+    """Create the reply-keyed session row and mirror the brief as a USER turn.
+    Callers pass the reply's chat_type, user_id, thread_id and scope_id (Slack team id)."""
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.mirror import mirror_to_session
+    from hermes_cli.profiles import get_active_profile_name
     seeded_session_id: Optional[str] = None
     session_store = getattr(adapter, "_session_store", None)
     if session_store is not None:
@@ -296,8 +296,7 @@ def _seed_cron_session(
         except (ValueError, KeyError):
             platform_enum = None
         if platform_enum is not None:
-            # Discord keys in-thread messages with chat_id == thread_id; Slack/Telegram use the
-            # parent channel.
+            # Discord replies key chat_id on the thread; Slack/Telegram retain the parent.
             seed_chat_id = (
                 str(thread_id)
                 if discord_keys_on_thread and platform_enum == Platform.DISCORD
@@ -307,9 +306,10 @@ def _seed_cron_session(
                 platform=platform_enum, chat_id=seed_chat_id, chat_name=chat_name,
                 chat_type=chat_type,
                 user_id=user_id, user_name=user_name, thread_id=thread_id,
-                scope_id=str(scope_id) if scope_id else None)
-            # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
-            # bails on populated chats.
+                scope_id=str(scope_id) if scope_id else None, profile=get_active_profile_name())
+            # The ticker binds the job's runtime; the delivery adapter owns its transport.
+            adapter._canonicalize(dest_source)
+            # Pin the mirror to this row: origin rediscovery bails on populated chats.
             _entry = session_store.get_or_create_session(dest_source)
             seeded_session_id = getattr(_entry, "session_id", None)
     return mirror_to_session(

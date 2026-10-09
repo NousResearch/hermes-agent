@@ -346,6 +346,7 @@ gateway:
     not_found: "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
     already_on: "📌 已在会话 **{name}** 上。"
     switch_failed: "切换会话失败。"
+    blocked_subagent:      "⚠️ /resume 已拒绝：'**{name}**' 是内部子代理（subagent）执行记录，不是会话。delegate 运行记录归发起它的会话所有——请改为 resume 那个会话。"
     resumed_one: "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
     resumed_many: "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
     resumed_no_count: "↻ 已恢复会话 **{title}**。对话已还原。"

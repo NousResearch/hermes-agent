@@ -118,6 +118,33 @@ def _infer_port_from_command(command: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+# Match an existing flag in a shell command, accepting both space- and equals-separated
+# forms (``--port 4321`` / ``--port=4321`` / ``-p 4321``). Anchored so the flag does not
+# match a fragment inside another token (e.g. a path containing ``--port``).
+_FLAG_PRESENT_RE = {
+    "host": re.compile(r"(?:^|\s)(?:--host|-H)(?:\s|=)"),
+    "port": re.compile(r"(?:^|\s)(?:--port|-p)(?:\s|=)"),
+}
+
+
+def _ensure_flags(command: str, **flags: str | int | None) -> str:
+    """Return ``command`` with ``--name value`` appended for every flag in ``flags`` whose
+    name is unknown, whose value is ``None``/empty, or which is already present in the
+    command. Recognised names: ``host``, ``port``. Useful for binding Astro ``dev``
+    explicitly to IPv4 127.0.0.1 so ``hermes verify``'s IPv4 readiness probe reaches it
+    (Astro binds to ``[::1]:4321`` by default, which causes connection-refused on the
+    probe).
+    """
+    tokens = [command]
+    for name, value in flags.items():
+        if value is None or value == "" or name not in _FLAG_PRESENT_RE:
+            continue
+        if _FLAG_PRESENT_RE[name].search(command):
+            continue
+        tokens.append(f"--{name} {value}")
+    return " ".join(tokens)
+
+
 def _dedupe(values: list[str | None]) -> list[str]:
     """Strip, drop empties, keep first occurrence order."""
     return list(dict.fromkeys(v.strip() for v in values if v and v.strip()))
@@ -156,9 +183,16 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
         return _dedupe([_script_runner(package_manager, s) for s in names if scripts.get(s)])
 
     start_script = next((s for s in ("dev", "start") if scripts.get(s)), None)
+    inferred_port = _infer_port_from_command(scripts[start_script]) if start_script else None
+    start_cmd = runners(start_script)[0] if start_script else None
+    # Astro binds [::1]:4321 by default; the verify readiness probe hits IPv4 127.0.0.1
+    # and would connection-refuse. Force the dev server to listen on 127.0.0.1 and the
+    # recipe's resolved port so the probe always reaches it.
+    if start_cmd and kind == "astro":
+        start_cmd = _ensure_flags(start_cmd, host="127.0.0.1", port=inferred_port or default_port)
     return Recipe(
-        name=label, kind=kind, start=runners(start_script)[0] if start_script else None,
-        port=(_infer_port_from_command(scripts[start_script]) or default_port) if start_script else None,
+        name=label, kind=kind, start=start_cmd,
+        port=(inferred_port or default_port) if start_script else None,
         bootstrap=[_NODE_INSTALL.get(package_manager or "", "npm install")],
         build=runners("build", "typecheck"), test=runners("test", "check", "lint"),
         evidence=_dedupe([

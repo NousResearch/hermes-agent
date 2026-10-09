@@ -114,6 +114,38 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# Keeper guardrail: research-shaped tasks must have max_runtime_seconds
+_RESEARCH_SHAPE_RE = re.compile(
+    r"\b(?:research|audit|inventory|investigate|analyze)\b",
+    re.IGNORECASE,
+)
+_RESEARCH_RUNTIME_REQUIRED_ERROR = (
+    "set max_runtime_seconds for research tasks; suggested 1800s "
+    "(use --max-runtime 30m on hermes kanban create)"
+)
+
+# Repos with a live deployed surface on THIS install (Caddy-served or
+# root-served build output). A ``dir`` workspace at one of these repo ROOTS
+# writes uncommitted changes into the live checkout on ``main`` - an incident
+# pattern seen repeatedly in local deployments. Matching is by repo-root
+# basename (case-insensitive); extend when a repo gains a live surface.
+LIVE_DEPLOYED_REPO_NAMES = frozenset({
+    "hermes-mission-control",  # packages/svelte-app/build/ served live
+    "portfolio-showcase",      # dist/ served live from the root checkout
+    "northlight-studio",       # site/ + contest-app/build/
+    "lantern-house",           # running ERP runtime
+    "component-hub",           # component gallery surface
+    "portfolio-server",        # Caddyfile config surface
+})
+
+# Devops merge/deploy closure cards are the sanctioned exception to the
+# dir-at-repo-root guard: they must operate on the root checkout itself to
+# merge ``wt/`` branches and run the gated deploy. Matched case-insensitively
+# against the card title.
+_DEV_OPS_CLOSURE_TITLE_RE = re.compile(
+    r"\[devops\]|merge|deploy|closure", re.IGNORECASE
+)
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """``VALID_REASONING_EFFORTS`` or ``"none"`` (thinking off), case-insensitive;
@@ -1241,11 +1273,19 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
 
+    # Keeper guardrail: reject dir workspaces at live-deployed repo roots
+    from hermes_cli.kanban_db_workspace import _reject_dir_workspace_at_live_repo_root
+    _reject_dir_workspace_at_live_repo_root(workspace_kind, workspace_path, assignee, title)
+
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+
+    # Keeper guardrail: require max_runtime_seconds for research-shaped cards
+    if max_runtime_seconds is None and _RESEARCH_SHAPE_RE.search(title):
+        raise ValueError(_RESEARCH_RUNTIME_REQUIRED_ERROR)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

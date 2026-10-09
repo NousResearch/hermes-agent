@@ -3062,6 +3062,65 @@ def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[b
     return seed.result
 
 
+def _self_heal_zai_pool(provider: str, raw_entries) -> tuple[bool, set[str]]:
+    """Repair Z.AI pool entries that were written with the General API URL.
+
+    Two failure modes existed before the resolver was wired into
+    ``_add_api_key_credential``:
+      1. Manual ``hermes auth add zai`` persisted ``base_url`` straight from the
+         registry default (``https://api.z.ai/api/paas/v4``) regardless of which
+         endpoint the key was actually valid against.
+      2. Env-seeded entries captured an empty ``GLM_API_KEY`` at first registration
+         (Bitwarden secret had not yet been applied to the parent shell), which
+         short-circuited ``_resolve_zai_base_url`` to the same wrong default.
+
+    The probe in ``hermes_cli.auth_zai_kimi.detect_zai_endpoint`` already cached
+    the correct endpoint under ``providers.zai.detected_endpoint.base_url``;
+    this heal propagates that URL onto entries whose key hash matches and clears
+    the 429 bench that the wrong URL caused.
+
+    Returns ``(changed, cleared_ids)`` — caller persists when changed.
+    """
+    if provider != "zai" or not isinstance(raw_entries, list):
+        return False, set()
+    try:
+        from hermes_cli import auth as _auth_mod
+        detected = _auth_mod._load_provider_state(_auth_mod._load_auth_store(), "zai") or {}
+    except Exception:
+        return False, set()
+    cached = detected.get("detected_endpoint") if isinstance(detected, dict) else None
+    if not isinstance(cached, dict):
+        return False, set()
+    cached_url = str(cached.get("base_url") or "").strip()
+    cached_hash = str(cached.get("key_hash") or "").strip()
+    if not cached_url or not cached_hash:
+        return False, set()
+
+    changed = False
+    cleared_ids: set[str] = set()
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_hash = str(entry.get("key_hash") or "").strip()
+        if entry_hash != cached_hash:
+            continue
+        entry_url = str(entry.get("base_url") or "").strip()
+        if entry_url == cached_url:
+            continue
+        entry["base_url"] = cached_url
+        # Clear any 429/rate-limit cooldown the wrong URL caused
+        if entry.get("last_error_code") in {"rate_limit", "upstream_rate_limit"}:
+            entry["last_error_code"] = None
+            entry["last_error_message"] = None
+            entry["last_status"] = None
+            entry["last_status_at"] = None
+        eid = str(entry.get("id") or "").strip()
+        if eid:
+            cleared_ids.add(eid)
+        changed = True
+    return changed, cleared_ids
+
+
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
@@ -3070,9 +3129,12 @@ def load_pool(provider: str) -> CredentialPool:
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
+    # One-time Z.AI self-heal: rewrite base_url and clear 429 bench for entries
+    # whose key hash matches the cached detected endpoint (see zai-model-package-case).
+    heal_changed, heal_cleared_ids = _self_heal_zai_pool(provider, raw_entries)
     # Ownership (auth.json read) after the heal above; re-read at the tail only if _persist() ran.
     owns_provider: Optional[bool] = None
-    changed = any(
+    changed = heal_changed or any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
     )
@@ -3124,7 +3186,10 @@ def load_pool(provider: str) -> CredentialPool:
     pool = CredentialPool(provider, entries)
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
     if changed:
-        pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
+        pool._persist(
+            removed_ids=sorted(disk_ids - {entry.id for entry in entries}),
+            status_cleared_ids=sorted(x for x in heal_cleared_ids if x) if heal_cleared_ids else None,
+        )
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
     # No disk rows -> nothing borrowed; the ``set()`` default already applies.

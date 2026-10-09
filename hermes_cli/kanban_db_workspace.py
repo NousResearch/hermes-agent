@@ -23,6 +23,8 @@ from hermes_cli.worktree_ops import release_lsp_clients
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
+import re
+
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
 
@@ -717,6 +719,47 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser().resolve()
     except Exception:
         return Path(out).expanduser()
+
+
+# Keeper guardrail: reject dir workspaces at live-deployed repo roots
+def _is_devops_closure_card(assignee: Optional[str], title: str) -> bool:
+    """True for the sanctioned devops merge/deploy closure exception."""
+    if (assignee or "").strip().casefold() != "devops":
+        return False
+    return bool(_kb._DEV_OPS_CLOSURE_TITLE_RE.search(title or ""))
+
+
+def _reject_dir_workspace_at_live_repo_root(
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    assignee: Optional[str],
+    title: str,
+) -> None:
+    """Reject ``dir`` workspaces pointed at a live-deployed repo root.
+
+    A ``dir`` workspace at a repo root with a live deployed surface is the
+    incident pattern: the worker writes uncommitted changes into the root
+    checkout on ``main`` and devops must later rescue them out of the live
+    tree. Steering to ``workspace_kind='worktree'`` under
+    ``<repo>/.worktrees/<task-id>`` instead. Devops merge/deploy closure cards
+    remain allowed - they must touch the root checkout by design.
+    """
+    if workspace_kind != "dir" or not workspace_path:
+        return
+    requested = Path(workspace_path).expanduser()
+    if not requested.is_absolute():
+        requested = Path.cwd() / requested
+    repo_root = _git_toplevel(requested)
+    if repo_root is None:
+        return
+    if repo_root.name.casefold() not in _kb.LIVE_DEPLOYED_REPO_NAMES:
+        return
+    if _is_devops_closure_card(assignee, title):
+        return
+    raise ValueError(
+        f"refusing_dir_workspace_at_live_repo_root: {workspace_path} is at the root of "
+        f"{repo_root.name!r}, which has a live deployed surface. Use worktree workspace_kind instead."
+    )
 
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:

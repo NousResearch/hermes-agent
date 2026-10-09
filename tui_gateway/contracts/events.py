@@ -738,6 +738,14 @@ class ChangeSignalPayload(OpenPayload):
     """``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed."""
 
 
+class SessionsDeletedPayload(OpenPayload):
+    """Exact stored IDs observed disappearing in a committed native DB snapshot."""
+
+    session_ids: list[str]
+    profile: str
+
+
+event("sessions.deleted", SessionsDeletedPayload, doc="Committed session rows disappeared; evict exact sidebar IDs immediately.")
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
 event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the session list.")
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")

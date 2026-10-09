@@ -32788,6 +32788,29 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
+      "SessionsDeletedPayload": {
+        "additionalProperties": true,
+        "description": "Exact stored IDs observed disappearing in a committed native DB snapshot.",
+        "properties": {
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_ids",
+          "profile"
+        ],
+        "title": "SessionsDeletedPayload",
+        "type": "object"
+      },
       "SetupChooseKind": {
         "enum": [
           "question",
@@ -40948,6 +40971,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "sessions.deleted",
+      "summary": "Committed session rows disappeared; evict exact sidebar IDs immediately.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionsDeletedPayload"
           }
         }
       ]

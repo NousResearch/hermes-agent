@@ -27,7 +27,9 @@ import argparse
 import json
 import math
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -1654,6 +1656,208 @@ def command_new_thread(args: argparse.Namespace, now: datetime) -> int:
     return 0
 
 
+# MARK: - Autonomous Background Dispatch & LaunchAgent Service
+
+LAUNCH_AGENT_LABEL = "ai.hermes.companion-inbox"
+
+
+def find_hermes_executable() -> Optional[str]:
+    """Locate the hermes CLI executable."""
+    candidates = [
+        shutil.which("hermes"),
+        str(Path.home() / ".local" / "bin" / "hermes"),
+        str(Path.home() / ".hermes" / "hermes-agent" / ".hermes" / "bin" / "hermes"),
+        str(Path.home() / ".hermes" / "bin" / "hermes"),
+        "/opt/homebrew/bin/hermes",
+        "/usr/local/bin/hermes",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def get_launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def install_launch_agent(icloud_dir: Optional[str] = None) -> bool:
+    """Install and load macOS LaunchAgent for 60s background dispatch with minimal resource usage."""
+    if sys.platform != "darwin":
+        return False
+
+    plist_path = get_launch_agent_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    script_path = str(Path(__file__).resolve())
+    python_bin = sys.executable or "/usr/bin/python3"
+
+    threads_dir = get_threads_dir(icloud_dir)
+    watch_xml = ""
+    if threads_dir:
+        watch_xml = f"""
+    <key>WatchPaths</key>
+    <array>
+        <string>{threads_dir}</string>
+    </array>"""
+
+    home = str(Path.home())
+    system_path = (
+        f"{home}/.local/bin:{home}/.hermes/bin:{home}/.hermes/hermes-agent/.hermes/bin:"
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    )
+
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LAUNCH_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_bin}</string>
+        <string>{script_path}</string>
+        <string>--dispatch-pending</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>{watch_xml}
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{system_path}</string>
+        <key>HERMES_HOME</key>
+        <string>{home}/.hermes</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{home}/.hermes/logs/companion-inbox.log</string>
+    <key>StandardErrorPath</key>
+    <string>{home}/.hermes/logs/companion-inbox.error.log</string>
+</dict>
+</plist>
+"""
+    try:
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        plist_path.write_text(plist_content.strip(), encoding="utf-8")
+        res = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
+        log("INFO", f"installed background auto-responder service: {plist_path}")
+        return res.returncode == 0
+    except Exception as exc:
+        log("WARN", f"could not install LaunchAgent: {exc}")
+        return False
+
+
+def uninstall_launch_agent() -> bool:
+    """Unload and remove macOS LaunchAgent."""
+    plist_path = get_launch_agent_path()
+    if not plist_path.is_file():
+        return True
+    try:
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        plist_path.unlink()
+        log("INFO", f"uninstalled background service: {plist_path}")
+        return True
+    except Exception as exc:
+        log("WARN", f"could not uninstall LaunchAgent: {exc}")
+        return False
+
+
+def ensure_launch_agent_installed(icloud_dir: Optional[str] = None) -> None:
+    """Ensure LaunchAgent is installed once on macOS without blocking."""
+    if sys.platform != "darwin":
+        return
+    plist_path = get_launch_agent_path()
+    if not plist_path.is_file():
+        install_launch_agent(icloud_dir)
+
+
+def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
+    """Scan for pending user letters and automatically invoke Hermes to reply (0 tokens if none)."""
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir:
+        return 0
+
+    pending = [t for t in list_dispatch_threads(threads_dir) if t.get("status") == "pending_agent"]
+    if not pending:
+        # Zero cost / zero tokens / zero CPU
+        return 0
+
+    hermes_bin = find_hermes_executable()
+    if not hermes_bin:
+        log("WARN", "hermes executable not found, cannot auto-dispatch pending letters")
+        return 1
+
+    lock_file = threads_dir / ".dispatch_lock"
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+    except FileExistsError:
+        return 0
+    except Exception:
+        pass
+
+    try:
+        dispatched_count = 0
+        for thread in pending:
+            thread_id = thread["thread_id"]
+            target_profile = (thread.get("target_profile") or "default").strip()
+            subject = thread.get("subject", "Letter")
+
+            messages = list_thread_messages(threads_dir, thread_id)
+            if not messages:
+                continue
+
+            last_msg = messages[-1]
+            if last_msg.get("sender") != "user":
+                continue
+
+            # Build conversation history context
+            history_lines: List[str] = []
+            for m in messages[-5:]:
+                sender_label = "Daniel (User)" if m.get("sender") == "user" else "You (Hermes Agent)"
+                history_lines.append(f"[{sender_label}]:\n{m.get('body', '')}")
+
+            history_block = "\n\n".join(history_lines)
+
+            prompt = (
+                f"You have received an asynchronous letter in Hermes Post from Daniel.\n"
+                f"Subject: {subject}\n\n"
+                f"Conversation:\n{history_block}\n\n"
+                f"Instruction:\n"
+                f"Reply thoughtfully to Daniel's letter in your own natural voice. "
+                f"Write ONLY the exact text of your letter reply without meta text or enclosing quotes."
+            )
+
+            cmd = [hermes_bin]
+            if target_profile and target_profile != "default":
+                cmd.extend(["-p", target_profile])
+            cmd.extend(["-z", prompt])
+
+            log("INFO", f"auto-replying to thread '{thread_id}' with profile '{target_profile}'...")
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    reply_body = proc.stdout.strip()
+                    reply_to_thread(threads_dir, thread_id, reply_body, sender="agent", now=now)
+                    log("INFO", f"successfully auto-replied to thread '{thread_id}'")
+                    dispatched_count += 1
+                else:
+                    err = proc.stderr.strip() or f"exit code {proc.returncode}"
+                    log("WARN", f"hermes execution failed for thread '{thread_id}': {err}")
+            except Exception as exc:
+                log("WARN", f"hermes execution error for thread '{thread_id}': {exc}")
+
+        return 0
+    finally:
+        try:
+            if lock_file.exists():
+                lock_file.unlink()
+        except Exception:
+            pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read Hermes Companion location and health from iCloud")
     parser.add_argument("--json", action="store_true", help="Print the raw facts as JSON")
@@ -1677,6 +1881,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--to-profile", help="Target agent profile for new dispatch thread (defaults to 'default')")
     parser.add_argument("--register-profile", metavar="NAME", help="Register a specific agent profile in profiles.json")
     parser.add_argument("--discover-profiles", action="store_true", help="Discover and print all installed Hermes profiles")
+    parser.add_argument("--dispatch-pending", action="store_true", help="Scan pending letters and generate autonomous replies using Hermes")
+    parser.add_argument("--install-service", action="store_true", help="Install macOS background LaunchAgent auto-responder")
+    parser.add_argument("--uninstall-service", action="store_true", help="Uninstall macOS background LaunchAgent auto-responder")
+    parser.add_argument("--service-status", action="store_true", help="Check status of background LaunchAgent auto-responder")
     parser.add_argument("--places", type=Path, help="Places JSON file")
     parser.add_argument("--icloud-dir", help="Directory that contains the latest_*.json files")
     parser.add_argument("--name")
@@ -1697,6 +1905,24 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         args.places = expand(str(args.places))
     moment = now or utcnow()
 
+    if args.install_service:
+        ok = install_launch_agent(args.icloud_dir)
+        print("LaunchAgent service installed and loaded" if ok else "Failed to install service")
+        return 0 if ok else 1
+    if args.uninstall_service:
+        ok = uninstall_launch_agent()
+        print("LaunchAgent service uninstalled" if ok else "Failed to uninstall service")
+        return 0 if ok else 1
+    if args.service_status:
+        path = get_launch_agent_path()
+        exists = path.is_file()
+        print(f"Service plist: {path} (installed: {exists})")
+        if exists:
+            subprocess.run(["launchctl", "list", LAUNCH_AGENT_LABEL])
+        return 0
+    if args.dispatch_pending:
+        return command_dispatch_pending(args, moment)
+
     # Automatically register active profile and discover installed profiles in iCloud profiles.json
     active_profile = active_profile_name(args.profile)
     if args.register_profile:
@@ -1705,6 +1931,9 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         return 0
 
     register_active_profile(active_profile, args.icloud_dir, now=moment, auto_discover=True)
+
+    # Ensure background service is installed on macOS automatically (1-minute latency, 0 idle tokens)
+    ensure_launch_agent_installed(args.icloud_dir)
 
     if args.discover_profiles:
         profs = discover_installed_hermes_profiles()

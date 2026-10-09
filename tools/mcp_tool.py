@@ -240,8 +240,9 @@ _PARKED_RETRY_INTERVAL = 300
 # Bounded wait for a respawned stdio child when a call finds it dead (gateway restarts kill
 # every MCP child); bounded so a broken server still parks via run()'s rapid-drop budget.
 _STDIO_RESPAWN_WAIT_SEC = 15.0
-# The client MUST ping faster than the server's idle-session TTL (short-TTL servers need a
-# smaller configured ``keepalive_interval``); the floor stops a tiny interval busy-looping.
+# Remote clients MUST ping faster than the server's idle-session TTL (short-TTL servers need a
+# smaller configured ``keepalive_interval``); stdio only opts in explicitly because local pipes
+# have no remote session TTL. The floor stops a tiny interval busy-looping.
 _DEFAULT_KEEPALIVE_INTERVAL, _MIN_KEEPALIVE_INTERVAL = 180, 5
 # One bounded cancellation cycle at final shutdown so resistant tasks cannot hang exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
@@ -309,14 +310,47 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     keepalive/liveness live in the three mixins."""
 
     __slots__ = (
-        "name", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
-        "_tools", "_error", "_config", "_sampling", "_elicitation", "_registered_tool_names",
-        "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
-        "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
-        "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
-        "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
-        "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback")
+        "_auth_type",
+        "_config",
+        "_elicitation",
+        "_error",
+        "_ever_connected",
+        "_idle_timeout_seconds",
+        "_inflight_tasks",
+        "_last_park_line",
+        "_last_tool_call_at",
+        "_lifecycle_started_at",
+        "_list_cache_meta",
+        "_max_lifetime_seconds",
+        "_park_reason",
+        "_pending_call_context",
+        "_pending_refresh_tasks",
+        "_permanent_grace_used",
+        "_ping_unsupported",
+        "_ready",
+        "_reconnect_event",
+        "_reconnect_retries",
+        "_reconnecting",
+        "_recycled_reason",
+        "_refresh_lock",
+        "_registered_tool_names",
+        "_resolved_identity",
+        "_rpc_lock",
+        "_sampling",
+        "_session_proven",
+        "_shutdown_event",
+        "_sse_fallback",
+        "_stdio_child_pids",
+        "_suspect_reason",
+        "_task",
+        "_teardown_race",
+        "_tools",
+        "_was_parked",
+        "initialize_result",
+        "name",
+        "session",
+        "tool_timeout",
+    )
 
     def __init__(self, name: str):
         self.name = name
@@ -347,8 +381,19 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._ever_connected: bool = False
         # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
         self._sse_fallback: bool = False
+        # Status/URL/body of the last HTTP rejection the Streamable HTTP client saw; names the real
+        # cause when the SDK reports only ``Server returned an error response``.
+        self._http_rejection: dict = {}
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
+        # Why the server is parked (the revival_reason handed to _park), None once healthy again.
+        # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
+        # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
+        self._park_reason: Optional[str] = None
+        self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
+        # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
+        # must resolve the same digest in its own scope. None until the transport publishes it.
+        self._resolved_identity: Optional[str] = None
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a
@@ -369,7 +414,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # PIDs of the stdio subprocess spawned for the current transport (captured in _run_stdio). Used to
         # fail in-flight calls FAST when the child dies instead of waiting out the full tool timeout
         # (#81995).
-        self._stdio_child_pids: Set[int] = set()
+        self._stdio_child_pids: set[int] = set()
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # A stdio session is one JSON-RPC stream (a concurrent list_tools can wedge a tool
@@ -404,24 +449,24 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 # same server with their own credentials are two connections; a name-keyed ledger let the first
 # profile's connection shadow the second's (never connected, silently tool-less — #106005).
 
-_servers: Dict[Any, MCPServerTask] = {}
+_servers: dict[Any, MCPServerTask] = {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
-_server_scope_keys: Dict[Any, Optional[str]] = {}
+_server_scope_keys: dict[Any, Optional[str]] = {}
 # Registry scopes that have adopted a live server connection. The owning scope above remains
 # authoritative for connection teardown; this set preserves visibility for shared connections.
-_server_tool_scopes: Dict[Any, set] = {}
+_server_tool_scopes: dict[Any, set] = {}
 _server_connecting: set = set()
-_server_connect_errors: Dict[Any, str] = {}
+_server_connect_errors: dict[Any, str] = {}
 # adopter scope -> server names whose shared connection an owner's scoped shutdown tore down;
 # drained by the next discovery pass so the adopter is re-registered (see mcp_tool_lifecycle).
-_orphaned_adopters: Dict[str, set] = {}
+_orphaned_adopters: dict[str, set] = {}
 # Lazy startup: servers registered from the schema cache without connecting; popped on
 # first real connection.
 # Keyed by connection key; entries are popped once a real connection is established on first use. See #56832.
-_lazy_server_configs: Dict[Any, dict] = {}
-_lazy_server_fingerprints: Dict[Any, str] = {}
-_lazy_server_tool_names: Dict[Any, List[str]] = {}
+_lazy_server_configs: dict[Any, dict] = {}
+_lazy_server_fingerprints: dict[Any, str] = {}
+_lazy_server_tool_names: dict[Any, list[str]] = {}
 # Task-local claim around ``_connect_server``: discovery retains a recoverable parked task
 # while standalone probes never publish failed servers into module-global ownership.
 _connect_server_claim: contextvars.ContextVar[Optional[Callable[[MCPServerTask], None]]] = (
@@ -442,8 +487,8 @@ _connect_server_claim: contextvars.ContextVar[Optional[Callable[[MCPServerTask],
 # ``retry_after`` deadline with exponential backoff. ``register_mcp_servers`` skips a server whose cooldown
 # has not elapsed, so a chronically failing server is retried on a backoff schedule instead of on every
 # worker session -- isolating it from the rest of the bridge. A successful connection clears the state.
-_server_connect_retry_after: Dict[Any, float] = {}   # connection key -> monotonic deadline
-_server_connect_failures: Dict[Any, int] = {}        # connection key -> consecutive failures
+_server_connect_retry_after: dict[Any, float] = {}   # connection key -> monotonic deadline
+_server_connect_failures: dict[Any, int] = {}        # connection key -> consecutive failures
 _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 
 # Per-server circuit breaker: closed -> open (calls short-circuit until the cooldown) ->
@@ -456,11 +501,11 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 # ``_server_breaker_opened_at`` records the monotonic timestamp when the breaker most recently transitioned
 # into the open state. Use the ``_bump_server_error`` / ``_reset_server_error`` helpers to mutate this state
 # — they keep the count and timestamp in sync.
-_server_error_counts: Dict[Any, int] = {}
-_server_breaker_opened_at: Dict[Any, float] = {}
+_server_error_counts: dict[Any, int] = {}
+_server_breaker_opened_at: dict[Any, float] = {}
 # True while every strike in the current streak was the tool's own error payload (server reachable,
 # call rejected); picks the open-breaker wording, since "unreachable" was false for that case (#11113).
-_server_errors_all_application: Dict[Any, bool] = {}
+_server_errors_all_application: dict[Any, bool] = {}
 _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 
 # Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
@@ -468,9 +513,11 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # before the RPC fires. A lying readOnlyHint can only skip approval for calls the operator was
 # already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
 # typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
-# mutation, prompt cache intact.
-_server_trust_levels: Dict[Any, str] = {}
-_tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
+# mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
+# key (its policy for the name, even when it adopted another profile's connection);
+# ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
+_server_trust_levels: dict[Any, str] = {}
+_tool_read_only_hints: dict[Any, dict[str, bool]] = {}
 
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
@@ -497,11 +544,11 @@ def _reset_server_error(server_name: str) -> None:
     _server_errors_all_application.pop(key, None)
 
 
-# Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
-# must not share policy).
+# Servers opted into parallel tool calls, keyed by the consuming profile's own key (``foo-bar``/
+# ``foo_bar`` sanitize alike but must not share policy; neither do two profiles' same-named servers).
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
-_mcp_tool_server_names: Dict[str, str] = {}
+_mcp_tool_server_names: dict[str, str] = {}
 
 # Dedicated event loop in a background daemon thread; _lock guards the loop handles, _servers,
 # the status maps and the PID ledgers.
@@ -629,15 +676,20 @@ def _update_death_supervisor(verb: str, pgids) -> None:
             # Reap it, or the exited supervisor stays a zombie until the next Popen in this process.
             try:
                 proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - timeout or already gone; either way we drop it
+            except Exception:
                 pass
             _death_supervisor = None
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
-    from agent.secret_scope import is_multiplex_active
-    if not is_multiplex_active():
+    """Registry scope for MCP registrations: a profile overlay when this process serves profiles,
+    else None. Under ``gateway.multiplex_profiles`` every turn runs scoped; a process that serves a
+    routed profile through the HERMES_HOME override (dashboard/desktop backend, per-profile cron
+    ticker) is a multiplexer too, even with the flag off — keying its connections by the bare name
+    would hand one profile's credentialed connection to every other served profile (#111151).
+    Single-profile processes (no override, or an override naming their own home) keep bare names."""
+    from agent.secret_scope import serves_routed_profile
+    if not serves_routed_profile():
         return None
     from tools.registry import registry
     return registry.current_scope_key()
@@ -665,63 +717,13 @@ def _server_visible_in_scope(key, scope: Optional[str]) -> bool:
 # See issue #62771.
 _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
-# Bounded wait when another process holds the lock.
-_MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 240, 0.5
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Coroutine  # noqa: F401,E402
-from types import SimpleNamespace  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-from contextlib import asynccontextmanager  # noqa: F401,E402
-import concurrent.futures  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import errno  # noqa: F401,E402
-import fnmatch  # noqa: F401,E402
-import json  # noqa: F401,E402
-import math  # noqa: F401,E402
-import random  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'InvalidMcpUrlError': ('tools.mcp_tool_errors', 'InvalidMcpUrlError'),
-    'MCP_TOOL_NAME_PREFIX': ('tools.mcp_tool_schema', 'MCP_TOOL_NAME_PREFIX'),
-    'NonMcpEndpointError': ('tools.mcp_tool_errors', 'NonMcpEndpointError'),
-    'discover_mcp_tools': ('tools.mcp_tool_discovery', 'discover_mcp_tools'),
-    'get_mcp_status': ('tools.mcp_tool_discovery', 'get_mcp_status'),
-    'get_registered_mcp_server_names': ('tools.mcp_tool_discovery', 'get_registered_mcp_server_names'),
-    'has_registered_mcp_tools': ('tools.mcp_tool_discovery', 'has_registered_mcp_tools'),
-    'is_mcp_tool_parallel_safe': ('tools.mcp_tool_discovery', 'is_mcp_tool_parallel_safe'),
-    'matches_name_filter': ('tools.mcp_tool_schema', 'matches_name_filter'),
-    'mcp_prefixed_tool_name': ('tools.mcp_tool_schema', 'mcp_prefixed_tool_name'),
-    'persist_agent_tool_names': ('tools.mcp_tool_agent', 'persist_agent_tool_names'),
-    'probe_mcp_server_tools': ('tools.mcp_tool_discovery', 'probe_mcp_server_tools'),
-    'reconnect_mcp_server': ('tools.mcp_tool_loop', 'reconnect_mcp_server'),
-    'refresh_agent_mcp_tools': ('tools.mcp_tool_agent', 'refresh_agent_mcp_tools'),
-    'register_mcp_servers': ('tools.mcp_tool_discovery', 'register_mcp_servers'),
-    'reprobe_tool_availability': ('tools.mcp_tool_agent', 'reprobe_tool_availability'),
-    'restore_agent_tool_prefix': ('tools.mcp_tool_agent', 'restore_agent_tool_prefix'),
-    'sanitize_mcp_name_component': ('tools.mcp_tool_schema', 'sanitize_mcp_name_component'),
-    'shutdown_mcp_servers': ('tools.mcp_tool_lifecycle', 'shutdown_mcp_servers'),
-    'strip_unicode_tags': ('tools.ansi_strip', 'strip_unicode_tags'),
-    'tool_error': ('tools.registry', 'tool_error'),
-}
-
-_plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+# A discovery pass (bounded gathers, one 120 s budget per wave) may legitimately
+# run past the 120 s a scatter completes in. The waiter must outlast the worst
+# legitimate holder (pass ceiling + slack), or it fails over at 120 s, discovers
+# unguarded beside a still-connecting holder, and spawns duplicate stdio trees.
+# See #117373: the concurrency cap made the old 120 s waiter budget stale.
+_MCP_DISCOVERY_PASS_MAX_SEC = 300          # overall pass ceiling
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.5
+# Waiter budget (max_retries * delay) must outlast the pass ceiling: 320 s > 300 s.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES = int(
+    _MCP_DISCOVERY_PASS_MAX_SEC / _MCP_DISCOVERY_LOCK_RETRY_DELAY_S) + 20

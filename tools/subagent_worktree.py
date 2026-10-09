@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _GIT_TIMEOUT = 30
 
 
-def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
+def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT, env=None):
     """Run git capturing output; never raises on non-zero exit.
 
     :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): this runs unattended against whatever
@@ -31,7 +31,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
     """
     return subprocess.run(["git", *harden_git_argv(args)], cwd=cwd, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+                          stdin=subprocess.DEVNULL, env=env or noninteractive_git_env())
 
 
 def local_backend_active() -> bool:
@@ -72,7 +72,7 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
         logger.debug("subagent worktree: could not update .gitignore: %s", exc)
 
 
-def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
     repo_root = resolve_repo_root(parent_cwd)
     if not repo_root:
@@ -85,7 +85,13 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         _ensure_gitignore_entry(repo_root)
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
-        result = _run_git(["worktree", "add", str(wt_path), "-b", branch, "HEAD"], cwd=repo_root)
+        # The checkout runs the repo-named smudge filter; skip isolation when it cannot be neutralized.
+        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        add_env = noninteractive_repo_git_env(repo_root)
+        if add_env is None:
+            logger.warning("subagent worktree: filter discovery failed; not creating a worktree")
+            return None
+        result = _run_git(["worktree", "add", str(wt_path), "-b", branch, "HEAD"], cwd=repo_root, env=add_env)
     except Exception as exc:
         logger.warning("subagent worktree: creation failed: %s", exc)
         return None
@@ -97,14 +103,14 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
 
 
-def _base_payload(info: Dict[str, str]) -> Dict[str, Any]:
+def _base_payload(info: dict[str, str]) -> dict[str, Any]:
     """Result-entry schema the parent expects (no creation-side internals)."""
     return {"path": info.get("path", ""), "branch": info.get("branch", ""),
             "commits": 0, "dirty": False, "pruned": False}
 
 
-def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
-                                   unmeasured: str = "commits/dirty") -> Dict[str, Any]:
+def mark_worktree_payload_unproven(payload: dict[str, Any], reason: str, *,
+                                   unmeasured: str = "commits/dirty") -> dict[str, Any]:
     """Flag a worktree result payload as un-inspected, in place.
 
     The parent only sees this dict, so the uncertainty must travel in it or "0 commits, clean"
@@ -123,12 +129,12 @@ def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
     return payload
 
 
-def unproven_worktree_payload(info: Dict[str, str], reason: str) -> Dict[str, Any]:
+def unproven_worktree_payload(info: dict[str, str], reason: str) -> dict[str, Any]:
     """Complete un-inspected payload for ``delegate_tool`` when finalize raises."""
     return mark_worktree_payload_unproven(_base_payload(info), reason)
 
 
-def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> Dict[str, Any]:
+def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> dict[str, Any]:
     """Inspect (and possibly prune) a child worktree after the child finishes.
 
     Prunes only when *prune*, commits==0, clean tree AND both git probes succeeded; otherwise
@@ -146,13 +152,18 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     if not base_commit:
         return mark_worktree_payload_unproven(
             payload, "no base_commit recorded — commit count unmeasurable", unmeasured="commits")
+    # The status probe re-hashes files the child touched, which runs repo-named clean filters.
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    probe_env = noninteractive_repo_git_env(path)
+    if probe_env is None:
+        return mark_worktree_payload_unproven(payload, "filter discovery failed", unmeasured="dirty")
     failed, unmeasured = [], []
     probes = (("commits", "rev-list", ["rev-list", "--count", f"{base_commit}..HEAD"],
                lambda s: int(s or 0)),
               ("dirty", "status", ["status", "--porcelain"], bool))
     try:
         for field, label, args, parse in probes:
-            res = _run_git(args, cwd=path)
+            res = _run_git(args, cwd=path, env=probe_env)
             if res.returncode == 0:
                 payload[field] = parse(res.stdout.strip())
             else:
@@ -168,6 +179,8 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
+            from hermes_cli.worktree_ops import release_lsp_clients
+            release_lsp_clients(path)  # the child ran in-process: its language servers are ours
             removed = _run_git(["worktree", "remove", "--force", path], cwd=cwd)
             if removed.returncode == 0:
                 _run_git(["branch", "-D", branch], cwd=cwd)
@@ -180,7 +193,7 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     return payload
 
 
-def build_worktree_context_note(info: Dict[str, str]) -> str:
+def build_worktree_context_note(info: dict[str, str]) -> str:
     """Context block telling the child to work inside its isolated worktree."""
     return (
         "\n\n[WORKTREE ISOLATION] You are working in an isolated git worktree "

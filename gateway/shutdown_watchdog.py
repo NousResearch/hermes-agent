@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ def start_loop_liveness_watchdog(
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
-            os._exit(exit_code)
+            _hard_exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -145,17 +145,39 @@ def start_loop_liveness_watchdog(
     return _LoopLivenessWatchdogHandle(stop_event, thread)
 
 
+def _hard_exit(exit_code: int) -> None:
+    """``os._exit`` skips every cleanup: SIGKILL in-flight foreground commands first, they run in their
+    own process group and would outlive the gateway, reparented to init."""
+    with contextlib.suppress(Exception):
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+    os._exit(exit_code)
+
+
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:
-    """Best-effort lifecycle-ledger stamp so the next boot names the watchdog, not SIGKILL/OOM."""
+    """Best-effort terminal stamp on BOTH lifecycle records before ``os._exit`` skips teardown:
+    the lifecycle ledger (so the next boot names the watchdog, not SIGKILL/OOM) and
+    ``gateway_state.json`` (so ``hermes gateway status`` and every other reader of that file stop
+    seeing ``running`` for a process the watchdog killed — #113372). The runtime-status write goes
+    LAST: it is the record housekeeping refreshes, so nothing may overwrite it after we stamp it."""
     with contextlib.suppress(Exception):
         from gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason=reason)
+    with contextlib.suppress(Exception):  # os._exit skips atexit: stamp the exit-metrics marker now
+        from hermes_cli.observability.shared_metrics_process import stamp_exit
+        stamp_exit("watchdog")
+    with contextlib.suppress(Exception):
+        from gateway.status import write_runtime_status
+        # Only the supervisor-restart code asserts a restart; other codes leave the recorded
+        # operator intent (a restart-drain that wedged is still a requested restart) untouched.
+        restart = {"restart_requested": True} if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE else {}
+        write_runtime_status(
+            gateway_state="degraded", exit_reason=reason, wait_timeout=0.25, **restart)
 
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore profile overrides)."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home(home: Optional[Path]) -> Path:
@@ -185,11 +207,11 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
 
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
-    home: Optional[Path] = None, extra: Optional[Dict[str, Any]] = None) -> Path:
+    home: Optional[Path] = None, extra: Optional[dict[str, Any]] = None) -> Path:
     """Atomically rewrite the loop-liveness heartbeat file; never raises.
     ``start_time`` (process start, epoch seconds) lets supervisors detect PID reuse."""
     path = get_loop_heartbeat_path(home)
-    payload: Dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
+    payload: dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
                                "updated_at": datetime.now(timezone.utc).isoformat(),
                                "monotonic": time.monotonic()}
     if start_time is not None:
@@ -215,7 +237,7 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
+                         snapshot: Optional[dict[str, Any]]) -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,7 +263,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
 
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
-    snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
+    snapshot_fn: Optional[Callable[[], dict[str, Any]]] = None, exit_code: int = 1,
     dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
@@ -283,7 +305,7 @@ def arm_shutdown_watchdog(
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
         _mark_exited_quietly(exit_code, "shutdown_watchdog")
-        os._exit(exit_code)
+        _hard_exit(exit_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:

@@ -5,6 +5,7 @@ import asyncio
 import logging
 import ipaddress
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -175,18 +176,17 @@ def _eager_reconcile_own_session_db() -> None:
     The dashboard is a view layer; the gateway owns the writer. A healthy store
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
-    two-writer corruption vector, #107688 / #100896). The read-only path still
-    bootstraps a missing store and heals a stale/malformed schema through ONE
-    writable open, so the #79531 contract holds. Never raises: an unfixable
-    store still gets the per-poll read-probe heal.
+    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
+    #79531 contract holds) live in the routers' own-store opener,
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import _default_db_path
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        from hermes_cli.web_server_sessions import _open_session_db_at_path
-
-        db = _open_session_db_at_path(Path(_default_db_path()), read_only=True)
-        db.close()
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
@@ -236,8 +236,10 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
+    from hermes_cli.url_utils import format_url_host
+
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"
@@ -292,6 +294,35 @@ def _is_serve_orphaned(
         return False
 
 
+#: Ceiling on the post-orphan graceful unwind before the hard exit takes over.
+#: The desktop is already gone, so nothing escalates for us and this is the
+#: whole budget: comfortably past the 5s exit-flush budget
+#: (``HERMES_TUI_EXIT_FLUSH_BUDGET_S``), still short enough to keep the reap prompt.
+_ORPHAN_EXIT_CEILING_S = 10.0
+
+
+def _request_orphan_shutdown() -> threading.Timer:
+    """Ask this backend to shut itself down, with a hard-exit backstop.
+
+    ``os._exit`` here skipped the flush-on-kill handlers this same process
+    installs before serving (#96095, ``install_exit_flush_signal_handlers``)
+    and every ``atexit`` hook, so an unclean desktop exit dropped the in-memory
+    transcripts that a SIGTERM from a live desktop persists to ``state.db``.
+    Raise SIGTERM instead, and keep the reap guaranteed the way ``cli.py``'s
+    ``_arm_exit_watchdog`` does: a daemon timer that ``os._exit``\\ s if the
+    unwind stalls (it survives ``Py_FinalizeEx``'s non-daemon thread joins).
+    ``raise_signal`` reaches Python's handler on Windows too, where
+    ``os.kill(pid, SIGTERM)`` would terminate the process without running it.
+
+    Returns the armed ceiling timer.
+    """
+    ceiling = threading.Timer(_ORPHAN_EXIT_CEILING_S, os._exit, args=(0,))
+    ceiling.daemon = True
+    ceiling.start()
+    signal.raise_signal(signal.SIGTERM)
+    return ceiling
+
+
 def _start_parent_death_watchdog() -> None:
     """Exit when the exact desktop parent that spawned this backend dies.
 
@@ -335,13 +366,13 @@ def _start_parent_death_watchdog() -> None:
             time.sleep(poll)
         try:
             _log.warning(
-                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); exiting.",
+                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); shutting down.",
                 desktop_pid,
                 start_marker,
             )
         except Exception:
             pass
-        os._exit(0)
+        _request_orphan_shutdown()
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
 

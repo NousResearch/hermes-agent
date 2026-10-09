@@ -60,13 +60,14 @@ def test_thread_require_mention_env_bridge(monkeypatch):
 
 
 def test_thread_require_mention_parses_yaml_and_env(monkeypatch):
+    """Explicit env beats YAML (documented env-over-YAML contract); YAML decides when env is unset."""
     monkeypatch.setenv("SLACK_THREAD_REQUIRE_MENTION", "true")
-
     assert make_adapter()._slack_thread_require_mention() is True
-    assert (
-        make_adapter({"thread_require_mention": "false"})._slack_thread_require_mention()
-        is False
-    )
+    assert make_adapter({"thread_require_mention": "false"})._slack_thread_require_mention() is True
+    monkeypatch.setenv("SLACK_THREAD_REQUIRE_MENTION", "false")
+    assert make_adapter({"thread_require_mention": True})._slack_thread_require_mention() is False
+    monkeypatch.delenv("SLACK_THREAD_REQUIRE_MENTION", raising=False)
+    assert make_adapter({"thread_require_mention": "false"})._slack_thread_require_mention() is False
     assert make_adapter({"thread_require_mention": True})._slack_thread_require_mention() is True
 
 

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def _require_numpy():
     """Lazy numpy import: the adapter imports this module unconditionally, so a missing
     ``voice`` extra must fail at mix time, not at import time."""
-    import numpy as np  # noqa: PLC0415 — intentional lazy import
+    import numpy as np
     return np
 
 # Discord-native frame geometry (matches discord.opus.Encoder): 48 kHz, stereo, s16, 20 ms frames.
@@ -40,7 +40,7 @@ class MixerChild:
     """One 48 kHz / stereo / s16le PCM stream feeding :class:`VoiceMixer`; ``read_frame``
     yields 20 ms frames, optionally looping, with per-child gain and linear fade-in."""
 
-    __slots__ = ("_pcm", "_pos", "loop", "gain", "fade_frames", "_fade_done", "_finished")
+    __slots__ = ("_fade_done", "_finished", "_pcm", "_pos", "fade_frames", "gain", "loop")
 
     def __init__(self, pcm: bytes, *, loop: bool = False, gain: float = 1.0, fade_in_ms: int = 0):
         # Pad to whole frames so looping is seamless and the final partial frame doesn't click.
@@ -87,7 +87,7 @@ class VoiceMixer(discord.AudioSource):
                  duck_release_ms: int = 400):
         self._lock = threading.Lock()
         self._ambient: Optional[MixerChild] = None
-        self._speech: List[MixerChild] = []
+        self._speech: list[MixerChild] = []
         self._ambient_gain, self._duck_gain, self._speech_gain = float(ambient_gain), float(duck_gain), float(speech_gain)
         # When speech ends, ramp the ambient back up over this many frames instead of jumping.
         self._duck_release_frames = max(1, duck_release_ms // FRAME_LENGTH_MS)
@@ -143,7 +143,7 @@ class VoiceMixer(discord.AudioSource):
             acc: "Optional[np.ndarray]" = None
             # Speech children (drop exhausted ones; release duck when last ends)
             if self._speech:
-                still_live: List[MixerChild] = []
+                still_live: list[MixerChild] = []
                 for child in self._speech:
                     frame = child.read_frame()
                     if frame is None:

@@ -491,28 +491,26 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   // Stream the hatch steps (which row is drawing, then compose/save) to the egg
   // screen so a multi-minute hatch shows live progress instead of a black box.
   const offProgress =
-    $gateway
-      .get()
-      ?.on('pet.hatch.progress', event => {
-        const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
+    $gateway.get()?.on('pet.hatch.progress', event => {
+      const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
 
-        if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
-          return
-        }
+      if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
+        return
+      }
 
-        if (p.event === 'row' && p.state) {
-          $petGenStage.set({
-            phase: 'row',
-            state: p.state,
-            done: Number(p.done) || undefined,
-            total: Number(p.total) || undefined
-          })
-        } else if (p.event === 'compose') {
-          $petGenStage.set({ phase: 'compose' })
-        } else if (p.event === 'save') {
-          $petGenStage.set({ phase: 'save' })
-        }
-      }) ?? (() => {})
+      if (p.event === 'row' && p.state) {
+        $petGenStage.set({
+          phase: 'row',
+          state: p.state,
+          done: Number(p.done) || undefined,
+          total: Number(p.total) || undefined
+        })
+      } else if (p.event === 'compose') {
+        $petGenStage.set({ phase: 'compose' })
+      } else if (p.event === 'save') {
+        $petGenStage.set({ phase: 'save' })
+      }
+    }) ?? (() => {})
 
   try {
     const result = await request<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(

@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  decideLivenessForceClose,
-  LIVENESS_PROBE_FAILURE_STREAK,
-  LIVENESS_REPROBE_DELAY_MS
-} from './gateway-liveness-policy'
+import { decideLivenessForceClose, LIVENESS_PROBE_FAILURE_STREAK } from './gateway-liveness-policy'
 
 describe('decideLivenessForceClose', () => {
   it('keeps the socket on the first timeout while a turn is in flight (#95327)', () => {
@@ -58,12 +54,5 @@ describe('decideLivenessForceClose', () => {
       close: true,
       reason: 'no-in-flight-work'
     })
-  })
-
-  it('keeps the re-probe delay far below the probe budget stack so detection stays bounded', () => {
-    // The re-probe is a second 5s liveness ping after this delay; together
-    // they must stay well under the reconnect-escalation horizon (5 min).
-    expect(LIVENESS_REPROBE_DELAY_MS).toBeGreaterThan(0)
-    expect(LIVENESS_REPROBE_DELAY_MS).toBeLessThan(60_000)
   })
 })

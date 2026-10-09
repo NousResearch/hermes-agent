@@ -2,7 +2,7 @@
 message prefix between call N and N+1. If Hermes strips prior-turn thinking, call N+1's messages[:k]
 will NOT equal call N's messages (prefix divergence) even though the conversation only grew.
 Also reports cache hit per call. Cost: a handful of calls."""
-import os, sys, re, time, json, copy, subprocess
+import os, sys, re, tempfile, time, json, copy, subprocess
 # LIVE: makes ~6 real calls to the configured provider (a few cents). Usage:
 #   python cache_prefix_wire.py <repo_root> <A|B> [--hermes-home DIR]   (default HERMES_HOME: the real one, for credentials)
 sys.path.insert(0, sys.argv[1])
@@ -50,9 +50,10 @@ ag = AIAgent(model="anthropic/claude-fable-5.1", provider="nous", base_url=rt.ge
              api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True, enabled_toolsets=["file", "terminal"],
              platform="cli", max_iterations=10, skip_context_files=True, skip_memory=True,
              reasoning_config={"enabled": True, "effort": "medium"})
-task = ("Work in /tmp/f0wire (create it). Before EACH tool call, think carefully for a moment about edge cases. "
+work = os.path.join(tempfile.gettempdir(), "f0wire")
+task = (f"Work in {work} (create it). Before EACH tool call, think carefully for a moment about edge cases. "
         "Steps, one tool call each: 1) write notes.md with a 5-line summary of what a Python context manager is; "
-        "2) read it back; 3) run `wc -l /tmp/f0wire/notes.md`; 4) append one more line to notes.md explaining __exit__ return values; "
+        f"2) read it back; 3) run `wc -l {work}/notes.md`; 4) append one more line to notes.md explaining __exit__ return values; "
         "5) read it back; then reply DONE.")
 ag.run_conversation(task)
 time.sleep(1)

@@ -35,11 +35,12 @@ def test_thinking_toggle_and_effort_never_both_on_moonshot_wire(reasoning_config
 
 
 @pytest.mark.parametrize("reasoning_config", REASONING_MATRIX, ids=str)
-def test_ox_alpha_translation_identical_on_zen_and_free(reasoning_config):
-    zen = get_provider_profile("opencode-zen").build_api_kwargs_extras(
+def test_ox_alpha_translation_on_zen(reasoning_config):
+    extra_body, top_level = get_provider_profile("opencode-zen").build_api_kwargs_extras(
         reasoning_config=reasoning_config, model="x-preview-f-free"
     )
-    free = get_provider_profile("opencode-free").build_api_kwargs_extras(
-        reasoning_config=reasoning_config, model="x-preview-f-free"
-    )
-    assert zen == free
+    # Ox Alpha's wire carries reasoning_effort at top level — never the thinking
+    # toggle — and every emitted effort is inside the wire vocabulary.
+    assert "thinking" not in extra_body
+    effort = top_level.get("reasoning_effort")
+    assert effort in (None, "low", "high", "max"), (reasoning_config, effort)

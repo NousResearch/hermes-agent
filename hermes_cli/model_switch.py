@@ -718,7 +718,10 @@ class AmbiguousAliasError(Exception):
         super().__init__(f"alias {alias!r} matches {len(candidates)} models on {provider}")
 
 
-def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+def _ambiguous_alias_message(
+    err: "AmbiguousAliasError", *, verb: str = "switching automatically",
+    hint: str = "Pick one with /model <exact-model-name>.",
+) -> str:
     """User-facing disambiguation list for an ambiguous alias."""
     shown = err.candidates[:10]
     lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
@@ -726,8 +729,7 @@ def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
     more = f"\n  … and {hidden} more" if hidden > 0 else ""
     return (
         f"'{err.alias}' matches {len(err.candidates)} models on "
-        f"{err.provider} — not switching automatically:\n{lines}{more}\n"
-        f"Pick one with /model <exact-model-name>.")
+        f"{err.provider} — not {verb}:\n{lines}{more}\n{hint}")
 
 
 def _provider_identity(name: str, user_providers: Optional[dict] = None,

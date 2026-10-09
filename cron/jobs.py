@@ -1872,6 +1872,9 @@ def create_job(
 
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
+    if f["model"]:
+        from cron.job_model import resolve_job_model_route
+        f.update(resolve_job_model_route(f["model"], f["provider"], f["base_url"]))
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
@@ -2038,6 +2041,15 @@ def _normalize_job_updates(job: dict[str, Any], updates: dict[str, Any]) -> None
     for key, norm in _UPDATE_FIELD_NORMALIZERS.items():
         if key in updates:
             updates[key] = norm(updates[key])
+    model = _normalize_job_optional_text(updates.get("model")) if "model" in updates else None
+    if model:
+        # Resolve against the route the merged record will run on: an explicit provider/base_url in
+        # this same edit wins over the stored one, and a resolved direct alias only fills blanks.
+        from cron.job_model import resolve_job_model_route
+        merged = {**job, **updates}
+        for key, value in resolve_job_model_route(model, merged.get("provider"), merged.get("base_url")).items():
+            if value != merged.get(key):
+                updates[key] = value
     if "repeat" in updates:
         _rp = updates["repeat"]
         completed = (job.get("repeat") or {}).get("completed", 0)

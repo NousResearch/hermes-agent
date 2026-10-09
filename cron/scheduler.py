@@ -1615,12 +1615,40 @@ class _CronJobConfig:
     model: str
     model_cfg: Any
     cron_default_provider: str
+    alias_provider: str = ""
+    #: Endpoint a ``model_aliases:`` direct alias pins when the job itself has no ``base_url``.
+    alias_base_url: str = ""
+
+
+def _resolve_cron_model_alias(model: str, job: dict, cfg: Optional[dict] = None) -> tuple:
+    """Resolve the run's model through the resolver ``/model`` uses (``cron.job_model``).
+
+    Sessions route ``/model claude-opus`` (and the config default) through the seat's
+    ``model.aliases`` / ``model_aliases:`` table and the provider catalog's short names before
+    the name ever reaches a provider; the cron pin used to bypass that, so an aliased pin died at
+    the provider as a literal 404 (#126655). A per-job ``provider`` pin wins over the alias's own
+    provider label — the same precedence ``resolve_startup_model_route`` gives an explicit
+    provider. Returns ``(model, alias_provider, alias_base_url)``; the latter two are empty when
+    the name is not a direct alias or the job pins its own route.
+    """
+    from cron.job_model import resolve_job_model_route
+    route = resolve_job_model_route(model, job.get("provider"), job.get("base_url"), cfg=cfg)
+    resolved = route["model"] or model
+    if resolved != model:
+        logger.info("Cron model pin %r resolved to %r (provider=%r)", model, resolved,
+                    route["provider"] or "(explicit/config)")
+    if job.get("provider"):
+        return resolved, "", ""
+    return resolved, (route["provider"] or "").strip(), (route["base_url"] or "").strip()
 
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
-    the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
-    ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    the main agent model (config ``model:``, then HERMES_MODEL). Whatever source wins then
+    resolves through the seat alias table (``model.aliases`` / ``model_aliases:``) exactly like
+    a session default, so an aliased pin never reaches a provider as a literal name (#126655).
+    Re-read every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both
+    apply next tick."""
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1662,12 +1690,16 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             "default with `hermes model <name>`."
         )
 
+    # The pin (whatever its source) resolves through the seat alias table exactly like a
+    # session default would; an unaliased name passes through untouched (#126655).
+    model, alias_provider, alias_base_url = _resolve_cron_model_alias(model, job, _cfg)
+
     with contextlib.suppress(Exception):
         from hermes_constants import apply_ipv4_preference
         _net_cfg = _cfg.get("network", {})
         if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
             apply_ipv4_preference(force=True)
-    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
+    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider, alias_provider, alias_base_url)
 
 
 def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
@@ -1763,7 +1795,10 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.auth import AuthError
 
     model = jc.model
-    requested = job.get("provider") or jc.cron_default_provider or None
+    # An alias-resolved pin (``--model claude-opus`` → seat alias) contributes its provider only
+    # when nothing more explicit selected one: per-job pin > cron.model_provider > the alias's
+    # own label > persisted config (#126655).
+    requested = job.get("provider") or jc.cron_default_provider or jc.alias_provider or None
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -1772,8 +1807,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             # api_mode must derive from the model actually run, not the stale persisted default.
             "target_model": model,
         }
-        if job.get("base_url"):
-            runtime_kwargs["explicit_base_url"] = job.get("base_url")
+        if job.get("base_url") or jc.alias_base_url:
+            runtime_kwargs["explicit_base_url"] = job.get("base_url") or jc.alias_base_url
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during

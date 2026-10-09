@@ -585,7 +585,7 @@ def test_restart_is_invoked_without_an_interactive_auth_prompt(linux_systemctl):
 
 
 def test_skip_unit_names_are_filtered_to_the_serve_family():
-    _, _, recover_serve, skip = recovery._parse_payload(
+    _, _, recover_serve, skip, targets = recovery._parse_payload(
         io.StringIO(
             json.dumps(
                 {
@@ -608,6 +608,7 @@ def test_skip_unit_names_are_filtered_to_the_serve_family():
         )
     )
     assert recover_serve is True
+    assert targets == []
     # Qualified entries keep their scope; the legacy bare shape stays bare.
     assert skip == [
         "hermes-serve",
@@ -636,11 +637,12 @@ def test_non_string_skip_entries_are_rejected():
 
 
 def test_absent_serve_block_defaults_to_no_serve_recovery():
-    _, _, recover_serve, skip = recovery._parse_payload(
+    _, _, recover_serve, skip, targets = recovery._parse_payload(
         io.StringIO(json.dumps({"profiles": []}))
     )
     assert recover_serve is False
     assert skip == []
+    assert targets == []
 
 
 # ---------------------------------------------------------------------------

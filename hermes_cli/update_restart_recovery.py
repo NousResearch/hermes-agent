@@ -54,6 +54,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 _RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
@@ -64,6 +65,7 @@ from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
 
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _UNIT_RE = re.compile(r"^hermes-(serve|dashboard)(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
+_CUSTOM_SERVICE_RE = re.compile(r"^[A-Za-z0-9_@][A-Za-z0-9_.@:\\x-]{0,250}\.service$")
 _SERVE_UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*")
 _SCOPE_LABELS = ("user", "system")
 _UNIT_RESTART_TIMEOUT = 60
@@ -325,6 +327,34 @@ def _serve_unit_replaced(
     return False
 
 
+def _pid_cgroup(pid: int) -> str | None:
+    """The unified cgroup path for a live PID; unreadable membership is unknown."""
+    try:
+        for line in Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                return line[3:].strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def _within_cgroup(path: str | None, parent: str) -> bool:
+    return bool(path and (path == parent or path.startswith(parent.rstrip("/") + "/")))
+
+
+def _validated_service_target(raw: Any) -> dict | None:
+    """A plan-captured service identity, constrained to an argv-safe systemd service name."""
+    if not isinstance(raw, Mapping):
+        return None
+    scope, unit, pid, cgroup = raw.get("scope"), raw.get("unit"), raw.get("pid"), raw.get("cgroup")
+    if (scope not in _SCOPE_LABELS or not isinstance(unit, str) or not _CUSTOM_SERVICE_RE.fullmatch(unit)
+            or not isinstance(pid, int) or pid <= 0 or not isinstance(cgroup, str) or not cgroup):
+        return None
+    if cgroup.rsplit("/", 1)[-1] != unit:
+        return None
+    return {"scope": scope, "unit": unit, "pid": pid, "cgroup": cgroup}
+
+
 def _split_skip_entry(entry: Any) -> tuple[str, str]:
     """``(scope_label, base_unit)`` of a skip entry in either the mapping or ``scope/unit`` shape."""
     if isinstance(entry, Mapping):
@@ -350,35 +380,70 @@ def _normalized_skips(skip_units: Iterable[Any]) -> tuple[set[tuple[str, str]], 
 
 
 def restart_serve_units(
-    *, skip_units: Iterable[Any] = (), run: Callable[..., Any] = subprocess.run, sleep: Callable[[float], Any] = time.sleep
+    *, skip_units: Iterable[Any] = (), targets: Iterable[Mapping] = (), include_discovered: bool = True,
+    run: Callable[..., Any] = subprocess.run, sleep: Callable[[float], Any] = time.sleep,
+    pid_cgroup: Callable[[int], str | None] | None = None,
 ) -> dict[str, list[str]]:
-    """Restart every active ``hermes-serve*``/``hermes-dashboard*`` systemd unit from this process.
+    """Restart active conventional serve units and plan-verified custom unit targets.
 
-    Units are enumerated from systemd, never from the update inventory, so a manually launched or
-    Desktop-owned ``hermes serve`` (no unit) structurally cannot be touched here.
+    A custom target is eligible only when its recorded MainPID still owns the same cgroup. A
+    manually launched or Desktop-owned backend cannot name an unrelated service through inherited
+    cgroup membership.
     """
     skipped_qualified, skipped_legacy = _normalized_skips(skip_units)
     # (scope, base unit) -> replaced?  The same unit name in the user and the system
     # scope is two processes; each is proven, reported and accounted for on its own.
     outcomes: dict[tuple[str, str], bool] = {}
     seen: set[tuple[str, str]] = set()
-    for scope_label, scope in _systemctl_scopes():
-        for unit in _listed_serve_units(scope, run=run):
-            base = unit.removesuffix(".service")
-            target = (scope_label, base)
-            if target in seen or target in skipped_qualified or base in skipped_legacy:
-                continue
-            seen.add(target)
-            if not _unit_is_active(scope, unit, run=run):
-                continue  # not running: nothing serves a stale generation from it
-            previous_pid = _unit_main_pid(scope, unit, run=run)
-            # No readable main PID: a replacement can't be observed, so it can't be claimed
-            # (restarting blind and reporting success is the failure mode this module removes).
-            # A failed restart includes the unprivileged system-scope case; no sudo probe —
-            # an unverifiable unit must read as failed so the update stays explicitly incomplete.
-            outcomes[target] = previous_pid > 0 and _succeeded(
-                _run_quiet(run, scope + ["--no-ask-password", "restart", unit], timeout=_UNIT_RESTART_TIMEOUT)
-            ) and _serve_unit_replaced(scope, unit, previous_pid, run=run, sleep=sleep)
+    read_pid_cgroup = pid_cgroup or _pid_cgroup
+    if include_discovered:
+        for scope_label, scope in _systemctl_scopes():
+            for unit in _listed_serve_units(scope, run=run):
+                base = unit.removesuffix(".service")
+                target = (scope_label, base)
+                if target in seen or target in skipped_qualified or base in skipped_legacy:
+                    continue
+                seen.add(target)
+                if not _unit_is_active(scope, unit, run=run):
+                    continue  # not running: nothing serves a stale generation from it
+                previous_pid = _unit_main_pid(scope, unit, run=run)
+                # A replacement is the only proof that the old interpreter was stopped.
+                outcomes[target] = previous_pid > 0 and _succeeded(
+                    _run_quiet(run, scope + ["--no-ask-password", "restart", unit], timeout=_UNIT_RESTART_TIMEOUT)
+                ) and _serve_unit_replaced(scope, unit, previous_pid, run=run, sleep=sleep)
+    scope_commands = dict(_systemctl_scopes())
+    from hermes_cli.update_cmd_fleet import _resolve_manage_cmd
+    manage_cmd_cache: dict = {}
+    for raw in targets or ():
+        target_row = _validated_service_target(raw)
+        if target_row is None:
+            continue
+        scope_label, unit = target_row["scope"], target_row["unit"]
+        base = unit.removesuffix(".service")
+        target = (scope_label, base)
+        if target in seen or target in skipped_qualified or base in skipped_legacy:
+            continue
+        seen.add(target)
+        scope = scope_commands.get(scope_label)
+        unit_path = target_row["cgroup"]
+        pid, previous_pid = target_row["pid"], 0
+        if scope is None or not _within_cgroup(read_pid_cgroup(pid), unit_path):
+            outcomes[target] = False
+            continue
+        previous_pid = _unit_main_pid(scope, unit, run=run)
+        if previous_pid != pid or not _unit_is_active(scope, unit, run=run):
+            outcomes[target] = False
+            continue
+        # Use the same manager-scope and non-interactive authorization resolver as the main
+        # updater. A failed probe means no manage-units command is attempted; never assume root
+        # or prompt through a detached Desktop action.
+        manage_cmd = _resolve_manage_cmd(manage_cmd_cache, scope_label, scope, unit)
+        if manage_cmd is None:
+            outcomes[target] = False
+            continue
+        result = _run_quiet(run, manage_cmd + ["restart", unit], timeout=_UNIT_RESTART_TIMEOUT)
+        outcomes[target] = _succeeded(result) and _serve_unit_replaced(
+            scope, unit, previous_pid, run=run, sleep=sleep)
     # ``<scope>/<unit>`` is the only identity this module reports for a serve unit.
     return {
         "verified": sorted(f"{scope}/{base}" for (scope, base), ok in outcomes.items() if ok),
@@ -386,7 +451,7 @@ def restart_serve_units(
     }
 
 
-def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
+def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str], list[dict]]:
     payload = json.load(stream)
     if not isinstance(payload, dict):
         payload = {}
@@ -410,10 +475,19 @@ def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
     raw_serve = payload.get("serve_units")
     recover_serve = False
     skip_units: list[str] = []
+    targets: list[dict] = []
     if raw_serve is not None:
         if not isinstance(raw_serve, dict):
             raise ValueError("recovery serve_units block is invalid")
         recover_serve = bool(raw_serve.get("recover"))
+        raw_targets = raw_serve.get("targets") or []
+        if not isinstance(raw_targets, list):
+            raise ValueError("recovery serve_units targets list is invalid")
+        for entry in raw_targets:
+            target = _validated_service_target(entry)
+            if target is None:
+                raise ValueError("recovery serve_units target is invalid")
+            targets.append(target)
         raw_skip = raw_serve.get("skip") or []
         if not isinstance(raw_skip, list) or any(not isinstance(entry, (str, dict)) for entry in raw_skip):
             raise ValueError("recovery serve_units skip list is invalid")
@@ -428,13 +502,18 @@ def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
                 if not isinstance(entry.get("scope"), str):
                     entry = {"unit": entry["unit"]}
             scope_label, base = _split_skip_entry(entry)
-            # Only shapes systemd can produce for this family (a skip is a name filter, never a command
-            # argument). An unrecognized scope DROPS the entry rather than raising: a dropped skip costs at
-            # most one extra restart-and-verify; honouring an unreadable one could suppress recovery.
-            if (scope_label and scope_label not in _SCOPE_LABELS) or not _UNIT_RE.fullmatch(f"{base}.service"):
+            unit_name = f"{base}.service"
+            target_skip = any(
+                target["unit"] == unit_name and (not scope_label or target["scope"] == scope_label)
+                for target in targets
+            )
+            # Conventional names are kept narrow. A custom name may be skipped only when it is also
+            # present in the separately MainPID-verified target list.
+            if ((scope_label and scope_label not in _SCOPE_LABELS)
+                    or not (_UNIT_RE.fullmatch(unit_name) or (target_skip and _CUSTOM_SERVICE_RE.fullmatch(unit_name)))):
                 continue
             skip_units.append(f"{scope_label}/{base}" if scope_label else base)
-    return profiles, supervisors, recover_serve, skip_units
+    return profiles, supervisors, recover_serve, skip_units, targets
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -445,10 +524,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("this command is an internal update-recovery entry point")
 
     try:
-        profiles, supervisors, recover_serve, skip_units = _parse_payload(sys.stdin)
+        profiles, supervisors, recover_serve, skip_units, targets = _parse_payload(sys.stdin)
         result = restart_profiles(profiles, supervisors=supervisors)
         result["serve_units"] = (
-            restart_serve_units(skip_units=skip_units) if recover_serve else {"verified": [], "failed": []}
+            restart_serve_units(skip_units=skip_units, targets=targets)
+            if recover_serve or targets else {"verified": [], "failed": []}
         )
     except (ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({

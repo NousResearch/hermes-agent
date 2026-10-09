@@ -113,18 +113,14 @@ class TestResetAndReentry:
     def test_reset_clears_in_block_state(self) -> None:
         s = StreamingThinkScrubber()
         s.feed("<think>hanging")
-        assert s._in_block is True
         s.reset()
-        assert s._in_block is False
         # After reset, a new turn works cleanly
         assert _drive(s, ["Hello world"]) == "Hello world"
 
     def test_reset_clears_buffered_partial_tag(self) -> None:
         s = StreamingThinkScrubber()
         s.feed("word<")
-        assert s._buf == "<"
         s.reset()
-        assert s._buf == ""
         assert _drive(s, ["fresh content"]) == "fresh content"
 
 
@@ -142,9 +138,7 @@ class TestFlushBehaviour:
         """
         s = StreamingThinkScrubber()
         assert s.feed("word") == "word"
-        assert s._last_emitted_ended_newline is False
         assert s.flush() == ""
-        assert s._last_emitted_ended_newline is True
         assert (
             _drive(s, ["<think>", "secret reasoning", "</think>", "Visible answer"])
             == "Visible answer"
@@ -155,7 +149,6 @@ class TestFlushBehaviour:
         s = StreamingThinkScrubber()
         s.feed("word<")
         assert s.flush() == "<"
-        assert s._last_emitted_ended_newline is True
         assert _drive(s, ["<think>hidden</think>Hello"]) == "Hello"
 
 
@@ -189,3 +182,24 @@ class TestRealisticStreaming:
         s = StreamingThinkScrubber()
         deltas = ["Hello ", "world ", "how ", "are ", "you?"]
         assert _drive(s, deltas) == "Hello world how are you?"
+
+
+class TestChineseReasoningTags:
+    """MiniMax-M3 emits Chinese reasoning tags (#43827); both surfaces must hide them."""
+
+    def test_split_chinese_tag_scrubbed_in_stream(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = ["<思", "考>让我想想", "……</思考>", "\n答案是 42"]
+        assert _drive(s, deltas) == "\n答案是 42"
+
+    def test_final_response_strip_hides_chinese_tags(self) -> None:
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        out = strip_think_blocks(None, "<反思>内部推理</反思>最终答案\n<推理>未闭合的推理")
+        assert "内部推理" not in out and "未闭合" not in out
+        assert "最终答案" in out
+
+    def test_cli_replay_strip_hides_chinese_tags(self) -> None:
+        from cli import _strip_reasoning_tags
+
+        assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"

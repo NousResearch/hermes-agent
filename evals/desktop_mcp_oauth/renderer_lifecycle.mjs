@@ -59,7 +59,7 @@ wss.on('connection', ws =>
 )
 const entry = `import React from 'react'; import {createRoot} from 'react-dom/client';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
-import {McpTab} from '${repo}/apps/desktop/src/app/skills/mcp-tab.tsx';
+import {McpTab} from '${repo}/apps/desktop/src/app/capabilities/mcp/mcp-tab.tsx';
 import {setApiRequestProfile,setApiRequestConnection} from '${repo}/apps/desktop/src/api/client.ts';
 setApiRequestProfile('profile-b');setApiRequestConnection('fixture-remote');
 const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});function Probe(){const [profile,setProfile]=React.useState('profile-b');const [shown,setShown]=React.useState(true);window.cancelFlow=()=>setProfile('profile-c');window.unmountFlow=()=>setShown(false);return <QueryClientProvider client={queryClient}>{shown && <McpTab gateway={null} profile={{connectionId:'fixture-remote',profile}} />}</QueryClientProvider>};createRoot(document.getElementById('root')).render(<Probe/>);`
@@ -90,6 +90,8 @@ const server = http.createServer(async (req, res) => {
 })
 await new Promise(r => server.listen(0, '127.0.0.1', r))
 const browser = await chromium.launch({
+  channel: 'chromium',
+  executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH,
   headless: true,
   args: ['--no-sandbox'],
   ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {})

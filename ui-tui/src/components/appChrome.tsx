@@ -1,4 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
+import type { Usage } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -8,15 +10,15 @@ import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
-import { FACES } from '../content/faces.js'
+import { faces } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { messages, t as tr } from '../i18n/runtime.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
-import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { Msg } from '../types.js'
 
 import { scrollbarColors } from './overlayPrimitives.js'
 
@@ -30,7 +32,7 @@ export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
-const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+const EMOJI_FRAMES = ['☤ ', '🌀', '🤔', '✨', '🍵', '🔮']
 const ASCII_FRAMES = ['|', '/', '-', '\\']
 
 // Faster tick for spinner-style indicators — they read as motion only
@@ -49,12 +51,14 @@ interface IndicatorRender {
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    const frames = faces()
+
+    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
 
   if (style === 'emoji') {
     return {
-      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
+      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '☤ ',
       intervalMs: SPINNER_TICK_MS * 6,
       showVerb: true
     }
@@ -78,14 +82,26 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
-// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
-// module load instead of rescanning on every status render.
-const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+// `EMOJI_FRAMES` is static, so measure its widest glyph once at module load
+// instead of rescanning on every status render. `faces()` follows the active
+// catalog, so its width is memoised per catalog table instead.
 const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
+let kaomojiWidthCache: { table: unknown; width: number } | null = null
+
+const kaomojiFrameWidth = (): number => {
+  const table = messages().content.faces
+
+  if (kaomojiWidthCache?.table !== table) {
+    kaomojiWidthCache = { table, width: Object.values(table).reduce((max, f) => Math.max(max, stringWidth(f)), 1) }
+  }
+
+  return kaomojiWidthCache.width
+}
 
 const indicatorFrameWidth = (style: IndicatorStyle): number => {
   if (style === 'kaomoji') {
-    return KAOMOJI_FRAME_WIDTH
+    return kaomojiFrameWidth()
   }
 
   if (style === 'emoji') {
@@ -214,7 +230,27 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
 }
 
 function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+  return tr('status.sessionCount', count)
+}
+
+// State values the app layer compares against ('ready', 'running…') are shown
+// through the catalog; anything else (a live verb, a slash reply) passes through.
+export function displayStatus(status: string): string {
+  const s = messages().status
+
+  if (status === 'ready') {
+    return s.ready
+  }
+
+  if (status === 'running…') {
+    return s.running
+  }
+
+  if (status === 'summoning hermes…') {
+    return s.summoning
+  }
+
+  return status
 }
 
 // Colour the battery read-out by its (Python-computed) category. Inverted vs
@@ -365,7 +401,7 @@ function SpawnHud({ t }: { t: Theme }) {
   const pieces: string[] = []
 
   if (delegation.paused) {
-    pieces.push('⏸ paused')
+    pieces.push(tr('status.paused'))
   }
 
   if (totals.descendantCount > 0) {
@@ -437,12 +473,23 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   return `✓ ${fmtDuration(now - endedAt)}`
 }
 
-const effortLabel = (effort?: string) => {
+// `wire` is the level the route actually sends (session.info.reasoning_effort_wire):
+// a clamped Hermes step such as `ultra` reads `ultra→max`, like the CLI's
+// "ultra (sends max on this route)", never as a distinct wire level (#61634).
+const effortLabel = (effort?: string, wire?: string) => {
   const value = String(effort ?? '')
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  const sent = String(wire ?? '')
+    .trim()
+    .toLowerCase()
+
+  if (!value || value === 'medium' || value === 'normal' || value === 'default') {
+    return ''
+  }
+
+  return sent && sent !== value ? `${value}→${sent}` : value
 }
 
 const shortModelLabel = (model: string) =>
@@ -455,8 +502,8 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
+  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -496,6 +543,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  modelReasoningEffortWire,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -509,7 +557,9 @@ export function StatusRule({
   onSessionCountClick,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
+  // Not a hook: tests call StatusRule as a plain function, and the rule re-renders on every tick anyway.
+  const T = messages()
+  const pct = usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -524,15 +574,15 @@ export function StatusRule({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${contextMark}${fmtK(usage.context_used ?? 0)} tok`
-          : `${contextMark}${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-        : usage.total > 0
-          ? `${fmtK(usage.total)} tok`
+          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+        : (usage.total ?? 0) > 0
+          ? `${compactNumber(usage.total)} tok`
           : ''
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -614,7 +664,10 @@ export function StatusRule({
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions =
-    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+    segs.compressions &&
+    ok('compressions') &&
+    compressions > 0 &&
+    fits(SEP + stringWidth(T.status.compressions(compressions)))
 
   // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
   // CLI bar (PR #98250). The server omits the keys when no data exists (zero
@@ -628,7 +681,7 @@ export function StatusRule({
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
   const showSubagents =
@@ -641,7 +694,7 @@ export function StatusRule({
   // Width-budgeted like every tail segment, so it drops first on a tight
   // terminal where ⛓ already carries the signal.
   const resumeHintText =
-    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+    subagentCount === 1 ? T.status.resumesWhenSubagentFinishes : T.status.resumesWhenSubagentsFinish(subagentCount)
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
@@ -686,11 +739,11 @@ export function StatusRule({
               color={statusColor}
               startedAt={turnStartedAt}
               style={indicatorStyle}
-              verbOverride={compacting ? 'compacting' : undefined}
+              verbOverride={compacting ? T.status.compacting : undefined}
             />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {status}
+              {displayStatus(status)}
             </Text>
           )}
         </Box>
@@ -708,7 +761,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
-              {' (dev credits)'}
+              {T.status.devCredits}
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
@@ -731,7 +784,8 @@ export function StatusRule({
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
+            <Text color={barColor}>[{bar}]</Text>{' '}
+            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (
@@ -750,7 +804,7 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              cmp {compressions}
+              {T.status.compressions(compressions)}
             </Text>
           </Text>
         ) : null}
@@ -797,7 +851,7 @@ export function StatusRule({
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {bgCount} bg
+            {T.status.bgTasks(bgCount)}
           </Text>
         ) : null}
         {showSubagents ? (
@@ -946,6 +1000,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  modelReasoningEffortWire?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

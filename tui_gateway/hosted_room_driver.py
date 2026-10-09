@@ -43,7 +43,7 @@ class InternalSessionRPC(Protocol):
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
     ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
@@ -593,7 +593,8 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
+                    member_id=_member_id(task))
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
                 receipt = self._wait_for_terminal(
@@ -968,16 +969,3 @@ def _info_is_active_for(
     info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False) -> bool:
     accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
     return _info_active(info) and info.get("task_id") in accepted
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-
-@contextlib.contextmanager
-def null_turn_lock(_profile: str) -> Any:
-    """Provide an explicit no-op lock for narrow embedding tests."""
-    yield
-# ---- END PLUGIN-COMPAT ----

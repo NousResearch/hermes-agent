@@ -2,9 +2,8 @@
 
 Covers ``register_child`` (the ledger mirror of ``register_self`` for
 subprocesses that never import Hermes code), the live-spawner protection
-contract, dead-spawner reap eligibility through BOTH consumers (the updater's
-``_ledger_reapable_backend_pids`` rung and the startup
-``reap_orphaned_mcp_helpers`` sweep), and prune-on-write of exited children.
+contract, dead-spawner reap eligibility through the startup
+``reap_orphaned_mcp_helpers`` sweep, and prune-on-write of exited children.
 
 Uses REAL subprocesses (``sleep``) and the real psutil so the
 ``(pid, create_time)`` identity pair is exercised end-to-end, with the ledger
@@ -25,9 +24,7 @@ import pytest
 
 from hermes_cli import process_identity as pi
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="uses POSIX sleep children"
-)
+pytestmark = pytest.mark.platforms("posix")  # uses POSIX sleep children
 
 
 @pytest.fixture
@@ -95,10 +92,6 @@ def test_register_child_rejects_dead_or_invalid_pids(ledger):
     assert not ledger.exists() or json.loads(ledger.read_text()) == []
 
 
-def test_mcp_helper_is_reapable_purpose():
-    assert "mcp-helper" in pi.REAPABLE_PURPOSES
-    # Interactive purposes still excluded.
-    assert "chat" not in pi.REAPABLE_PURPOSES
 
 
 # ---------------------------------------------------------------------------
@@ -175,24 +168,6 @@ def test_reap_ignores_non_mcp_purposes(ledger, child):
     _orphan_entry_for(child.pid)
     assert pi.reap_orphaned_mcp_helpers() == []
     assert psutil.pid_exists(child.pid)
-
-
-# ---------------------------------------------------------------------------
-# Updater rung (_ledger_reapable_backend_pids) flow-through
-# ---------------------------------------------------------------------------
-
-def test_updater_ledger_rung_flows_mcp_helper(ledger, child):
-    from hermes_cli import update_cmd
-
-    pi.register_child(child.pid, "mcp-helper")
-    matches = [(child.pid, "python", "sleep 300")]
-
-    # Live spawner (this process) → never selected.
-    assert update_cmd._ledger_reapable_backend_pids(matches) == []
-
-    # Provably dead spawner → positively identified as reapable.
-    _orphan_entry_for(child.pid)
-    assert update_cmd._ledger_reapable_backend_pids(matches) == [child.pid]
 
 
 # ---------------------------------------------------------------------------

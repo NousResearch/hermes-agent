@@ -461,7 +461,7 @@ def test_run_py_keeps_self_anchor_in_thread_mode():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_session_stamp_opt_out_keeps_rolling_dm_session():
-    adapter, stub = _wire("D1", "dm")
+    adapter, _stub = _wire("D1", "dm")
     adapter.config.extra = {
         "slack": {
             "reply_in_thread": True,
@@ -477,7 +477,7 @@ async def test_session_stamp_opt_out_keeps_rolling_dm_session():
 
 @pytest.mark.asyncio
 async def test_session_stamp_default_remains_per_message():
-    adapter, stub = _wire("D1", "dm")
+    adapter, _stub = _wire("D1", "dm")
     adapter.config.extra = {"slack": {"reply_in_thread": True}}
     event = _inbound_event("D1", message_id="1700.0002", thread_id=None)
     adapter._stamp_slack_session_thread(event)

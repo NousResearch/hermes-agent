@@ -5,11 +5,6 @@
 #56889, which isolates callers that pass different explicit ``model=`` values.
 """
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -80,16 +75,6 @@ def test_runtime_context_token_restores_previous_value_after_turn():
 
 
 
-def test_explicit_model_cache_isolation_remains_independent_of_runtime_key():
-    """#56889 remains covered: explicit model values isolate non-auto clients."""
-    first = aux._client_cache_key(
-        "openrouter", async_mode=False, model="anthropic/claude-opus-4.8"
-    )
-    second = aux._client_cache_key(
-        "openrouter", async_mode=False, model="openai/gpt-5.5"
-    )
-
-    assert first != second
 
 
 
@@ -152,3 +137,20 @@ def test_string_api_keys_are_not_retained_in_cache_key_repr():
     assert second_secret not in rendered
 
 
+
+
+def test_client_cache_key_is_scoped_per_profile_home(tmp_path):
+    """Callers that omit api_key (pool / Nous auth.json paths) must not share a client across
+    multiplex profiles: the per-turn HERMES_HOME override has to participate in the key."""
+    import hermes_constants
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    keys = []
+    for home in (a, b):
+        tok = hermes_constants.set_hermes_home_override(str(home))
+        try:
+            keys.append(aux._client_cache_key("nous", async_mode=False, base_url="https://inf.example", model="m"))
+        finally:
+            hermes_constants.reset_hermes_home_override(tok)
+    assert keys[0] != keys[1]

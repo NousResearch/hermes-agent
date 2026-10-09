@@ -1033,7 +1033,11 @@ class GatewayStartupMixin:
         allow_all_vars = ["GATEWAY_ALLOW_ALL_USERS", *self._BUILTIN_ALLOW_ALL_VARS]
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
-            entries = platform_registry.plugin_entries()
+            # Enabled plugin platforms were materialized by the config passes; an unconfigured
+            # adapter's allowlist var cannot gate anything, so never import one just to read it.
+            entries = [e for e in (*platform_registry.loaded_entries(), *filter(None, (
+                platform_registry.get(p.value) for p, cfg in self.config.platforms.items() if cfg.enabled)))
+                if e.source == "plugin"]
             allowed_vars += [e.allowed_users_env for e in entries if e.allowed_users_env]
             allow_all_vars += [e.allow_all_env for e in entries if e.allow_all_env]
         # An API-server/webhook/local-only gateway has no messaging sender to gate, so the

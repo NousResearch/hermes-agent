@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 from registration_lifecycle import replacement_coordinator
@@ -16,6 +17,12 @@ if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+
+def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
+    """(plugin name, resolved ``__file__``) identity shared by the general and memory loaders."""
+    source = getattr(module, "__file__", None)
+    return (name, str(Path(source).resolve())) if source else None
 
 
 @dataclass
@@ -86,7 +93,7 @@ class PluginLedgerMixin:
         )
         return self._track_registration(manifest, kind, name, lease.dispose)
 
-    def _active_persistent(self) -> List[PluginRegistration]:
+    def _active_persistent(self) -> list[PluginRegistration]:
         """Live persistent registrations across every plugin in the ownership ledger."""
         return [r for owned in self._ownership_ledger.values() for r in owned if r.persistent and r.active]
 
@@ -120,7 +127,7 @@ class PluginLedgerMixin:
         del values[index]
         return True
 
-    def _remove_callback(self, mapping: Dict[str, List[Callable]], key: str, callback: Callable) -> None:
+    def _remove_callback(self, mapping: dict[str, list[Callable]], key: str, callback: Callable) -> None:
         callbacks = mapping.get(key)
         if callbacks is None:
             return
@@ -128,7 +135,7 @@ class PluginLedgerMixin:
         if not callbacks:
             mapping.pop(key, None)
 
-    def _restore_mapping(self, mapping: Dict[str, Any], key: str, current: Any, previous: Optional[Any]) -> bool:
+    def _restore_mapping(self, mapping: dict[str, Any], key: str, current: Any, previous: Optional[Any]) -> bool:
         """Restore a manager-local mapping only when *current* is still present."""
         if mapping.get(key) is not current:
             return False
@@ -145,7 +152,7 @@ class PluginLedgerMixin:
         setattr(self, attribute, previous)
         return True
 
-    def _remove_name_if_unowned(self, kind: str, names: Set[str], name: str) -> None:
+    def _remove_name_if_unowned(self, kind: str, names: set[str], name: str) -> None:
         """Drop *name* from the manager-local name set once no active ledger entry owns it."""
         if not any(r.active and r.kind == kind and r.key == name for r in self._registration_order):
             names.discard(name)
@@ -156,19 +163,44 @@ class PluginLedgerMixin:
     def _remove_platform_name_if_unowned(self, name: str) -> None:
         self._remove_name_if_unowned("platform", self._plugin_platform_names, name)
 
-    def _forget_registrations(self, registrations: List[PluginRegistration]) -> None:
+    def _forget_registrations(self, registrations: list[PluginRegistration]) -> None:
         if not registrations:
             return
         ids = {id(r) for r in registrations}
         self._registration_order = [r for r in self._registration_order if id(r) not in ids]
-        for plugin_key, owned in list(self._ownership_ledger.items()):
-            remaining = [r for r in owned if id(r) not in ids]
-            if remaining:
-                self._ownership_ledger[plugin_key] = remaining
-            else:
-                self._ownership_ledger.pop(plugin_key, None)
+        for ledger in (self._ownership_ledger, self._memory_hook_registrations):
+            for plugin_key, owned in list(ledger.items()):
+                remaining = [r for r in owned if id(r) not in ids]
+                if remaining:
+                    ledger[plugin_key] = remaining
+                else:
+                    ledger.pop(plugin_key, None)
 
-    def _dispose_registrations(self, registrations: List[PluginRegistration]) -> None:
+    # -- dual-kind hook ownership -------------------------------------------------------------
+    # A plugin dir loaded by general discovery AND as the configured memory provider calls
+    # ``register()`` twice against the same manager. General discovery owns the hook group; the
+    # memory loader's hooks are a fallback group keyed by (name, resolved source path) that is
+    # dropped once the same source loads through discovery. Groups, not callbacks, are replaced:
+    # one register() may deliberately create several closures for one hook.
+
+    def _drop_fallback_hooks(self, hook_source: Optional[tuple]) -> None:
+        if hook_source is not None:
+            for handle in self._memory_hook_registrations.pop(hook_source, []):
+                handle.dispose()
+
+    def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
+                                callback: Callable) -> PluginRegistration:
+        """Register ``callback`` unless the same source is already live through general discovery, in
+        which case return an inert handle so the provider keeps its disposable-handle contract."""
+        if hook_source is None:
+            return context.register_hook(hook_name, callback)
+        owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
+                    for loaded in self._plugins.values())
+        handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
+        self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
+        return handle
+
+    def _dispose_registrations(self, registrations: list[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""
         from hermes_cli.plugins import _PLUGINS_DEBUG
         for registration in reversed(registrations):
@@ -220,13 +252,13 @@ class PluginLedgerMixin:
                 self._plugins.pop(key, None)
         return found
 
-    def _unload_target_keys(self, requested: str) -> Set[str]:
+    def _unload_target_keys(self, requested: str) -> set[str]:
         """Resolve a targeted-unload request to canonical plugin keys (exact key, else by name)."""
         if requested in self._ownership_ledger or requested in self._plugins:
             return {requested}
         return {key for key, loaded in self._plugins.items() if loaded.manifest.name == requested}
 
-    def _reset_after_unload_all(self, registrations: List[PluginRegistration]) -> None:
+    def _reset_after_unload_all(self, registrations: list[PluginRegistration]) -> None:
         """Sweep pre-ledger global state and clear every manager-local container."""
         # Handles are authoritative for global registries; names present in the manager-local sets without a
         # ledger entry (pre-ledger or manually set state) are swept here so they do not survive a force reload
@@ -256,8 +288,8 @@ class PluginLedgerMixin:
         for container in (
             self._ownership_ledger, self._plugins, self._hooks, self._middleware,
             self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
-            self._plugin_commands, self._plugin_skills, self._portable_mcp_servers,
-            self._aux_tasks, self._system_prompt_sections, self._approval_transports,
+            self._plugin_commands, self._plugin_skills, self._automation_blueprints, self._portable_mcp_servers,
+            self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections, self._approval_transports,
             self._slack_action_handlers, self._predeclared_modules, self._predeclared_tools,
             self._platform_handler_factories,
         ):
@@ -265,5 +297,7 @@ class PluginLedgerMixin:
         self._context_engine = None
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
+            self._hook_abandoned.clear()
             self._hook_timeout_suppressed_until.clear()
+        self._hook_failures_reported.clear()
         self._discovered = False

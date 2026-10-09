@@ -47,7 +47,7 @@ def _looks_like_error_output(content: Any) -> bool:
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return first.startswith(("error:", "failed:", "traceback ", "exception:"))
 
-def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_chars: int = 8000) -> List[Dict[str, Any]]:
+def _extract_output_tail(result: dict[str, Any], *, max_entries: int = 12, max_chars: int = 8000) -> list[dict[str, Any]]:
     """Last N tool-call results ``{tool, preview, is_error}`` from a child's conversation (the overlay's "Output"
     section), chronological order. Content blocks are flattened first so a block-wrapped "Error: ..." is still
     flagged; line structure is preserved (capped at ``max_chars``) so the overlay shows real output rather than a
@@ -60,7 +60,7 @@ def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_c
         for msg in messages if isinstance(msg, dict) and msg.get("role") == "assistant"
         for tc in msg.get("tool_calls") or [] if tc.get("id")
     }
-    tail: List[Dict[str, Any]] = []
+    tail: list[dict[str, Any]] = []
     for msg in reversed(messages):  # newest first, then restore order below
         if len(tail) >= max_entries:
             break
@@ -103,9 +103,9 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
             return None
     return bounded
 
-def _sanitize_targets(mapping: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_targets(mapping: dict[str, Any]) -> dict[str, Any]:
     """Keep only known side-effect target keys, each sanitized (URL secrets dropped)."""
-    targets: Dict[str, Any] = {}
+    targets: dict[str, Any] = {}
     for raw_key, value in mapping.items():
         key = str(raw_key).lower()
         if key in _TOOL_INPUT_TARGET_KEYS:
@@ -114,14 +114,14 @@ def _sanitize_targets(mapping: Dict[str, Any]) -> Dict[str, Any]:
                 targets[key] = cleaned
     return targets
 
-def _input_summary(keys: Any, targets: Any) -> Dict[str, Any]:
+def _input_summary(keys: Any, targets: Any) -> dict[str, Any]:
     """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes)."""
     return {
         "argument_keys": [str(key)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
         "targets": _sanitize_targets(targets) if isinstance(targets, dict) else {},
     }
 
-def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
+def _summarize_tool_arguments(arguments: Any) -> dict[str, Any]:
     """Summarize argument names and side-effect targets without raw payloads."""
     try:
         parsed = json.loads(arguments) if isinstance(arguments, str) else None
@@ -131,7 +131,7 @@ def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
         return _input_summary([], {})
     return _input_summary(sorted(str(key)[:128] for key in parsed), parsed)
 
-def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
+def _subagent_stop_tool_call_history(tool_trace: Any) -> list[dict[str, Any]]:
     """Detached, metadata-only tool history for lifecycle hooks (input summaries re-sanitized)."""
     if not isinstance(tool_trace, list):
         return []
@@ -140,7 +140,7 @@ def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
         value = item.get(key, 0)
         return max(0, int(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
-    history: List[Dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
     for item in tool_trace:
         if not isinstance(item, dict):
             continue
@@ -222,18 +222,38 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     footer_lines.append("─" * 37)
     return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines), spill_path
 
+def _parent_prompt_size_tokens(parent_agent) -> Optional[int]:
+    """The parent's current prompt size: the aggregator's own last ``prompt_tokens`` (pre-MoA-fold), else
+    the last provider usage. ``None`` when no request has completed yet: the caller then applies the
+    static ceiling only. Treating "no usage yet" as zero handed a 190K/200K parent a 384K-char budget."""
+    size = getattr(parent_agent, "_last_prompt_size_tokens", None)
+    if isinstance(size, (int, float)) and size > 0:
+        return int(size)
+    last_usage = getattr(parent_agent, "_last_turn_usage", None) or {}
+    used = last_usage.get("prompt_tokens") if isinstance(last_usage, dict) else None
+    if isinstance(used, (int, float)) and used > 0:
+        return int(used)
+    return None
+
+
 def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
-    """Per-summary char budget from the parent's *remaining* context headroom (context length − prompt tokens − the
-    compressor's output reserve), a fraction of it split across the batch at ~4 chars/token. None when the parent's
-    context state is unknown — caller then uses the static ceiling only."""
+    """Per-summary char budget from the parent's *remaining* context headroom (context length − the parent's
+    current prompt size − the compressor's output reserve), a fraction of it split across the batch at ~4
+    chars/token. None when the parent's context state is unknown — caller then uses the static ceiling only.
+
+    "Current prompt size" is the last API call's ``prompt_tokens`` (``_last_turn_usage``), never
+    ``session_prompt_tokens``: that field is the running SUM over every call in the session, so after a
+    few hundred calls it exceeds any context window and every summary collapsed to the 2,000-char floor
+    (measured: all 1,393 child summaries in one run, each spilled to disk, the orchestrator working from
+    the stub)."""
     try:
         compressor = getattr(parent_agent, "context_compressor", None)
         context_length = getattr(compressor, "context_length", None)
         if not isinstance(context_length, int) or context_length <= 0:
             return None
-        used_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
-        if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
-            used_tokens = 0
+        used_tokens = _parent_prompt_size_tokens(parent_agent)
+        if used_tokens is None:
+            return None  # no usage yet and nothing to estimate from: static ceiling only, never "zero context"
         headroom_tokens = context_length - int(used_tokens) - int(getattr(compressor, "max_tokens", 0) or 0)
         if headroom_tokens <= 0:
             return _MIN_SUMMARY_CHARS  # parent already over budget: floor only
@@ -243,7 +263,7 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         logger.debug("Summary budget computation failed", exc_info=True)
         return None
 
-def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+def _apply_summary_budget(results: list[dict[str, Any]], parent_agent) -> None:
     """Trim subagent summaries in-place so a batch can't overflow the parent's context window (full text spilled to
     disk). Per-summary cap = MIN(dynamic headroom budget, static ``delegation.max_summary_chars`` ceiling; 0 =
     disabled); over-cap summaries become head+tail plus a pointer to the spill file."""
@@ -302,7 +322,7 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
         if lock is None:
             lock = threading.RLock()
             try:
-                setattr(parent_agent, "_subagent_finalization_lock", lock)
+                parent_agent._subagent_finalization_lock = lock
             except Exception:
                 return _PARENT_FINALIZATION_FALLBACK_LOCK
     return lock
@@ -370,7 +390,7 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
         logger.debug("Subagent cost rollup failed", exc_info=True)
 
 def _finalize_child_results(
-    results: List[Dict[str, Any]], task_list: List[Dict[str, Any]], children: List[tuple[int, Dict[str, Any], Any]],
+    results: list[dict[str, Any]], task_list: list[dict[str, Any]], children: list[tuple[int, dict[str, Any], Any]],
     parent_agent,
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
@@ -380,7 +400,7 @@ def _finalize_child_results(
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 
-def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
+def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""
     from tools.delegate_tool import _run_single_child
     result = _run_single_child(task_index, goal, child, parent_agent)

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio, save_b64_image,
     save_url_image, success_response)
-from plugins.image_gen._common import error_factory, load_image_gen_config, post_json
+from plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +62,11 @@ _load_image_gen_config = load_image_gen_config
 _IMAGE_API_ENV_PREFIX = "OPENROUTER_IMAGE_API_"
 # Separate connect budget: no TLS in 20s means the endpoint is down — don't wait out the read budget.
 _IMAGE_API_CONNECT_TIMEOUT = 20.0
-# ``/images/models`` probes keyed by base URL: ``(fetched_at, ids)``; empty sets cached too.
+# ``/images/models`` probes keyed by (base URL, key fingerprint): ``(fetched_at, ids)``; empty sets
+# are cached too, so the key must include the credential or one profile's 401 would pin a sibling
+# profile (same base URL, different key) to chat-completions for the whole TTL.
 _CATALOG_TTL_SECONDS = 900.0
-_CATALOG_CACHE: Dict[str, Tuple[float, frozenset]] = {}
+_CATALOG_CACHE: dict[tuple[str, Optional[str]], tuple[float, frozenset]] = {}
 
 _GEMINI_RATIOS = (
     "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9",
@@ -75,7 +77,7 @@ _OPENAI_QUALITY = ("auto", "low", "medium", "high")
 _NO_KNOBS = {"quality": (), "background": (), "output_format": (), "compression": False, "seed": False}
 
 
-def _image_api_model(display: str, strengths: str, **spec: Any) -> Dict[str, Any]:
+def _image_api_model(display: str, strengths: str, **spec: Any) -> dict[str, Any]:
     """Curated Image API model entry; unspecified knobs default to "not supported"."""
     return {"display": display, "strengths": strengths, **_NO_KNOBS, "resolutions": (), **spec}
 
@@ -83,7 +85,7 @@ def _image_api_model(display: str, strengths: str, **spec: Any) -> Dict[str, Any
 # Curated Image API models + the parameters each declares in ``GET /images/models``. An
 # id missing here still works (no per-model knob filtering; one cached catalog probe).
 # Keys mirror the payload field they gate; an empty tuple means "no such knob".
-_IMAGE_API_MODELS: Dict[str, Dict[str, Any]] = {
+_IMAGE_API_MODELS: dict[str, dict[str, Any]] = {
     "google/gemini-3.1-flash-lite-image": _image_api_model(
         "Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)",
         "Cheap and fast; 14 exact aspect ratios; 14 reference images",
@@ -139,7 +141,7 @@ _ENDPOINT_ASPECT_RATIOS = frozenset({
 })
 
 # Semantic ratio → exact ratios, best first (``landscape`` degrades to 3:2 where 16:9 is missing).
-_ASPECT_PREFERENCES: Dict[str, Tuple[str, ...]] = {
+_ASPECT_PREFERENCES: dict[str, tuple[str, ...]] = {
     "landscape": ("16:9", "3:2", "4:3", "5:4", "21:9", "2:1", "19.5:9", "20:9", "4:1", "8:1"),
     "portrait": ("9:16", "2:3", "3:4", "4:5", "9:21", "1:2", "9:19.5", "9:20", "1:4", "1:8"),
     "square": ("1:1",),
@@ -195,19 +197,19 @@ def _to_image_url_part(ref: str) -> Optional[str]:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-def _dict_at(node: Any, key: str) -> Dict[str, Any]:
+def _dict_at(node: Any, key: str) -> dict[str, Any]:
     value = node.get(key) if isinstance(node, dict) else None
     return value if isinstance(value, dict) else {}
 
 
-def _list_at(node: Any, key: str) -> List[Any]:
+def _list_at(node: Any, key: str) -> list[Any]:
     value = node.get(key) if isinstance(node, dict) else None
     return value if isinstance(value, list) else []
 
 
-def _extract_images(payload: Dict[str, Any]) -> List[str]:
+def _extract_images(payload: dict[str, Any]) -> list[str]:
     """Generated image URLs from ``choices[].message.images[].image_url.url``."""
-    out: List[str] = []
+    out: list[str] = []
     for choice in _list_at(payload, "choices"):
         for image in _list_at(_dict_at(choice, "message"), "images"):
             url = _dict_at(image, "image_url").get("url")
@@ -231,7 +233,7 @@ def _access_error_hint(display: str, model_id: str, env_var: str, status: int, e
         f"image access in your {display} account, or set {env_var}={_FALLBACK_MODEL}.")
 
 
-def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> List[Tuple[str, Dict[str, Any]]]:
+def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> list[tuple[str, dict[str, Any]]]:
     """``(model_id, entry)`` pairs from ``GET {base_url}{path}``'s ``data[]``; raises on HTTP failure."""
     import requests
 
@@ -239,7 +241,7 @@ def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> List[T
         f"{base_url}{path}", headers={"Authorization": f"Bearer {api_key}"} if api_key else {}, timeout=timeout,
     )
     response.raise_for_status()
-    out: List[Tuple[str, Dict[str, Any]]] = []
+    out: list[tuple[str, dict[str, Any]]] = []
     for entry in _list_at(response.json(), "data"):
         model_id = entry.get("id") if isinstance(entry, dict) else None
         if isinstance(model_id, str) and model_id.strip():
@@ -248,12 +250,12 @@ def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> List[T
 
 
 def _fetch_catalog(
-    base_url: str, api_key: str, *, path: str, meta: Dict[str, Dict[str, Any]], generic: str,
+    base_url: str, api_key: str, *, path: str, meta: dict[str, dict[str, Any]], generic: str,
     image_output_only: bool,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Picker rows from ``GET {base_url}{path}``; raises on failure. ``image_output_only`` keeps
     image-output models minus router pseudo-models; curated ``meta`` wins for known ids."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for model_id, entry in _get_catalog(base_url, path, api_key, _LIVE_TIMEOUT):
         arch = _dict_at(entry, "architecture")
         if image_output_only and (
@@ -271,23 +273,26 @@ def _fetch_catalog(
 
 
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
-    """Model ids from ``GET {base_url}/images/models``, cached per base URL. Any failure caches an
-    empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
-    cached = _CATALOG_CACHE.get(base_url)
+    """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
+    an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
+    from agent.credential_persistence import fingerprint_secret_value
+
+    cache_key = (base_url, fingerprint_secret_value(api_key))
+    cached = _CATALOG_CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CATALOG_TTL_SECONDS:
         return cached[1]
     ids: set = set()
     try:
         catalog = _get_catalog(base_url, "/images/models", api_key, (_IMAGE_API_CONNECT_TIMEOUT, 30.0))
         ids = {model_id for model_id, _entry in catalog}
-    except Exception as exc:  # noqa: BLE001 - probe must never break generation
+    except Exception as exc:
         logger.debug("image API catalog probe failed for %s: %s", base_url, exc)
     resolved = frozenset(ids)
-    _CATALOG_CACHE[base_url] = (time.monotonic(), resolved)
+    _CATALOG_CACHE[cache_key] = (time.monotonic(), resolved)
     return resolved
 
 
-def _image_api_model_meta(model_id: str) -> Dict[str, Any]:
+def _image_api_model_meta(model_id: str) -> dict[str, Any]:
     """Catalog metadata for *model_id*, or permissive defaults when unknown."""
     return _IMAGE_API_MODELS.get(model_id, _UNKNOWN_IMAGE_API_MODEL)
 
@@ -332,11 +337,11 @@ def _coerce_int(value: Any) -> Optional[int]:
 
 
 def _pick_exact_aspect_ratio(
-    semantic: str, meta: Dict[str, Any], forced: Optional[str], notes: List[str]
+    semantic: str, meta: dict[str, Any], forced: Optional[str], notes: list[str]
 ) -> Optional[str]:
     """Exact ``aspect_ratio`` or ``None`` to omit. *forced* wins when supported; otherwise the
     downgrade is noted and the per-model mapping of *semantic* applies."""
-    supported: Tuple[str, ...] = tuple(meta.get("aspect_ratios") or ())
+    supported: tuple[str, ...] = tuple(meta.get("aspect_ratios") or ())
     if isinstance(forced, str) and forced.strip():
         value = forced.strip()
         if (supported and value in supported) or (not supported and value in _ENDPOINT_ASPECT_RATIOS):
@@ -357,7 +362,7 @@ def _pick_exact_aspect_ratio(
 
 
 def _image_api_enum(
-    name: str, explicit: Any, meta: Dict[str, Any], config_key: str, notes: List[str], *,
+    name: str, explicit: Any, meta: dict[str, Any], config_key: str, notes: list[str], *,
     meta_key: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve an enum knob and drop it when this model doesn't accept it."""
@@ -365,7 +370,7 @@ def _image_api_enum(
     if not isinstance(value, str) or not value.strip():
         return None
     value = value.strip()
-    allowed: Tuple[str, ...] = tuple(meta.get(meta_key or name) or ())
+    allowed: tuple[str, ...] = tuple(meta.get(meta_key or name) or ())
     if not allowed:
         notes.append(f"'{name}' is not supported by this model; dropped")
         return None
@@ -376,15 +381,15 @@ def _image_api_enum(
 
 
 def _build_image_api_payload(
-    *, model_id: str, prompt: str, semantic_aspect: str, references: List[str], config_key: str,
-    kwargs: Dict[str, Any],
-) -> Tuple[Dict[str, Any], List[str]]:
+    *, model_id: str, prompt: str, semantic_aspect: str, references: list[str], config_key: str,
+    kwargs: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
     """``/images/generations`` body: ``(payload, notes)``. Every knob is filtered against what the
     model declares: the endpoint silently *ignores* unknown parameters, which would let a caller
     believe ``background=transparent`` took effect on a model without it."""
     meta = _image_api_model_meta(model_id)
-    notes: List[str] = []
-    payload: Dict[str, Any] = {"model": model_id, "prompt": prompt}
+    notes: list[str] = []
+    payload: dict[str, Any] = {"model": model_id, "prompt": prompt}
 
     forced_ratio = _image_api_setting("aspect_ratio", kwargs.get("aspect_ratio_exact"), config_key)
     ratio = _pick_exact_aspect_ratio(semantic_aspect, meta, forced_ratio, notes)
@@ -427,7 +432,7 @@ def _extract_image_api_error(response: Any, fallback: str) -> str:
         return fallback
     try:
         body = response.json()
-    except Exception:  # noqa: BLE001 - non-JSON error body
+    except Exception:
         return (getattr(response, "text", "") or "")[:300] or fallback
 
     error = body.get("error") if isinstance(body, dict) else None
@@ -439,7 +444,7 @@ def _extract_image_api_error(response: Any, fallback: str) -> str:
     if error.get("name") == "ZodError" and isinstance(message, str):
         try:
             issues = json.loads(message)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return message[:300]
         parts = [
             f"{'.'.join(str(p) for p in (issue.get('path') or [])) or 'request'}: "
@@ -463,7 +468,7 @@ def _model_slug(model_id: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in model_id)
 
 
-def _save_image_api_entry(entry: Dict[str, Any], prefix: str) -> Optional[str]:
+def _save_image_api_entry(entry: dict[str, Any], prefix: str) -> Optional[str]:
     """Cache one ``data[]`` entry; ``None`` without b64/URL. Raises on write failure."""
     b64 = entry.get("b64_json")
     if isinstance(b64, str) and b64.strip():
@@ -475,10 +480,10 @@ def _save_image_api_entry(entry: Dict[str, Any], prefix: str) -> Optional[str]:
 
 
 def _image_api_extra(
-    payload: Dict[str, Any], saved: List[str], usable_refs: List[str], notes: List[str], body: Any
-) -> Dict[str, Any]:
+    payload: dict[str, Any], saved: list[str], usable_refs: list[str], notes: list[str], body: Any
+) -> dict[str, Any]:
     """Success ``extra`` for an Image API result (knobs sent, extra images, usage)."""
-    extra: Dict[str, Any] = {"endpoint": "images/generations", "exact_aspect_ratio": payload.get("aspect_ratio")}
+    extra: dict[str, Any] = {"endpoint": "images/generations", "exact_aspect_ratio": payload.get("aspect_ratio")}
     extra.update({key: payload[key] for key in _IMAGE_API_EXTRA_KEYS if key in payload})
     if len(saved) > 1:
         extra["additional_images"] = saved[1:]
@@ -500,7 +505,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def __init__(
         self, *, provider_name: str, display_name: str, runtime_name: str, config_key: str,
-        model_env_var: str, setup_schema: Dict[str, Any], supports_image_api: bool = False,
+        model_env_var: str, setup_schema: Optional[dict[str, Any]], supports_image_api: bool = False,
     ) -> None:
         self._name = provider_name
         self._display = display_name
@@ -520,7 +525,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     def display_name(self) -> str:
         return self._display
 
-    def _credentials(self) -> Tuple[str, str]:
+    def _credentials(self) -> tuple[str, str]:
         """``(api_key, base_url)`` — either may be ``""``; raises on resolution failure."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -532,11 +537,11 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     def is_available(self) -> bool:
         try:
             return bool(self._credentials()[0])
-        except Exception as exc:  # noqa: BLE001 - treat resolution failure as unavailable
+        except Exception as exc:
             logger.debug("%s runtime resolution failed: %s", self._name, exc)
             return False
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # Report the reference cap of the model that would service the next call.
         max_refs = _MAX_REFERENCE_IMAGES
         if self._supports_image_api:
@@ -545,10 +550,10 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 max_refs = int(_IMAGE_API_MODELS[resolved].get("max_refs") or max_refs)
         return {"modalities": ["text", "image"], "max_reference_images": max_refs}
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """Live catalog: OpenRouter = ``GET /images/models`` ∪ chat-completions image models (new
         releases selectable); Nous Portal = chat-completions only. Offline: default chain + snapshot."""
-        merged: Dict[str, Dict[str, Any]] = {}
+        merged: dict[str, dict[str, Any]] = {}
         if self._supports_image_api:
             merged = {entry["id"]: entry for entry in self._image_api_live_models()}
         for entry in self._live_models():
@@ -562,28 +567,28 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 for model_id, meta in _IMAGE_API_MODELS.items())
         return models
 
-    def _cached_catalog(self, attr: str, label: str, **fetch: Any) -> List[Dict[str, Any]]:
+    def _cached_catalog(self, attr: str, label: str, **fetch: Any) -> list[dict[str, Any]]:
         """Cached (per TTL) live catalog rows for this backend; ``[]`` when unreachable."""
         cached = getattr(self, attr)
         if cached is not None and time.monotonic() - cached[1] < _LIVE_CACHE_TTL:
             return cached[0]
-        models: List[Dict[str, Any]] = []
+        models: list[dict[str, Any]] = []
         try:
             api_key, base_url = self._credentials()
             if base_url:
                 models = _fetch_catalog(base_url, api_key, **fetch)
-        except Exception as exc:  # noqa: BLE001 - offline/unauth → fallback path
+        except Exception as exc:
             logger.debug("%s live %s unavailable: %s", self._name, label, exc)
             models = []
         setattr(self, attr, (models, time.monotonic()))
         return models
 
-    def _image_api_live_models(self) -> List[Dict[str, Any]]:
+    def _image_api_live_models(self) -> list[dict[str, Any]]:
         return self._cached_catalog(
             "_image_api_models_cache", "Image API catalog", path="/images/models", meta=_IMAGE_API_MODELS,
             generic="Image API model (from live OpenRouter catalog)", image_output_only=False)
 
-    def _live_models(self) -> List[Dict[str, Any]]:
+    def _live_models(self) -> list[dict[str, Any]]:
         return self._cached_catalog(
             "_live_models_cache", "image model catalog", path="/models", meta=_KNOWN_MODEL_META,
             generic="Image-output model (from live OpenRouter catalog)", image_output_only=True)
@@ -592,8 +597,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         # The catalog default, not the effective runtime model (_resolve_model_chain).
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
-        return dict(self._setup_schema)
+    def get_setup_schema(self) -> Optional[dict[str, Any]]:
+        return dict(self._setup_schema) if self._setup_schema else None
 
     def _resolve_model(self, explicit: Optional[str] = None) -> str:
         return self._resolve_model_chain(explicit)[0]
@@ -611,27 +616,27 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return list(_DEFAULT_MODEL_CHAIN)
 
     def _generate_via_image_api(
-        self, *, model_id: str, prompt: str, semantic_aspect: str, references: List[str],
-        base_url: str, headers: Dict[str, str], kwargs: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        self, *, model_id: str, prompt: str, semantic_aspect: str, references: list[str],
+        base_url: str, headers: dict[str, str], kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
         """One ``POST {base_url}/images/generations`` attempt; a chain-retryable failure carries a
         private ``_retryable`` flag that :meth:`generate` strips."""
         base_fail = error_factory(self._name, semantic_aspect, model=model_id, prompt=prompt)
 
-        def _fail(error: str, error_type: str, retryable: bool = False) -> Dict[str, Any]:
+        def _fail(error: str, error_type: str, retryable: bool = False) -> dict[str, Any]:
             response = base_fail(error, error_type)
             if retryable:
                 response["_retryable"] = True
             return response
 
         # Not the chat path's `content`: that is clamped to 3 refs, these models take up to 16.
-        usable_refs: List[str] = []
-        unreadable: List[str] = []
+        usable_refs: list[str] = []
+        unreadable: list[str] = []
         try:
             for ref in references:
                 part = _to_image_url_part(ref)
                 (usable_refs if part else unreadable).append(part or str(ref))
-        except Exception as exc:  # noqa: BLE001 - blocked by the file-safety guard
+        except Exception as exc:
             return _fail(f"Could not load reference image: {exc}", "io_error")
         # An edit with no readable source must not silently bill a text-to-image picture.
         if unreadable and not usable_refs:
@@ -675,6 +680,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                     "model_access", retryable=True)
             return _fail(failure.error, "api_error", retryable=status in _IMAGE_API_FALLBACK_STATUSES)
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(body, "usage"), model=model_id, provider=self._name, base_url=base_url)
         entries = [e for e in _list_at(body, "data") if isinstance(e, dict)]
         if not entries:
             return _fail(
@@ -683,7 +690,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         prefix = f"{self._name}_{_model_slug(model_id)}"
         try:
             saved = [p for p in (_save_image_api_entry(e, prefix) for e in entries) if p]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return _fail(f"Could not save generated image: {exc}", "io_error")
         if not saved:
             return _fail(f"{self._display} response carried neither b64_json nor url.", "empty_response")
@@ -693,13 +700,13 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             extra=_image_api_extra(payload, saved, usable_refs, notes, body))
 
     def _generate_via_chat(
-        self, *, model_id: str, prompt: str, aspect: str, content: List[Dict[str, Any]],
-        base_url: str, headers: Dict[str, str],
-    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        self, *, model_id: str, prompt: str, aspect: str, content: list[dict[str, Any]],
+        base_url: str, headers: dict[str, str],
+    ) -> tuple[dict[str, Any], Optional[str]]:
         """One ``/chat/completions`` attempt: ``(result, retry_reason)``; reason set when the
         chain may continue with the fallback model."""
         fail = error_factory(self._name, aspect, model=model_id, prompt=prompt)
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model_id,
             "modalities": ["image", "text"],
             "messages": [{"role": "user", "content": content}],
@@ -719,6 +726,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 return fail(hint, "model_access"), "unavailable"
             return fail(failure.error, "api_error"), None
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(result, "usage"), model=model_id, provider=self._name, base_url=base_url)
         images = _extract_images(result)
         if not images:
             # Text but no image usually means the model didn't honor image output.
@@ -733,7 +742,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
             else:
                 saved_path = save_url_image(first, prefix=f"{self._name}_gen")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return fail(f"Could not save generated image: {exc}", "io_error"), None
         return success_response(
             image=str(saved_path), model=model_id, prompt=prompt, aspect_ratio=aspect, provider=self._name,
@@ -741,13 +750,13 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         fail = error_factory(self._name, aspect_ratio)
         try:
             api_key, base_url = self._credentials()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return fail(f"Could not resolve {self._display} credentials: {exc}", "missing_api_key")
         if not api_key or not base_url:
             return fail(
@@ -762,14 +771,14 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         if image_url:
             references.append(str(image_url))
         references.extend(str(ref) for ref in reference_image_urls or [])
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for ref in references[:_MAX_REFERENCE_IMAGES]:
             part = _to_image_url_part(ref)
             if part:
                 content.append({"type": "image_url", "image_url": {"url": part}})
         headers = {"Authorization": f"Bearer {api_key}", **_ATTRIBUTION_HEADERS}
 
-        last_error: Optional[Dict[str, Any]] = None
+        last_error: Optional[dict[str, Any]] = None
         for i, model_id in enumerate(model_chain):
             # Image API and chat models are not interchangeable: this is routing, not preference.
             surface = "chat"
@@ -797,7 +806,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             model=model_chain[-1] if model_chain else "", prompt=prompt, aspect_ratio=aspect)
 
 
-def _build_providers() -> List[OpenRouterCompatImageProvider]:
+def _build_providers() -> list[OpenRouterCompatImageProvider]:
     return [
         OpenRouterCompatImageProvider(
             provider_name="openrouter", display_name="OpenRouter", runtime_name="openrouter",
@@ -810,16 +819,12 @@ def _build_providers() -> List[OpenRouterCompatImageProvider]:
                     "key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys",
                 }],
             }),
+        # No picker row: Portal models are offered inside the single managed "Nous Subscription" row
+        # (tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
+        # read "active" alongside the managed FAL row while the runtime routed its pick to FAL.
         OpenRouterCompatImageProvider(
             provider_name="nous", display_name="Nous Portal", runtime_name="nous", config_key="nous",
-            model_env_var="NOUS_IMAGE_MODEL",
-            setup_schema={
-                "name": "Nous Portal (image)",
-                "badge": "subscription",
-                "tag": "Reference-grounded image generation via Nous Portal (OpenRouter-backed)",
-                "env_vars": [],
-                "requires_nous_auth": True,
-            }),
+            model_env_var="NOUS_IMAGE_MODEL", setup_schema=None),
     ]
 
 

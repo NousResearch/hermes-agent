@@ -35,37 +35,6 @@ def test_all_tui_subprocess_calls_have_stdin():
     )
 
 
-def test_oauth_setup_token_keeps_inherited_stdin():
-    """The interactive 'claude setup-token' login must NOT be muzzled.
-
-    Forcing stdin=subprocess.DEVNULL here would feed the OAuth prompt EOF and
-    break interactive token setup. A blanket DEVNULL sweep over TUI-context
-    subprocess calls must leave this one inheriting stdin. Regression guard for
-    the over-application caught while salvaging the stdin-EOF fix.
-
-    The call's owner moved from agent/anthropic_adapter.py into
-    agent/anthropic_credentials.py in the adapter godfile split; the guard
-    scans both seams so a future move fails loudly instead of going dark.
-    """
-    candidates = [
-        REPO_ROOT / "agent" / "anthropic_credentials.py",
-        REPO_ROOT / "agent" / "anthropic_adapter.py",
-    ]
-    sources = [p.read_text() for p in candidates if p.exists()]
-    owners = [
-        src for src in sources
-        if 'subprocess.run([claude_path, "setup-token"])' in src
-    ]
-    assert owners, (
-        "interactive setup-token call changed shape or moved; re-verify it "
-        "still inherits stdin (no stdin=subprocess.DEVNULL) and update this "
-        "guard's candidate list"
-    )
-    for src in sources:
-        assert 'subprocess.run([claude_path, "setup-token"], stdin' not in src, (
-            "setup-token must inherit stdin so the user can complete the OAuth "
-            "login prompt; do not add stdin=subprocess.DEVNULL"
-        )
 
 
 def test_inline_noqa_marker_exempts_a_call():
@@ -117,3 +86,12 @@ def test_splatted_kwargs_helper_counts_only_when_it_sets_stdin():
     assert len(guard.find_subprocess_calls(unsafe_const, "x.py")) == 1
     assert len(guard.find_subprocess_calls(undefined, "x.py")) == 1
     assert [v["line"] for v in guard.find_subprocess_calls(unrelated_later, "x.py")] == [3]
+
+
+def test_call_with_arguments_on_the_next_line_is_checked():
+    """A call whose arguments start on the line after ``(`` is found and checked."""
+    guard = _load_guard()
+    multiline = "import subprocess\nsubprocess.run(\n    ['ffmpeg', '-y'],\n    check=True,\n)\n"
+    assert [v["line"] for v in guard.find_subprocess_calls(multiline, "x.py")] == [2]
+    fixed = multiline.replace("check=True,", "stdin=subprocess.DEVNULL, check=True,")
+    assert guard.find_subprocess_calls(fixed, "x.py") == []

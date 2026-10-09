@@ -11,21 +11,41 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
 import contextlib
+
+from hermes_cli.worktree_ops import release_lsp_clients
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
-# Statuses after which a child no longer needs its parent's workspace artifacts.
+
+def _path_key(path: Path | str | None) -> str:
+    """Unicode-form-insensitive identity for a filesystem path.
+
+    macOS hands back DECOMPOSED path strings (NFD: ``o`` + U+0308) for names the
+    user typed in composed form (NFC: ``ö``) — a OneDrive/FileProvider path like
+    ``OneDrive-Persönlich`` round-trips through ``git rev-parse --show-toplevel``
+    as NFD while the DB row holds NFC. Raw ``Path`` equality then reports a real
+    repo root as "not a repo" purely on Unicode form, so every path identity
+    check here goes through this key.
+    """
+    return unicodedata.normalize("NFC", str(path)) if path is not None else ""
+
+# Statuses after which a task no longer needs a workspace: a child stops
+# needing its parent's handoff artifacts, and a sharer stops holding a dir.
+_TERMINAL_STATUSES_SQL = "('done', 'archived', 'failed', 'cancelled')"
+
 _ACTIVE_CHILDREN_SQL = (
     "SELECT 1 FROM task_links l "
     "JOIN tasks t ON t.id = l.child_id "
-    "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+    f"WHERE l.parent_id = ? AND t.status NOT IN {_TERMINAL_STATUSES_SQL} "
     "LIMIT 1"
 )
 
@@ -33,13 +53,23 @@ _WORKSPACE_ROW_SQL = "SELECT workspace_kind, workspace_path, branch_name FROM ta
 
 
 def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
-    """``git -C repo_root args``; never raises on a non-zero exit."""
+    """``git -C repo_root args``; never raises on a non-zero exit.
+
+    :func:`noninteractive_repo_git_env` (GHSA-7x36-8jrh-v4pw): the dispatcher runs ``worktree add``
+    unattended, which executes the repo's hooks, ``core.fsmonitor`` and smudge filters.
+    """
+    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    env = noninteractive_repo_git_env(repo_root)
+    if env is None:
+        return subprocess.CompletedProcess(["git", "-C", str(repo_root), *args], 1, "", FILTER_DISCOVERY_FAILED)
     return subprocess.run(
         ["git", "-C", str(repo_root), *args],
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         timeout=timeout,
         check=False,
+        stdin=subprocess.DEVNULL,
+        env=env,
     )
 
 
@@ -47,36 +77,255 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+_TERMINAL_TASK_SQL = (
+    f"SELECT 1 FROM tasks WHERE id = ? AND status IN {_TERMINAL_STATUSES_SQL}"
+)
+
+
+def _is_terminal_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    return conn.execute(_TERMINAL_TASK_SQL, (task_id,)).fetchone() is not None
+
+
+_OTHER_LIVE_PATHS_SQL = (
+    "SELECT workspace_path FROM tasks "
+    "WHERE id != ? AND workspace_path IS NOT NULL "
+    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
+)
+# Sibling boards mint their own ids, so the id being cleaned up here can
+# name a different live task there. Do not exclude it.
+_ANY_LIVE_PATHS_SQL = (
+    "SELECT workspace_path FROM tasks "
+    "WHERE workspace_path IS NOT NULL "
+    f"AND status NOT IN {_TERMINAL_STATUSES_SQL}"
+)
+
+
+def _conn_uses_path(
+    conn: sqlite3.Connection, task_id: str, key: str, *, exclude_task_id: bool = True
+) -> bool:
+    if exclude_task_id:
+        rows = conn.execute(_OTHER_LIVE_PATHS_SQL, (task_id,)).fetchall()
+    else:
+        rows = conn.execute(_ANY_LIVE_PATHS_SQL).fetchall()
+    for row in rows:
+        other = row["workspace_path"]
+        if not other:
+            continue
+        try:
+            other_key = _path_key(Path(other).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+        if other_key == key:
+            return True
+    return False
+
+
+def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
+    """Every other board's ``kanban.db``. Raises ``OSError`` when the set is unknown.
+
+    ``kanban_db_path`` follows ``HERMES_KANBAN_DB`` and would collapse every
+    slug onto the pinned file, so the scan uses the on-disk layout: the
+    default board at ``<home>/kanban.db`` and named boards at
+    ``<home>/kanban/boards/<slug>/kanban.db``.
+    """
+    from hermes_cli.kanban_db_connect import _main_db_file  # late: import cycle
+
+    current_file = _main_db_file(conn)
+    current = Path(current_file).resolve() if current_file else None
+    candidates = [_kb.kanban_home() / "kanban.db"]
+    root = _kb.boards_root()
+    if root.is_dir():
+        for child in root.iterdir():
+            if child.is_dir():
+                candidates.append(child / "kanban.db")
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if current is not None and resolved == current:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(resolved)
+    return found
+
+
+def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
+    uri = db_file.as_uri() + "?mode=ro"
+    other = sqlite3.connect(uri, uri=True, timeout=1.0)
+    try:
+        other.row_factory = sqlite3.Row
+        return _conn_uses_path(other, task_id, key, exclude_task_id=False)
+    finally:
+        other.close()
+
+
+def _workspace_in_use_by_other(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> Optional[str]:
+    """Why *path* must be kept: ``"shared"``, ``"unknown"``, or None when free.
+
+    ``gc``, completion and deferred parent cleanup used to ``rmtree`` a shared
+    ``workspace_path`` as soon as one of its tasks went terminal. Compare the
+    resolved path: a row may store ``~`` or a symlinked spelling.
+
+    The connection covers one board. A ready task on a named board can point
+    at the same directory. If that set of databases cannot be read, refuse
+    the delete (``"unknown"``) and log the board DB that failed, so one broken
+    sibling DB is not reported as a live sharer.
+    """
+    try:
+        key = _path_key(Path(path).expanduser().resolve(strict=False))
+    except OSError as exc:
+        _kb._log.warning("Cannot resolve workspace %s for task %s: %s", path, task_id, exc)
+        return "unknown"
+    if not key:
+        return None
+    try:
+        if _conn_uses_path(conn, task_id, key):
+            return "shared"
+    except sqlite3.Error as exc:
+        _kb._log.warning("Cannot read live workspaces for task %s: %s", task_id, exc)
+        return "unknown"
+    try:
+        siblings = _sibling_board_db_files(conn)
+    except OSError as exc:
+        _kb._log.warning("Cannot list kanban boards for task %s: %s", task_id, exc)
+        return "unknown"
+    for db_file in siblings:
+        try:
+            if _other_board_uses_path(db_file, task_id, key):
+                return "shared"
+        except (OSError, sqlite3.Error) as exc:
+            _kb._log.warning(
+                "Cannot read board db %s for task %s: %s", db_file, task_id, exc,
+            )
+            return "unknown"
+    return None
+
+
+def _defer_shared_workspace_cleanup(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> bool:
+    """Skip removal and record why, when *path* may still be used by a live task."""
+    reason = _workspace_in_use_by_other(conn, task_id, path)
+    if reason is None:
+        return False
+    if reason == "shared":
+        _kb._log.warning(
+            "Deferring workspace cleanup for task %s: %s is still used by "
+            "another non-terminal task",
+            task_id, path,
+        )
+    else:
+        _kb._log.warning(
+            "Deferring workspace cleanup for task %s: cannot tell whether "
+            "another task still uses %s",
+            task_id, path,
+        )
+    try:
+        _kb._append_event(
+            conn, task_id, "workspace_cleanup_deferred_shared",
+            {"path": str(path), "reason": reason},
+        )
+    except sqlite3.Error:
+        pass
+    return True
+
+
+def _defer_shared_worktree_cleanup(
+    conn: sqlite3.Connection, task_id: str, path: Path | str
+) -> bool:
+    """Defer removing a linked worktree another live task may still use.
+
+    Only a real linked worktree is ever removed, so the sharing scan runs just
+    for those.
+    """
+    wt = Path(path).expanduser()
+    return (
+        wt.is_dir()
+        and _is_linked_worktree_checkout(wt)
+        and _defer_shared_workspace_cleanup(conn, task_id, path)
+    )
+
+
+def _lexical_path(path: Path | str) -> Path:
+    """Absolute, ``..``-collapsed, NFC form of *path* WITHOUT following symlinks."""
+    return Path(_path_key(os.path.abspath(path)))
+
+
 def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
-    """Return whether *p* is managed scratch storage and the matching board."""
+    """Return whether *p* is managed scratch storage and the matching board.
+
+    *p* must be strictly below a managed root both after resolving symlinks
+    AND lexically (as spelled, without resolving). Resolved containment alone
+    is not enough: when a root is itself a symlink to a broad directory
+    (relocated storage, or a planted link), every path inside the link target
+    would resolve "under" the root, so a scratch task naming such a path
+    directly would get it rmtree'd. Tasks created through the root are spelled
+    through it, so the lexical check keeps them managed. A root's lexical form
+    is accepted both as configured and with its anchor (kanban home, or the
+    override's parent) resolved, so a process spelling a symlinked home by its
+    real path still matches; the managed ``kanban/.../workspaces`` components
+    themselves are never resolved for the lexical check.
+    """
     try:
         p_abs = p.resolve(strict=False)
     except OSError:
         return False, None
-    roots: list[tuple[Path, Optional[str]]] = []
+    p_lex = _lexical_path(p)
+    # (resolved root, lexical spellings of the root, board)
+    roots: list[tuple[Path, tuple[Path, ...], Optional[str]]] = []
+
+    def _add_root(
+        anchor: Path, anchor_real: Path, parts: tuple[str, ...], board: Optional[str]
+    ) -> None:
+        root = anchor.joinpath(*parts)
+        with contextlib.suppress(OSError):
+            roots.append((
+                root.resolve(strict=False),
+                (_lexical_path(root), _lexical_path(anchor_real.joinpath(*parts))),
+                board,
+            ))
+
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
+        override_root = Path(override).expanduser()
         with contextlib.suppress(OSError):
-            roots.append((Path(override).expanduser().resolve(strict=False), None))
+            override_parent = override_root.parent
+            _add_root(
+                override_parent,
+                override_parent.resolve(strict=False),
+                (override_root.name,),
+                None,
+            )
     try:
         home = _kb.kanban_home()
+        # Resolve the shared anchor once, not once per board root.
+        home_real = home.resolve(strict=False)
     except OSError:
         home = None
     if home is not None:
-        with contextlib.suppress(OSError):
-            roots.append(((home / "kanban" / "workspaces").resolve(strict=False), _kb.DEFAULT_BOARD))
+        _add_root(home, home_real, ("kanban", "workspaces"), _kb.DEFAULT_BOARD)
         entries: list[Path] = []
         with contextlib.suppress(OSError):
             entries = list((home / "kanban" / "boards").resolve(strict=False).iterdir())
         for entry in entries:
             with contextlib.suppress(OSError):
                 if entry.is_dir():
-                    roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
-    for root, board in roots:
+                    _add_root(
+                        home, home_real, ("kanban", "boards", entry.name, "workspaces"), entry.name
+                    )
+    for root, lexical_roots, board in roots:
         if p_abs == root:
             continue
         try:
-            if p_abs.is_relative_to(root):
+            if p_abs.is_relative_to(root) and any(
+                p_lex != lex and p_lex.is_relative_to(lex) for lex in lexical_roots
+            ):
                 return True, board
         except ValueError:
             continue
@@ -141,7 +390,8 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
             _cleanup_worker_tmux(conn, task_id)
-            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
+            if not _defer_shared_worktree_cleanup(conn, task_id, path):
+                _cleanup_worktree_workspace(task_id, path, row["branch_name"])
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
@@ -149,10 +399,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
             # source tree; without this, completion would rmtree the user's data.
-            # See #28818.
+            # See #28818. Containment runs first so an unmanaged dir that is
+            # never removed does not pay for (or log) the shared-use scan.
             if _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Removed scratch workspace: %s", wp)
+                if not _defer_shared_workspace_cleanup(conn, task_id, path):
+                    release_lsp_clients(str(wp))
+                    shutil.rmtree(wp, ignore_errors=True)
+                    _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
                     "Refusing to remove out-of-scratch workspace for task %s: %s "
@@ -191,17 +444,44 @@ def _cleanup_worktree_workspace(
         if common is None or common.name != ".git":
             return  # not a linked worktree of a normal repo — never guess
         repo_root = common.parent
-        if wp.resolve(strict=False) == repo_root.resolve(strict=False):
+        if _path_key(wp.resolve(strict=False)) == _path_key(repo_root.resolve(strict=False)):
             return  # never remove the main checkout
-        if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
+        if _worktree_is_dirty(str(wp), str(repo_root)) or _worktree_has_unpushed_commits(str(wp)):
             _kb._log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,
             )
             return
+        # Windows cannot delete a directory while this process has its current
+        # directory inside it. Completed workers normally run from their own
+        # linked worktree, so move this process back to the main checkout
+        # before asking Git to remove the worktree.
+        worktree_path = wp.resolve(strict=False)
+        try:
+            cwd = Path.cwd().resolve(strict=False)
+        except OSError:
+            # cwd was already deleted (a scratch-kind child's own workspace is
+            # rmtree'd before this deferred parent cleanup runs, #33774). A
+            # dead cwd cannot hold the worktree open, so leaving it is safe.
+            cwd = None
+        if cwd is None or cwd == worktree_path or cwd.is_relative_to(worktree_path):
+            try:
+                os.chdir(repo_root)
+            except OSError as exc:
+                _kb._log.warning(
+                    "Preserving worktree for task %s: cannot leave %s for %s: %s",
+                    task_id, cwd or "<deleted cwd>", repo_root, exc,
+                )
+                return
         # No --force: git's own dirty guard re-verifies at removal time, so if
         # the tree became dirty since our check (TOCTOU) removal fails safe.
+        release_lsp_clients(str(worktree_path))
         result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
+        if result.returncode != 0:
+            # Windows can retain a directory handle briefly after cwd changes.
+            # Retry once without --force; Git still enforces its dirty guard.
+            time.sleep(0.1)
+            result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
         if result.returncode != 0:
             _kb._log.warning(
                 "git worktree remove failed for task %s at %s: %s",
@@ -234,14 +514,23 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 not row
                 or row["workspace_kind"] not in _REMOVABLE_KINDS
                 or not row["workspace_path"]
+                or not _is_terminal_task(conn, parent_id)
                 or _has_active_children(conn, parent_id)
             ):
                 continue
+            ws_path = row["workspace_path"]
             if row["workspace_kind"] == "worktree":
-                _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])
+                if _defer_shared_worktree_cleanup(conn, parent_id, ws_path):
+                    continue
+                _cleanup_worktree_workspace(parent_id, ws_path, row["branch_name"])
                 continue
-            wp = Path(row["workspace_path"])
-            if wp.is_dir() and _is_managed_scratch_path(wp):
+            wp = Path(ws_path)
+            if not wp.is_dir():
+                continue
+            if _is_managed_scratch_path(wp):
+                if _defer_shared_workspace_cleanup(conn, parent_id, ws_path):
+                    continue
+                release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
@@ -360,18 +649,22 @@ def _git_common_dir(path: Path) -> Optional[Path]:
     return _git_abs_path(path, "--git-common-dir")
 
 
-def _git_dir(path: Path) -> Optional[Path]:
-    return _git_abs_path(path, "--git-dir")
-
-
 def _git_current_branch(path: Path) -> Optional[str]:
     return _kb._git_out(path, "branch", "--show-current")
 
 
 def _is_linked_worktree_checkout(path: Path) -> bool:
-    git_dir = _git_dir(path)
-    common_dir = _git_common_dir(path)
-    return git_dir is not None and common_dir is not None and git_dir != common_dir
+    """True when *path* is a linked worktree (git-dir differs from common-dir).
+
+    One ``rev-parse`` call answers both directories.
+    """
+    out = _kb._git_out(
+        path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
+    )
+    lines = out.splitlines() if out else []
+    return len(lines) == 2 and (
+        Path(lines[0]).resolve(strict=False) != Path(lines[1]).resolve(strict=False)
+    )
 
 
 def _nearest_existing_path(path: Path) -> Path:
@@ -396,7 +689,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
-    if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
+    if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -469,7 +762,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         fallback_root = _repo_root_for_worktree_target(requested.parent)
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
-            if fallback.resolve(strict=False) != requested_resolved:
+            if _path_key(fallback.resolve(strict=False)) != _path_key(requested_resolved):
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this task's
@@ -477,7 +770,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)
-    if repo_root is not None and requested_resolved == repo_root:
+    if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):
         return _anchored_worktree(repo_root, task.id, branch_name)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -546,4 +839,4 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

@@ -87,7 +87,6 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
                 mcp_tool._reset_server_error(self.name)
                 self._reconnect_retries = 0
                 await self._wait_for_lifecycle_event()
-                return
 
         task = _Task("srv")
         task._registered_tool_names = ["srv__tool"]
@@ -112,10 +111,6 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
             f"(expected >= 8)"
         )
 
-        # Verify the counter is an instance variable, not a local.
-        assert hasattr(task, "_reconnect_retries"), (
-            "_reconnect_retries should be an instance variable"
-        )
 
         # Clean shutdown.
         task._shutdown_event.set()

@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from hermes_cli.sqlite_util import add_column_if_missing
+
 
 # Keep the extracted store's log records on the API server logger.
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -33,7 +35,7 @@ _MIGRATIONS = {
     "acknowledged_at": "REAL"}
 
 
-def _encode_status(status: Dict[str, Any]) -> str:
+def _encode_status(status: dict[str, Any]) -> str:
     return json.dumps(status, sort_keys=True, separators=(",", ":"))
 
 
@@ -60,7 +62,7 @@ class RunIdempotencyStore:
     def durable(self) -> bool:
         """Whether reservations survive this process."""
         return self._db_path is not None
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
@@ -101,7 +103,7 @@ class RunIdempotencyStore:
         columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(run_idempotency)")}
         for column, ddl in _MIGRATIONS.items():
             if column not in columns:
-                self._conn.execute(f"ALTER TABLE run_idempotency ADD COLUMN {column} {ddl}")
+                add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
         self._conn.commit()
@@ -128,7 +130,7 @@ class RunIdempotencyStore:
                 self._conn.rollback()
                 raise
 
-    def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
+    def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
@@ -215,7 +217,7 @@ class RunIdempotencyStore:
                 "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone()
         return row is not None
 
-    def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+    def update_status(self, run_id: str, status: dict[str, Any]) -> None:
         with self._lock:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",

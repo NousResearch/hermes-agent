@@ -38,30 +38,57 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
     return "/".join(parts)
 
 
-def _skill_file_list(skill_dir: Path) -> List[str]:
-    """List files inside a skill directory in lock-file format."""
-    return [f.relative_to(skill_dir).as_posix() for f in sorted(skill_dir.rglob("*")) if f.is_file()]
+# Only generated runtime state, never generic cache/ or arbitrary dotfiles. This
+# is updater ownership, not the security scanner's content-integrity policy.
+_RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+
+
+def _is_runtime_cache(path: Path, skill_dir: Path) -> bool:
+    """Whether a skill-relative path is disposable Python/tool runtime state.
+
+    Install prefixes may themselves contain a cache directory name. Legacy
+    sibling bytecode is ignored only alongside its source; source-less .pyc
+    files can be deliberately shipped or user-owned content.
+    """
+    relative = path.relative_to(skill_dir)
+    if any(part in _RUNTIME_CACHE_DIRS for part in relative.parts[:-1]):
+        return True
+    if path.name in _RUNTIME_CACHE_DIRS and path.is_dir():
+        return True
+    return path.suffix in {".pyc", ".pyo"} and path.with_suffix(".py").is_file()
+
+
+def _ignore_runtime_cache(directory: str, names: list[str]) -> list[str]:
+    """copytree callback: don't seed generated caches into managed packages."""
+    root = Path(directory)
+    return [name for name in names if _is_runtime_cache(root / name, root)]
+
+
+def _skill_file_list(skill_dir: Path) -> list[str]:
+    """List package files for provenance/diff, excluding generated runtime caches."""
+    return [f.relative_to(skill_dir).as_posix() for f in sorted(skill_dir.rglob("*"))
+            if not _is_runtime_cache(f, skill_dir) and f.is_file()]
 
 
 def _load_hub_lock() -> Optional[dict]:
     """Parse the skills-hub lock; None when missing or unreadable."""
     try:
-        return json.loads((_ss()._skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8"))
+        return json.loads((_ss()._skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8-sig"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
-def _hub_lock_entries(data: Optional[dict]) -> List[dict]:
+def _hub_lock_entries(data: Optional[dict]) -> list[dict]:
     return [e for e in ((data or {}).get("installed") or {}).values() if isinstance(e, dict)]
 
 
-def _read_hub_install_paths() -> Set[str]:
+def _read_hub_install_paths() -> set[str]:
     """Hub-lock install paths as POSIX strings. Hub-installed skills are owned by the hub: rename
     recovery must not move them even when content matches a bundled origin hash (dangling lock)."""
     return {str(e["install_path"]).strip("/") for e in _hub_lock_entries(_load_hub_lock()) if e.get("install_path")}
 
 
-def _iter_optional_skills(optional_dir: Path, *, root_relative: bool) -> Iterator[Tuple[Path, Path, str]]:
+def _iter_optional_skills(optional_dir: Path, *, root_relative: bool) -> Iterator[tuple[Path, Path, str]]:
     """Yield ``(skill_md, src, install_path)`` for every safe official optional skill."""
     for skill_md in sorted(optional_dir.rglob("SKILL.md")):
         if (is_excluded_skill_path(skill_md.relative_to(optional_dir), root=optional_dir)
@@ -73,12 +100,12 @@ def _iter_optional_skills(optional_dir: Path, *, root_relative: bool) -> Iterato
             logger.debug("Skipping optional skill with unsafe path %s: %s", skill_md.parent, e)
 
 
-def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
+def _optional_skill_index() -> dict[str, tuple[str, str, Path]]:
     """Official optional skills keyed by BOTH folder name and frontmatter name (hub-lock slug or
     user-facing name). Values are ``(folder_name, install_path, source_dir)``."""
     ss = _ss()
     optional_dir = ss._get_optional_dir()
-    index: Dict[str, Tuple[str, str, Path]] = {}
+    index: dict[str, tuple[str, str, Path]] = {}
     if optional_dir.exists():
         for skill_md, src, install_path in _iter_optional_skills(optional_dir, root_relative=True):
             value = (src.name, install_path, src)
@@ -111,8 +138,8 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     else:
         message = f"Official optional skill not found: {name}" if index else "No official optional skills directory found."
         return {"ok": False, "message": message, "restored": [], "backfilled": [], "backed_up": []}
-    restored: List[str] = []
-    backed_up: List[str] = []
+    restored: list[str] = []
+    backed_up: list[str] = []
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup_root = ss._skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
     for folder_name, install_path, src in targets if restore else []:
@@ -137,11 +164,11 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         "backup_dir": str(backup_root) if backed_up else ""}
 
 
-def _index_installed_skill_dirs_by_name() -> Dict[str, List[Path]]:
+def _index_installed_skill_dirs_by_name() -> dict[str, list[Path]]:
     """Installed skills by directory name in one active-tree scan, skipping anything that
     resolves outside the skills tree (symlinks/external)."""
     ss = _ss()
-    index: Dict[str, List[Path]] = {}
+    index: dict[str, list[Path]] = {}
     root = ss._skills_dir().resolve()
     for skill_md in ss._iter_active_skill_mds():
         with suppress(OSError, ValueError):
@@ -150,7 +177,7 @@ def _index_installed_skill_dirs_by_name() -> Dict[str, List[Path]]:
     return index
 
 
-def _relocated_dest(src_name: str, index: Dict[str, List[Path]]) -> Optional[Tuple[Path, str]]:
+def _relocated_dest(src_name: str, index: dict[str, list[Path]]) -> Optional[tuple[Path, str]]:
     """``(dest, install_path)`` of a UNIQUE same-directory-name match, else None: the active
     tree may hold a skill under a DIFFERENT category than the repo (upstream reorganized,
     installed copy kept its place); ambiguity gives no basis to pick."""
@@ -163,7 +190,7 @@ def _relocated_dest(src_name: str, index: Dict[str, List[Path]]) -> Optional[Tup
         return None
 
 
-def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
+def _backfill_optional_provenance(quiet: bool = False) -> list[str]:
     """Mark already-present official optional skills as hub-installed: formerly bundled (or
     hand-copied) skills now under optional-skills/ get official provenance when byte-identical
     to the source; modified/local skills are left alone."""
@@ -176,8 +203,8 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         data = {"version": 1, "installed": {}}
     installed = data.setdefault("installed", {})
     existing_paths = {entry.get("install_path") for entry in _hub_lock_entries(data)}
-    backfilled: List[str] = []
-    installed_dir_index: Optional[Dict[str, List[Path]]] = None
+    backfilled: list[str] = []
+    installed_dir_index: Optional[dict[str, list[Path]]] = None
     for _skill_md, src, install_path in _iter_optional_skills(optional_dir, root_relative=False):
         lock_name = src.name
         if lock_name in installed or install_path in existing_paths:

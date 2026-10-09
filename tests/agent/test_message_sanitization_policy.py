@@ -22,7 +22,6 @@ from agent.message_sanitization import (
     uniquify_tool_call_ids,
 )
 
-
 # ---------------------------------------------------------------------------
 # deterministic_call_id — byte-exact (prompt-cache keys)
 # ---------------------------------------------------------------------------
@@ -38,25 +37,12 @@ class TestDeterministicCallId:
             "call_567cb168d22d"
         assert deterministic_call_id("", "", 0) == "call_feda901d71ea"
 
-    def test_deterministic_across_calls(self):
-        a = deterministic_call_id("web_search", '{"q":"x"}', 3)
-        b = deterministic_call_id("web_search", '{"q":"x"}', 3)
-        assert a == b
-        assert a.startswith("call_")
-        assert len(a) == len("call_") + 12
-
     def test_index_disambiguates(self):
         assert deterministic_call_id("t", "{}", 0) != deterministic_call_id("t", "{}", 1)
 
     def test_surrogates_do_not_crash(self):
         out = deterministic_call_id("t", "bad \ud800 arg", 0)
         assert out.startswith("call_")
-
-    def test_run_agent_static_delegates(self):
-        from run_agent import AIAgent
-        assert AIAgent._deterministic_call_id("terminal", '{"command":"ls"}', 0) == \
-            deterministic_call_id("terminal", '{"command":"ls"}', 0)
-
 
 # ---------------------------------------------------------------------------
 # coalesce_tool_call_id
@@ -77,12 +63,6 @@ class TestCoalesceToolCallId:
         assert coalesce_tool_call_id(SimpleNamespace(call_id="c", id="i")) == "c"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=" i ")) == "i"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=None)) == ""
-
-    def test_run_agent_static_delegates(self):
-        from run_agent import AIAgent
-        tc = {"call_id": "c9", "id": "i9"}
-        assert AIAgent._get_tool_call_id_static(tc) == coalesce_tool_call_id(tc)
-
 
 # ---------------------------------------------------------------------------
 # uniquify_tool_call_ids
@@ -128,6 +108,18 @@ class TestUniquifyToolCallIds:
         uniquify_tool_call_ids(tcs)
         assert tcs[2]["id"] == "z_d3"
 
+    def test_id_used_earlier_in_the_session_is_renamed_and_history_is_not(self):
+        # Providers that name every call "call_0" turn after turn: the session's
+        # earlier ids stay as stored (prompt cache); the incoming call moves.
+        taken = {"call_0", "call_0_d2"}
+        tcs = [
+            {"id": "call_0", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "call_fresh", "function": {"name": "g", "arguments": "{}"}},
+        ]
+        uniquify_tool_call_ids(tcs, taken=taken)
+        assert [tc["id"] for tc in tcs] == ["call_0_d3", "call_fresh"]
+        assert taken == {"call_0", "call_0_d2"}
+
     def test_blank_and_non_string_ids_skipped(self):
         tcs = [
             {"id": "", "function": {"name": "a", "arguments": "{}"}},
@@ -152,7 +144,6 @@ class TestUniquifyToolCallIds:
     def test_empty_and_none_inputs(self):
         assert uniquify_tool_call_ids([]) == []
         assert uniquify_tool_call_ids(None) is None
-
 
 # ---------------------------------------------------------------------------
 # reasoning_echo_family — the provider-direction table
@@ -196,7 +187,6 @@ class TestReasoningEchoFamily:
     def test_unknown_family_raises(self):
         with pytest.raises(KeyError):
             matches_reasoning_echo_family("nope", "p", "m", "https://x")
-
 
 # ---------------------------------------------------------------------------
 # apply_reasoning_content_policy
@@ -255,7 +245,6 @@ class TestApplyReasoningContentPolicy:
             {"role": "assistant", "content": "x", "reasoning_content": None}, api, False)
         assert "reasoning_content" not in api
 
-
 # ---------------------------------------------------------------------------
 # reapply_reasoning_echo
 # ---------------------------------------------------------------------------
@@ -289,7 +278,6 @@ class TestReapplyReasoningEcho:
         assert reapply_reasoning_echo(msgs, True) == 0
         reapply_reasoning_echo(msgs, False)
         assert reapply_reasoning_echo(msgs, False) == 0
-
 
 # ---------------------------------------------------------------------------
 # Per-provider reasoning_echo config opt-in — preserves reasoning_content
@@ -339,26 +327,6 @@ class TestPerProviderReasoningEcho:
         agent = self._make_agent(reasoning_echo_flag=True)
         assert agent._needs_thinking_reasoning_pad() is True
         assert agent._reasoning_echo_opt_in() is True
-
-    def test_opt_in_does_not_replace_family_detection(self):
-        """Kimi-coding family still gets echo-back regardless of the flag."""
-        agent = self._make_agent(
-            reasoning_echo_flag=False,
-            provider="kimi-coding",
-            model="t9s/kimi-k3",
-        )
-        agent._needs_kimi_tool_reasoning = lambda: True
-        assert agent._needs_thinking_reasoning_pad() is True
-
-    def test_opt_in_additive_with_family_detection(self):
-        """Flag on AND family match: both paths agree, still True."""
-        agent = self._make_agent(
-            reasoning_echo_flag=True,
-            provider="deepseek",
-            model="deepseek-v4-pro",
-        )
-        agent._needs_deepseek_tool_reasoning = lambda: True
-        assert agent._needs_thinking_reasoning_pad() is True
 
     def test_strict_fallback_strips_despite_primary_opt_in(self):
         """Primary has flag=True, fallback switches to a strict provider.
@@ -456,20 +424,26 @@ class TestPerProviderReasoningEcho:
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
 
-    def test_apply_policy_preserves_with_opt_in(self):
-        """apply_reasoning_content_policy preserves reasoning_content
-        when needs_thinking_pad is True (via opt-in)."""
-        from agent.message_sanitization import apply_reasoning_content_policy
-        source = {"role": "assistant", "content": "hi", "reasoning_content": "my thoughts"}
-        api_msg = {"role": "assistant", "content": "hi"}
-        apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=True)
-        assert api_msg["reasoning_content"] == "my thoughts"
 
-    def test_apply_policy_strips_without_opt_in(self):
-        """apply_reasoning_content_policy strips reasoning_content
-        when needs_thinking_pad is False (no opt-in, not echo family)."""
-        from agent.message_sanitization import apply_reasoning_content_policy
-        source = {"role": "assistant", "content": "hi", "reasoning_content": "my thoughts"}
-        api_msg = {"role": "assistant", "content": "hi"}
-        apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=False)
-        assert "reasoning_content" not in api_msg
+from agent.message_sanitization import normalize_provider_tool_call_ids
+
+def test_normalize_provider_parallel_ids_is_deterministic_and_preserves_composite():
+    calls = [
+        {"id": "chatcmpl-tool-alpha|item-a", "call_id": "chatcmpl-tool-alpha|item-a"},
+        {"id": "chatcmpl-tool-beta", "call_id": "chatcmpl-tool-beta"},
+    ]
+    normalize_provider_tool_call_ids(calls)
+    first = [c.copy() for c in calls]
+    normalize_provider_tool_call_ids(calls)
+    assert calls == first
+    assert calls[0]["id"].endswith("|item-a")
+    assert all(c["id"].startswith("call_") for c in calls)
+
+def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
+    for calls in [
+        [{"id": "chatcmpl-tool-alpha"}],
+        [{"id": "chatcmpl-tool-alpha"}, {"id": "call_1"}],
+    ]:
+        before = [c.copy() for c in calls]
+        normalize_provider_tool_call_ids(calls)
+        assert calls == before

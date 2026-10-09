@@ -42,13 +42,16 @@ except ImportError:
     websockets = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
-from gateway.platforms._shared import get_scoped_secret as _yb_secret
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
@@ -62,17 +65,14 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
-from gateway.session import build_session_key
 from gateway.session_transcript import TranscriptReadError
 
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-try:
-    from hermes_cli import __version__ as _HERMES_VERSION
-except ImportError:
-    _HERMES_VERSION = "0.0.0"
-_APP_VERSION = _BOT_VERSION = _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
+
+_APP_VERSION = _BOT_VERSION = get_version_info().base_version
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
@@ -96,8 +96,20 @@ NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}  # permanent err
 HEARTBEAT_TIMEOUT_THRESHOLD = 2  # consecutive missed pongs before reconnect
 REPLY_HEARTBEAT_INTERVAL_S = 2.0   # RUNNING cadence
 REPLY_HEARTBEAT_TIMEOUT_S = 30.0   # auto-FINISH after this much inactivity
-SLOW_RESPONSE_TIMEOUT_S = 120.0  # push SLOW_RESPONSE_MESSAGE when the agent is silent this long
-SLOW_RESPONSE_MESSAGE = "任务有点复杂，正在努力处理中，请耐心等待..."
+SLOW_RESPONSE_TIMEOUT_S = 120.0  # push slow_response_message() when the agent is silent this long
+
+
+def slow_response_message() -> str:
+    """Patience notice pushed after SLOW_RESPONSE_TIMEOUT_S of agent silence (localized; the
+    Chinese wording Yuanbao users historically saw lives in locales/zh.yaml)."""
+    return t("platform.yuanbao.slow_response_notice")
+
+
+# Cron wrapper markers, mirrored from cron/scheduler_delivery.py (``wrap_response``). The wrapper
+# is not keyed yet; when it is, import the same key here so ``strip_cron_wrapper`` keeps matching.
+CRON_WRAPPER_HEADER_PREFIX = "Cronjob Response: "
+CRON_WRAPPER_DIVIDER = "\n-------------\n\n"
+CRON_WRAPPER_FOOTER_PREFIX = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
 
 # Transcript anchors: [image|ybres:abc]  [file:report.pdf|ybres:xyz]  [voice|ybres:…]
 _YB_RES_REF_RE = re.compile(r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]")
@@ -116,7 +128,7 @@ _MIN_RESOLVE_CONCURRENCY = 1
 _MAX_RESOLVE_CONCURRENCY = 12
 
 
-def _iter_ybres_refs(matches) -> Iterator[Tuple[str, str, str]]:
+def _iter_ybres_refs(matches) -> Iterator[tuple[str, str, str]]:
     """Turn ``_YB_RES_REF_RE`` matches into ``(rid, kind, filename)`` for resolvable kinds only."""
     for m in matches:
         kind, _, filename = m.group(1).partition(":")
@@ -129,19 +141,12 @@ def _text_elem(text: str) -> dict:
     return {"msg_type": _TEXT_ELEM_TYPE, "msg_content": {"text": text}}
 
 
-def _cancel_all(tasks: Dict[str, asyncio.Task]) -> None:
+def _cancel_all(tasks: dict[str, asyncio.Task]) -> None:
     """Cancel every unfinished task in *tasks* and clear the dict."""
     for task in list(tasks.values()):
         if not task.done():
             task.cancel()
     tasks.clear()
-
-
-async def _cancel_task(task: asyncio.Task) -> None:
-    """Cancel *task* and wait for it to unwind (swallowing the CancelledError)."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
 
 
 class MarkdownProcessor:
@@ -400,7 +405,7 @@ class DecodeMiddleware(InboundMiddleware):
         return result
 
     @staticmethod
-    def json_sender_fields(raw_json: dict) -> Tuple[str, str]:
+    def json_sender_fields(raw_json: dict) -> tuple[str, str]:
         """(from_account, group_code) accepting both Tencent IM PascalCase and internal snake_case keys."""
         from_account = raw_json.get("from_account", "") or raw_json.get("From_Account", "")
         group_code = raw_json.get("group_code", "") or raw_json.get("GroupId", "") or raw_json.get("group_id", "")
@@ -699,39 +704,30 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy:
+class AccessPolicy(OwnAccessPolicyMixin):
     """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
-        self._dm_allow_from = dm_allow_from
+        self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
-    def _open_dm_opted_in(self) -> bool:
-        return any((_yb_secret(k, "") or "").lower() in {"true", "1", "yes"}
-                   for k in ("GATEWAY_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"))
-
-    def _evaluate(self, policy: str, allow_from: list[str], principal: str, *, pairing: bool) -> bool:
-        """Shared allow/deny rule; *pairing* is the verdict for the "pairing" policy."""
-        if policy == "allowlist":
-            return principal in allow_from
-        if policy == "pairing":
-            return pairing
-        if policy == "open":
-            return self._open_dm_opted_in()
-        return False  # "disabled" or unknown
-
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        return self._evaluate(self._dm_policy, self._dm_allow_from, sender_id.strip(), pairing=False)
+        return self._is_dm_allowed(sender_id.strip())
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        return bool(principal) and self._evaluate(self._dm_policy, self._dm_allow_from, principal, pairing=True)
+        return self._is_dm_intake_allowed(sender_id)
 
     def is_group_allowed(self, group_code: str) -> bool:
-        return self._evaluate(self._group_policy, self._group_allow_from, group_code.strip(), pairing=False)
+        """Unlike the shared rule, an ``open`` group still needs the allow-all opt-in: Yuanbao groups
+        have no runner-side mention gate, so open-without-opt-in would forward every member."""
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return self._is_group_allowed(group_code.strip())
 
     @property
     def dm_policy(self) -> str:
@@ -767,7 +763,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
         if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
-            _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
+            _cur_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or ""
             _should_set = not _cur_home or (_cur_home.startswith("group:") and ctx.chat_type == "dm")
             if ctx.chat_type == "dm":
                 adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
@@ -778,20 +774,23 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
+            from gateway.config import HomeChannel, persist_home_channel
+            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
+            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
+            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
+            # delivery in THIS process has a target without a restart.
+            persist_home_channel(home)
+            adapter.config.home_channel = home
+            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
+            # would make this tenant's chat the default profile's cron/notification home.
+            if not _profile_scoped():
+                os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
         except Exception as e:
             logger.warning("[%s] Auto-sethome failed: %s", adapter.name, e)
 
 
-def _iter_custom_elems(msg_body: list) -> Iterator[Tuple[Any, dict]]:
+def _iter_custom_elems(msg_body: list) -> Iterator[tuple[Any, dict]]:
     """Yield ``(custom, content)`` for each TIMCustomElem whose ``data`` parses as JSON (any type)."""
     for elem in msg_body or []:
         if not isinstance(elem, dict) or elem.get("msg_type") != "TIMCustomElem":
@@ -809,9 +808,9 @@ def _file_name(content: dict) -> str:
             or str(content.get("filename") or "").strip())
 
 
-def _media_ref(kind: str, url: str, name: str = "") -> Dict[str, str]:
+def _media_ref(kind: str, url: str, name: str = "") -> dict[str, str]:
     """media_refs entry; ``name`` is only emitted when non-empty."""
-    ref: Dict[str, str] = {"kind": kind, "url": url}
+    ref: dict[str, str] = {"kind": kind, "url": url}
     if name:
         ref["name"] = name
     return ref
@@ -933,9 +932,9 @@ class ExtractContentMiddleware(InboundMiddleware):
         return '/' + text[1:] if text.startswith('\uff0f') else text
 
     @staticmethod
-    def _extract_inbound_media_refs(msg_body: list) -> List[Dict[str, str]]:
+    def _extract_inbound_media_refs(msg_body: list) -> list[dict[str, str]]:
         """Inbound image/file refs: ``[{"kind": "image", "url": ...}, {"kind": "file", "url": ..., "name": ...}]``."""
-        refs: List[Dict[str, str]] = []
+        refs: list[dict[str, str]] = []
         for elem in msg_body or []:
             if not isinstance(elem, dict):
                 continue
@@ -1003,7 +1002,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
     _rewrite_slash_command = staticmethod(ExtractContentMiddleware._rewrite_slash_command)
 
     @classmethod
-    def _detect_owner_command(cls, *, push: dict, msg_body: list, chat_type: str, from_account: str) -> Tuple[Optional[str], Optional[str], bool]:
+    def _detect_owner_command(cls, *, push: dict, msg_body: list, chat_type: str, from_account: str) -> tuple[Optional[str], Optional[str], bool]:
         """→ (cmd, cmd_line, is_owner); (None, None, False) when not an allowlisted command."""
         if chat_type != "group" or not cls.ALLOWLIST:
             return None, None, False
@@ -1030,7 +1029,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if matched_cmd and not is_owner:
             logger.info("[%s] Reject non-owner slash command: chat=%s from=%s cmd=%s", adapter.name, ctx.chat_id, ctx.from_account, matched_cmd)
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
+                adapter.send(ctx.chat_id, t("platform.yuanbao.owner_command_denied", command=matched_cmd)),
                 name=f"yuanbao-owner-cmd-denial-{matched_cmd}"))
             return  # Stop pipeline
         if matched_cmd and is_owner and cmd_line:
@@ -1178,7 +1177,7 @@ class QuoteContextMiddleware(InboundMiddleware):
     """Extract quote/reply context from cloud_custom_data."""
     name = "quote-context"
 
-    def _extract_quote_context(self, cloud_custom_data: str) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_quote_context(self, cloud_custom_data: str) -> tuple[Optional[str], Optional[str]]:
         """(quote_id, quote_text) from cloud_custom_data → MessageEvent.reply_to_*."""
         try:
             parsed = json.loads(cloud_custom_data) if cloud_custom_data else None
@@ -1192,13 +1191,13 @@ class QuoteContextMiddleware(InboundMiddleware):
         sender = str(quote.get("sender_nickname") or quote.get("sender_id") or "").strip()
         return quote_id, (f"{sender}: {desc}" if sender else desc) if desc else None
 
-    async def _extract_media_refs_from_transcript(self, ctx: InboundContext) -> List[Tuple[str, str, str]]:
+    async def _extract_media_refs_from_transcript(self, ctx: InboundContext) -> list[tuple[str, str, str]]:
         """``(rid, kind, filename)`` for ybres anchors in the quoted transcript message; [] when
         there is no reply_to id, no store/source, or no resolvable anchors."""
         if ctx.reply_to_message_id is None:
             return []
         adapter = ctx.adapter
-        media_refs: List[Tuple[str, str, str]] = []
+        media_refs: list[tuple[str, str, str]] = []
         try:
             store = _session_store(adapter)
             if not store or ctx.source is None:
@@ -1253,7 +1252,7 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
             await ctx.adapter._outbound.heartbeat.send_heartbeat_once(ctx.chat_id, WS_HEARTBEAT_RUNNING)
 
     @classmethod
-    def _media_marker(cls, media: dict, plain_text: str = "") -> Tuple[str, Optional[Dict[str, str]]]:
+    def _media_marker(cls, media: dict, plain_text: str = "") -> tuple[str, Optional[dict[str, str]]]:
         """One ``multimedia`` entry → ``(marker, ref)``: ``[kind|ybres:RID]`` + media_refs dict when a
         RID/URL is usable, else a plain ``[kind] name`` marker and ``ref=None``."""
         media_type = (media.get("type", "") or media.get("doc_type", "")).strip().lower()
@@ -1275,15 +1274,15 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
         return f"[{media_type or 'media'}] {url or file_name}".rstrip(), None
 
     @classmethod
-    def _walk_forward_msgs(cls, forward_data: dict) -> Iterator[Tuple[str, str, List[Dict[str, str]]]]:
+    def _walk_forward_msgs(cls, forward_data: dict) -> Iterator[tuple[str, str, list[dict[str, str]]]]:
         """Yield ``(sender, body, refs)`` per ``ForwardMsgData['msg']`` record; body capped at
         FORWARD_MSG_TEXT_MAX_CHARS. ``refs`` keeps textual order — PatchAnchorsMiddleware relies on it."""
         for msg in (forward_data.get("msg") if isinstance(forward_data, dict) else None) or []:
             if not isinstance(msg, dict):
                 continue
             plain_text = msg.get("plainText", "")
-            refs: List[Dict[str, str]] = []
-            parts: List[str] = []
+            refs: list[dict[str, str]] = []
+            parts: list[str] = []
             for mc in msg.get("msgContent", []) or []:
                 if not isinstance(mc, dict):
                     continue
@@ -1327,12 +1326,12 @@ class MediaResolveMiddleware(InboundMiddleware):
     local paths."""
     name = "media-resolve"
     # Resource download cache keyed by resourceId: rid -> (local_path, mime, ts)
-    _resource_cache: ClassVar[Dict[str, Tuple[str, str, float]]] = {}
+    _resource_cache: ClassVar[dict[str, tuple[str, str, float]]] = {}
     _RESOURCE_CACHE_TTL_S: ClassVar[int] = 24 * 60 * 60
     _RESOURCE_CACHE_MAX_SIZE: ClassVar[int] = 256
 
     @classmethod
-    def _get_cached_resource(cls, resource_id: str) -> Optional[Tuple[str, str]]:
+    def _get_cached_resource(cls, resource_id: str) -> Optional[tuple[str, str]]:
         """Cached ``(local_path, mime)`` if unexpired and the file still exists (cache dir may be swept)."""
         entry = cls._resource_cache.get(resource_id) if resource_id else None
         if entry is None:
@@ -1355,7 +1354,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         cls._resource_cache[resource_id] = (local_path, mime, time.time())
 
     @classmethod
-    def _append_cached_resource(cls, adapter, resource_id: str, media_paths: List[str], mimes: List[str]) -> bool:
+    def _append_cached_resource(cls, adapter, resource_id: str, media_paths: list[str], mimes: list[str]) -> bool:
         """Append a cached resource to the output lists; False on miss."""
         hit = cls._get_cached_resource(resource_id)
         if hit is None:
@@ -1425,7 +1424,7 @@ class MediaResolveMiddleware(InboundMiddleware):
     async def _download_and_cache(
         cls, adapter, *, fetch_url: str, kind: str,
         file_name: Optional[str] = None, log_tag: str = "", resource_id: str = "",
-    ) -> Optional[Tuple[str, str]]:
+    ) -> Optional[tuple[str, str]]:
         """Download a Yuanbao resource into the local media cache → ``(local_path, mime)`` or None.
         A *resource_id* is checked against the in-memory cache first."""
         if resource_id:
@@ -1464,12 +1463,12 @@ class MediaResolveMiddleware(InboundMiddleware):
         return local_path, mime
 
     @classmethod
-    async def _resolve_media_urls(cls, adapter, media_refs: List[Dict[str, str]]) -> Tuple[List[str], List[str]]:
+    async def _resolve_media_urls(cls, adapter, media_refs: list[dict[str, str]]) -> tuple[list[str], list[str]]:
         """Resolve inbound media refs → (local_paths, mime_types); same bounded-concurrency,
         order-preserving, exception-isolated contract as :meth:`_resolve_ybres_refs`."""
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        active: List[Tuple[str, str, str, str]] = []  # (kind, filename, rid, url)
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        active: list[tuple[str, str, str, str]] = []  # (kind, filename, rid, url)
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
             url = str(ref.get("url") or "").strip()
@@ -1498,7 +1497,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         offline aggregation."""
         semaphore = asyncio.Semaphore(adapter.media_resolve_concurrency)
 
-        async def _one(kind: str, filename: str, rid: str, key: str) -> Optional[Tuple[str, str]]:
+        async def _one(kind: str, filename: str, rid: str, key: str) -> Optional[tuple[str, str]]:
             async with semaphore:
                 try:
                     fetch_url = await get_url(key)
@@ -1526,11 +1525,11 @@ class MediaResolveMiddleware(InboundMiddleware):
         )
 
     @classmethod
-    async def _resolve_ybres_refs(cls, adapter, refs: List[Tuple[str, str, str]], *, log_prefix: str) -> Tuple[List[str], List[str]]:
+    async def _resolve_ybres_refs(cls, adapter, refs: list[tuple[str, str, str]], *, log_prefix: str) -> tuple[list[str], list[str]]:
         """Resolve ``(rid, kind, filename)`` ybres tuples to local paths (bounded concurrency,
         input order preserved, per-rid failures isolated). Cache hits are served without a fetch."""
-        media_paths: List[str] = []
-        mimes: List[str] = []
+        media_paths: list[str] = []
+        mimes: list[str] = []
         active = [(kind, filename, rid, rid) for rid, kind, filename in refs
                   if kind in _RESOLVABLE_MEDIA_KINDS and not cls._append_cached_resource(adapter, rid, media_paths, mimes)]
         if active:
@@ -1544,7 +1543,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         return media_paths, mimes
 
     @classmethod
-    async def _collect_observed_media(cls, adapter, source) -> Tuple[List[str], List[str]]:
+    async def _collect_observed_media(cls, adapter, source) -> tuple[list[str], list[str]]:
         """Resolve recent observed image/file anchors from the transcript into ``(local_paths, mimes)``."""
         store = _session_store(adapter)
         if not store:
@@ -1560,7 +1559,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             return [], []
         # Walk newest→oldest (matches within a message too) so the per-turn cap keeps the
         # *latest* refs; ``order`` is reversed back to chronological before resolving.
-        order: List[Tuple[str, str, str]] = []  # (rid, kind, filename)
+        order: list[tuple[str, str, str]] = []  # (rid, kind, filename)
         seen: set = set()
         for msg in reversed((history or [])[-OBSERVED_MEDIA_BACKFILL_LOOKBACK:]):
             content = msg.get("content")
@@ -1579,17 +1578,17 @@ class MediaResolveMiddleware(InboundMiddleware):
         return await cls._resolve_ybres_refs(adapter, order[::-1], log_prefix="observed-media")
 
     @classmethod
-    async def _resolve_quote_media(cls, adapter, quote_media_refs: List[Tuple[str, str, str]]) -> Tuple[List[str], List[str]]:
+    async def _resolve_quote_media(cls, adapter, quote_media_refs: list[tuple[str, str, str]]) -> tuple[list[str], list[str]]:
         """Resolve ybres anchors of the quoted message (from QuoteContextMiddleware)."""
         return await cls._resolve_ybres_refs(adapter, quote_media_refs, log_prefix="quote")
 
     @staticmethod
-    def _collect_quote_local_media(ctx: InboundContext) -> Tuple[List[str], List[str]]:
+    def _collect_quote_local_media(ctx: InboundContext) -> tuple[list[str], list[str]]:
         """DM quote fallback: ``(local_paths, mimes)`` for media PatchAnchorsMiddleware already
         rewrote to ``[image: /path]`` / ``[file: name → /path]`` on the original turn. Unresolved
         anchors were that turn's failure — no re-download here."""
-        paths: List[str] = []
-        mimes: List[str] = []
+        paths: list[str] = []
+        mimes: list[str] = []
         cache = getattr(ctx.adapter, "_msg_content_cache", None)
         text = cache.get(ctx.reply_to_message_id) if ctx.reply_to_message_id and cache else None
         for m in _YB_LOCAL_MEDIA_RE.finditer(text if isinstance(text, str) else ""):
@@ -1605,10 +1604,10 @@ class MediaResolveMiddleware(InboundMiddleware):
         # In groups only @bot / owner-command turns reach here (GroupAtGuard short-circuits the
         # rest), so media download and observed-media hydration need no @bot re-check.
         adapter = ctx.adapter
-        urls: List[str] = []
-        types: List[str] = []
+        urls: list[str] = []
+        types: list[str] = []
 
-        def _add_unique_pairs(pair_lists: Tuple[List[str], List[str]]) -> None:
+        def _add_unique_pairs(pair_lists: tuple[list[str], list[str]]) -> None:
             for u, m in zip(*pair_lists):
                 if u and u not in urls:
                     urls.append(u)
@@ -1645,7 +1644,7 @@ class PatchAnchorsMiddleware(InboundMiddleware):
     name = "patch-anchors"
 
     @staticmethod
-    def _patch(text: str, urls: List[str], types: List[str]) -> str:
+    def _patch(text: str, urls: list[str], types: list[str]) -> str:
         patched = text
         for u, m in zip(urls, types):
             if not u.startswith("/"):
@@ -1677,11 +1676,8 @@ class DispatchMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        _sk = build_session_key(
-            ctx.source,
-            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-        )
+        # The adapter seam: keyed in the owner profile's namespace, same as ``handle_message``.
+        _sk = adapter._source_session_key(ctx.source)
 
         async def _dispatch_inbound_event() -> None:
             if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types):
@@ -1776,13 +1772,13 @@ class ConnectionManager:
         self._connect_id: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._pending_acks: Dict[str, asyncio.Future] = {}
+        self._pending_acks: dict[str, asyncio.Future] = {}
         self._pending_pong: Optional[asyncio.Future] = None
         self._consecutive_hb_timeouts = self._reconnect_attempts = 0
         self._reconnecting: bool = False
         # Debounce buffer aggregating multi-part inbound messages: sender key -> frames / timer
-        self._inbound_buffer: Dict[str, list] = {}
-        self._inbound_timers: Dict[str, asyncio.TimerHandle] = {}
+        self._inbound_buffer: dict[str, list] = {}
+        self._inbound_timers: dict[str, asyncio.TimerHandle] = {}
 
     @property
     def ws(self):
@@ -1805,7 +1801,7 @@ class ConnectionManager:
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
-            logger.warning("[%s] %s. Run: pip install websockets", adapter.name, msg)
+            logger.warning("[%s] %s. Run: hermes pm repair", adapter.name, msg)
             return False
         if not adapter._app_key or not adapter._app_secret:
             msg = "Yuanbao startup failed: YUANBAO_APP_ID and YUANBAO_APP_SECRET are required"
@@ -1843,6 +1839,7 @@ class ConnectionManager:
         self._ws = await asyncio.wait_for(
             websockets.connect(  # type: ignore[attr-defined]
                 self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
+                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
             ),
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
@@ -1872,7 +1869,7 @@ class ConnectionManager:
         for attr, _coro_name, _tag in self._LOOPS:
             task = getattr(self, attr)
             if task:
-                await _cancel_task(task)
+                await cancel_task(task)
                 setattr(self, attr, None)
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
@@ -2157,7 +2154,7 @@ class ConnectionManager:
 
 
 def _read_local_file(adapter, label: str, path: str, default_name: str, default_mime: str,
-                     filename: Optional[str] = None) -> Tuple[bytes, str, str]:
+                     filename: Optional[str] = None) -> tuple[bytes, str, str]:
     """(bytes, filename, content_type) for a local file; ValueError when missing."""
     if not os.path.isfile(path):
         raise ValueError(f"File not found: {path}")
@@ -2176,7 +2173,7 @@ class MediaSendHandler(ABC):
         return True
 
     @abstractmethod
-    async def acquire_file(self, adapter: "YuanbaoAdapter", **kwargs: Any) -> Tuple[bytes, str, str]:
+    async def acquire_file(self, adapter: "YuanbaoAdapter", **kwargs: Any) -> tuple[bytes, str, str]:
         """(file_bytes, filename, content_type); raise ValueError when unobtainable."""
 
     @abstractmethod
@@ -2282,8 +2279,8 @@ class HeartbeatManager:
     """Reply heartbeat lifecycle: RUNNING every 2s, auto-FINISH after 30s idle, explicit stop."""
     def __init__(self, adapter: "YuanbaoAdapter") -> None:
         self._adapter = adapter
-        self._reply_heartbeat_tasks: Dict[str, asyncio.Task] = {}
-        self._reply_hb_last_active: Dict[str, float] = {}
+        self._reply_heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._reply_hb_last_active: dict[str, float] = {}
 
     def _ready(self) -> bool:
         return self._adapter._connection.ws is not None and bool(self._adapter._bot_id)
@@ -2339,7 +2336,7 @@ class HeartbeatManager:
         """Stop the RUNNING sender and optionally send FINISH."""
         task = self._reply_heartbeat_tasks.pop(chat_id, None)
         if task and not task.done():
-            await _cancel_task(task)
+            await cancel_task(task)
         if send_finish:
             await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
 
@@ -2353,7 +2350,7 @@ class SlowResponseNotifier:
     def __init__(self, adapter: "YuanbaoAdapter", sender: "MessageSender") -> None:
         self._adapter = adapter
         self._sender = sender
-        self._tasks: Dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
 
     async def start(self, chat_id: str) -> None:
         self.cancel(chat_id)
@@ -2363,7 +2360,7 @@ class SlowResponseNotifier:
         try:
             await asyncio.sleep(SLOW_RESPONSE_TIMEOUT_S)
             logger.info("[%s] Agent response exceeded %ds for %s, sending wait notice", self._adapter.name, int(SLOW_RESPONSE_TIMEOUT_S), chat_id)
-            await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
+            await self._sender.send_text_chunk(chat_id, slow_response_message())
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -2389,7 +2386,7 @@ class MessageSender:
     def __init__(self, adapter: "YuanbaoAdapter") -> None:
         self._adapter = adapter
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()
-        self._media_handlers: Dict[str, MediaSendHandler] = {
+        self._media_handlers: dict[str, MediaSendHandler] = {
             "image_url": ImageUrlHandler(), "image_file": ImageFileHandler(), "document": DocumentHandler(), "sticker": StickerHandler(),
         }
 
@@ -2429,7 +2426,7 @@ class MessageSender:
             return SendResult(success=False, error=f"Unknown media handler: {handler_name!r}")
         return await handler.handle(self._adapter, chat_id, reply_to=reply_to, caption=caption, **kwargs)
 
-    async def send_direct(self, chat_id: str, message: str, media_files: Optional[List[Tuple[str, bool]]] = None) -> Dict[str, Any]:
+    async def send_direct(self, chat_id: str, message: str, media_files: Optional[list[tuple[str, bool]]] = None) -> dict[str, Any]:
         """send_message tool entry: text first, then each media file by extension, on the running adapter."""
         adapter = self._adapter
         last_result: Optional["SendResult"] = None
@@ -2555,7 +2552,7 @@ class MessageSender:
         return None
 
     @staticmethod
-    def truncate_message(content: str, max_length: int = 4000, len_fn: Optional[Callable[[str], int]] = None) -> List[str]:
+    def truncate_message(content: str, max_length: int = 4000, len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
         """Table/fence-aware chunking via MarkdownProcessor, stripping ``(1/3)`` page indicators."""
         if (len_fn or len)(content) <= max_length:
             return [content]
@@ -2565,10 +2562,10 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip the scheduler's cron header/footer wrapper; unchanged when the shape doesn't match."""
-        if not content.startswith("Cronjob Response: "):
+        if not content.startswith(CRON_WRAPPER_HEADER_PREFIX):
             return content
-        divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        divider = CRON_WRAPPER_DIVIDER
+        footer_prefix = CRON_WRAPPER_FOOTER_PREFIX
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos or "\n(job_id: " not in content[:divider_pos]:
@@ -2602,14 +2599,31 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
+    # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
+    # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
+    # unscoped path.
+    _active_instances: ClassVar[dict[str, "YuanbaoAdapter"]] = {}
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        return cls._active_instance
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            return cls._active_instance
+        return cls._active_instances.get(hermes_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        cls._active_instance = adapter
+        from hermes_constants import get_hermes_home_override, hermes_home_key
+
+        if get_hermes_home_override() is None:
+            cls._active_instance = adapter
+        elif adapter is None:
+            cls._active_instances.pop(hermes_home_key(), None)
+        else:
+            cls._active_instances[hermes_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)
@@ -2631,15 +2645,15 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._inbound_tasks: set[asyncio.Task] = set()  # cancelled by disconnect()
         self._background_tasks: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive
         # group_code -> (updated_ts, members); used by @mention resolution, stale after MEMBER_CACHE_TTL_S
-        self._member_cache: Dict[str, Tuple[float, list]] = {}
+        self._member_cache: dict[str, tuple[float, list]] = {}
         self.MEMBER_CACHE_TTL_S: float = 300.0
         self._dedup = MessageDeduplicator(ttl_seconds=300)  # WS reconnect / network jitter
-        self._group_queues: Dict[str, asyncio.Queue] = {}  # session_key → sequential dispatch queue
+        self._group_queues: dict[str, asyncio.Queue] = {}  # session_key → sequential dispatch queue
         # Recall support: msg_id/text being processed per session_key (RecallGuardMiddleware), plus a
         # bounded msg_id → content cache for content-match redaction when rows lack a message_id.
-        self._processing_msg_ids: Dict[str, str] = {}
-        self._processing_msg_texts: Dict[str, str] = {}
-        self._msg_content_cache: Dict[str, str] = {}
+        self._processing_msg_ids: dict[str, str] = {}
+        self._processing_msg_texts: dict[str, str] = {}
+        self._msg_content_cache: dict[str, str] = {}
 
         def _policy(kind: str) -> tuple[str, list[str]]:
             policy = (_extra.get(f"{kind}_policy") or _yb_secret(f"YUANBAO_{kind.upper()}_POLICY") or "pairing").strip().lower()
@@ -2648,7 +2662,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._access_policy = AccessPolicy(*_policy("dm"), *_policy("group"))
         self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
         # Auto-sethome stays open when no home is set or the home is a group (upgradable by first DM).
-        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (config.home_channel.chat_id if config.home_channel else "")
+        _existing_home = _yb_secret("YUANBAO_HOME_CHANNEL", "") or (config.home_channel.chat_id if config.home_channel else "")
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
     def _track_task(self, task: asyncio.Task) -> asyncio.Task:
@@ -2659,7 +2673,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @property
     def enforces_own_access_policy(self) -> bool:
-        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        """Intake gating lives in ``AccessPolicy`` (composed, not inherited), so the flag stays here."""
         return True
 
     def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
@@ -2692,7 +2706,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""
         if YuanbaoAdapter._active_instance is self:
-            YuanbaoAdapter.set_active(None)
+            YuanbaoAdapter._active_instance = None
+        for home_key, active in list(YuanbaoAdapter._active_instances.items()):
+            if active is self:
+                del YuanbaoAdapter._active_instances[home_key]
         self._running = False
         self._mark_disconnected()
         self._release_platform_lock()
@@ -2706,10 +2723,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None, group_code: str = "") -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None, group_code: str = "") -> SendResult:
         return await self._outbound.sender.send_text(chat_id, content, reply_to, group_code=group_code)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "group" if chat_id.startswith("group:") else "dm"}
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict] = None) -> None:
@@ -2776,7 +2793,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         if not self._access_policy.is_dm_allowed(user_id):
             return SendResult(success=False, error="DM access denied for this user")
         if len(text) > self.DM_MAX_CHARS:
-            text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
+            text = text[:self.DM_MAX_CHARS] + t("platform.shared.truncated_suffix")
         return await self.send(f"direct:{user_id}", text, group_code=group_code)
 
     # Media sends delegate to MessageSender.send_media via the named handler strategy.
@@ -2801,205 +2818,3 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def _get_cached_token(self) -> dict:
         """Current valid sign token (module-level cache)."""
         return await SignManager.get_token(self._app_key, self._app_secret, self._api_domain, route_env=self._route_env)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-AUTH_FAILED_CODES = {4001, 4002, 4003}      # permanent auth failure, re-sign token
-
-AUTH_RETRYABLE_CODES = {4010, 4011, 4099}   # transient, can retry with same token
-
-class FileUrlHandler(MediaSendHandler):
-    """Strategy: send file from a URL (download → COS → TIMFileElem)."""
-
-    async def acquire_file(self, adapter, **kwargs):
-        file_url: str = kwargs["file_url"]
-        logger.info("[%s] FileUrlHandler: downloading %s", adapter.name, file_url)
-        file_bytes, content_type = await media_download_url(
-            file_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
-        )
-        filename = kwargs.get("filename")
-        if not filename:
-            path_part = file_url.split("?")[0]
-            filename = os.path.basename(path_part) or "file"
-        if not content_type or content_type == "application/octet-stream":
-            content_type = guess_mime_type(filename) or "application/octet-stream"
-        return file_bytes, filename, content_type
-
-    def build_msg_body(self, upload_result, **kwargs):
-        return build_file_msg_body(
-            url=upload_result["url"],
-            filename=kwargs["filename"],
-            uuid=kwargs["file_uuid"],
-            size=upload_result["size"],
-        )
-
-class GroupQueryService:
-    """Encapsulates all group query operations (both low-level WS calls and
-    higher-level AI-tool-facing wrappers).
-
-    Responsibilities:
-      - Low-level WS encode/decode for group info and member list queries
-      - Chat-id parsing, error wrapping and result filtering for AI tools
-      - Member cache population on the adapter
-    """
-
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
-        self._adapter = adapter
-
-    # ------------------------------------------------------------------
-    # Low-level WS query methods
-    # ------------------------------------------------------------------
-
-    async def query_group_info_raw(self, group_code: str) -> Optional[dict]:
-        """Query group info via WS (group name, owner, member count, etc.).
-
-        Returns:
-            Decoded dict or None on failure.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_query_group_info(group_code)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] query_group_info failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                return decode_query_group_info_rsp(biz_data)
-            return {"group_code": group_code}
-        except asyncio.TimeoutError:
-            logger.warning("[%s] query_group_info timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] query_group_info failed: %s", adapter.name, exc)
-            return None
-
-    async def get_group_member_list_raw(
-        self, group_code: str, offset: int = 0, limit: int = 200
-    ) -> Optional[dict]:
-        """Query group member list via WS.
-
-        Returns:
-            Decoded dict or None on failure.  Also populates adapter._member_cache.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] get_group_member_list failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                result = decode_get_group_member_list_rsp(biz_data)
-            else:
-                result = {"members": [], "next_offset": 0, "is_complete": True}
-            if result and result.get("members"):
-                adapter._member_cache[group_code] = (time.time(), result["members"])
-            return result
-        except asyncio.TimeoutError:
-            logger.warning("[%s] get_group_member_list timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] get_group_member_list failed: %s", adapter.name, exc)
-            return None
-
-    # ------------------------------------------------------------------
-    # AI-tool-facing wrappers (chat_id parsing + filtering)
-    # ------------------------------------------------------------------
-
-    async def query_group_info(self, chat_id: str) -> dict:
-        """AI tool: Query current group info.
-
-        No parameters needed (group_code extracted from session context).
-        Returns group name, owner, member count, etc.
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.query_group_info_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group info"}
-        return result
-
-    async def query_session_members(
-        self,
-        chat_id: str,
-        action: str = "list_all",
-        name: Optional[str] = None,
-    ) -> dict:
-        """AI tool: Query group member list.
-
-        Args:
-            chat_id: Chat ID (extracted from session context)
-            action: 'find' (search by name) | 'list_bots' (list bots) | 'list_all' (list all)
-            name: Search keyword when action='find'
-
-        Returns:
-            {"members": [...], "total": int, "mentionHint": str}
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.get_group_member_list_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group members"}
-
-        members = result.get("members", [])
-
-        if action == "find" and name:
-            query = name.lower()
-            members = [
-                m for m in members
-                if query in (m.get("nickname", "") or "").lower()
-                or query in (m.get("name_card", "") or "").lower()
-                or query in (m.get("user_id", "") or "").lower()
-            ]
-        elif action == "list_bots":
-            members = [m for m in members if "bot" in (m.get("nickname", "") or "").lower()]
-
-        # Construct mentionHint
-        mention_hint = ""
-        if members and len(members) <= 10:
-            names = [m.get("name_card") or m.get("nickname") or m.get("user_id", "") for m in members]
-            mention_hint = "Mention with @name: " + ", ".join(names)
-
-        return {
-            "members": members[:50],  # Limit return count
-            "total": len(members),
-            "mentionHint": mention_hint,
-        }
-
-REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
-
-def get_active_adapter() -> Optional["YuanbaoAdapter"]:
-    """Delegate to ``YuanbaoAdapter.get_active()``."""
-    return YuanbaoAdapter.get_active()
-
-async def send_yuanbao_direct(
-    adapter: "YuanbaoAdapter",
-    chat_id: str,
-    message: str,
-    media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
-    """Delegate to ``OutboundManager.send_direct``."""
-    return await adapter._outbound.sender.send_direct(chat_id, message, media_files)
-# ---- END PLUGIN-COMPAT ----

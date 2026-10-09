@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from hermes_cli.timefmt import coerce_epoch
+
 _DURATION_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*"
     r"(s|sec|secs|second|seconds|"
@@ -51,8 +53,8 @@ def parse_point_in_time(value: str, flag: str) -> float:
 
 
 def format_epoch(ts: Optional[float]) -> str:
-    """Render an epoch timestamp as a short local-time string."""
-    return "-" if ts is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    """Render an epoch timestamp as a short local-time string; ``-`` when unset or corrupt."""
+    return "-" if (ts := coerce_epoch(ts)) is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 # (filter key, argparse attr, CLI flag, description template) for the four epoch bounds.
@@ -91,13 +93,13 @@ _ARG_FILTERS = (
 )
 
 
-def build_prune_filters(args: Any) -> Dict[str, Any]:
+def build_prune_filters(args: Any) -> dict[str, Any]:
     """Translate argparse Namespace flags into SessionDB filter kwargs.
 
-    ``--older-than`` / ``--newer-than`` bound last activity (latest message timestamp, falling back
-    to ``started_at`` for empty sessions); ``--before`` / ``--after`` bound session start time.
+    ``--older-than`` / ``--newer-than`` bound last activity (freshest of ``last_activity_at`` /
+    latest message / ``started_at``); ``--before`` / ``--after`` bound session start time.
     """
-    bounds: Dict[str, Optional[float]] = {
+    bounds: dict[str, Optional[float]] = {
         key: None if (raw := getattr(args, attr, None)) is None else parse_point_in_time(raw, flag)
         for key, attr, flag, _ in _TIME_BOUNDS
     }
@@ -114,7 +116,7 @@ def build_prune_filters(args: Any) -> Dict[str, Any]:
     return {"older_than_days": None, **bounds, **{key: getattr(args, attr, None) for key, attr, _ in _ARG_FILTERS}}
 
 
-def describe_filters(filters: Dict[str, Any]) -> str:
+def describe_filters(filters: dict[str, Any]) -> str:
     """Human-readable summary of active filters for confirmation prompts."""
     parts = [
         template.format(v=format_epoch(filters[key])) for key, _, _, template in _TIME_BOUNDS

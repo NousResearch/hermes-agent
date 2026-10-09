@@ -36,7 +36,8 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from tasks import SYSTEM, TASKS  # noqa: E402
+from agent.compression_marker import elide
+from tasks import SYSTEM, TASKS
 
 ALLOWED_KEYS = {
     "query", "role_filter", "limit", "session_id", "around_message_id",
@@ -85,21 +86,7 @@ def load_arm(path: Path, name: str, work_db_path: Path):
             return SessionDB(db_path=work_db_path, read_only=True)
         raise ValueError(f"profile '{profile}' does not exist")
 
-    def _fake_locate_session_db(session_id):
-        try:
-            db = SessionDB(db_path=work_db_path, read_only=True)
-            row = db._conn.execute(
-                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            if row:
-                return db, "work"
-            db.close()
-        except Exception:
-            pass
-        return None, None
-
     mod._resolve_profile_db = _fake_resolve_profile_db
-    mod._locate_session_db = _fake_locate_session_db
     return mod
 
 
@@ -132,7 +119,7 @@ def exec_tool(arm_mod, args, main_db_path: Path):
                 "error": f"unexpected parameter(s): {', '.join(bad)}",
             }), True
         return arm_mod.session_search(db=db, **kwargs), False
-    except Exception as e:  # noqa: BLE001 — tool errors go back to the model
+    except Exception as e:
         return json.dumps({
             "success": False, "error": f"{type(e).__name__}: {e}",
         }), True
@@ -190,8 +177,7 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
                 out, was_err = exec_tool(arm_mod, args, main_db_path)
             if was_err:
                 bad_calls += 1
-            if len(out) > 30000:
-                out = out[:30000] + "...[truncated]"
+            out = elide(out, 30000)
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": out})
     return {
@@ -275,7 +261,7 @@ def main():
                                       f"bad={r['bad_calls']} "
                                       f"ptok={r['first_prompt_tokens']}")
                                 break
-                            except Exception as e:  # noqa: BLE001
+                            except Exception as e:
                                 print(f"RETRY {task_id} {arm_name} rep{rep}: {e}")
                                 traceback.print_exc()
                                 time.sleep(5 * (attempt + 1))

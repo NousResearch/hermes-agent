@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**/voice 用法**\n• `/voice on` — 當你傳送語音訊息時以語音回覆\n• `/voice tts` — 對*每則*訊息都以語音回覆\n• `/voice off` — 恢復為純文字回覆\n• `/voice status` — 顯示目前模式\n• `/voice`（無參數）— 在開啟和關閉之間快速切換{channels}"
     help_channels: "\n\n**即時語音頻道 (Discord)**\n• 先加入一個語音頻道，然後 `/voice channel` — 我會加入、聆聽並以語音回覆\n• `/voice leave` — 中斷語音頻道"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ STT 備援：{fallback_from} 失敗，因此 Hermes 改用 {provider_used} / faster-whisper。"
     channel_unsupported: "此平台不支援語音頻道。"
     channel_guild_only: "此指令僅能在 Discord 伺服器中使用。"
     channel_not_in_voice: "你需要先加入一個語音頻道。"

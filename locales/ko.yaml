@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
     help_channels: "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ STT 대체: {fallback_from}에 실패하여 Hermes가 {provider_used} / faster-whisper를 사용했습니다."
     channel_unsupported: "이 플랫폼에서는 음성 채널을 지원하지 않아요."
     channel_guild_only: "이 명령은 Discord 서버에서만 동작해요."
     channel_not_in_voice: "먼저 음성 채널에 들어가 있어야 해요."

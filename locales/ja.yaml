@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
     help_channels: "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ STT のフォールバック: {fallback_from} に失敗したため、Hermes は {provider_used} / faster-whisper を使用しました。"
     channel_unsupported: "このプラットフォームでは音声チャンネルはサポートされていません。"
     channel_guild_only: "このコマンドは Discord サーバー内でのみ使えます。"
     channel_not_in_voice: "先に音声チャンネルに参加してください。"

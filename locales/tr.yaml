@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
     help_channels: "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ STT yedeği: {fallback_from} başarısız oldu, bu yüzden Hermes {provider_used} / faster-whisper kullandı."
     channel_unsupported: "Bu platformda ses kanalları desteklenmiyor."
     channel_guild_only: "Bu komut yalnızca bir Discord sunucusunda çalışır."
     channel_not_in_voice: "Önce bir ses kanalında olmanız gerekir."

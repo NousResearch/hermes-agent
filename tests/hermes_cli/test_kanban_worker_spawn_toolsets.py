@@ -133,7 +133,18 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
-    assert args.query == "work kanban task t_spawn_tools"
+    # WAF-safe seed (IBF, 2026-09-07): the dispatcher must not send a short
+    # message ending in a bare hex token — agentrouter WAF answers HTTP 400
+    # content-blocked and the worker dies in seconds. The check is on the
+    # SHAPE, not on one literal: prose start, the task id present, and the id
+    # not left dangling at the end of the message.
+    query = args.query
+    assert query.startswith("Begin your assigned kanban card now"), (
+        f"сид воркера должен быть прозаическим, получено: {query[:80]!r}")
+    assert "t_spawn_tools" in query, (
+        f"сид воркера должен называть задачу, получено: {query[:80]!r}")
+    assert not query.rstrip().endswith("t_spawn_tools"), (
+        "идентификатор задачи не должен стоять в конце сообщения — WAF режет такой сид")
 
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):

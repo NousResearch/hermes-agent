@@ -633,6 +633,56 @@ def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
 
+_EMBED_MAX_DIMENSION = 1568
+
+
+def _embed_capture_image_url(cap: CaptureResult, screenshot_path: Optional[str]) -> str:
+    """Data URL for the capture, compressed to the vision embed budget when possible.
+
+    A capture baked into a tool result is re-sent on EVERY later turn, so one raw
+    1568x887 PNG (~1.9 MB base64, ~476K billed tokens) can wedge a whole session.
+    Ride the same budget the vision path already enforces: downscale to the 1568px
+    long edge and re-encode through the JPEG quality ladder, keeping whichever of
+    PNG/JPEG is smaller and never exceeding the raw payload.
+    """
+    mime = _capture_image_format(cap)[0]
+    raw_url = f"data:{mime};base64,{cap.png_b64}"
+    tmp_path = None
+    try:
+        from pathlib import Path as _Path
+        from tools.vision_tools import _resize_image_for_vision
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
+
+        src = _Path(screenshot_path) if screenshot_path else None
+        if src is None or not src.exists():
+            tmp_path = _cache_file("cache/images", "image_cache", f"embed_src_{uuid.uuid4().hex}.png")
+            tmp_path.write_bytes(base64.b64decode(cap.png_b64, validate=False))
+            src = tmp_path
+        budget = resolve_embed_target_bytes()
+        candidates = []
+        for as_jpeg in (True, False):
+            try:
+                cand = _resize_image_for_vision(src, mime, max_base64_bytes=budget,
+                                                max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=as_jpeg)
+                if cand:
+                    candidates.append(cand)
+            except Exception:
+                continue
+        if not candidates:
+            return raw_url
+        candidates.append(raw_url)
+        return min(candidates, key=len)
+    except Exception as exc:
+        logger.debug("computer_use: capture embed compression skipped: %s", exc)
+        return raw_url
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     """One capture's derived facts, computed once for every response branch: ``visible`` is the capped element list,
     ``dims_omitted`` an image below the provider minimum."""
@@ -713,7 +763,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             return {
                 "_multimodal": True,
                 "content": [{"type": "text", "text": summary},
-                            {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
+                            {"type": "image_url", "image_url": {"url": _embed_capture_image_url(cap, v.screenshot_path)}}],
                 "text_summary": summary,
                 "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
                          **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},

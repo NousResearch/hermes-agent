@@ -159,6 +159,7 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     _web_server_dashboard._invalidate_plugins_hub_cache()
 
     calls = {"discover": 0}
+    install_calls = []
 
     def discover_all_plugins():
         calls["discover"] += 1
@@ -178,15 +179,18 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     # Simulate a successful install through the endpoint; its invalidation
     # hook must drop the memoized payload so the next fetch rebuilds.
     monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
-    monkeypatch.setattr(
-        plugins_cmd, "dashboard_install_plugin", lambda *a, **k: {"ok": True}
-    )
+    def fake_install(*args, **kwargs):
+        install_calls.append((args, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", fake_install)
 
     asyncio.run(
         _rt_dashboard_ui.post_agent_plugin_install(
-            object(), _AgentPluginInstallBody(identifier="demo")
+            object(), _AgentPluginInstallBody(identifier="demo", assume_deps_consent=True)
         )
     )
+    assert install_calls[0][1]["assume_deps_consent"] is True
 
     _web_server_dashboard._merged_plugins_hub()
     assert calls["discover"] == 2

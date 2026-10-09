@@ -44,6 +44,7 @@ export const ruPluginSettings = {
       gitCloneLabel: 'URL для git clone',
       enableAgent: 'Включить плагин агента после установки',
       forceReinstall: 'Принудительная переустановка (заменить, если уже установлен)',
+      installPythonDependencies: 'Разрешаю установить объявленные Python-зависимости плагина',
       pinToCommit: 'Закрепить на коммите (необязательно)',
       pinToCommitPlaceholder: 'Полный SHA коммита (40 символов)',
       pinToCommitHint:

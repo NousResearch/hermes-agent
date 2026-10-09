@@ -49,6 +49,19 @@ describe('installAgentPlugin', () => {
     )
   })
 
+  it('forwards explicit dependency consent only when provided', async () => {
+    const request = vi.fn(async (_method: string, _params?: Record<string, unknown>, _timeoutMs?: number) =>
+      ({ ok: true, plugin_name: 'demo' }))
+
+    await installAgentPlugin(request as never, {
+      identifier: 'demo', force: true, enable: true, assumeDepsConsent: true
+    })
+    await installAgentPlugin(request as never, { identifier: 'demo', force: true, enable: true })
+
+    expect(request.mock.calls[0][1]).toMatchObject({ force: true, assume_deps_consent: true })
+    expect(request.mock.calls[1][1]).not.toHaveProperty('assume_deps_consent')
+  })
+
   it('marks a client timeout as an unknown install outcome', async () => {
     const request = vi.fn(async () => {
       throw new Error('request timed out after 120s: plugins.manage')

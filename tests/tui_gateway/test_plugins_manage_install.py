@@ -34,6 +34,47 @@ def test_plugins_manage_install_failure():
     assert "error" in resp
     assert "Git clone failed" in resp["error"]["message"]
 
+
+def test_plugins_manage_install_forwards_explicit_dependency_consent():
+    with patch(
+        "hermes_cli.plugins_cmd.dashboard_install_plugin",
+        return_value={"ok": False, "error": "Reinstall declined"},
+    ) as install:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "plugins.manage",
+                "params": {
+                    "action": "install",
+                    "identifier": "example/plugin",
+                    "force": True,
+                    "assume_deps_consent": True,
+                },
+            }
+        )
+
+    assert install.call_args.kwargs["assume_deps_consent"] is True
+
+
+def test_plugins_manage_install_does_not_infer_consent_from_force():
+    with patch(
+        "hermes_cli.plugins_cmd.dashboard_install_plugin",
+        return_value={"ok": False, "error": "Reinstall declined"},
+    ) as install:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "plugins.manage",
+                "params": {
+                    "action": "install",
+                    "identifier": "example/plugin",
+                    "force": True,
+                },
+            }
+        )
+
+    assert install.call_args.kwargs["assume_deps_consent"] is None
+
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
     from hermes_cli import plugins_cmd

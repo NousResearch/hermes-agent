@@ -233,7 +233,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
     result = await _plugin_mutation(lambda: _plugin_action(
         dashboard_install_plugin(
             identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
-            ref=body.ref),
+            ref=body.ref, assume_deps_consent=body.assume_deps_consent),
         "Install failed.", rescan=True))
     # Strip internal paths from the response
     result.pop("after_install_path", None)

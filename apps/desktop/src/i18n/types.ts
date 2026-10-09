@@ -691,6 +691,7 @@ export interface Translations extends NoticeTranslations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        installPythonDependencies: string
         pinToCommit: string
         pinToCommitPlaceholder: string
         pinToCommitHint: string

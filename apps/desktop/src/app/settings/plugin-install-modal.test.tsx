@@ -155,6 +155,53 @@ describe('Install from Git entry flow', () => {
     )
   })
 
+  it('requires separate consent for Python dependencies when force-reinstalling an agent plugin', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockResolvedValue({ ok: false, error: 'Reinstall declined' })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+
+    await screen.findByRole('textbox', { name: 'Pin to commit (optional)' })
+    fireEvent.click(screen.getByRole('switch', { name: 'Force reinstall (replace if already installed)' }))
+    const consent = await screen.findByRole('checkbox', {
+      name: 'I approve installing this plugin’s declared Python dependencies'
+    })
+    expect(consent.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage', expect.objectContaining({ action: 'install', force: true, assume_deps_consent: false }), expect.any(Number)
+    ))
+  })
+
+  it('sends dependency consent only after the user checks it on a forced replacement', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockResolvedValue({ ok: false, error: 'test stop' })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+
+    await screen.findByRole('textbox', { name: 'Pin to commit (optional)' })
+    fireEvent.click(screen.getByRole('switch', { name: 'Force reinstall (replace if already installed)' }))
+    fireEvent.click(await screen.findByRole('checkbox', {
+      name: 'I approve installing this plugin’s declared Python dependencies'
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage', expect.objectContaining({ action: 'install', force: true, assume_deps_consent: true }), expect.any(Number)
+    ))
+  })
+
+  it('preserves fresh-install consent behavior without the force-reinstall field', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockResolvedValue({ ok: true, plugin_name: 'plugin', enabled: true })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+    await screen.findByRole('textbox', { name: 'Pin to commit (optional)' })
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage', expect.not.objectContaining({ assume_deps_consent: expect.anything() }), expect.any(Number)
+    ))
+  })
+
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
     requestGateway.mockImplementation(async method =>

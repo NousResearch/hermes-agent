@@ -1887,7 +1887,8 @@ def _plugins_install(rid, params):
     _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
+        ref=str(params.get("ref") or "").strip() or None,
+        assume_deps_consent=params.get("assume_deps_consent"))
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "install failed")
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)

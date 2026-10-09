@@ -288,6 +288,8 @@ export async function installAgentPlugin(
     identifier: string
     force?: boolean
     enable?: boolean
+    /** Explicit consent for installing declared Python dependencies on forced replacement. */
+    assumeDepsConsent?: boolean
     /** Curated-catalog install: the backend resolves repo + pinned SHA from
      *  its own plugin-catalog and records provenance in the sidecar. */
     catalogName?: string
@@ -320,6 +322,7 @@ export async function installAgentPlugin(
           identifier: opts.identifier,
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
+          ...(opts.assumeDepsConsent !== undefined ? { assume_deps_consent: opts.assumeDepsConsent } : {}),
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
           ...(opts.ref ? { ref: opts.ref } : {})
         },

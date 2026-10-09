@@ -89,6 +89,7 @@ export function PluginInstallModal() {
   const [installDesktop, setInstallDesktop] = useState(true)
   const [enableAgent, setEnableAgent] = useState(true)
   const [forceReinstall, setForceReinstall] = useState(false)
+  const [confirmDependencyInstall, setConfirmDependencyInstall] = useState(false)
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
@@ -103,6 +104,7 @@ export function PluginInstallModal() {
     setInstallDesktop(true)
     setEnableAgent(true)
     setForceReinstall(false)
+    setConfirmDependencyInstall(false)
     setPinRef('')
     setInstalling(false)
     setInstallError(null)
@@ -133,6 +135,7 @@ export function PluginInstallModal() {
       // (installing a reviewed entry to not use it is the rare case).
       setEnableAgent(payload.enable ?? true)
       setForceReinstall(payload.force ?? false)
+      setConfirmDependencyInstall(false)
 
       const probeFn = window.hermesDesktop?.probePluginRepo
 
@@ -249,6 +252,7 @@ export function PluginInstallModal() {
           identifier: request.repo,
           force: forceReinstall,
           enable: enableAgent,
+          assumeDepsConsent: forceReinstall ? confirmDependencyInstall : undefined,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
           profile: targetProfile
@@ -568,7 +572,27 @@ export function PluginInstallModal() {
                     <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                       {m.forceReinstall}
                     </span>
-                    <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
+                    <Switch
+                      checked={forceReinstall}
+                      disabled={busy}
+                      onCheckedChange={checked => {
+                        setForceReinstall(checked)
+                        if (!checked) setConfirmDependencyInstall(false)
+                      }}
+                    />
+                  </label>
+                )}
+
+                {forceReinstall && installAgent && (
+                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+                    <Checkbox
+                      checked={confirmDependencyInstall}
+                      disabled={busy}
+                      onCheckedChange={value => setConfirmDependencyInstall(value === true)}
+                    />
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.installPythonDependencies}
+                    </span>
                   </label>
                 )}
 

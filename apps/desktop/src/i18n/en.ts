@@ -831,6 +831,7 @@ export const en: Translations = {
         gitCloneLabel: 'Git clone URL',
         enableAgent: 'Enable agent plugin after install',
         forceReinstall: 'Force reinstall (replace if already installed)',
+        installPythonDependencies: 'I approve installing this plugin’s declared Python dependencies',
         pinToCommit: 'Pin to commit (optional)',
         pinToCommitPlaceholder: 'Full 40-character commit SHA',
         pinToCommitHint:

@@ -606,6 +606,7 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    assume_deps_consent: bool | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
 

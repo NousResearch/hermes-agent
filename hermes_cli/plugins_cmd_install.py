@@ -336,7 +336,7 @@ def _install_plugin_core(
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
-    assume_deps_consent: bool = False,
+    assume_deps_consent: Optional[bool] = None,
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
@@ -479,7 +479,7 @@ def _install_plugin_core(
                 f"copies are under {backup} (re-apply by hand).[/yellow]")
         try:
             publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True,
-                           assume_consent=assume_deps_consent)
+                           assume_consent=assume_deps_consent is True)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}",
                                              failure_class=_publish_failure_class(exc)) from exc

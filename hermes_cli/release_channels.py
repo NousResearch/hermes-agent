@@ -27,6 +27,13 @@ class ChannelNotFound(ChannelError):
     pass
 
 
+class ChannelUnavailable(ChannelError):
+    """The channel archive could not be reached (HTTP error or transient network
+    fault), as opposed to metadata that was retrieved but found invalid. A source
+    ``main`` subscription may transiently fall back to its git branch on this,
+    exactly as it does for a not-yet-published record."""
+
+
 def _match(pattern: str, value: object, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(pattern, value, re.ASCII) is None:
         raise ChannelError(f"Invalid {label}")
@@ -300,9 +307,9 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
-            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
+            raise ChannelUnavailable(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:
-            raise ChannelError("Channel read unavailable") from exc
+            raise ChannelUnavailable("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")
         if sha256 is not None and hashlib.sha256(body).hexdigest() != sha256:

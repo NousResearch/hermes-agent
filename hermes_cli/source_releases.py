@@ -74,17 +74,18 @@ def _resolve_channel(name: str, repository: str):
 
 def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
     """Resolve every subscription, including default labels, through R2."""
-    from hermes_cli.release_channels import ChannelNotFound, validate_name
+    from hermes_cli.release_channels import ChannelNotFound, ChannelUnavailable, validate_name
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
     try:
         resolved = _resolve_channel(channel, repository)
-    except ChannelNotFound:
+    except (ChannelNotFound, ChannelUnavailable):
         if channel != "main":
             raise
         # main IS the source branch; its record can only add a retirement.
-        # Until one is published, a checkout keeps following the branch via git.
+        # Until one is published (or the archive is temporarily unreachable) a
+        # checkout keeps following the branch via git instead of failing.
         return SourceTarget(channel, channel, repository, branch="main")
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():

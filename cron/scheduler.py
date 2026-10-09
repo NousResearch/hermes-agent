@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -3864,6 +3865,13 @@ def _launch_external_cron_worker(job: dict) -> bool:
     )
 
 
+# The gateway keeps a dispatched claim reserved for HANDOFF_ADOPTION_GRACE_SECONDS; a worker
+# whose adoption hits a busy executions store spends the same window retrying instead of dying
+# before the ack (#135487).
+_ADOPTION_LOCK_RETRY_BUDGET = HANDOFF_ADOPTION_GRACE_SECONDS
+_ADOPTION_LOCK_RETRY_SLEEP_SECONDS = 0.5
+
+
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     """Adopt and execute one gateway-dispatched cron payload.
 
@@ -3923,7 +3931,29 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            # A sibling process holding the executions.db write lock past the 5 s busy_timeout
+            # killed the worker before the ack, and the gateway marked the occurrence failed
+            # (#135487). The gateway keeps the claim reserved for HANDOFF_ADOPTION_GRACE_SECONDS,
+            # so spend that same window retrying the adoption instead of dying on first lock.
+            deadline = time.monotonic() + _ADOPTION_LOCK_RETRY_BUDGET
+            while True:
+                try:
+                    adopted = adopt_claimed_execution(execution_id)
+                    break
+                except sqlite3.OperationalError as exc:
+                    if (
+                        "database is locked" not in str(exc)
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    logger.warning(
+                        "Cron external worker adoption of %s is waiting out a locked "
+                        "executions store (%s); retrying within the handoff grace",
+                        execution_id,
+                        exc,
+                    )
+                    time.sleep(_ADOPTION_LOCK_RETRY_SLEEP_SECONDS)
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",

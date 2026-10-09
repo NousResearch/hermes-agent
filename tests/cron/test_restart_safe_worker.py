@@ -239,6 +239,109 @@ def test_external_worker_refuses_to_run_without_durable_ownership(
     assert not ack.exists()
 
 
+def test_external_worker_retries_adoption_while_executions_store_is_locked(
+    tmp_path, monkeypatch
+):
+    """A sibling process holding the executions.db write lock past the 5 s busy_timeout killed
+    the worker before the ack and the occurrence was lost (#135487): the worker must spend the
+    handoff grace retrying the adoption instead of dying on the first lock."""
+    import sqlite3
+
+    from cron import scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    attempts = []
+
+    def contended_adoption(execution_id):
+        attempts.append(execution_id)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": execution_id, "status": "running"}
+
+    run = Mock(return_value=True)
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", contended_adoption)
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    sleeps = []
+    monkeypatch.setattr(scheduler.time, "sleep", lambda s: sleeps.append(s))
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert attempts == ["exec-1", "exec-1"]
+    assert sleeps and sleeps[0] > 0
+    run.assert_called_once()
+    assert ack.exists()
+
+
+def test_external_worker_adoption_lock_retry_gives_up_at_budget(tmp_path, monkeypatch):
+    """A lock that outlasts the handoff grace must surface the original error (worker exits 1)
+    rather than retrying forever."""
+    import sqlite3
+
+    from cron import scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    adopted = Mock(side_effect=sqlite3.OperationalError("database is locked"))
+    run = Mock()
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    monkeypatch.setattr(scheduler, "_ADOPTION_LOCK_RETRY_BUDGET", 0.0)
+    sleeps = []
+    monkeypatch.setattr(scheduler.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        scheduler._run_external_worker_payload(payload, ack)
+
+    adopted.assert_called_once_with("exec-1")
+    assert sleeps == []
+    run.assert_not_called()
+    assert not ack.exists()
+
+
+def test_external_worker_does_not_retry_adoption_on_other_operational_errors(
+    tmp_path, monkeypatch
+):
+    """Only a busy store is worth waiting out; schema or disk errors must fail immediately."""
+    import sqlite3
+
+    from cron import scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    adopted = Mock(side_effect=sqlite3.OperationalError("no such table: executions"))
+    run = Mock()
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        scheduler._run_external_worker_payload(payload, ack)
+
+    adopted.assert_called_once_with("exec-1")
+    run.assert_not_called()
+
+
 def _stub_external_worker_launch(scheduler, monkeypatch):
     """Fake Popen that acks the handoff and reports running -> completed.
 

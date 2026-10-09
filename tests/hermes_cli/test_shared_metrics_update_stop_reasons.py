@@ -152,6 +152,29 @@ def test_an_exit_before_the_receipt_reads_desktop_only_under_its_own_hand_off(ro
         ("lock_held", "desktop"), ("git_in_progress", "desktop"), ("lock_held", "cli"), ("managed_install", "cli")]
 
 
+def test_a_lock_refusal_of_the_hand_offs_own_update_child_is_a_failed_run(rows, monkeypatch):
+    """Invariant: when the lock refuses the claim whose delegate line names this very process, the
+    Desktop quit to run this update and reports the refusal as a failed update, so the row reads
+    ``failed``; a refusal under someone else's claim (Tauri partner, a CLI run) stays ``refused``."""
+    import os
+
+    from hermes_cli.update_cmd_common import _record_stop
+
+    monkeypatch.delenv("HERMES_UPDATE_HANDOFF_PID", raising=False)
+    pid, other = os.getpid(), 999_999
+    _marker(rows.home, other, 1, "ct:1.000", f"delegate:{pid} ct:2.000")  # our own hand-off's claim
+    _record_stop("lock_held", without_receipt="refused")
+    monkeypatch.setenv("HERMES_UPDATE_HANDOFF_PID", str(other))
+    _marker(rows.home, other, 1, "ct:1.000")
+    _record_stop("lock_held", without_receipt="refused")
+    monkeypatch.delenv("HERMES_UPDATE_HANDOFF_PID")
+    _record_stop("lock_held", without_receipt="refused")
+
+    assert [(r["outcome"], r["kind"], r["failure_class"]) for r in rows.runs()] == [
+        ("failed", "desktop", "lock_held"), ("refused", "desktop", "lock_held"), ("refused", "cli", "lock_held")]
+    assert all(contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, r) for r in rows.runs())
+
+
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="POSIX permissions; root ignores them")
 def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(rows, tmp_path, monkeypatch):
     """Invariant: the fast-forward's git error goes through the shared classifier: an index.lock that

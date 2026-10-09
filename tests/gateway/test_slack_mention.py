@@ -746,17 +746,34 @@ def test_recovered_mentions_never_raise_on_malformed_payload(event):
     assert _slack_recovered_mentions(event) == []
 
 
-def test_recovered_mentions_keep_partial_result_on_pathological_nesting():
-    """A block tree deeper than the recursion limit keeps the mentions found before it."""
+def _rich_text_nested_past_recursion_limit() -> dict:
     deep: dict = {"type": "rich_text_section", "elements": []}
     for _ in range(sys.getrecursionlimit() + 50):
         deep = {"type": "rich_text_section", "elements": [deep]}
+    return {"type": "rich_text", "elements": [deep]}
+
+
+def test_recovered_mentions_keep_partial_result_on_pathological_nesting():
+    """A block tree deeper than the recursion limit keeps the mentions found before it."""
     blocks = [
         {"type": "rich_text", "elements": [
             {"type": "rich_text_section", "elements": [{"type": "user", "user_id": BOT_USER_ID}]}]},
-        {"type": "rich_text", "elements": [deep]},
+        _rich_text_nested_past_recursion_limit(),
     ]
     assert _slack_recovered_mentions({"text": "", "blocks": blocks}) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_attachment_mention_survives_pathologically_nested_blocks():
+    """Attachment provenance fails closed on a too-deep block tree instead of raising: a URL
+    walked before the overflow must not mark the matching attachment as an unfurl."""
+    url_block = {"type": "rich_text", "elements": [
+        {"type": "rich_text_section", "elements": [{"type": "link", "url": "https://example.com/x"}]}]}
+    event = {
+        "text": "",
+        "blocks": [url_block, _rich_text_nested_past_recursion_limit()],
+        "attachments": [{"title_link": "https://example.com/x", "text": f"<@{BOT_USER_ID}> disk 91%"}],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
 
 
 def test_attachment_mentions_survive_a_malformed_sibling():

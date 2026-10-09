@@ -553,7 +553,7 @@ class GatewayTurnProgressMixin:
         len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
         try:
             raw_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- moved unchanged from run_turn_runner.py (main has the same handler): a plugin adapter's odd MAX_MESSAGE_LENGTH falls back to 4000
             raw_limit = 4000
         # Per-chat resolution (relay adapter fronting N platforms): cap and length unit follow the
         # chat's underlying platform; native adapters return their scalar/property unchanged.

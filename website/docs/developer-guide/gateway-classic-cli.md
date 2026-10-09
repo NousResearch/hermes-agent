@@ -33,9 +33,13 @@ rest print `/x is not available on the shared gateway yet` with a link to the
 [command parity table](gateway-command-parity.md), which lists what every local
 client does with every command.
 
-One-shot stdout contains only the final reply. Exit status is 0 for a completed
+One-shot stdout ends with the final reply. Without `-Q`, a resumed session first
+prints its stored history (`user:` / `assistant:` lines), and the reply is followed by
+the `Resume this session with:` block (see Launch options); `-Q` prints the reply
+alone. Exit status is 0 for a completed
 admission, 1 for failed execution/connection, 2 for unsupported frontend options,
-3 for a pending control that requires interactive reattachment, and 130 for a
+3 for a pending control that requires interactive reattachment or a turn lost in a
+gateway crash (clear it with `hermes sessions discard <id> --yes`), and 130 for a
 keyboard detach. A pending control does not imply cancellation. `-z` no longer
 implicitly bypasses approval policy.
 

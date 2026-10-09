@@ -717,7 +717,7 @@ async def test_proxy_turn_uses_native_cot_lifecycle(outcome, monkeypatch):
         if outcome == "stale":
             current[0] = False
         if outcome == "failed":
-            return gateway._agent_error_result("proxy unavailable")
+            return gateway._proxy_error_result("proxy unavailable")
         return {"final_response": "ordinary final"}
 
     gateway._run_agent_via_proxy = proxy

@@ -36,10 +36,12 @@ def resume_route(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shape", ["nested", "legacy", "model-only"])
+@pytest.mark.parametrize("shape", ["nested", "legacy", "model-only", "named-custom"])
 async def test_resume_route_survives_db_only_restart_and_next_turn(resume_route, shape):
     runner, store, event, key, new_store, tmp_path = resume_route
     route = {"provider": "openai", "base_url": "https://api.openai.com/v1"}
+    if shape == "named-custom":
+        route = {"provider": "custom:chosen", "base_url": "https://chosen.example/v1"}
     config = {"gateway_runtime": {**route, "api_key": "not-to-be-restored", "api_mode": "old-wire"}}
     if shape == "legacy":
         config = route
@@ -64,7 +66,7 @@ async def test_resume_route_survives_db_only_restart_and_next_turn(resume_route,
     fresh = _make_runner(session_db=restarted._db, event=event)
     fresh.session_store = restarted
     fresh.config = GatewayConfig()
-    runtime = {"provider": "openai", "base_url": route["base_url"],
+    runtime = {"provider": route["provider"], "base_url": route["base_url"],
                "api_key": "fresh-credential", "api_mode": "chat_completions"}
     with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", return_value=runtime), \
          patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime):
@@ -115,3 +117,33 @@ async def test_failed_switch_keeps_departing_pin(resume_route):
     with patch.object(runner.async_session_store, "switch_session", new=AsyncMock(return_value=None)):
         await runner._handle_resume_command(event)
     assert store.get_model_override(key)["model"] == "departing"
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_compression_tip_model(resume_route):
+    runner, store, event, key, _, _ = resume_route
+    store._db.create_session("target", "telegram", user_id="12345", chat_id="67890", model="root-model")
+    store._db.end_session("target", "compression")
+    store._db.create_session("tip", "telegram", user_id="12345", chat_id="67890",
+                             parent_session_id="target", model="tip-model")
+    await runner._handle_resume_command(event)
+    assert store.get_or_create_session(event.source).session_id == "tip"
+    assert store.get_model_override(key) == {"model": "tip-model"}
+
+
+@pytest.mark.asyncio
+async def test_resume_unavailable_provider_keeps_coherent_fallback(resume_route):
+    runner, store, event, key, _, _ = resume_route
+    route = {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex"}
+    store._db.create_session("target", "telegram", user_id="12345", chat_id="67890",
+                             model="target-model", model_config={"gateway_runtime": route})
+    await runner._handle_resume_command(event)
+    fallback = {"provider": "openai", "base_url": "https://api.openai.com/v1", "api_key": "ambient-key"}
+    with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=RuntimeError("gone")), \
+         patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(fallback)):
+        model, runtime = runner._resolve_session_agent_runtime(
+            session_key=key, user_config={"model": {"default": "ambient"}})
+    assert model == "ambient"
+    assert {k: runtime[k] for k in fallback} == fallback
+    assert runner._pre_agent_fallback_notice
+    assert store.get_model_override(key) == {"model": "target-model", **route}

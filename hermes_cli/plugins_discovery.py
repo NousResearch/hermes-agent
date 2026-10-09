@@ -110,6 +110,22 @@ def join_background_discovery(timeout: float = 30.0) -> bool:
     return thread.is_alive()
 
 
+_delivery_join_abandoned = False
+
+
+def _delivery_manager():
+    """Resolve the active manager and lazily discover plugins before hook delivery."""
+    from hermes_cli import plugins
+
+    global _delivery_join_abandoned
+    manager = plugins.get_plugin_manager()
+    if not _delivery_join_abandoned:
+        _delivery_join_abandoned = join_background_discovery()
+    if not getattr(manager, "_discovered", True):
+        manager.discover_and_load()
+    return manager
+
+
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
     """Return one metadata entry-point group across supported Python APIs."""
     if hasattr(entry_points, "select"):

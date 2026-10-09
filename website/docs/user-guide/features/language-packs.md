@@ -84,6 +84,10 @@ When the manifest declares `provides_locales`, the plugin loader registers every
 - **`pl.tui.yaml` / `pl.desktop.yaml`** mirror the English catalogs of the TUI and Desktop apps. The key
   sets are exported to `locales/_keys.tui.json` and `locales/_keys.desktop.json` in the Hermes repo,
   which is what the validator checks against.
+- **Desktop plugins with their own strings** (Kanban, Bot Mode) are translated from the same
+  `pl.desktop.yaml` under `plugins.<plugin-id>.`: `plugins.kanban.newTask`,
+  `plugins.hermes-bots.<key>`. These keys are listed in `_keys.desktop.json` too, and they layer over
+  the plugin's own translation for that language.
 - YAML values must be **text**. A number, list, `true`/`false` or empty value is rejected.
 - Never use YAML reserved words (`on`, `off`, `yes`, `no`) as keys.
 

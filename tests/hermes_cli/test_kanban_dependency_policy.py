@@ -303,3 +303,20 @@ def test_archiving_completed_parent_regates_existing_runnable_child(board, phase
     status(board, parent, "done")
     assert kb.recompute_ready(board) == 1
     assert status(board, child) == ("review" if phase == "review" else "ready")
+
+
+def test_archiving_completed_parent_regates_transitive_descendants(board):
+    parent = kb.create_task(board, title="parent", assignee="writer")
+    status(board, parent, "done")
+    intermediate = kb.create_task(board, title="intermediate", assignee="writer", parents=[parent])
+    status(board, intermediate, "done")
+    descendant = kb.create_task(board, title="descendant", assignee="writer", parents=[intermediate])
+    assert kb.claim_task(board, descendant) is not None
+
+    assert kb.archive_task(board, parent)
+    assert status(board, intermediate) == "todo"
+    assert status(board, descendant) == "todo"
+    assert kb.claim_task(board, descendant) is None
+    waits = [event for event in kb.list_events(board, descendant) if event.kind == "dependency_wait"]
+    assert waits[-1].payload["parent"] == parent
+    assert waits[-1].payload["source_status"] == "running"

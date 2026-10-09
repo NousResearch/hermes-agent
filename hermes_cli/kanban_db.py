@@ -3776,17 +3776,23 @@ def specify_triage_task(
 
 
 def _regate_children_after_parent_archive(conn: sqlite3.Connection, parent_id: str) -> list[tuple[str, object, object, object, Optional[int]]]:
-    """Atomically revoke runnable direct children after a parent loses success.
+    """Atomically revoke every nonterminal descendant after a parent loses success.
 
-    A child which became runnable while its parent was ``done`` must not remain
-    runnable after that parent is archived. Running children are fenced in this
-    transaction and returned for post-commit process termination.
+    A descendant can be hidden behind already-completed intermediate work. It
+    must not remain complete or runnable after an ancestor is archived. Running
+    descendants are fenced in this transaction and returned for post-commit
+    process termination.
     """
     terminations = []
     rows = conn.execute(
+        "WITH RECURSIVE descendants(id) AS ("
+        "  SELECT child_id FROM task_links WHERE parent_id = ? "
+        "  UNION "
+        "  SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id"
+        ") "
         "SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.worker_started_at "
-        "FROM tasks t JOIN task_links l ON l.child_id = t.id "
-        "WHERE l.parent_id = ? AND t.status IN ('ready', 'review', 'running')",
+        "FROM tasks t JOIN descendants d ON d.id = t.id "
+        "WHERE t.status IN ('done', 'ready', 'review', 'running')",
         (parent_id,),
     ).fetchall()
     for row in rows:

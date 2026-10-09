@@ -96,6 +96,8 @@ class PendingTurn:
     turn_id: str
     created_at: float
     finalized: bool = False
+    canary_excluded: bool = False
+    fail_closed: bool = False
     workflow_result: WorkflowResult | Any | None = None
 
 
@@ -186,9 +188,11 @@ class CounterpointController:
     def on_pre_tool_call(self, **kwargs: Any) -> dict[str, str] | None:
         """Block model tools for enforced non-direct turns."""
         pending = self._lookup(kwargs.get("turn_id"), kwargs.get("task_id"), kwargs.get("session_id"))
-        if pending is None or not self._enforce(pending):
+        if pending is None:
             return None
-        if pending.outcome.decision == DispatchDecision.DIRECT:
+        if not self._must_fail_closed(pending) and not self._enforce(pending):
+            return None
+        if pending.outcome.decision == DispatchDecision.DIRECT and not pending.fail_closed:
             return None
         return {
             "action": "block",
@@ -215,7 +219,7 @@ class CounterpointController:
                 response = response[:_MAX_RESPONSE_CHARS]
             if pending.outcome.decision != DispatchDecision.COUNTERPOINT:
                 pending.finalized = True
-                if self._enforce(pending) and pending.outcome.decision != DispatchDecision.DIRECT:
+                if self._must_fail_closed(pending):
                     return _human_review_message(pending.outcome.reason)
                 return None
             if self.mode == "canary" and not pending.canary_selected:
@@ -228,20 +232,23 @@ class CounterpointController:
                 self.last_results[pending.turn_id] = result
             except Exception:  # health: allow BLE001 -- workflow boundary converts all failures to human review
                 self._persist_workflow_failure(pending, "workflow_callback_failed")
+                pending.workflow_result = SimpleWorkflowResult(
+                    verdict="human_review",
+                    blocked_reason="workflow_callback_failed",
+                )
+                pending.fail_closed = True
                 pending.finalized = True
-                return _human_review_message("workflow_callback_failed") if self._enforce(pending) else None
+                return _human_review_message("workflow_callback_failed")
 
             pending.finalized = True
             accepted = _workflow_accepted(result)
+            if not accepted:
+                pending.fail_closed = True
+                return _human_review_message(getattr(result, "blocked_reason", None) or "human_review_required")
             if self.mode == "shadow" or not self._enforce(pending):
                 return None
-            if accepted:
-                # Artifact content is intentionally external to the contract and is
-                # not exposed by the workflow.  The original response is the only
-                # response available unless a caller-owned runner returns text.
-                replacement = getattr(result, "replacement_text", None)
-                return replacement if isinstance(replacement, str) and replacement.strip() else None
-            return _human_review_message(getattr(result, "blocked_reason", None) or "human_review_required")
+            replacement = getattr(result, "replacement_text", None)
+            return replacement if isinstance(replacement, str) and replacement.strip() else None
 
     def pending(self, turn_id: str) -> PendingTurn:
         with self._lock:
@@ -292,17 +299,10 @@ class CounterpointController:
         )
         outcome = self.dispatcher.admit(envelope)
         spec = None
+        canary_excluded = False
         if outcome.decision == DispatchDecision.COUNTERPOINT:
-            if self.mode == "canary" and not canary_selected:
-                # Canary exclusion is explicit and remains shadow-only for this
-                # turn; it never authorizes a tool or an external effect.
-                outcome = replace(
-                    outcome,
-                    decision=DispatchDecision.DIRECT,
-                    reason="canary_not_selected",
-                    next_actor="otto",
-                )
-            else:
+            canary_excluded = self.mode == "canary" and not canary_selected
+            if not canary_excluded:
                 spec = self._workflow_spec(
                     envelope=envelope,
                     generator=generator,
@@ -323,6 +323,7 @@ class CounterpointController:
             task_id=task_id,
             turn_id=turn_id,
             created_at=time.monotonic(),
+            canary_excluded=canary_excluded,
         )
 
     def _failed_closed_pending(
@@ -558,6 +559,13 @@ class CounterpointController:
 
     def _enforce(self, pending: PendingTurn) -> bool:
         return self.mode == "blocking" or (self.mode == "canary" and pending.canary_selected)
+
+    @staticmethod
+    def _must_fail_closed(pending: PendingTurn) -> bool:
+        return pending.fail_closed or pending.outcome.decision in {
+            DispatchDecision.BLOCKED,
+            DispatchDecision.HUMAN_REVIEW,
+        }
 
     def _persist_direct(self, pending: PendingTurn) -> None:
         lifecycle = RunLifecycle(self.ledger)

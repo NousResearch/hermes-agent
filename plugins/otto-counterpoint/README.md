@@ -48,11 +48,15 @@ The plugin records request hashes, route metadata, deterministic gate results,
 decisions, and lifecycle states in the profile plugin state directory. Prompt,
 response, and private model reasoning text are not written to the ledger.
 
-In `shadow`, tool calls and the original response are left unchanged while the
-workflow is observed. In `blocking`, non-direct turns block tools until the
-bounded workflow accepts locally; missing independence, failed gates, callback
-errors, and unresolved divergence become human review. A human review message
-never authorizes an external effect.
+In `shadow`, a successful counterpoint observation leaves tool calls and the
+original response unchanged. Admission reviews, blocked decisions, callback
+failures, and failed/unresolved workflows remain fail-closed in every mode:
+tools are vetoed and the response becomes a human-review message. In `canary`,
+non-selected counterpoint turns remain explicit non-enforced observations; they
+are never recorded as direct acceptance. In `blocking`, non-direct turns block
+tools until the bounded workflow accepts locally; missing independence, failed
+gates, callback errors, and unresolved divergence become human review. A human
+review message never authorizes an external effect.
 
 This rollout does not restart the gateway or activate a durable worker. Those
 operations require a separate operational approval.

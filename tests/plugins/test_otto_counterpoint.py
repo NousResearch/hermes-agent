@@ -34,7 +34,11 @@ if "hermes_plugins.otto_counterpoint" not in sys.modules:
     _spec.loader.exec_module(_module)
 
 from hermes_plugins.otto_counterpoint.controller import CounterpointController
-from hermes_plugins.otto_counterpoint.counterpoint import HermesRuntime
+from hermes_plugins.otto_counterpoint.counterpoint import (
+    DispatchDecision,
+    HermesAgentClient,
+    HermesRuntime,
+)
 from scripts.otto_counterpoint_plugin_smoke import _workflow_smoke_passed
 
 
@@ -85,7 +89,26 @@ def test_discover_uses_launcher_runtime_and_checkout_root(tmp_path, monkeypatch)
     assert runtime.worker_script == _PLUGIN_DIR / "hermes_counterpoint_worker.py"
 
 
-def test_smoke_gate_rejects_blocked_workflow():
+def test_child_environment_is_allowlisted_for_selected_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("NOUS_API_KEY", "selected-provider-secret")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "unrelated-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-secret")
+    runtime = HermesRuntime(
+        runtime_python=Path(sys.executable),
+        source_root=Path(__file__).resolve().parents[2],
+        worker_script=_PLUGIN_DIR / "hermes_counterpoint_worker.py",
+        hermes_home=tmp_path,
+    )
+
+    environment = HermesAgentClient(runtime)._child_environment("nous")
+
+    assert environment["NOUS_API_KEY"] == "selected-provider-secret"
+    assert "TYPESAFE_API_KEY" not in environment
+    assert "AWS_SECRET_ACCESS_KEY" not in environment
+    assert environment["HERMES_COUNTERPOINT_CHILD"] == "1"
+
+
     blocked = SimpleNamespace(status="blocked", decision=SimpleNamespace(verdict="block"))
     accepted = SimpleNamespace(status="succeeded", decision=SimpleNamespace(verdict="accept_local"))
 
@@ -188,6 +211,71 @@ def test_counterpoint_shadow_runs_once_but_preserves_original_response(tmp_path)
         turn_id="turn-1",
     ) is None
     assert len(calls) == 1
+
+
+def test_shadow_admission_review_blocks_tools_and_replaces_response(tmp_path):
+    controller = CounterpointController(
+        config={"mode": "shadow"},
+        state=_State(tmp_path),
+    )
+
+    _pre(controller, user_message="deploy this to production")
+
+    directive = controller.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "must not run"},
+        session_id="session-1",
+        task_id="task-1",
+        turn_id="turn-1",
+    )
+    assert directive["action"] == "block"
+    transformed = controller.on_transform_llm_output(
+        response_text="I would deploy it now.",
+        session_id="session-1",
+        model="gpt-5.6-luna",
+        platform="discord",
+        turn_id="turn-1",
+    )
+    assert transformed is not None
+    assert "revisão humana" in transformed.lower()
+
+
+def test_shadow_workflow_failure_replaces_response_with_review(tmp_path):
+    def workflow_runner(*, pending, response_text):
+        raise RuntimeError("provider detail must stay private")
+
+    controller = CounterpointController(
+        config={"mode": "shadow", "counterpoint_route": _route()},
+        state=_State(tmp_path),
+        workflow_runner=workflow_runner,
+    )
+    _pre(controller, user_message="research the architecture and compare the evidence")
+
+    transformed = controller.on_transform_llm_output(
+        response_text="unreviewed answer",
+        session_id="session-1",
+        model="gpt-5.6-luna",
+        platform="discord",
+        turn_id="turn-1",
+    )
+    assert transformed is not None
+    assert "revisão humana" in transformed.lower()
+    assert "provider detail" not in transformed
+
+
+def test_unselected_canary_is_not_recorded_as_direct_acceptance(tmp_path):
+    controller = CounterpointController(
+        config={"mode": "canary", "canary_percent": 0, "counterpoint_route": _route()},
+        state=_State(tmp_path),
+    )
+
+    _pre(controller, user_message="research the architecture and compare the evidence")
+
+    pending = controller.pending("turn-1")
+    assert pending.outcome.decision == DispatchDecision.COUNTERPOINT
+    assert pending.canary_selected is False
+    assert pending.canary_excluded is True
+    assert controller.ledger.list_run("cp-turn-1") == []
 
 
 def test_blocking_counterpoint_blocks_tools_until_local_acceptance(tmp_path):

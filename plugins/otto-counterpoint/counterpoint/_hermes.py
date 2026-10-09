@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -27,6 +28,38 @@ _MAX_PROMPT_CHARS = 300_000
 _MAX_RESPONSE_CHARS = 100_000
 _MAX_CHILD_OUTPUT_CHARS = 400_000
 _MAX_ARTIFACT_CHARS = 200_000
+_SAFE_CHILD_ENV = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_MONETARY",
+        "LC_NUMERIC",
+        "LC_TIME",
+        "TZ",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "VIRTUAL_ENV",
+        "PYTHONUTF8",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "SYSTEMROOT",
+        "WINDIR",
+        "PATHEXT",
+        "COMSPEC",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+    }
+)
 _SECRET_KEY_PARTS = frozenset({"api_key", "apikey", "token", "password", "secret", "private_key"})
 _PRIVATE_CONTEXT_KEYS = frozenset(
     {"private_reasoning", "chain_of_thought", "cot", "internal_reasoning", "generator_reasoning"}
@@ -165,7 +198,7 @@ class HermesAgentClient:
             "run_budget_seconds": self.runtime.run_budget_seconds,
             "toolsets": [],
         }
-        environment = self._child_environment()
+        environment = self._child_environment(route.provider)
         try:
             completed = subprocess.run(
                 [str(self.runtime.runtime_python), "-I", str(self.runtime.worker_script)],
@@ -215,15 +248,26 @@ class HermesAgentClient:
             output_tokens=self._optional_count(response.get("output_tokens")),
         )
 
-    def _child_environment(self) -> dict[str, str]:
-        environment = dict(os.environ)
-        for key in tuple(environment):
-            if key.startswith("HERMES_SESSION_") or key in {
-                "HERMES_CRON_SESSION",
-                "HERMES_SUPERVISED_CHILD",
-                "_HERMES_GATEWAY",
-            }:
-                environment.pop(key, None)
+    def _child_environment(self, provider: str) -> dict[str, str]:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key in _SAFE_CHILD_ENV
+        }
+        try:
+            source_root = str(self.runtime.source_root)
+            if source_root not in sys.path:
+                sys.path.insert(0, source_root)
+            from tools.environments.local import served_profile_child_env
+
+            environment = served_profile_child_env(
+                base=environment,
+                target_home=self.runtime.hermes_home,
+                inherit_credentials=False,
+            )
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise HermesCallError("child environment unavailable") from exc
+        environment.update(self._selected_provider_environment(provider))
         environment["HERMES_COUNTERPOINT_CHILD"] = "1"
         environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
         environment["HERMES_QUIET"] = "1"
@@ -233,6 +277,34 @@ class HermesAgentClient:
             environment["HERMES_PROFILE"] = self.runtime.profile
             environment["HERMES_PROFILE_NAME"] = self.runtime.profile
         return environment
+
+    def _selected_provider_environment(self, provider: str) -> dict[str, str]:
+        try:
+            from agent.secret_scope import build_profile_secret_scope, get_secret
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(provider)
+            names = tuple(getattr(profile, "env_vars", ()) or ()) if profile is not None else ()
+            scoped = (
+                build_profile_secret_scope(self.runtime.hermes_home)
+                if self.runtime.hermes_home is not None
+                else {}
+            )
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+            return {}
+        selected: dict[str, str] = {}
+        for name in names:
+            if not isinstance(name, str) or not name.isidentifier():
+                continue
+            value = scoped.get(name)
+            if value is None:
+                try:
+                    value = get_secret(name)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    value = None
+            if isinstance(value, str) and value:
+                selected[name] = value
+        return selected
 
     @staticmethod
     def _last_json_line(stdout: str) -> dict[str, Any]:

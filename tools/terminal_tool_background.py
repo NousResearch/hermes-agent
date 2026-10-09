@@ -144,7 +144,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
-    notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
+    notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
     continuation: Optional[dict] = None,

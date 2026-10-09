@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_cli.auth as auth
-import hermes_cli.auth_nous as auth_nous
+from hermes_cli import auth
+from hermes_cli import auth_nous
 from hermes_cli.auth import (
     NOUS_BILLING_MANAGE_SCOPE,
     nous_token_has_billing_scope,
@@ -51,7 +51,7 @@ class TestNousTokenHasBillingScope:
 def _stub_persist(monkeypatch):
     """Neutralize the persistence side-effects so step-up tests are pure."""
     monkeypatch.setattr(auth, "_auth_store_lock", lambda: _NullCtx())
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(auth, "_load_auth_store", dict)
     monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **kw: None)
     monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **kw: "auth.json")
     monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **kw: None)

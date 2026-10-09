@@ -126,7 +126,7 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
 def test_sibling_write_inside_section_is_merged(hermes_env):
     """A write that lands on disk after the section's load changes the stamp,
     so the save must re-merge instead of trusting its stale snapshot."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import create_job
 
     job = create_job(
@@ -173,7 +173,7 @@ def test_save_over_corrupt_store_fails_closed(hermes_env):
     """A merging save over an unreadable jobs.json must refuse (the jobs in it
     are unknown, so overwriting would drop them) and leave the bytes intact;
     ``replace=True`` stays available as the explicit recovery rewrite."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import load_jobs, save_jobs
 
     jobs.ensure_dirs()
@@ -193,7 +193,7 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     an outer caller's later save with a pre-create payload must re-merge and
     keep the nested create (stamp refresh here would deterministically
     clobber it)."""
-    import cron.jobs as jobs
+    from cron import jobs
     from cron.jobs import create_job, load_jobs, save_jobs
 
     seed = {"id": "aaaaaaaaaaaa", "name": "a"}

@@ -1543,6 +1543,32 @@ such damage and replaced on the next **Rescan**, while a marker-less folder
 that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
 is never overwritten.
 
+#### Developing a unified package
+
+The app loads the **copy** in `desktop-plugins/<id>/`, not your package. An
+installed package (catalog, Git URL, `file://` path) is refreshed only when its
+source `plugin.js` is newer than the copy and something asks — **Rescan** in
+**Capabilities → Plugins**, an install/update through the app, or a restart —
+so editing `~/.hermes/plugins/<id>/desktop/plugin.js` in place does nothing
+on screen until then. Develop from a checkout linked into `plugins/` instead:
+
+```bash
+ln -s ~/src/my-plugin ~/.hermes/plugins/my-plugin
+```
+
+A linked package's copy is marked `"linked": true`. The app watches the
+checkout's `desktop/plugin.js`; every save re-syncs the copy (by content, not
+mtime, so `git stash pop` counts) and hot-reloads the plugin. Catalog and Git
+installs keep the mtime rule.
+
+`hermes plugins doctor <path-or-id>` warns when the copy differs from your
+source and names the copy it found:
+
+```text
+WARN: Desktop runs a stale copy of desktop/plugin.js (~/.hermes/desktop-plugins/my-plugin);
+your edits are not loaded. Refresh it with Capabilities → Plugins → Rescan …
+```
+
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's

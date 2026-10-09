@@ -38,7 +38,7 @@ def transcript_tail(path: str, *, lines: int = TAIL_LINES, chars: int = TAIL_CHA
     return tail or None
 
 
-def transcript_tails(paths: Dict[str, str]) -> Dict[str, str]:
+def transcript_tails(paths: dict[str, str]) -> dict[str, str]:
     return {index: tail for index, path in (paths or {}).items() if (tail := transcript_tail(path))}
 
 

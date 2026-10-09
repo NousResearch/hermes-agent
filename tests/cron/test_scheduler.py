@@ -375,7 +375,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 future.set_exception(exc)
             return future
 
@@ -440,7 +440,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -648,7 +648,7 @@ class TestRunJobSessionPersistence:
             "name": "test",
             "prompt": "hello",
         }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1334,7 +1334,7 @@ class TestRunJobSkillBacked:
             mock_agent_cls.return_value = mock_agent
 
             try:
-                success, output, final_response, error = run_job(job)
+                success, _output, final_response, error = run_job(job)
             finally:
                 clear_env_passthrough()
 
@@ -1550,13 +1550,13 @@ class TestRunJobWakeGate:
         """When _run_job_script output ends with {wakeAgent: false}, the agent
         is not invoked and run_job returns the SILENT marker so delivery is
         suppressed."""
-        import cron.scheduler as scheduler
+        from cron import scheduler
         from cron import scheduler_script as sched_script
 
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            success, _doc, final, err = scheduler.run_job(self._make_job())
 
         assert success is True
         assert err is None
@@ -1566,7 +1566,7 @@ class TestRunJobWakeGate:
     def test_wake_true_runs_agent_with_injected_output(self):
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""
-        import cron.scheduler as scheduler
+        from cron import scheduler
         from cron import scheduler_script as sched_script
 
         script_output = '{"wakeAgent": true, "data": {"new": 3}}'
@@ -1577,7 +1577,7 @@ class TestRunJobWakeGate:
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, script_output)), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            success, _doc, _final, err = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()
         # The script output should be visible in the prompt passed to
@@ -1766,8 +1766,8 @@ class TestParallelTick:
 
         assert result == 2
         # With max_workers=1, second job starts after first ends
-        end_s1 = [t for action, jid, t in call_times if action == "end" and jid == "s1"][0]
-        start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
+        end_s1 = next(t for action, jid, t in call_times if action == "end" and jid == "s1")
+        start_s2 = next(t for action, jid, t in call_times if action == "start" and jid == "s2")
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
 class TestDeliverResultTimeoutCancelsFuture:
@@ -2204,7 +2204,7 @@ class TestCronContinuableSurfaceInChannel:
             try:
                 import asyncio as _asyncio
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -2310,7 +2310,7 @@ class TestCronContinuableSurfaceInChannel:
         in_channel IS the continuation surface: the seed must fire on origin
         match alone. attach_to_session stays the opt-in for the SEPARATE
         default-surface mirror behavior; it must not be required here."""
-        from cron.scheduler import _deliver_result  # noqa: F401 (driven via helper)
+        from cron.scheduler import _deliver_result
 
         adapter = self._slack_adapter(supports_inchannel=True)
         with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:

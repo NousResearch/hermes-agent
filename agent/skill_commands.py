@@ -338,10 +338,11 @@ def _build_skill_message(
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import _skills_dir
-    # Preprocess first so downstream blocks see the expanded content.
-    content = preprocess_skill_content(
-        str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
-    )
+    # Remote text is inert: never run inline shell or materialize support files.
+    content = (str(loaded_skill.get("content") or "") if loaded_skill.get("remote") else
+        preprocess_skill_content(
+            str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
+        ))
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
@@ -509,11 +510,30 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     # (key, map) pair. Only the publish/lookup pair is locked; the scan above
     # (file I/O, deferred imports) stays outside it (#14536, #74574).
     with _publish_lock:
-        # Publishing under the lock keeps the (key, map) pair consistent for any
-        # reader between the lookup and this store (#14536, #74574); the scan above
-        # (file I/O, deferred imports) stays outside it.
         _skill_commands_by_key[key] = commands
-    return commands
+    return _with_skill_source_commands(commands)
+
+
+def _with_skill_source_commands(commands: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Overlay freshly authorized metadata; filesystem commands keep precedence."""
+    result = dict(commands)
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        for key, info in get_plugin_manager().list_skill_source_commands().items():
+            result.setdefault(key, info)
+    except Exception:
+        logger.warning("Remote skill source catalog unavailable")
+    return result
+
+
+def _load_command_payload(info: dict | None, task_id: str | None = None):
+    if not info:
+        return None
+    if info.get("source_id"):
+        from hermes_cli.plugins import get_plugin_manager
+        payload = get_plugin_manager().load_skill_source_payload(info)
+        return payload, None, info["name"]
+    return _load_skill_payload(info.get("skill_identifier") or info["skill_dir"], task_id=task_id)
 
 
 def get_skill_commands() -> dict[str, dict[str, Any]]:
@@ -528,7 +548,7 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
     if cached is not None:
-        return cached
+        return _with_skill_source_commands(cached)
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return scan_skill_commands()
@@ -721,7 +741,7 @@ def build_skill_invocation_message(
 ) -> Optional[str]:
     """Build the user message for a skill slash command, or None if not found."""
     skill_info = get_interactive_skill_commands().get(cmd_key)
-    loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id) if skill_info else None
+    loaded = _load_command_payload(skill_info, task_id=task_id)
     if not loaded:
         return None
     note = (f'[IMPORTANT: The user has invoked the "{loaded[2]}" skill, indicating they want '
@@ -766,7 +786,7 @@ def build_stacked_skill_invocation_message(
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,
-        lambda cmd_key: _load_skill_payload(commands[cmd_key].get("skill_identifier") or commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
+        lambda cmd_key: _load_command_payload(commands.get(cmd_key), task_id=task_id),
         lambda name: f'[Loaded as part of the stacked skill invocation "{name}".]',  # bundle block marker
         task_id, missing_label=lambda k: k.lstrip("/"),
     )

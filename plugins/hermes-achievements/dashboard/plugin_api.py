@@ -58,6 +58,9 @@ def _load_locale(locale_code: str) -> Dict[str, Any]:
         data = {}
     if not isinstance(data, dict):
         data = {}
+    for section in ("._strings", "._metrics"):
+        if section in data and not isinstance(data[section], dict):
+            data[section] = {}
     _LOCALE_CACHE[locale_code] = data
     return data
 

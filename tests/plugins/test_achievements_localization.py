@@ -11,6 +11,50 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+def _by_id(payload):
+    return {item["id"]: item for item in payload["achievements"]}
+
+
+def _assert_malformed_catalog_section(
+    client, api, locale_dir, catalog, original, english_items, definitions, secret, section
+):
+    for invalid in (None, [], "not a mapping", 7, False):
+        malformed = copy.deepcopy(catalog)
+        malformed[section] = invalid
+        (locale_dir / "zh-CN.json").write_text(
+            json.dumps(malformed, ensure_ascii=False), encoding="utf-8"
+        )
+        api._LOCALE_CACHE.clear()
+        for route in (
+            "/achievements", "/recent-unlocks", "/sessions/sample/badges", "/rescan"
+        ):
+            method = client.post if route == "/rescan" else client.get
+            response = method(route + "?locale=zh")
+            assert response.status_code == 200, (section, invalid, route)
+            body = response.json()
+            localized = body if isinstance(body, list) else body.get(
+                "achievements", body.get("badges")
+            )
+            assert localized
+            for item in localized:
+                if item["state"] == "secret":
+                    assert item["name"] == "???" and item["icon"] == "secret"
+                    assert item["description"] == catalog["._strings"]["secret_hint"]
+                    assert item["criteria"] == catalog["._strings"]["secret_hint"]
+                    assert secret["name"] not in json.dumps(item, ensure_ascii=False)
+                else:
+                    assert item["name"] == catalog[item["id"]]["name"]
+                    if section == "._metrics":
+                        definition = next(d for d in definitions if d["id"] == item["id"])
+                        if "threshold_metric" in definition:
+                            assert api.METRIC_LABELS[definition["threshold_metric"]] in item["criteria"]
+            assert api._SNAPSHOT_CACHE == original
+            assert _by_id(client.get("/achievements?locale=en").json()) == english_items
+            if route == "/rescan":
+                persisted = json.loads(api._data_file(api.SNAPSHOT_FILE).read_text(encoding="utf-8"))
+                assert persisted["achievements"] == original["achievements"]
+
+
 def test_localized_routes_preserve_canonical_scan_and_secret_boundary(
     tmp_path, monkeypatch
 ):
@@ -65,7 +109,7 @@ def test_localized_routes_preserve_canonical_scan_and_secret_boundary(
         assert english_response.status_code == chinese_response.status_code == 200
         english = english_response.json()
         chinese = chinese_response.json()
-        by_id = lambda payload: {a["id"]: a for a in payload["achievements"]}
+        by_id = _by_id
         english_items, chinese_items = by_id(english), by_id(chinese)
         assert (
             chinese_items[visible["id"]]["name"] != english_items[visible["id"]]["name"]
@@ -163,3 +207,10 @@ def test_localized_routes_preserve_canonical_scan_and_secret_boundary(
         monkeypatch.setattr(api, "_LOCALE_DIR", locale_dir)
         api._LOCALE_CACHE.clear()
         assert by_id(client.get("/achievements?locale=zh-CN").json()) == chinese_items
+
+        # Valid JSON with unusable internal sections must take the existing fallbacks.
+        for section in ("._metrics", "._strings"):
+            _assert_malformed_catalog_section(
+                client, api, locale_dir, catalog, original, english_items,
+                definitions, secret, section
+            )

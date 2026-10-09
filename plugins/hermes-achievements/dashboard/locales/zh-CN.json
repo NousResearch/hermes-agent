@@ -384,7 +384,7 @@
   },
   "screenshot_hunter": {
     "name": "截图猎人",
-    "description": "抓取至少一次网页截图。",
+    "description": "持续捕捉、检查并打磨截图、Playwright、PNG 或视觉检查活动中的可视化证据，而不只是声称它能用。",
     "category": "工具掌握"
   },
   "ship_first_ask_later": {

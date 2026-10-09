@@ -31,12 +31,31 @@ class _NormalizedPrefetchResult:
     truncated_reason: Optional[str] = None
 
 
+def _builtin_dict_fields(value: dict, names: tuple[str, ...]) -> dict[str, Any]:
+    """Read selected fields without hashing or comparing provider-controlled keys."""
+    wanted = set(names)
+    fields = {}
+    for key, child in dict.items(value):
+        if isinstance(key, str):
+            key = str.__str__(key)
+            if key in wanted:
+                fields[key] = child
+    return fields
+
+
 def coerce_prefetch_result(raw_result: Any) -> Any:
-    """Restore structured result fields after the plugin-host wire codec."""
-    if isinstance(raw_result, Mapping) and "context" in raw_result:
+    """Restore dict-shaped structured results without calling mapping overrides."""
+    if isinstance(raw_result, dict):
+        fields = _builtin_dict_fields(raw_result, ("context", "observations"))
+        if "context" not in fields:
+            return raw_result
+        raw_context: Any = fields["context"]
+        raw_observations: Any = fields.get("observations", ())
+        if type(raw_observations) is not list and not isinstance(raw_observations, tuple):
+            raw_observations = ()
         return MemoryPrefetchResult(
-            context=raw_result["context"],
-            observations=raw_result.get("observations", ()),
+            context=raw_context,
+            observations=raw_observations,
         )
     return raw_result
 
@@ -50,53 +69,89 @@ def _invalid_observation(provider: Any, exc: Exception) -> None:
 
 
 def _normalize_observation(
-    provider: Any, candidate: Any, traversal_budget: Optional[List[int]]
+    provider: Any, candidate: Any, traversal_budget: Optional[list[int]]
 ) -> Optional[tuple[MemoryObservation, int]]:
     try:
-        if isinstance(candidate, Mapping):
-            # Read the fixed contract fields; never expand arbitrary plugin keys.
-            raw_candidate: Any = candidate
-            candidate = MemoryObservation(
-                source_kind=raw_candidate.get("source_kind"),
-                schema=raw_candidate.get("schema"),
-                version=raw_candidate.get("version"),
-                provider=raw_candidate.get("provider", ""),
-                payload=raw_candidate.get("payload"),
+        if isinstance(candidate, dict):
+            fields = _builtin_dict_fields(
+                candidate, ("source_kind", "schema", "version", "provider", "payload")
             )
-        if not isinstance(candidate, MemoryObservation):
+            source_kind: Any = fields.get("source_kind")
+            schema: Any = fields.get("schema")
+            version: Any = fields.get("version")
+            provider_name: Any = fields.get("provider", "")
+            payload: Any = fields.get("payload")
+            candidate = MemoryObservation(
+                source_kind=source_kind,
+                schema=schema,
+                version=version,
+                provider=provider_name,
+                payload=payload,
+            )
+        elif provider.name == "builtin" and isinstance(candidate, Mapping):
+            # Preserve the trusted builtin provider's legacy Mapping format.
+            # External provider mapping methods never run on the turn thread.
+            source_kind: Any = candidate.get("source_kind")
+            schema: Any = candidate.get("schema")
+            version: Any = candidate.get("version")
+            provider_name: Any = candidate.get("provider", "")
+            payload: Any = candidate.get("payload")
+            candidate = MemoryObservation(
+                source_kind=source_kind,
+                schema=schema,
+                version=version,
+                provider=provider_name,
+                payload=payload,
+            )
+        if type(candidate) is not MemoryObservation:
             raise TypeError("observation has the wrong type")
-        for field_name in ("source_kind", "schema"):
-            field = getattr(candidate, field_name)
-            if (
-                not isinstance(field, str)
-                or not field
-                or str.__len__(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
-            ):
-                raise ValueError(f"observation {field_name} is invalid")
+        source_kind = candidate.source_kind
+        schema = candidate.schema
+        raw_version = candidate.version
+        raw_provider = candidate.provider
+        if not isinstance(source_kind, str) or not isinstance(schema, str):
+            raise ValueError("observation source_kind or schema is invalid")
+        source_kind = str.__str__(source_kind)
+        schema = str.__str__(schema)
         if (
-            isinstance(candidate.version, bool)
-            or not isinstance(candidate.version, int)
-            or candidate.version < 1
+            not source_kind
+            or str.__len__(source_kind) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
+        ):
+            raise ValueError("observation source_kind is invalid")
+        if not schema or str.__len__(schema) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+            raise ValueError("observation schema is invalid")
+        if (
+            isinstance(raw_version, bool)
+            or not isinstance(raw_version, int)
         ):
             raise ValueError("observation version is invalid")
-        if _encoded_json_scalar_size(candidate.version) > MAX_MEMORY_OBSERVATION_BYTES:
+        # Convert int subclasses with the base implementation before comparing or encoding.
+        version = int.__int__(raw_version)
+        if version < 1:
+            raise ValueError("observation version is invalid")
+        if _encoded_json_scalar_size(version) > MAX_MEMORY_OBSERVATION_BYTES:
             raise ValueError("observation version is too large")
-        if candidate.provider not in ("", provider.name):
-            raise ValueError("observation provider does not match its source provider")
-        if not isinstance(provider.name, str) or not provider.name:
+        provider_name = provider.name
+        if not isinstance(provider_name, str) or not provider_name:
             raise ValueError("provider name is invalid")
-        if str.__len__(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+        provider_name = str.__str__(provider_name)
+        if str.__len__(provider_name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
             raise ValueError("provider name is too long")
+        if not isinstance(raw_provider, str):
+            raise ValueError("observation provider is invalid")
+        observation_provider = str.__str__(raw_provider)
+        if observation_provider not in ("", provider_name):
+            raise ValueError("observation provider does not match its source provider")
 
         frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
             candidate.payload, operation_budget=traversal_budget
         )
         encoded = json.dumps(
             {
-                "source_kind": candidate.source_kind,
-                "provider": provider.name,
-                "schema": candidate.schema,
-                "version": candidate.version,
+                "source_kind": source_kind,
+                "provider": provider_name,
+                "schema": schema,
+                "version": version,
                 "payload": _thaw_json_value(frozen_payload),
             },
             ensure_ascii=False,
@@ -106,15 +161,15 @@ def _normalize_observation(
             raise ValueError("observation envelope is too large")
         return (
             MemoryObservation(
-                source_kind=candidate.source_kind,
-                provider=provider.name,
-                schema=candidate.schema,
-                version=candidate.version,
+                source_kind=source_kind,
+                provider=provider_name,
+                schema=schema,
+                version=version,
                 payload=frozen_payload,
             ),
             len(encoded),
         )
-    except (TypeError, ValueError, OverflowError) as exc:
+    except Exception as exc:  # health: allow BLE001 -- malformed candidates are isolated
         _invalid_observation(provider, exc)
         return None
 
@@ -125,8 +180,8 @@ def _normalize_observations(
     *,
     remaining_count: int,
     remaining_bytes: int,
-    traversal_budget: Optional[List[int]],
-    inspected_budget: Optional[List[int]],
+    traversal_budget: Optional[list[int]],
+    inspected_budget: Optional[list[int]],
 ) -> tuple[tuple[MemoryObservation, ...], tuple[int, ...], Optional[str]]:
     observations: list[MemoryObservation] = []
     sizes: list[int] = []
@@ -134,7 +189,13 @@ def _normalize_observations(
     if raw_observations is None:
         raw_observations = ()
     try:
-        iterator = iter(raw_observations)
+        # Use builtin base iterators; never invoke an arbitrary provider iterator on the turn thread.
+        if isinstance(raw_observations, tuple):
+            iterator = tuple.__iter__(raw_observations)
+        elif isinstance(raw_observations, list):
+            iterator = list.__iter__(raw_observations)
+        else:
+            raise TypeError("observations must be a list or tuple")
     except Exception:  # health: allow BLE001 -- provider-controlled iterables may raise arbitrary exceptions
         logger.warning(
             "Memory provider '%s' returned an unreadable observation container; dropping it",
@@ -193,16 +254,18 @@ def normalize_prefetch_result(
     remaining_count: int = MAX_MEMORY_OBSERVATIONS,
     remaining_bytes: int,
     inspect_observations: bool = True,
-    traversal_budget: Optional[List[int]] = None,
-    inspected_budget: Optional[List[int]] = None,
+    traversal_budget: Optional[list[int]] = None,
+    inspected_budget: Optional[list[int]] = None,
 ) -> _NormalizedPrefetchResult:
     """Validate one provider result within the operation's remaining budgets."""
     if raw_result is None:
         raw_result = ""
     raw_result = coerce_prefetch_result(raw_result)
     if isinstance(raw_result, str):
-        return _NormalizedPrefetchResult(MemoryPrefetchResult(context=raw_result), ())
-    if not isinstance(raw_result, MemoryPrefetchResult):
+        return _NormalizedPrefetchResult(
+            MemoryPrefetchResult(context=str.__str__(raw_result)), ()
+        )
+    if type(raw_result) is not MemoryPrefetchResult:
         raise TypeError(
             f"Memory provider '{provider.name}' prefetch() must return str "
             "or MemoryPrefetchResult"
@@ -211,9 +274,10 @@ def normalize_prefetch_result(
         raise TypeError(
             f"Memory provider '{provider.name}' returned non-string prefetch context"
         )
+    context = str.__str__(raw_result.context)
     if not inspect_observations:
         return _NormalizedPrefetchResult(
-            MemoryPrefetchResult(context=raw_result.context), ()
+            MemoryPrefetchResult(context=context), ()
         )
 
     observations, sizes, truncated_reason = _normalize_observations(
@@ -226,7 +290,7 @@ def normalize_prefetch_result(
     )
     return _NormalizedPrefetchResult(
         MemoryPrefetchResult(
-            context=raw_result.context,
+            context=context,
             observations=observations,
         ),
         sizes,

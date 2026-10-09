@@ -31,6 +31,7 @@ def fake_home(tmp_path, monkeypatch):
 
 
 
+@pytest.mark.require_symlinks
 def test_does_not_follow_symlink_into_venv(fake_home, tmp_path):
     """#21454 failure mode: never write through a symlinked hermes-acp."""
     (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")

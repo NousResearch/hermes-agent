@@ -131,6 +131,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
         # Returns False after /new or /stop; run() then abandons the stream.
         self._run_still_current = run_still_current or (lambda: True)
+        # Whether this consumer is fed the final reply's stream deltas. A consumer built only to
+        # relay interim commentary (text streaming off, ``display.interim_assistant_messages`` on)
+        # never receives the final's deltas, so the duplicate-risk diagnostic in
+        # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
+        # other construction site (incl. the proxy path) creates consumers only when streaming is on.
+        self.stream_deltas_enabled = True
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
@@ -144,7 +150,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Wall-clock timestamp (time.monotonic) when ``_message_id`` was first assigned from a successful
         # first-send. Used by the fresh-final logic to detect long-lived previews whose edit timestamps
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
-        self._preview_message_ids: "set[str]" = set()
+        self._preview_message_ids: set[str] = set()
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
@@ -194,7 +200,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._fallback_prefix = ""
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
-        self._segment_preview_message_ids: "set[str]" = set()
+        self._segment_preview_message_ids: set[str] = set()
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
@@ -356,6 +362,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         target = self._clean_for_display(text or "").strip()
         seen = (self._visible_prefix(), *self._delivered_commentary_texts,
                 *self._delivered_segment_texts)
+        return bool(target) and any(sent.strip() == target for sent in seen)
+
+    def has_durably_delivered_text(self, text: str) -> bool:
+        """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
+        finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
+        sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
+        back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
+        target = self._clean_for_display(text or "").strip()
+        seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
+        if self._already_sent:
+            seen.append(self._visible_prefix())
         return bool(target) and any(sent.strip() == target for sent in seen)
 
     def on_segment_break(self) -> None:
@@ -557,13 +574,23 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
+                    # Seal first: it clears the message id, so a remainder still over the limit
+                    # is split again below. A plain first send would let the adapter split it and
+                    # adopt only the LAST chunk as the preview; the next seal then overwrites that
+                    # chunk with the head of the whole remainder (duplicated + lost text, #25349).
+                    await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
                     if not self._use_native_streaming and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
-                        continue
-                    await self._seal_overflow_heads()
+                        if self._first_send_overflows():
+                            # A head send failed: keep the full text for the fallback final, and
+                            # skip the boundary reset below that would clear it.
+                            self._signal_flush(tick.flush_event)
+                            continue
+                    # The split tail goes out now, so a commentary or tool boundary drained in
+                    # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
 
                 if tick.got_done:
@@ -591,11 +618,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     # ── run() collaborators ─────────────────────────────────────────────
 
-    def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
+    def _resolve_length_budget(self) -> tuple[Callable[[str], int], int]:
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
-        len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
-                  if isinstance(self.adapter, _BasePlatformAdapter) else len)
+        # Shares the guarded ladder with the fallback path: a git pull while the gateway
+        # runs can pair new consumer code with an old in-memory adapter lacking
+        # message_len_fn_for_chat (#72628), which then falls back to message_len_fn.
+        len_fn, _ = self._fallback_len_budget()
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:
@@ -621,7 +650,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             logger.debug("Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                          self.chat_id, self._draft_id)
 
-    def _drain_queue(self) -> "_Tick":
+    def _drain_queue(self) -> _Tick:
         """Drain everything queued so far into one tick.  Control sentinels stop the drain
         (they take effect this tick); _FINAL_TEXT / _TOOL_PROGRESS / text deltas fold into
         state so simultaneous items batch."""
@@ -697,7 +726,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # Degrade to a single buffered send(), like the approval path.
             self._degrade_native_to_buffered_send()
 
-    def _should_edit(self, tick: "_Tick") -> bool:
+    def _should_edit(self, tick: _Tick) -> bool:
         """Decide whether this tick flushes an edit/frame."""
         if not tick.is_interim:
             return True
@@ -709,15 +738,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).
+            # platform-limit check (_len_fn is for overflow).  It must not
+            # override an active flood backoff: while a refusal is being
+            # waited out, only the (server-requested) interval may fire an edit.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(
             self._clean_for_display(self._accumulated))
 
-    async def _split_first_send(self, tick: "_Tick") -> bool:
+    async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
         tail stays in _accumulated as the active preview later deltas edit in place.
         True when the turn finished here (the run loop returns)."""
@@ -735,7 +767,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             reply_to = new_id
 
         if heads_delivered:
-            self._accumulated = chunks[-1]
+            # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE
+            # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
+            tail = chunks[-1]
+            indicator = f" ({len(chunks)}/{len(chunks)})"
+            self._accumulated = tail.removesuffix(indicator)
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -758,11 +794,6 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if tick.got_segment_break:
             self._fallback_final_send = False
             self._fallback_prefix = ""
-            if not self._accumulated:
-                return False
-        # Early `continue` skips the bottom-of-loop flush signal.
-        if tick.got_flush:
-            self._signal_flush(tick.flush_event)
         return False
 
     def _overflows(self) -> bool:
@@ -790,7 +821,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._last_sent_text = ""
             self._turn_split_delivery = True
 
-    async def _push_update(self, tick: "_Tick") -> None:
+    async def _push_update(self, tick: _Tick) -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
@@ -815,7 +846,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 
-    async def _finalize_turn(self, tick: "_Tick") -> None:
+    async def _finalize_turn(self, tick: _Tick) -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
@@ -841,7 +872,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif self._accumulated:
             await self._finalize_edit_path(tick)
 
-    async def _finalize_edit_path(self, tick: "_Tick") -> None:
+    async def _finalize_edit_path(self, tick: _Tick) -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
         if self._fallback_final_send:
             await self._send_fallback_final(self._accumulated)
@@ -888,7 +919,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not cumulative:
             self._reset_segment_state()
 
-    async def _end_segment(self, tick: "_Tick") -> None:
+    async def _end_segment(self, tick: _Tick) -> None:
         """Tool boundary: edit-based transports reset so the next chunk is a fresh message.
         Cumulative transports must NOT reset — clearing _accumulated makes the next frame a
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:
@@ -897,9 +928,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
             return
-        # If the segment-break edit didn't land (flood control / fallback mode),
-        # _accumulated holds unseen pre-boundary text — flush it before the reset.
-        if (self._accumulated and not tick.update_visible and self._message_id
+        # If the segment-break edit or send didn't land (flood control / fallback mode, or a
+        # failed first send of a split tail with no message id yet), _accumulated holds unseen
+        # pre-boundary text — flush it before the reset clears it.
+        if (self._accumulated and not tick.update_visible
                 and self._message_id != "__no_edit__"):
             await self._flush_segment_tail_on_edit_failure()
         self._reset_segment_state(preserve_no_edit=True)
@@ -939,26 +971,3 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _clean_for_display(text: str) -> str:
         """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MEDIA_TAG_CLEANUP_RE': ('gateway.platforms.base', 'MEDIA_TAG_CLEANUP_RE'),
-    'escape_code_fences_for_display': ('gateway.stream_consumer_fences', 'escape_code_fences_for_display'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

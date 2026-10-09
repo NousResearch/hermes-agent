@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -17,21 +18,13 @@ logger = logging.getLogger("gateway.stream_consumer")
 class StreamThinkFilterMixin:
     """Progressive <think>-tag suppression over streamed deltas."""
 
-    # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
-    # run_agent.py _strip_think_blocks() tag variants.
-    _OPEN_THINK_TAGS = (
-        "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
-        "<THINKING>", "<thinking>", "<thought>",
-    )
-    _CLOSE_THINK_TAGS = (
-        "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
-        "</THINKING>", "</thinking>", "</thought>",
-    )
+    _OPEN_THINK_TAGS = THINK_OPEN_TAGS
+    _CLOSE_THINK_TAGS = THINK_CLOSE_TAGS
 
     def _at_block_boundary(self, buf: str, idx: int) -> bool:
         """Tag at ``idx`` starts a block: start of text, or newline + optional whitespace.
 
-        Prose that merely *mentions* a tag must not trigger (mirrors cli.py).
+        Prose that merely *mentions* a tag must not trigger.
         """
         acc_boundary = not self._accumulated or self._accumulated.endswith("\n")
         if idx == 0:
@@ -42,7 +35,7 @@ class StreamThinkFilterMixin:
             return acc_boundary and preceding.strip() == ""
         return preceding[last_nl + 1:].strip() == ""
 
-    def _earliest_open_tag(self, buf: str, lower_buf: str) -> "tuple[int, int]":
+    def _earliest_open_tag(self, buf: str, lower_buf: str) -> tuple[int, int]:
         """(index, length) of the earliest block-boundary opening tag, or (-1, 0)."""
         best_idx, best_len = -1, 0
         for tag in self._OPEN_THINK_TAGS:

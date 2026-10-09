@@ -25,6 +25,7 @@ import requests
 
 from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
+from hermes_constants import get_hermes_home_override, hermes_home_key
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -36,27 +37,36 @@ _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _NO_SESSION_ERROR = "No browser session. Call browser_navigate first."
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
-_cached_cmd_timeout: Optional[int] = None  # browser.command_timeout, resolved lazily like browser_tool
+# Routed profiles (multiplexed gateway) each point CAMOFOX_URL at their own server, so the one-shot
+# slot above would hand the launch profile's VNC address to every other profile: memo per server URL.
+_vnc_url_by_camofox_url: dict[str, Optional[str]] = {}
+# browser.command_timeout, resolved lazily like browser_tool; keyed by profile home because the
+# multiplexed gateway serves every profile from one process.
+_cached_cmd_timeout: Optional[dict[str, int]] = None
 _cmd_timeout_resolved = False
 
 
 def _get_command_timeout() -> int:
-    """``browser.command_timeout`` (floor 5s, default 30s), cached after first read."""
+    """``browser.command_timeout`` (floor 5s, default 30s), cached per profile home after first read."""
     global _cached_cmd_timeout, _cmd_timeout_resolved
-    if _cmd_timeout_resolved:
-        return _cached_cmd_timeout  # type: ignore[return-value]
-    _cmd_timeout_resolved = True
-    _cached_cmd_timeout = _DEFAULT_TIMEOUT
+    home = hermes_home_key()
+    if _cached_cmd_timeout is None:
+        _cached_cmd_timeout = {}
+    if _cmd_timeout_resolved and home in _cached_cmd_timeout:
+        return _cached_cmd_timeout[home]
+    timeout = _DEFAULT_TIMEOUT
     try:
         val = cfg_get(read_raw_config(), "browser", "command_timeout")
         if val is not None:
-            _cached_cmd_timeout = max(int(val), 5)
+            timeout = max(int(val), 5)
     except Exception as exc:
         logger.debug("Could not read browser.command_timeout: %s", exc)
-    return _cached_cmd_timeout
+    _cached_cmd_timeout[home] = timeout
+    _cmd_timeout_resolved = True
+    return timeout
 
 
-def _auth_headers() -> Dict[str, str]:
+def _auth_headers() -> dict[str, str]:
     """Return Authorization header when CAMOFOX_API_KEY is set."""
     key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
     return {"Authorization": f"Bearer {key}"} if key else {}
@@ -100,6 +110,16 @@ def is_camofox_mode() -> bool:
     return bool(get_camofox_url())
 
 
+def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:
+    try:
+        vnc_port = resp.json().get("vncPort")
+        if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
+            return f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
+    except (ValueError, KeyError):
+        pass
+    return None
+
+
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable (and cache its VNC URL once)."""
     global _vnc_url, _vnc_url_checked
@@ -110,25 +130,29 @@ def check_camofox_available() -> bool:
         resp = requests.get(f"{url}/health", timeout=5)
     except Exception:
         return False
-    if resp.status_code == 200 and not _vnc_url_checked:
-        try:
-            vnc_port = resp.json().get("vncPort")
-            if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                _vnc_url = f"http://{urlsplit(url).hostname or 'localhost'}:{vnc_port}"
-        except (ValueError, KeyError):
-            pass
-        _vnc_url_checked = True
+    if resp.status_code == 200:
+        if get_hermes_home_override() is not None:
+            if url not in _vnc_url_by_camofox_url:
+                _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
+        elif not _vnc_url_checked:
+            _vnc_url = _vnc_url_from_health(url, resp) or _vnc_url
+            _vnc_url_checked = True
     return resp.status_code == 200
 
 
 def get_vnc_url() -> Optional[str]:
     """Return the VNC URL if the Camofox server exposes one, or None."""
+    if get_hermes_home_override() is not None:
+        url = get_camofox_url()
+        if url not in _vnc_url_by_camofox_url:
+            check_camofox_available()
+        return _vnc_url_by_camofox_url.get(url)
     if not _vnc_url_checked:
         check_camofox_available()
     return _vnc_url
 
 
-def _get_camofox_config() -> Dict[str, Any]:
+def _get_camofox_config() -> dict[str, Any]:
     """Return the ``browser.camofox`` config block, or an empty dict."""
     try:
         camofox_cfg = load_config().get("browser", {}).get("camofox", {})
@@ -138,18 +162,18 @@ def _get_camofox_config() -> Dict[str, Any]:
     return camofox_cfg if isinstance(camofox_cfg, dict) else {}
 
 
-def _managed_persistence_enabled(camofox_cfg: Optional[Dict[str, Any]] = None) -> bool:
+def _managed_persistence_enabled(camofox_cfg: Optional[dict[str, Any]] = None) -> bool:
     """``browser.camofox.managed_persistence``: stable profile-scoped userId vs random per session."""
     return bool((_get_camofox_config() if camofox_cfg is None else camofox_cfg).get("managed_persistence"))
 
 
-def _env_or_cfg(env_name: str, camofox_cfg: Dict[str, Any], cfg_key: str, *, secret: bool = False) -> str:
+def _env_or_cfg(env_name: str, camofox_cfg: dict[str, Any], cfg_key: str, *, secret: bool = False) -> str:
     """Env/secret-scope value first, then the ``browser.camofox`` config key, else ""."""
     raw = get_secret(env_name, "") if secret else os.getenv(env_name, "")
     return (raw or "").strip() or str(camofox_cfg.get(cfg_key) or "").strip()
 
 
-def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
+def _camofox_identity_override(task_id: Optional[str], camofox_cfg: dict[str, Any]) -> Optional[dict[str, str]]:
     """Externally configured identity (integrations owning the visible Camofox browser
     share a user ID so Hermes uses the same profile), or None."""
     user_id = _env_or_cfg("CAMOFOX_USER_ID", camofox_cfg, "user_id", secret=True)
@@ -159,7 +183,7 @@ def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, An
     return {"user_id": user_id, "session_key": session_key or f"task_{(task_id or 'default')[:16]}"}
 
 
-def _flag(env_name: str, camofox_cfg: Dict[str, Any], cfg_key: str) -> bool:
+def _flag(env_name: str, camofox_cfg: dict[str, Any], cfg_key: str) -> bool:
     """Boolean toggle: env var wins when set to a valid value, else config key."""
     raw = os.getenv(env_name, "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
@@ -183,7 +207,7 @@ def _is_loopback_hostname(hostname: Optional[str]) -> bool:
         return False
 
 
-def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str, str]]]:
+def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[dict[str, str]]]:
     """Rewrite loopback page URLs for Docker-hosted Camofox, if configured.
 
     ``CAMOFOX_URL`` may point at a host-published Docker port, but page URLs are opened by
@@ -211,11 +235,11 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 
 
 # ---- Session management ----
-_sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
+_sessions: dict[str, dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
 _sessions_lock = threading.Lock()
 
 
-def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
+def _adopt_existing_tab(session: dict[str, Any]) -> dict[str, Any]:
     """Rehydrate tab_id from an already-open managed tab: gateway restarts empty the
     in-memory cache while Camofox still holds the integration-owned tab."""
     if session.get("tab_id") or not session.get("adopt_existing_tab") or not get_camofox_url():
@@ -234,7 +258,7 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
-def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
+def _get_session(task_id: Optional[str]) -> dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
@@ -257,7 +281,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         return _adopt_existing_tab(session)
 
 
-def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
+def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
     if not session["tab_id"]:
@@ -266,7 +290,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     return session
 
 
-def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def _drop_session(task_id: Optional[str]) -> Optional[dict[str, Any]]:
     """Remove and return session info."""
     with _sessions_lock:
         return _sessions.pop(task_id or "default", None)
@@ -297,33 +321,33 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     return _request("post", path, timeout, json=body).json()
 
 
-def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
+def _get(path: str, params: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("get", path, timeout, params=params).json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
+def _get_raw(path: str, params: dict | None = None, timeout: Optional[int] = None) -> requests.Response:
     """GET and return the raw response (for binary data)."""
     return _request("get", path, timeout, params=params)
 
 
-def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
+def _delete(path: str, body: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("delete", path, timeout, json=body).json()
 
 
 # ---- Tool implementations ----
-def _tab_path(session: Dict[str, Any], suffix: str) -> str:
+def _tab_path(session: dict[str, Any], suffix: str) -> str:
     return f"/tabs/{session['tab_id']}/{suffix}"
 
 
-def _user_params(session: Dict[str, Any]) -> Dict[str, str]:
+def _user_params(session: dict[str, Any]) -> dict[str, str]:
     return {"userId": session["user_id"]}
 
 
-def _snapshot_data(session: Dict[str, Any]) -> dict:
+def _snapshot_data(session: dict[str, Any]) -> dict:
     return _get(_tab_path(session, "snapshot"), params=_user_params(session))
 
 
-def _parse_snapshot_images(snapshot: str) -> list[Dict[str, str]]:
+def _parse_snapshot_images(snapshot: str) -> list[dict[str, str]]:
     """Images from an accessibility snapshot: ``img "alt" [eN]`` entries with the URL on
     the following ``/url:`` line (Camofox has no /images endpoint)."""
     images = []
@@ -340,7 +364,7 @@ def _parse_snapshot_images(snapshot: str) -> list[Dict[str, str]]:
     return images
 
 
-def _fetch_snapshot(session: Dict[str, Any]) -> tuple[str, int]:
+def _fetch_snapshot(session: dict[str, Any]) -> tuple[str, int]:
     """``(snapshot_text, refs_count)`` truncated like the main browser tool (line boundaries,
     full tree stored to cache/web, read_file pointer appended). Lazy import: ``browser_tool``
     imports this module."""
@@ -353,7 +377,7 @@ def _fetch_snapshot(session: Dict[str, Any]) -> tuple[str, int]:
     return snapshot, data.get("refsCount", 0)
 
 
-def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, Any], dict]:
+def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[dict[str, Any], dict]:
     """Open ``browser_url`` in the task's tab (creating it if missing) and return
     ``(session, navigate_response)``. A 404 on the existing tab means the server
     garbage-collected it — recreate instead of failing."""
@@ -402,7 +426,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         return tool_error(str(e), success=False)
 
 
-def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
+def _camofox_private_page_block(session: dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
     """Blocked payload when the current page is private/internal, else None.
 
     Mirrors the ``_camofox_eval`` guard in browser_tool.py: page-state reads on a non-local
@@ -421,7 +445,7 @@ def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str],
         f"({blocked_url}). Refusing to {action} on this page in this browser mode.")}, ensure_ascii=False)
 
 
-def _require_tab(task_id: Optional[str], action: Optional[str] = None) -> tuple[Dict[str, Any], Optional[str]]:
+def _require_tab(task_id: Optional[str], action: Optional[str] = None) -> tuple[dict[str, Any], Optional[str]]:
     """Return ``(session, error_payload)``: error when no tab exists or, if ``action`` given, the page is private."""
     session = _get_session(task_id)
     if not session["tab_id"]:
@@ -429,7 +453,7 @@ def _require_tab(task_id: Optional[str], action: Optional[str] = None) -> tuple[
     return session, (_camofox_private_page_block(session, task_id, action) if action is not None else None)
 
 
-def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[Dict[str, Any]], str]) -> str:
+def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[dict[str, Any]], str]) -> str:
     """Require a tab (+ private-page guard when ``guard_action`` is set), then run ``body(session)``;
     any exception becomes a ``tool_error``."""
     try:
@@ -442,7 +466,7 @@ def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callabl
 
 
 def _tab_action(task_id: Optional[str], guard_action: Optional[str], suffix: str,
-                body: Dict[str, Any], result: Callable[[dict], dict]) -> str:
+                body: dict[str, Any], result: Callable[[dict], dict]) -> str:
     """Simple tab action: POST ``body`` to ``/tabs/<id>/<suffix>``, build the result."""
     return _with_tab(task_id, guard_action, lambda session: json.dumps(
         result(_post(_tab_path(session, suffix), {"userId": session["user_id"], **body}))))

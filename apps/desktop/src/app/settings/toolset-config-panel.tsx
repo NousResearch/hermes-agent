@@ -34,6 +34,7 @@ import type {
 } from '@/types/hermes'
 
 import { EnvVarActionsMenu, EnvVarActionsTrigger, EnvVarContextMenu } from './env-var-actions-menu'
+import { prettyName } from './helpers'
 import { Pill } from './primitives'
 import { VoiceProviderFields } from './voice-provider-fields'
 
@@ -96,6 +97,21 @@ function providerStatus(provider: ToolProvider, envState: Record<string, boolean
   }
 
   return providerConfigured(provider, envState) ? 'ready' : 'needs_keys'
+}
+
+/**
+ * Whether a web provider row serves a capability right now. The managed
+ * "Nous Subscription" row and the BYOK Firecrawl rows resolve to the same
+ * backend name, so the server's `*_via_nous` flag decides which one is lit.
+ */
+function capabilityServedBy(provider: ToolProvider, backend: null | string | undefined, viaNous?: boolean): boolean {
+  if (provider.managed_nous_feature) {
+    return Boolean(viaNous)
+  }
+
+  // Rows sharing a backend name (cloud vs self-hosted Firecrawl) are told apart by the server's
+  // is_active, which knows which one's credential is set.
+  return Boolean(provider.web_backend && backend === provider.web_backend && !viaNous && provider.is_active)
 }
 
 interface EnvVarFieldProps {
@@ -329,7 +345,16 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete,
                 title: copy.postSetupCompleteTitle,
                 message: copy.postSetupCompleteMessage(postSetupKey)
               }
-            : { kind: 'error', title: copy.postSetupErrorTitle, message: copy.postSetupErrorMessage(postSetupKey) }
+            : {
+                kind: 'error',
+                title: copy.postSetupErrorTitle,
+                message: copy.postSetupErrorMessage(prettyName(postSetupKey)),
+                action: {
+                  label: copy.postSetupOpenLogs,
+                  onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
+                },
+                secondaryAction: { label: copy.postSetupRunAgain, onClick: () => void run() }
+              }
         )
         onComplete?.()
       }
@@ -646,7 +671,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
       const start = await startOAuthLogin('nous', profile)
 
       if (start.flow !== 'device_code') {
-        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
+        notifyNousAuthFailed(`unexpected flow: ${start.flow}`)
 
         return
       }
@@ -682,16 +707,28 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         }
 
         if (polled.status !== 'pending') {
-          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.nousAuthFailed)
+          notifyNousAuthFailed(polled.error_message || `Sign-in ${polled.status}`)
 
           return
         }
       }
     } catch (err) {
       if (mountedRef.current) {
-        notifyError(err, copy.nousAuthFailed)
+        notifyNousAuthFailed(err instanceof Error ? err.message : String(err))
       }
     }
+  }
+
+  // Plain failure copy with the raw poll status under Details and a one-click
+  // retry of the same sign-in flow (desktop-26).
+  function notifyNousAuthFailed(detail: string) {
+    notify({
+      kind: 'error',
+      title: copy.nousAuthFailed,
+      message: copy.nousAuthFailedMessage,
+      detail,
+      action: { label: copy.nousAuthTryAgain, onClick: () => void signInToNousPortal() }
+    })
   }
 
   function patchEnv(key: string, isSet: boolean) {
@@ -703,19 +740,24 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name, capability, profile)
-      // Mirror the backend write locally so the Search:/Extract: badges track
-      // the new per-capability backend without a refetch.
-      setCfg(current =>
-        current
-          ? {
-              ...current,
-              ...(capability === 'search'
-                ? { active_search_backend: provider.web_backend ?? provider.name }
-                : { active_extract_backend: provider.web_backend ?? provider.name })
-            }
-          : current
-      )
+      const result = await selectToolsetProvider(toolset, provider.name, capability, profile)
+
+      if (result.needs_nous_auth) {
+        notify({
+          kind: 'warning',
+          title: copy.nousAuthNeededTitle,
+          message: copy.nousAuthNeededMessage(provider.name),
+          action: { label: copy.nousAuthSignIn, onClick: () => void signInToNousPortal() }
+        })
+        await refresh()
+
+        return
+      }
+
+      // Refetch rather than mirror: whether the capability now rides the Nous
+      // Tool Gateway or the user's own key is resolved server-side (the
+      // managed and BYOK Firecrawl rows share one web_backend).
+      await refresh()
       notify({
         kind: 'success',
         title: copy.selectedTitle,
@@ -752,6 +794,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     return <p className="px-1 py-3 text-xs text-muted-foreground">{copy.noProviders}</p>
   }
 
+  // The gateway route is labelled with the managed row's own (server-provided) name.
+  const managedRowName = providers.find(p => p.managed_nous_feature)?.name
+
   return (
     <div className="grid gap-2">
       {toolset === 'web' && cfg.active_search_backend !== undefined && (
@@ -759,8 +804,16 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         // (web.search_backend / web.extract_backend) — show which backend
         // each capability resolves to right now.
         <div className="flex flex-wrap items-center gap-2 px-1">
-          <Pill>{copy.webSearchActive(cfg.active_search_backend || copy.webCapabilityUnset)}</Pill>
-          <Pill>{copy.webExtractActive(cfg.active_extract_backend || copy.webCapabilityUnset)}</Pill>
+          <Pill>
+            {copy.webSearchActive(
+              (cfg.search_via_nous && managedRowName) || cfg.active_search_backend || copy.webCapabilityUnset
+            )}
+          </Pill>
+          <Pill>
+            {copy.webExtractActive(
+              (cfg.extract_via_nous && managedRowName) || cfg.active_extract_backend || copy.webCapabilityUnset
+            )}
+          </Pill>
         </div>
       )}
       {providers.map(provider => {
@@ -768,8 +821,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         const isBackendActive = provider.is_active || cfg?.active_provider === provider.name
         const status = providerStatus(provider, envState)
         const webCaps = toolset === 'web' ? (provider.capabilities ?? []) : []
-        const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === provider.web_backend)
-        const isExtractBackend = Boolean(provider.web_backend && cfg.active_extract_backend === provider.web_backend)
+        const isSearchBackend = capabilityServedBy(provider, cfg.active_search_backend, cfg.search_via_nous)
+        const isExtractBackend = capabilityServedBy(provider, cfg.active_extract_backend, cfg.extract_via_nous)
 
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
@@ -860,7 +913,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                     )}
                   </div>
                 )}
-                {provider.requires_nous_auth && (
+                {provider.requires_nous_auth && status === 'needs_auth' && (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
                 )}
                 {provider.env_vars.length === 0 ? (
@@ -889,8 +942,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                 {toolset === 'tts' && provider.tts_provider && (
                   // Voice/model settings for this backend (tts.<key>.*) —
                   // the same fields Settings → Voice renders, inline so the
-                  // Capabilities panel is a complete setup surface.
-                  <VoiceProviderFields providerKey={provider.tts_provider} section="tts" />
+                  // Capabilities panel is a complete setup surface. Profile
+                  // threaded like every other fetch in this panel: unscoped,
+                  // these fields read AND autosaved the ACTIVE profile's
+                  // config while the panel claimed to configure another.
+                  <VoiceProviderFields profile={profile} providerKey={provider.tts_provider} section="tts" />
                 )}
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker

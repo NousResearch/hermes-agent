@@ -12,32 +12,13 @@ import io
 import logging
 from typing import Any, Callable, Dict, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger("gateway.platforms.google_chat")
 
-_NOT_CONFIGURED_TEXT = (
-    "🔧 Native attachment delivery is **not configured**.\n"
-    "**Step 1 (one-time, on the host):** create OAuth client credentials at "
-    "https://console.cloud.google.com/apis/credentials → *Create credentials* → "
-    "*OAuth client ID* → *Desktop app*. Download the JSON. Then on the host run:\n"
-    "```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n"
-    "**Step 2:** come back here and send `/setup-files start`."
-)
-_START_INSTRUCTIONS = (
-    "1. Open this URL in your browser and authorize:\n{auth_url}\n\n"
-    "2. After clicking *Allow*, your browser will fail to load "
-    "`http://localhost:1/?...&code=...`. That's expected.\n\n"
-    "3. Copy the entire failed URL from the browser's URL bar and paste it back here as: "
-    "`/setup-files <PASTE_URL>` (or just the `code=...` value).\n\n"
-    "Tip: the URL contains your access grant — keep it private."
-)
-_START_EXIT_TEXT = (
-    "❌ Couldn't generate the OAuth URL. Check the gateway logs and verify the client_secret.json is valid."
-)
-_EXCHANGE_EXIT_TEXT = (
-    "❌ Token exchange failed. The code may have expired or the URL is malformed. "
-    "Send `/setup-files start` to get a fresh OAuth URL."
-)
-_REVOKE_EXIT_OUTPUT = "Revoke completed (some steps may have been skipped)."
+# Reply copy lives in the catalog under platform.google_chat.setup_files.* and is resolved
+# through ``t()`` at reply time (never at import) so the active language applies.
+_K = "platform.google_chat.setup_files."
 _EXITED = object()  # _run_helper marker: helper called sys.exit but the step tolerates it
 
 
@@ -67,7 +48,7 @@ async def handle_setup_files_command(
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     async def _reply(text: str) -> None:
-        body: Dict[str, Any] = {"text": text}
+        body: dict[str, Any] = {"text": text}
         if thread_id:
             body["thread"] = {"name": thread_id}
         try:
@@ -75,19 +56,19 @@ async def handle_setup_files_command(
         except Exception:
             logger.debug("[GoogleChat] /setup-files reply send failed", exc_info=True)
 
-    async def _run_helper(step: str, exit_text: Optional[str], fn: Callable[..., Any], *args: Any):
-        """Captured helper output; ``None`` after replying on failure. ``exit_text``
-        is the reply on ``SystemExit`` (the helpers' failure signal); ``None``
-        tolerates the exit and returns ``_EXITED``."""
+    async def _run_helper(step: str, exit_key: Optional[str], fn: Callable[..., Any], *args: Any):
+        """Captured helper output; ``None`` after replying on failure. ``exit_key``
+        is the catalog key of the reply on ``SystemExit`` (the helpers' failure signal);
+        ``None`` tolerates the exit and returns ``_EXITED``."""
         try:
             return await _run_captured(fn, *args)
         except SystemExit:
-            if exit_text is None:
+            if exit_key is None:
                 return _EXITED
-            await _reply(exit_text)
+            await _reply(t(exit_key))
         except Exception as exc:
             logger.warning("[GoogleChat] /setup-files %s failed: %s", step, exc)
-            await _reply(f"❌ Error{' revoking' if step == 'revoke' else ''}: {exc}")
+            await _reply(t(_K + ("revoke_error" if step == "revoke" else "helper_error"), error=str(exc)))
         return None
 
     def _set_user_creds(creds: Any, api: Any) -> None:
@@ -107,42 +88,34 @@ async def handle_setup_files_command(
         token_path = oauth_helper._token_path(sender_key)
         creds = oauth_helper.load_user_credentials(sender_key) if token_path.exists() else None
         if creds is not None:
-            who = sender_key or "shared (legacy)"
-            await _reply(
-                f"✅ Native attachment delivery is **active** for `{who}`.\n"
-                f"Token: `{token_path}`\nSend `/setup-files revoke` to disable.")
+            who = sender_key or t(_K + "who_shared")
+            await _reply(t(_K + "active", who=who, token_path=str(token_path)))
         elif not client_secret_present:
-            await _reply(_NOT_CONFIGURED_TEXT)
+            await _reply(t(_K + "not_configured"))
         else:
-            await _reply(
-                "🔧 Client credentials are stored but you haven't authorized yet. "
-                "Send `/setup-files start` to begin."
-            )
+            await _reply(t(_K + "not_authorized_yet"))
         return True
 
     if arg == "start":
         if not oauth_helper._client_secret_path().exists():
-            await _reply(
-                "⚠️ No client credentials stored for this profile. Send "
-                "`/setup-files` (no args) for setup instructions."
-            )
+            await _reply(t(_K + "no_client_credentials"))
             return True
-        output = await _run_helper("start", _START_EXIT_TEXT, oauth_helper.get_auth_url, sender_key)
+        output = await _run_helper("start", _K + "start_failed", oauth_helper.get_auth_url, sender_key)
         if output is not None:
-            await _reply(_START_INSTRUCTIONS.format(auth_url=output.strip().splitlines()[-1]))
+            await _reply(t(_K + "start_instructions", auth_url=output.strip().splitlines()[-1]))
         return True
 
     if arg == "revoke":
         output = await _run_helper("revoke", None, oauth_helper.revoke, sender_key)
         if output is None:
             return True
-        output = _REVOKE_EXIT_OUTPUT if output is _EXITED else (output.strip() or "Revoked.")
+        output = t(_K + "revoke_completed") if output is _EXITED else (output.strip() or t(_K + "revoked"))
         _set_user_creds(None, None)
-        await _reply(f"✅ Done.\n```\n{output}\n```")
+        await _reply(t(_K + "done_output", output=output))
         return True
 
     # Anything else is the auth code or the pasted failed-redirect URL.
-    output = await _run_helper("exchange", _EXCHANGE_EXIT_TEXT, oauth_helper.exchange_auth_code, arg, sender_key)
+    output = await _run_helper("exchange", _K + "exchange_failed", oauth_helper.exchange_auth_code, arg, sender_key)
     if output is None:
         return True
     # Re-load credentials so the next file send uses them without a gateway restart.
@@ -151,12 +124,10 @@ async def handle_setup_files_command(
         if new_creds is not None:
             new_api = await asyncio.to_thread(lambda: oauth_helper.build_user_chat_service(new_creds))
             _set_user_creds(new_creds, new_api)
-            await _reply("✅ Authorized! Native attachment delivery is now active. Try asking me to send you a PDF.")
+            await _reply(t(_K + "authorized"))
             return True
     except Exception as exc:
         logger.warning("[GoogleChat] post-exchange creds load failed: %s", exc)
-    await _reply(
-        "⚠️ Token exchanged but the gateway couldn't load the new credentials in-memory. "
-        f"Restart the gateway and the token at `{oauth_helper._token_path(sender_key)}` will be picked up.\n"
-        f"Helper output:\n```\n{output.strip()}\n```")
+    await _reply(t(_K + "exchanged_not_loaded", token_path=str(oauth_helper._token_path(sender_key)),
+                   output=output.strip()))
     return True

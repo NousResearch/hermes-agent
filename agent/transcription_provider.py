@@ -26,7 +26,7 @@ class TranscriptionProvider(CatalogProviderBase):
     @abc.abstractmethod
     def transcribe(
         self, file_path: str, *, model: Optional[str] = None, language: Optional[str] = None, **extra: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Transcribe ``file_path`` (existence + size already validated) into the module envelope.
 
         Must NOT raise — convert exceptions to the error envelope. ``model`` None →
@@ -35,26 +35,32 @@ class TranscriptionProvider(CatalogProviderBase):
         unknown keys must be ignored.
         """
 
+    @property
+    def streaming_capable(self) -> bool:
+        """True when :meth:`open_stream_session` can transcribe live 16 kHz mono s16le PCM
+        (``stt.streaming``). Default False: only the file-based :meth:`transcribe` is used."""
+        return False
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-import logging  # noqa: F401,E402
+    def open_stream_session(
+        self, *, language: Optional[str] = None, prompt: Optional[str] = None,
+    ) -> TranscriptionStreamSession:
+        """A single-use live session for one utterance (streaming-capable providers only)."""
+        raise NotImplementedError(f"{self.name} does not support live streaming transcription")
 
 
-_PLUGIN_COMPAT_LAZY = {
-    'logger': ('agent.i18n', 'logger'),
-}
+class TranscriptionStreamSession(abc.ABC):
+    """Live audio -> transcript for one utterance. ``push_audio`` receives 16 kHz mono s16le PCM in
+    any chunk size from one feeder thread; ``finalize`` flushes and returns the standard envelope
+    (``success``/``transcript``/``provider``/``error``) and must not raise."""
 
+    @abc.abstractmethod
+    def push_audio(self, chunk: bytes) -> None:
+        """Feed one chunk of 16 kHz mono s16le PCM."""
 
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+    @abc.abstractmethod
+    def finalize(self) -> dict[str, Any]:
+        """End the session and return the transcription envelope (blocks until final)."""
+
+    def partial_transcript(self) -> str:
+        """Latest non-final text, polled for live captions. Default: none."""
+        return ""

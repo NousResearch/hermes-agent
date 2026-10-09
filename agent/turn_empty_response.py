@@ -4,7 +4,10 @@ Runs when the model returned no visible text after ``<think>`` blocks. Ladder or
 load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
 → one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
 retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+``(empty)`` sentinel. Machinery turns (``display_kind=internal_notification``) are not
+owed a reply, so their paid retry rung collapses to zero (#135816); the free repair
+paths above it stay available. Nothing here imports ``agent.conversation_loop`` at
+module level.
 """
 
 from __future__ import annotations
@@ -22,6 +25,36 @@ from agent.turn_recovery import interruptible_backoff_sleep
 logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
+
+# The persisted user-row kinds the gateway types as self-injected machinery turns
+# (gateway/response_filters.py MACHINERY_DISPLAY_KINDS). agent/ cannot import
+# gateway/ (it imports agent/, and the layering is one-way), so the one kind the
+# gateway produces is mirrored here; a drift is caught by the gateway marker tests.
+MACHINERY_TURN_DISPLAY_KIND = "internal_notification"
+MACHINERY_TURN_DISPLAY_KINDS = frozenset({MACHINERY_TURN_DISPLAY_KIND})
+
+# Agent-object slot for the current turn's persisted user-row kind. Staged by
+# ``turn_context._reset_turn_scoped_state`` (the ``display_kind`` key lives on the
+# user row only, and the recovery ladder sees ``messages`` after compaction may have
+# rewritten history) and cleared by the same reset on every later turn.
+_TURN_DISPLAY_KIND_ATTR = "_machinery_turn_display_kind"
+
+
+def current_turn_display_kind(agent: Any, explicit: Optional[str] = None) -> Optional[str]:
+    """The current turn's persisted user-row kind, from the caller's explicit value when
+    given (a direct ladder caller holding the staged row) else the slot
+    ``turn_context`` staged at reset. Only machinery kinds survive the check: human
+    turns and a caller that skipped the turn prologue both read as None."""
+    value = explicit if explicit is not None else getattr(agent, _TURN_DISPLAY_KIND_ATTR, None)
+    return value if value in MACHINERY_TURN_DISPLAY_KINDS else None
+
+
+def _reset_turn_scoped_state(agent: Any, user_msg: Any) -> None:
+    """Stage the just-built user row's ``display_kind`` onto the agent (and clear the
+    slot when untyped). Called after ``_reset_per_turn_agent_state`` staged the user
+    message, so the slot always describes the turn that is about to run."""
+    kind = user_msg.get("display_kind") if isinstance(user_msg, dict) else None
+    setattr(agent, _TURN_DISPLAY_KIND_ATTR, kind if kind in MACHINERY_TURN_DISPLAY_KINDS else None)
 
 
 @dataclass
@@ -46,10 +79,16 @@ class EmptyResponseVerdict:
 def _retry_empty(
     agent: Any, response: Any, finish_reason: str, empty_candidate: bool, *, messages: Any,
     conversation_history: Any, api_call_count: int, observed_generation: bool = False,
+    display_kind: Optional[str] = None,
 ) -> tuple:
     """Budgeted empty-response retry. Each empty attempt re-bills the full input, so the
     signature is recorded and deterministic empties stop burning paid retries (fails
-    open: missing usage or any output keeps the budget). Returns
+    open: missing usage or any output keeps the budget). A machinery turn
+    (``display_kind=internal_notification``, #82888) is not owed a reply, so its paid
+    budget collapses to zero (#135816: every paid retry on those turns came back empty
+    too, re-billing the full input with nobody waiting) — the attempts are still
+    recorded so the deterministic-empty short-circuit keeps its evidence, and the free
+    repair paths (nudge, prefill, fallback) stay available. Returns
     ``(action_or_None, interrupt_result, deterministic_empty)``."""
     from agent.retry_utils import jittered_backoff
 
@@ -61,6 +100,8 @@ def _retry_empty(
         _empty_guard.empty_retry_budget(agent, response)
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
+    if empty_candidate and current_turn_display_kind(agent, display_kind):
+        budget = 0
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
     if not (empty_candidate and agent._empty_content_retries < budget and not deterministic):
         return None, None, deterministic
@@ -252,6 +293,7 @@ def recover_empty_response(
         agent, response, finish_reason, _empty_candidate, messages=messages,
         conversation_history=conversation_history, api_call_count=api_call_count,
         observed_generation=_has_structured,
+        display_kind=current_turn_display_kind(agent),
     )
     if action is not None:
         return _verdict(action, interrupt_result)

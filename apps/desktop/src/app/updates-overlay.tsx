@@ -55,6 +55,11 @@ function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
 }
 
+/** A local-only branch reports its distance behind main for information; it never installs from here. */
+function installOffered(status: DesktopUpdateStatus | null, behind: number): boolean {
+  return !status?.localOnly && Boolean(status?.updateAvailable || behind > 0)
+}
+
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
@@ -81,7 +86,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  const updateAvailable = installOffered(status, behind)
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'

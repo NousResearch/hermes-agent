@@ -45,6 +45,8 @@ export interface VersionStatusInput {
   copy: VersionStatusCopy
   /** Stable channel: the newest release tag, when the check found one. */
   latestTag?: null | string
+  /** The pinned branch exists nowhere upstream: `behind` is measured against main, so the tooltip names main. */
+  localOnly?: boolean
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
   /** The apply reached the restart stage — labels `restart`, not `update`. */
@@ -74,6 +76,7 @@ export function resolveVersionStatus({
   channel = 'main',
   copy,
   latestTag = null,
+  localOnly = false,
   remote,
   restarting,
   sha = null,
@@ -109,19 +112,20 @@ export function resolveVersionStatus({
   // that knows it's stale but can't count (pip, non-git checkout).
   const hint = busy ? '' : !stable && behind > 0 ? ` (+${behind})` : available ? ` (${copy.update})` : ''
 
-  const tooltip = [
-    busy && (applyMessage || copy.updateInProgress),
-    !busy && available && stable && latestTag && copy.releaseAvailable(latestTag),
-    !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && available && (stable ? !latestTag : behind <= 0) && copy.update,
-    version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
-    client && sha && copy.commit(sha),
-    // The branch line is main-channel vocabulary; a stable checkout sits on
-    // a tag, and naming a branch would contradict the release line.
-    client && !stable && branch && copy.branch(branch)
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const tooltip = versionTooltip({
+    applyMessage,
+    available,
+    behind,
+    branch,
+    busy,
+    client,
+    copy,
+    latestTag,
+    localOnly,
+    sha,
+    stable,
+    version
+  })
 
   return {
     hasUpdate: !busy && available,
@@ -129,4 +133,60 @@ export function resolveVersionStatus({
     tooltip: tooltip || undefined,
     unknown: !version && !(client && sha)
   }
+}
+
+interface VersionTooltipInput {
+  applyMessage?: string
+  available: boolean
+  behind: number
+  branch?: string
+  busy: boolean
+  client: boolean
+  copy: VersionStatusCopy
+  latestTag: null | string
+  /** The pinned branch exists nowhere upstream: `behind` counts against main. */
+  localOnly: boolean
+  sha: null | string
+  stable: boolean
+  version: null | string
+}
+
+/** The hover text behind a version item: progress, distance, identity, branch — in that order. */
+function versionTooltip(input: VersionTooltipInput): string {
+  return [...updateTooltipLines(input), ...identityTooltipLines(input)].filter(Boolean).join(' · ')
+}
+
+/** Progress while applying; otherwise the release or commit distance and the update word. */
+function updateTooltipLines({
+  applyMessage,
+  available,
+  behind,
+  branch,
+  busy,
+  client,
+  copy,
+  latestTag,
+  localOnly,
+  stable
+}: VersionTooltipInput): unknown[] {
+  if (busy) {
+    return [applyMessage || copy.updateInProgress]
+  }
+
+  return [
+    available && stable && latestTag && copy.releaseAvailable(latestTag),
+    !stable && behind > 0 && copy.commitsBehind(behind, (client && !localOnly ? branch : 'main') || '...'),
+    available && (stable ? !latestTag : behind <= 0) && copy.update
+  ]
+}
+
+/** What the target is: version, commit, branch. Shown whether or not an apply is running. */
+function identityTooltipLines({ branch, client, copy, sha, stable, version }: VersionTooltipInput): unknown[] {
+  return [
+    version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
+    client && sha && copy.commit(sha),
+    // The branch line is main-channel vocabulary; a stable checkout sits on
+    // a tag, and naming a branch would contradict the release line.
+    client && !stable && branch && copy.branch(branch)
+  ]
 }

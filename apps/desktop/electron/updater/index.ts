@@ -50,6 +50,8 @@ export interface UpdaterStatusWire {
   supported: boolean
   mechanism?: UpdaterMechanism
   updateAvailable?: boolean
+  /** The pinned branch exists nowhere upstream; `behind` is measured against main for information only. */
+  localOnly?: boolean
   branch?: string
   currentBranch?: string
   reason?: string

@@ -329,16 +329,45 @@ def _unhealable_reason(co: _Checkout, branch: str) -> Optional[str]:
     return "unmerged"  # Unknown merge state keeps the branch.
 
 
-def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
+def _compare_ahead(current: str, target: str, repository: str) -> tuple[Optional[int], list[dict]]:
+    """``(ahead_by, commits)`` from the GitHub compare API; ``(None, [])`` when it can't answer."""
+    payload = _github_compare(current, target, repository)
+    ahead = (payload or {}).get("ahead_by")
+    if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0:
+        return ahead, (_quiet(lambda: _commits(payload), []) if ahead else [])
+    return None, []
+
+
+def _local_upstream_base(co: _Checkout, branch: str) -> Optional[str]:
+    """Merge-base of HEAD and the local ``origin/<branch>`` ref, when it resolves to a full SHA."""
+    if co.embedded or not co.head:
+        return None
+    base = _git_stdout(["merge-base", "HEAD", f"origin/{branch}"], cwd=co.root, git=co.git)
+    return base if _is_full_sha(base) else None
+
+
+def _behind_count(co: _Checkout, target: str, *, branch: str = "main") -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git)):
         return 0, []
     if co.repository:
-        payload = _github_compare(co.head, target, co.repository)
-        ahead = (payload or {}).get("ahead_by")
-        if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0:
-            return ahead, (_quiet(lambda: _commits(payload), []) if ahead else [])
+        ahead, commits = _compare_ahead(co.head, target, co.repository)
+        if ahead is not None:
+            return ahead, commits
+        # A HEAD carrying local commits on top of ``origin/<branch>`` (an overlay branch rebased
+        # onto upstream) exists nowhere upstream, so compare 404s for it FOREVER -- every update
+        # re-creates a local-only HEAD, so the no-count sentinel below would become permanent.
+        # Its merge-base with the remote-tracking ref IS an upstream commit, and every upstream
+        # commit newer than that base is exactly what this checkout lacks; the local commits
+        # above the base are ours, not missing. So count ``base...target``. Still no ``git fetch``.
+        base = _local_upstream_base(co, branch)
+        if base and base != co.head:
+            if base == target:
+                return 0, []
+            ahead, commits = _compare_ahead(base, target, co.repository)
+            if ahead is not None:
+                return ahead, commits
     return UPDATE_AVAILABLE_NO_COUNT, []
 
 
@@ -352,8 +381,22 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     if reason:
         detail = ("has never been pushed" if reason == "never-pushed"
                   else "is gone from the remote but has commits that are not in main")
-        result.update(error="branch-local-only", localOnly=True,
+        result.update(localOnly=True,
                       message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+        # The pin stays, but the checkout can still say how far behind upstream main it
+        # is: that distance is what a local overlay branch needs to see at a glance, and
+        # ``_behind_count`` measures it from the merge-base with ``origin/main``. Nothing
+        # here offers to apply an update -- ``updateAvailable`` stays False -- because
+        # the updater must not move a branch that exists nowhere else.
+        main_remote = remote if co.embedded else "origin"
+        main_tip, _, main_failure = _branch_tip(co.repository, "main", co.root, co.git, main_remote)
+        if main_tip is None:
+            result.update(error="fetch-failed",
+                          message=f"Could not resolve the remote main tip: {main_failure}" if main_failure
+                          else "Could not resolve the remote main tip.")
+            return
+        behind, commits = _behind_count(co, main_tip, branch="main")
+        result.update(commits=commits, targetSha=main_tip, behind=behind, updateAvailable=False)
         return
     if missing and selected_branch != "main":
         result["branch"] = "main"
@@ -365,7 +408,7 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
                       message=f"Could not resolve the remote branch tip: {failure}" if failure
                       else "Could not resolve the remote branch tip.")
         return
-    behind, commits = _behind_count(co, target)
+    behind, commits = _behind_count(co, target, branch=result["branch"])
     result["commits"] = commits
     result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
 

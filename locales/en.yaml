@@ -350,6 +350,7 @@ gateway:
     not_found: "No session found matching '**{name}**'.\nUse `/resume` with no arguments to see available sessions."
     already_on: "📌 Already on session **{name}**."
     switch_failed: "Failed to switch session."
+    blocked_subagent:      "⚠️ /resume blocked: '**{name}**' is an internal subagent transcript, not a conversation. Delegate runs are execution records owned by the session that spawned them — resume that session instead."
     resumed_one: "↻ Resumed session **{title}** ({count} message). Conversation restored."
     resumed_many: "↻ Resumed session **{title}** ({count} messages). Conversation restored."
     resumed_no_count: "↻ Resumed session **{title}**. Conversation restored."

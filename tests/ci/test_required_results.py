@@ -35,9 +35,30 @@ def test_status_policy(job, result, ordinary, excluded, release):
                        "allowed_skips": [job] if expected and result == "skipped" else []}
 
 
+@pytest.mark.parametrize("lane,jobs", [
+    ("python", ("tests", "tests-os")),
+    ("e2e", ("tests", "tests-os")),
+    ("e2e_upgrade", ("tests", "tests-os")),
+    ("desktop_updater", ("tests-os",)),
+    ("e2e_desktop_update", ("e2e-desktop-update",)),
+])
+@pytest.mark.parametrize("result", ["skipped", "absent", "success"])
+def test_selected_update_consumers_must_succeed(lane, jobs, result):
+    needs = {"detect": {"result": "success", "outputs": {lane: "true"}}}
+    if result != "absent":
+        needs.update({job: {"result": result} for job in jobs})
+    verdict = evaluate_gate(needs)
+    assert verdict["ok"] is (result == "success")
+    assert verdict["failed"] == ([] if result == "success" else sorted(jobs))
+    assert verdict["allowed_skips"] == []
+    # False string outputs must not arm a job merely because they are truthy.
+    needs["detect"]["outputs"][lane] = "false"
+    assert evaluate_gate(needs)["ok"]
+
+
 def test_release_exclusion_policy():
     assert required_results.EXCLUDED_JOBS == {
-        "history-check", "lockfile-diff", "supply-chain", "review-labels", "e2e-desktop",
+        "history-check", "lockfile-diff", "supply-chain", "e2e-desktop",
     }
 
 
@@ -67,7 +88,7 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
     )
     assert child.returncode == code, child.stderr
     assert report in child.stdout
-    key, value = output.read_text(encoding="utf-8").strip().split("=", 1)
+    key, value = output.read_text(encoding="utf-8-sig").strip().split("=", 1)
     assert key == "needs-json"
     assert json.loads(value) == results
     assert f"{key}={value}" in child.stdout

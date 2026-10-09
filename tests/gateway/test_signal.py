@@ -829,7 +829,6 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_count["n"] += 1
-            return None
 
         adapter._rpc = _fake_rpc
 

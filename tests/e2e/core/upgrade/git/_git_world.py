@@ -4,7 +4,7 @@
 git wrapper that reports the official remote URL) whose ``~/.gitconfig`` rewrites the official
 GitHub URL to a loopback ``git http-backend`` origin (``_smart_http``). The install itself comes
 from a real ``scripts/install.sh``: N-1's own copy for an N-1 install (it makes the depth-1
-single-branch clone N-1 users have), HEAD's for a HEAD install (a ``--filter=tree:0`` clone).
+single-branch clone N-1 users have), HEAD's for a HEAD install (a ``--filter=blob:none`` clone).
 ``preclone`` seeds a checkout the installer then adopts, for the clone shapes users got another
 way (a manual full clone, a ``blob:none`` fallback clone).
 
@@ -246,6 +246,6 @@ def in_parallel(jobs: dict[str, Callable[[], object]]) -> dict[str, object]:
         for name, fut in futures.items():
             try:
                 out[name] = fut.result()
-            except BaseException as exc:  # noqa: BLE001 - handed to the cell
+            except BaseException as exc:
                 out[name] = exc
     return out

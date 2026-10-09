@@ -13,8 +13,8 @@ from pm import paths
 from pm.package import InstallError
 from pm.plugin_inputs import Members, Selection
 from pm.runtime import runtime_python
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
-from tests.pm.test_runtime_wheelhouse import locked_wheelhouse  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
+from tests.pm.test_runtime_wheelhouse import locked_wheelhouse
 from tests.pm._fixtures import (
     _wheel,
     build_worker as build_worker,

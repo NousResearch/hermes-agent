@@ -59,7 +59,7 @@ class Finding:
     manual_issues: list = field(default_factory=list)
     fixed: int = 0
 
-    def merge(self, other: "Finding") -> None:
+    def merge(self, other: Finding) -> None:
         self.issues.extend(other.issues)
         self.manual_issues.extend(other.manual_issues)
         self.fixed += other.fixed

@@ -112,16 +112,11 @@ _TERMINAL_ENV_ROWS = {
     "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", DEFAULT_SANDBOX_IMAGE, False),),
 }
 
-_PLATFORMS = {  # name -> (token env var, home-channel env var or None)
-    "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-    "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"), "WhatsApp": ("WHATSAPP_ENABLED", None),
-    "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-    "Slack": ("SLACK_BOT_TOKEN", None), "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-    "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"), "DingTalk": ("DINGTALK_CLIENT_ID", None),
-    "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"), "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
-    "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None), "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
-    "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"), "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
-    "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL")}
+# Labels for built-in adapters without a platform-registry entry; registry entries bring their own.
+_PLATFORM_LABELS = {"telegram": "Telegram", "discord": "Discord", "whatsapp": "WhatsApp", "signal": "Signal",
+                    "slack": "Slack", "email": "Email", "sms": "SMS", "dingtalk": "DingTalk", "feishu": "Feishu",
+                    "wecom": "WeCom", "wecom_callback": "WeCom Callback", "weixin": "Weixin",
+                    "bluebubbles": "BlueBubbles", "qqbot": "QQBot", "yuanbao": "Yuanbao"}
 
 # Gateway manager label when the runtime snapshot is unavailable, keyed by platform.
 _GATEWAY_FALLBACK = {"termux": ("unknown", "Termux / manual process"), "linux": ("unknown", "systemd/manual"),
@@ -144,15 +139,20 @@ def _render_header(ctx):
         _banner((paused,), Colors.YELLOW, Colors.BOLD)
 
 
+def _load_ctx_config(ctx) -> None:
+    """Load config.yaml into the shared context (fail-soft)."""
+    try:
+        ctx.config = load_config()
+    except Exception:
+        ctx.config = {}
+
+
 def _render_environment(ctx):
     _section("Environment")
     _kv("Project:", PROJECT_ROOT)
     _kv("Python:", sys.version.split()[0])
     _kv_flag(".env file:", get_env_path().exists(), "exists", "not found")
-    try:
-        ctx.config = load_config()
-    except Exception:
-        ctx.config = {}
+    _load_ctx_config(ctx)
     _kv("Model:", _configured_model_label(ctx.config))
     _kv("Provider:", _effective_provider_label())
 
@@ -197,24 +197,21 @@ def _render_terminal(ctx):
 
 
 def _render_platforms(ctx):
+    """One row per platform, judged by the gateway (same verdict as the summary's Platforms line)."""
     _section("Messaging Platforms")
-    for name, (token_var, home_var) in _PLATFORMS.items():
-        has_token = bool(os.getenv(token_var, ""))
-        home_channel = os.getenv(home_var, "") if home_var else ""
-        _row(name, has_token, _configured(has_token) + (f" (home: {home_channel})" if home_channel else ""))
-
-    try:  # Plugin-registered platforms
+    try:
+        from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            # Per-entry guard: one raising probe must not abort the listing of every remaining
-            # plugin platform (matches the other check_fn sites).
-            try:
-                configured = bool(entry.check_fn())
-            except Exception:
-                configured = False
-            _row(entry.label, configured, f"{_configured(configured)} (plugin)")
+        cfg = load_gateway_config()
     except Exception:
-        pass
+        return
+    connected = {p.value for p in cfg.get_connected_platforms()}
+    homes = {p.value: pc.home_channel for p, pc in cfg.platforms.items() if pc.home_channel}
+    labels = {**_PLATFORM_LABELS, **{e.name: e.label for e in platform_registry.plugin_entries()}}
+    for value, label in sorted(labels.items(), key=lambda kv: kv[1].lower()):
+        home = homes.get(value)
+        _row(label, value in connected,
+             _configured(value in connected) + (f" (home: {home.chat_id})" if home else ""))
 
 
 def _render_gateway(ctx):
@@ -255,19 +252,23 @@ def _load_json(path: Path, encoding: str = "utf-8"):
         return json.load(f)
 
 
-def _render_cron(ctx):
-    _section("Scheduled Jobs")
+def _cron_summary() -> str:
+    """``N active, M total`` jobs line, shared by the full and short status renderers."""
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if not jobs_file.exists():
-        _kv("Jobs:", 0)
-        return
+        return "0"
     try:
         # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors may leave a UTF-8 BOM
         # that plain utf-8 json.load rejects.
         jobs = _load_json(jobs_file, "utf-8-sig").get("jobs", [])
-        _kv("Jobs:", f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total")
+        return f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total"
     except Exception:
-        _kv("Jobs:", "(error reading jobs file)")
+        return "(error reading jobs file)"
+
+
+def _render_cron(ctx):
+    _section("Scheduled Jobs")
+    _kv("Jobs:", _cron_summary())
 
 
 def _render_sessions(ctx):
@@ -351,6 +352,65 @@ def _render_footer(ctx):
     print()
 
 
+def _connected_platforms() -> list:
+    """Platforms the gateway would start (``GatewayConfig.get_connected_platforms``)."""
+    from gateway.config import load_gateway_config
+    return load_gateway_config().get_connected_platforms()
+
+
+def _connected_platform_labels() -> list:
+    from gateway.platform_registry import platform_registry
+    return [getattr(platform_registry.get(p.value), "label", p.value) for p in _connected_platforms()]
+
+
+def _authenticated_provider_names() -> list:
+    """The providers the /model picker offers: cached catalogs only, no endpoint probes."""
+    from hermes_cli.inventory import load_picker_context
+    from hermes_cli.model_switch import list_authenticated_providers
+    pick = load_picker_context()
+    return [row["name"] for row in list_authenticated_providers(
+        user_providers=pick.user_providers, custom_providers=pick.custom_providers,
+        excluded_providers=pick.excluded_providers, max_models=0, non_blocking_catalogs=True,
+        probe_custom_providers=False)]
+
+
+def _gateway_state() -> tuple:
+    from hermes_cli.gateway import get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer
+    if get_gateway_runtime_snapshot().running:
+        return True, "running"
+    if named_profile_served_by_running_multiplexer():  # satellite profile: no gateway.pid of its own
+        return True, "running (via the default-profile multiplexer)"
+    return False, "stopped"
+
+
+def _summary_row(label: str, probe, empty: str) -> None:
+    """One summary row; a failing probe degrades only its own row."""
+    try:
+        values = list(dict.fromkeys(probe()))
+    except Exception:
+        values = None
+    _kv(label, "unknown" if values is None else ", ".join(values) or empty)
+
+
+def _render_summary(ctx):
+    """Default ``hermes status``: one line per component; ``--full`` prints every section."""
+    _render_header(ctx)
+    print()
+    _load_ctx_config(ctx)
+    _kv("Model:", _configured_model_label(ctx.config))
+    _kv("Provider:", _effective_provider_label())
+    _summary_row("Providers:", _authenticated_provider_names, "none connected")
+    try:
+        running, text = _gateway_state()
+        _kv_flag("Gateway:", running, text, text)
+    except Exception:
+        _kv("Gateway:", "unknown")
+    _summary_row("Platforms:", _connected_platform_labels, "none configured")
+    _kv("Jobs:", _cron_summary())
+    _banner(("  Run 'hermes status --full' for every section",), Colors.DIM)
+    print()
+
+
 # Print order of `hermes status`; each renderer takes the shared _StatusContext.
 _SECTIONS = (
     _render_header, _render_environment, _render_api_keys, _render_auth_providers, _render_nous_gateway,
@@ -359,10 +419,10 @@ _SECTIONS = (
 
 
 def show_status(args):
-    """Show status of all Hermes Agent components."""
+    """One-screen summary by default; ``--full``/``--deep`` print every section."""
     # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
     # for the later Nous Tool Gateway section.
     ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
                           nous_inference_present=False, nous_account_info=None)
-    for render in _SECTIONS:
+    for render in _SECTIONS if getattr(args, 'full', False) or ctx.deep else (_render_summary,):
         render(ctx)

@@ -56,7 +56,7 @@ _activity_callback_local = threading.local()
 # Foreground commands in flight in THIS process, across every environment. Each runs in its
 # own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
 # orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
-_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+_live_foreground: dict[int, tuple[BaseEnvironment, ProcessHandle]] = {}
 # Reentrant, and the hard-exit path only ever takes it with a timeout: a signal handler can run
 # on a thread that already holds it.
 _live_foreground_cond = threading.Condition(threading.RLock())
@@ -74,7 +74,7 @@ def _enter_foreground_spawn() -> bool:
         return True
 
 
-def _leave_foreground_spawn(env: "BaseEnvironment", spawned) -> bool:
+def _leave_foreground_spawn(env: BaseEnvironment, spawned) -> bool:
     """Publish ``spawned`` (None: the spawn failed); True when the exit fence went up meanwhile."""
     global _spawns_in_flight
     with _live_foreground_cond:
@@ -257,7 +257,7 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
-    def __init__(self, cwd: str, timeout: int, env: dict = None):
+    def __init__(self, cwd: str, timeout: int, env: dict | None = None):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
@@ -589,7 +589,6 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook before each command. Remote backends (SSH, Modal, Daytona)
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
-        pass
 
     def _mark_recreated(self) -> None:
         """Flag that the live container/sandbox was replaced while serving the
@@ -740,9 +739,18 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD.
+
+        Also applies the macOS ``open`` frontmost raise-ladder (a pure string
+        rewrite, no-op on non-Darwin) so files opened via tool calls are
+        brought to the front instead of landing behind the Hermes window.
+        """
+        from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
+        return _transform_sudo_command(
+            _transform_macos_open_command(command),
+            sudo_nopasswd_check=self._sudo_nopasswd_works,
+        )
 
     _SUDO_PROBE_TIMEOUT_S = 3
 

@@ -17,6 +17,7 @@ def _desktop_session(monkeypatch, db):
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
     resp = server.handle_request({"id": "c", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
     assert "result" in resp, resp
@@ -139,6 +140,69 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
                        for r in every if "DRAIN-RESTART-B" not in str(r["content"]))
         finally:
             fresh.close()
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_readonly_resume_after_restart_retires_marked_row_without_reopen(
+        monkeypatch, tmp_path):
+    """RED on the #128508 head: with the reopen gone from the mount paths, a restart + bare
+    resume (no submit) left the still-marked accept row ACTIVE — it stayed glued into the
+    previous turn's user message by alternation repair until the next send. The mount must
+    stay read-only for the session row (ended_at keeps, #85303) while retiring the residue.
+    """
+    import pytest
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    try:
+        _accept_busy_prompt_a_concludes(db, sid, key)
+        # The restart: the queue is gone and no live in-memory session survives (the queue,
+        # running flag and inflight turn all lived in it); the row is FINALIZED and carries
+        # a never-drained accept row.
+        with server._sessions[sid]["history_lock"]:
+            server._sessions[sid]["running"] = False
+            server._clear_inflight_turn(server._sessions[sid])
+        server._sessions.pop(sid, None)
+        db.end_session(key, "agent_close")
+        assert db.get_session(key)["ended_at"] is not None
+
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **kwargs: db)
+        monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
+        monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
+        monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+        monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *args: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+        for defer_history in (False, True):  # cold read + deferred hydration paths
+            monkeypatch.setattr(server, "_schedule_agent_build", lambda *args: None)
+            response = server.handle_request({"id": "resume", "method": "session.resume", "params": {
+                "session_id": key, "source": "desktop", "defer_history": defer_history}})
+            assert response is not None and "error" not in response, response
+            resumed_sid = response["result"]["session_id"]
+            try:
+                if defer_history:  # the hydration thread owns the retire on this path
+                    assert server._sessions[resumed_sid]["resume_history_ready"].wait(5)
+                # Read-only mount kept (#85303): the row stays finalized.
+                row = db.get_session(key)
+                assert row["ended_at"] is not None, "resume must not reopen the finalized row (#85303)"
+                assert row["end_reason"] == "agent_close"
+                # But the never-drained accept row is retired (#125577): the repaired projection
+                # no longer absorbs the queued prompt into turn A's user message.
+                repaired = db.get_messages_as_conversation(key, repair_alternation=True,
+                                                            include_row_ids=True)
+                assert [(r["role"], r["content"]) for r in repaired] == [
+                    ("user", "prompt A"), ("assistant", "reply A")]
+                raw = db.get_messages(key, include_inactive=True)
+                assert [(r["role"], r["active"]) for r in raw] == [
+                    ("user", 1), ("user", 0), ("assistant", 1)]
+            finally:
+                server._sessions.pop(resumed_sid, None)
     finally:
         server._sessions.pop(sid, None)
         db.close()

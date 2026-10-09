@@ -194,7 +194,7 @@ def _eager_reconcile_own_session_db() -> None:
         )
 
 
-def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
+def _read_bound_port(server: uvicorn.Server, fallback: int) -> int:
     """Read the OS-assigned port from the live uvicorn socket (ephemeral port-0 discovery)."""
     if server.servers and server.servers[0].sockets:
         return server.servers[0].sockets[0].getsockname()[1]
@@ -236,8 +236,10 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
+    from hermes_cli.url_utils import format_url_host
+
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"

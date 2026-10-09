@@ -60,28 +60,35 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
-    def absorb(self, other: "MessageDeduplicator") -> None:
+    def absorb(self, other: MessageDeduplicator) -> None:
         """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
         cutoff = time.time() - self._ttl
         self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
 
 
-def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
-    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
-    adapter admits after this call still reach its replacement)."""
-    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
-
-
-def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
-    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces (call before connect).
 
     The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
     inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
     admitted and answered a second time."""
-    for name, previous in (caches or {}).items():
+    if predecessor is None:
+        return
+    for name, previous in vars(predecessor).items():
         current = getattr(adapter, name, None)
-        if isinstance(current, MessageDeduplicator) and current is not previous:
+        if isinstance(previous, MessageDeduplicator) and isinstance(current, MessageDeduplicator) and current is not previous:
             current.absorb(previous)
+
+
+def hand_over_held_inbound(source: Any, target: Any) -> None:
+    """Move inbound ``source`` is holding to ``target`` (#132829, #133399).
+
+    The runner calls it at publish time (retired instance -> replacement) and after disposing a
+    failed reconnect candidate (candidate -> retained predecessor): a candidate that fails connect
+    can hold acked updates and salvage pending batches in disconnect(), which must not die with it."""
+    adopt = getattr(target, "adopt_held_inbound", None)
+    if source is not None and callable(adopt):
+        adopt(source)
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute
@@ -128,7 +135,7 @@ _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def _keep_link_target(match: "re.Match[str]") -> str:
+def _keep_link_target(match: re.Match[str]) -> str:
     r"""``[label](https://url)`` -> ``label\nurl``.
 
     The bare URL is the only thing a platform with its own data detection
@@ -242,6 +249,26 @@ class ThreadParticipationTracker:
             self._threads.clear()
 
 
+async def send_chunks(chunks: list, send_one) -> Any:
+    """Send ``chunks`` in order through ``send_one(chunk) -> SendResult``, stopping at the first failure.
+
+    A failure after earlier chunks landed carries the ``partial_overflow`` contract that
+    ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
+    fallback, cron standalone fallback) re-sends the head the recipient already has.
+    """
+    from gateway.platforms.base import SendResult
+    result = SendResult(success=False, error="nothing to send")
+    for delivered, chunk in enumerate(chunks):
+        result = await send_one(chunk)
+        if not result.success:
+            if delivered:
+                raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                raw.update(partial_overflow=True, delivered_chunks=delivered, total_chunks=len(chunks))
+                result.raw_response = raw
+            break
+    return result
+
+
 def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4."""
     if not phone:
@@ -318,8 +345,8 @@ def convert_table_to_bullets(text: str) -> str:
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
-                             display_label: str | None = None, defaults: 'list[str] | None' = None,
-                             logger_: 'logging.Logger | None' = None) -> 'list[re.Pattern]':
+                             display_label: str | None = None, defaults: list[str] | None = None,
+                             logger_: logging.Logger | None = None) -> list[re.Pattern]:
     """Compile regex wake-word/mention patterns from config or env values.
 
     * **Config-style** (dingtalk, telegram): pass ``platform_label``. ``raw`` must be a
@@ -432,11 +459,11 @@ def split_at_paragraph_boundary(text, max_chars, len_fn=None):
     return text[:cut], text[cut:]
 
 
-def split_markdown_atoms(text: str) -> "list[str]":
+def split_markdown_atoms(text: str) -> list[str]:
     """Split markdown into indivisible atoms: fenced code blocks, tables
     (consecutive ``|...|`` lines) and paragraphs. Blank lines belong to no atom."""
-    atoms: "list[str]" = []
-    current_lines: "list[str]" = []
+    atoms: list[str] = []
+    current_lines: list[str] = []
     in_fence = False
 
     def _flush_current() -> None:
@@ -478,10 +505,10 @@ def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
     return '\n\n'
 
 
-def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
+def merge_streaming_fences(chunks: list[str]) -> list[str]:
     """Rejoin chunks truncated mid-fence: while chunk *i* has an unclosed fence
     and a successor exists, merge the successor in via :func:`infer_block_separator`."""
-    result: "list[str]" = []
+    result: list[str] = []
     i = 0
     while i < len(chunks):
         current = chunks[i]
@@ -493,12 +520,12 @@ def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
     return result
 
 
-def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     """Close orphaned ``` fences at each chunk boundary and reopen (with the
     original language tag) on the next, so every chunk is fence-balanced alone."""
     if len(chunks) <= 1:
         return chunks
-    out: "list[str]" = []
+    out: list[str] = []
     carry_lang = None
     for chunk in chunks:
         body = f"```{carry_lang}\n{chunk}" if carry_lang is not None else chunk
@@ -508,7 +535,7 @@ def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
     return out
 
 
-def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tuple[bool, str]":
+def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
@@ -522,7 +549,7 @@ def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=Non
     """Greedily pack *blocks* (joined with *sep*) into chunks of at most *max_length*; an
     oversized block goes through *overflow(block)* (-> list of chunks) if given, else as-is."""
     _len = len_fn or len
-    packed: "list[str]" = []
+    packed: list[str] = []
     current = ""
     for block in blocks:
         candidate = block if not current else f"{current}{sep}{block}"
@@ -569,9 +596,9 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if _len(text) <= max_chars:
         return [text]
     # Phase 2: greedy merge; oversized fence/table atoms stay indivisible.
-    chunks: "list[str]" = []
-    indivisible_set: "set[int]" = set()
-    current_parts: "list[str]" = []
+    chunks: list[str] = []
+    indivisible_set: set[int] = set()
+    current_parts: list[str] = []
     current_len = 0
     for atom in split_markdown_atoms(text):
         atom_len = _len(atom)
@@ -589,7 +616,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if current_parts:
         chunks.append('\n\n'.join(current_parts))
     # Phase 3: split still-oversized divisible chunks at paragraph boundaries.
-    result: "list[str]" = []
+    result: list[str] = []
     for idx, chunk in enumerate(chunks):
         if _len(chunk) <= max_chars or idx in indivisible_set or text_has_unclosed_fence(chunk):
             result.append(chunk)
@@ -604,7 +631,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
         if remaining:
             result.append(remaining)
     # Phase 4: merge small chunks with neighbours.
-    merged: "list[str]" = result[:1]
+    merged: list[str] = result[:1]
     for chunk in result[1:]:
         combined = merged[-1] + '\n\n' + chunk
         if _len(combined) <= max_chars:
@@ -620,7 +647,7 @@ def _chunk_newline_preferred(text, limit, len_fn):
         return [text]
     # Reserve headroom for fence markers a balancing pass may add.
     split_limit = max(limit - 16, limit // 2, 1) if "```" in text else limit
-    chunks: "list[str]" = []
+    chunks: list[str] = []
     remaining = text
     while len_fn(remaining) > split_limit:
         budget = _cp_budget(remaining, split_limit, len_fn)

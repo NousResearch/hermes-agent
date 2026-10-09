@@ -87,7 +87,7 @@ jobs:
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -279,6 +279,7 @@ jobs:
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -313,6 +314,7 @@ jobs:
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -347,6 +349,7 @@ jobs:
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -412,6 +415,8 @@ jobs:
   windows-packaged:
     name: Windows signed-package acceptance
     needs: transitions-win32
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-win32.outputs.windows) }}
@@ -428,6 +433,8 @@ jobs:
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
     needs: transitions-darwin-arm64
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-arm64.outputs.macos) }}
@@ -444,6 +451,8 @@ jobs:
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
     needs: transitions-darwin-x64
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-x64.outputs.macos) }}
@@ -523,7 +532,7 @@ jobs:
     secrets: inherit
     with:
       release-phase: publish
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:

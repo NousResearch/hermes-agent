@@ -67,7 +67,7 @@ class TeamsPipelineConfig:
     teams_delivery: dict[str, Any] | None = None
 
     @classmethod
-    def from_dict(cls, payload: Optional[dict[str, Any]]) -> "TeamsPipelineConfig":
+    def from_dict(cls, payload: Optional[dict[str, Any]]) -> TeamsPipelineConfig:
         data = dict(payload or {})
         tmp_dir = data.get("tmp_dir") or data.get("tmpDir")
         flags = {"transcript_preferred": True, "transcript_required": False, "transcription_fallback": True, "ffmpeg_extract_audio": True}
@@ -338,7 +338,7 @@ class TeamsMeetingPipeline:
             raise TeamsPipelineRetryableError("Recording fallback requires ffmpeg for audio extraction, but ffmpeg was not found.")
         audio_path = recording_path.with_suffix(".wav")
         proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise TeamsPipelineRetryableError(f"ffmpeg audio extraction failed: {stderr.decode('utf-8', errors='replace').strip()}")

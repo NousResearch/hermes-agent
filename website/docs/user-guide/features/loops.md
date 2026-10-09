@@ -34,8 +34,10 @@ What you'll see:
 Loop a slash command just as easily:
 
 ```
-/loop 10m /recap
+/loop 10m /status
 ```
+
+This periodically shows the current session status, just like running `/status` directly.
 
 ## The two cadence modes
 

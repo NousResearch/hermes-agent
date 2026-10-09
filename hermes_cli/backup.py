@@ -1094,12 +1094,18 @@ _QUICK_DEFAULT_KEEP = 20
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     """Quick snapshot root — USB backup volume when mounted, loud error otherwise.
-
+    
     Redirected from <home>/state-snapshots/ to /Volumes/Storage/backups/hermes/state-snapshots/
     (t_d39dc69f followup). If the USB volume is absent, raise RuntimeError so
     callers fail loudly instead of silently writing to internal disk.
+    
+    When hermes_home is explicitly provided (e.g., tests), use the original location
+    to allow isolated testing without USB volume.
     """
-    _ = hermes_home  # signature preserved for call-site compatibility
+    if hermes_home is not None:
+        # Explicit path provided (tests, non-default homes) — use original location
+        return hermes_home / _QUICK_SNAPSHOTS_DIR
+    # Production path: redirect to USB volume
     return _require_usb_backup_volume() / _QUICK_SNAPSHOTS_DIR
 
 

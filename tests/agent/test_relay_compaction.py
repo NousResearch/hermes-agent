@@ -7,6 +7,7 @@ hygiene runs outside any turn). Relay resets LLM-history freshness only for the 
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from unittest.mock import patch
 
@@ -133,6 +134,39 @@ def test_no_relay_session_skips_quietly(relay):
 def test_no_relay_host_skips_quietly(monkeypatch):
     monkeypatch.setattr(relay_runtime, "HOST_REGISTRY", _Registry(None))
     assert emit_compaction_mark("s1", "compaction", _committed("s1")) is False
+
+
+def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
+    fake, runtime, coordinator = relay
+    coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
+    entered, release = threading.Event(), threading.Event()
+
+    def stalled_event(_name, **_kwargs):
+        entered.set()
+        release.wait()
+
+    monkeypatch.setattr(fake.scope, "event", stalled_event)
+    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 0.05)
+    result = []
+
+    def publish():
+        try:
+            emit_compaction_mark("s1", "compaction", _committed("s1"))
+        except Exception as exc:
+            result.append(exc)
+
+    publisher = threading.Thread(target=publish, daemon=True)
+    try:
+        publisher.start()
+        publisher.join(timeout=2)
+        assert not publisher.is_alive()
+        assert entered.is_set()
+        assert len(result) == 1
+        assert isinstance(result[0], TimeoutError)
+        assert "Relay scope operation exceeded" in str(result[0])
+    finally:
+        release.set()
+        publisher.join(timeout=2)
 
 
 def test_a_turn_relay_does_not_instrument_records_no_mark(relay):

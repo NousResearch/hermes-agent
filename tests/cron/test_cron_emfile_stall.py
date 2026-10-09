@@ -100,7 +100,7 @@ class TestTickerEmfileBackoff:
             side_effect=OSError(errno.EMFILE, "Too many open files"),
         ), patch(
             "cron.jobs.record_ticker_heartbeat",
-            side_effect=lambda success=False: beats.append(success),
+            side_effect=lambda success=False, **_kw: beats.append(success),
         ), patch(
             "cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),
@@ -162,7 +162,7 @@ class TestTickerEmfileBackoff:
 
         with patch("cron.scheduler.tick", side_effect=flaky_tick), patch(
             "cron.jobs.record_ticker_heartbeat",
-            side_effect=lambda success=False: beats.append(success),
+            side_effect=lambda success=False, **_kw: beats.append(success),
         ), patch(
             "cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),

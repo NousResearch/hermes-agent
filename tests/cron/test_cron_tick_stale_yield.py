@@ -166,7 +166,7 @@ class TestYieldedTickIsAFailedTick:
             side_effect=scheduler_mod.CronTickYielded(SKEW[0], SKEW[1]),
         ), patch(
             "cron.jobs.record_ticker_heartbeat",
-            side_effect=lambda success=False: beats.append(success),
+            side_effect=lambda success=False, **_kw: beats.append(success),
         ), patch(
             "cron.jobs.record_ticker_error",
             side_effect=lambda msg: errors.append(msg),
@@ -203,7 +203,7 @@ class TestYieldedTickIsAFailedTick:
 
         with patch("cron.scheduler.tick", side_effect=_tick), patch(
             "cron.jobs.record_ticker_heartbeat",
-            side_effect=lambda success=False: beats.append(success),
+            side_effect=lambda success=False, **_kw: beats.append(success),
         ), patch("cron.jobs.record_ticker_error"), patch("cron.jobs.clear_ticker_error"):
             t = threading.Thread(
                 target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
@@ -249,7 +249,7 @@ class TestYieldedTickIsAFailedTick:
             # Profile B ticks fine.
             return 0
 
-        def _beat(success=False):
+        def _beat(success=False, **_kw):
             from hermes_constants import get_hermes_home
 
             per_home_beats[str(get_hermes_home())].append(success)

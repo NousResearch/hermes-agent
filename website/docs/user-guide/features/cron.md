@@ -335,7 +335,7 @@ over ones that create new jobs each run.
 
 ## How it works
 
-**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
+**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds by default, running any due jobs in isolated agent sessions. Change the cadence with `cron.tick_interval_seconds` in `config.yaml` (minimum 5; restart the gateway to apply). A longer interval means fewer idle wakeups but jobs can fire up to that many seconds late.
 
 ```bash
 hermes gateway install     # Install as a user service

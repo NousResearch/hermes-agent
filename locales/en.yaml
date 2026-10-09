@@ -254,6 +254,7 @@ gateway:
       blocked: "⏸ {head} blocked{reason}"
       crashed: "✖ {head} — its worker stopped unexpectedly; it will be retried automatically."
       status: "🔄 {head} → {status}"
+      promoted: "⬆️ {head} promoted to {status}"
       board_tag: "[{board}] "
       assignee_tag: "@{assignee} "
       head: "{board_tag}{assignee_tag}Kanban {task_id}"

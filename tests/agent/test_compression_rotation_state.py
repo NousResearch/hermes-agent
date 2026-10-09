@@ -18,7 +18,9 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import copy
+import json
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -132,6 +134,100 @@ def refresh_state_db(tmp_path: Path):
         yield db
     finally:
         db.close()
+
+
+class TestAtomicCompressorRouteReset:
+    def test_apply_compressor_route_reset_updates_all_owned_fields_atomically(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """A healthy compressor route owns all four reset fields as one row write.
+
+        Removing any one of the counter, cooldown, or rearm updates must make
+        this fail; unrelated model configuration must survive unchanged.
+        """
+        db = refresh_state_db
+        session_id = "ATOMIC_COMPRESSOR_ROUTE_RESET"
+        unrelated_value = "\u2603-preserve-this-value-exactly"
+        db.create_session(
+            session_id,
+            source="telegram",
+            model_config={
+                "_proactive_prune_rearm_tokens": 4096,
+                "unrelated_key": unrelated_value,
+            },
+        )
+        db.set_compression_ineffective_count(session_id, 2)
+        db.set_compression_fallback_streak(session_id, 2)
+        db.record_compression_failure_cooldown(session_id, time.time() + 60, "rate limited")
+
+        db.apply_compressor_route_reset(
+            session_id,
+            ineffective_count=0,
+            fallback_streak=0,
+            clear_failure_cooldown=True,
+            clear_proactive_prune_rearm=True,
+        )
+
+        row = db._conn.execute(
+            "SELECT compression_ineffective_count, compression_fallback_streak, "
+            "compression_failure_cooldown_until, compression_failure_error, model_config "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row["compression_ineffective_count"] == 0
+        assert row["compression_fallback_streak"] == 0
+        assert row["compression_failure_cooldown_until"] is None
+        assert row["compression_failure_error"] is None
+        model_config = json.loads(row["model_config"])
+        assert "_proactive_prune_rearm_tokens" not in model_config
+        assert model_config["unrelated_key"] == unrelated_value
+
+    def test_apply_compressor_route_reset_rolls_back_the_whole_row_on_failure(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """An aborted single-row reset cannot leak a partial durable clear."""
+        db = refresh_state_db
+        session_id = "ATOMIC_COMPRESSOR_ROUTE_RESET_ROLLBACK"
+        db.create_session(
+            session_id,
+            source="telegram",
+            model_config={
+                "_proactive_prune_rearm_tokens": 4096,
+                "unrelated_key": "must-survive-rollback",
+            },
+        )
+        db.set_compression_ineffective_count(session_id, 2)
+        db.set_compression_fallback_streak(session_id, 2)
+        db.record_compression_failure_cooldown(session_id, time.time() + 60, "rate limited")
+        columns = (
+            "compression_ineffective_count, compression_fallback_streak, "
+            "compression_failure_cooldown_until, compression_failure_error, model_config"
+        )
+        before = dict(db._conn.execute(
+            f"SELECT {columns} FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone())
+        db._conn.execute(
+            "CREATE TRIGGER abort_atomic_compressor_route_reset "
+            "BEFORE UPDATE ON sessions "
+            f"WHEN NEW.id = '{session_id}' "
+            "BEGIN SELECT RAISE(ABORT, 'forced compressor route reset failure'); END"
+        )
+
+        with pytest.raises(sqlite3.DatabaseError, match="forced compressor route reset failure"):
+            db.apply_compressor_route_reset(
+                session_id,
+                ineffective_count=0,
+                fallback_streak=0,
+                clear_failure_cooldown=True,
+                clear_proactive_prune_rearm=True,
+            )
+
+        after = dict(db._conn.execute(
+            f"SELECT {columns} FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone())
+        assert after == before
 
 
 class TestGoalMigratesOnRotation:

@@ -416,6 +416,64 @@ class SessionCompressionMixin:
         if session_id:
             self._write_session_column("compression_ineffective_count", session_id, max(0, int(count)))
 
+    def apply_compressor_route_reset(
+        self,
+        session_id: str,
+        *,
+        ineffective_count: int,
+        fallback_streak: Optional[int] = None,
+        clear_failure_cooldown: bool = False,
+        clear_proactive_prune_rearm: bool = False,
+    ) -> None:
+        """Atomically persist a compressor route's owned healthy-reset state.
+
+        ``fallback_streak=None`` and false clear flags intentionally leave their
+        respective fields alone.  A route reset that touches several guards must
+        commit as one row update so an aborted write cannot expose a partial
+        healthy state to a concurrently rebuilt compressor.
+        """
+        if not session_id:
+            return
+        normalized_ineffective_count = max(0, int(ineffective_count))
+        normalized_fallback_streak = (
+            None if fallback_streak is None else max(0, int(fallback_streak))
+        )
+
+        def _do(conn):
+            assignments = ["compression_ineffective_count = ?"]
+            params = [normalized_ineffective_count]
+            if normalized_fallback_streak is not None:
+                assignments.append("compression_fallback_streak = ?")
+                params.append(normalized_fallback_streak)
+            if clear_failure_cooldown:
+                assignments.extend((
+                    "compression_failure_cooldown_until = NULL",
+                    "compression_failure_error = NULL",
+                ))
+            if clear_proactive_prune_rearm:
+                row = conn.execute(
+                    "SELECT model_config FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row is None:
+                    return
+                raw_model_config = row["model_config"]
+                try:
+                    model_config = json.loads(raw_model_config) if raw_model_config else {}
+                except (TypeError, json.JSONDecodeError):
+                    model_config = {}
+                if not isinstance(model_config, dict):
+                    model_config = {}
+                model_config.pop("_proactive_prune_rearm_tokens", None)
+                assignments.append("model_config = ?")
+                params.append(json.dumps(model_config) if model_config else None)
+            params.append(session_id)
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+
+        self._execute_write(_do)
+
     def get_compression_recovery_deadline(self, session_id: str) -> float:
         """Persisted anti-thrash recovery deadline (epoch; ``0.0`` = not armed). Durable
         because the gateway rebuilds the compressor every turn / cache eviction.

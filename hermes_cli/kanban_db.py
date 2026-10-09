@@ -3620,40 +3620,31 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
-    comments; restores the implementer from the ``review_requested`` event.
-    Preserves ``consecutive_failures`` and the block loop counter (review is
-    not a block; only :func:`complete_task` clears them)."""
-    now = int(time.time())
-    with write_txn(conn):
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("review",), now=now,
-            note="invariant recovery on review reopen",
-        )
-        new_status = _landing_status_after_parents(conn, task_id)
-        review_event = _latest_event(conn, task_id, "review_requested")
-        handoff = _json_dict(_row_get(review_event, "payload"))
-        implementer = _nonblank_str(handoff.get("implementer"))
-        params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
-        cur = conn.execute(
-            # consecutive_failures deliberately PRESERVED: review reopen is not
-            # a success signal; only complete_task resets the breaker (#35072).
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-            + (", assignee = ?" if implementer else "")
-            + " WHERE id = ? AND status = 'review'",
-            params,
-        )
-        if cur.rowcount != 1:
-            return False
-        payload: dict[str, Any] = {"status": new_status}
-        if implementer:
-            payload["implementer"] = implementer
-        _append_event(
-            conn, task_id, "review_reopened", payload if payload != {"status": "ready"} else None,
-        )
-        return True
+def _apply_review_reopen(
+    conn: sqlite3.Connection, task_id: str, new_status: str,
+    implementer: str, reason: str | None,
+) -> bool:
+    """UPDATE + ``review_reopened`` event half of :func:`reopen_review_task`
+    (kanban_db_review); runs inside the caller's txn. Returns False when the
+    card left ``review`` concurrently. ``reason`` (already redacted by the
+    caller) rides on the event payload so the notifier can surface it."""
+    # assignee binds through ``?``; a NULL implementer keeps the column
+    # (COALESCE), matching the previous conditional-column UPDATE.
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, assignee = COALESCE(?, assignee) WHERE id = ? AND status = 'review'",
+        (new_status, implementer, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    payload: dict[str, Any] = {"status": new_status}
+    if implementer:
+        payload["implementer"] = implementer
+    if reason:
+        payload["reason"] = reason
+    _append_event(
+        conn, task_id, "review_reopened", payload if payload != {"status": "ready"} else None,
+    )
+    return True
 
 
 def invalidate_descendants_for_parent_reopen(
@@ -4448,3 +4439,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_review import reopen_review_task

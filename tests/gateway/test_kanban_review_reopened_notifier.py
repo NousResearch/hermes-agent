@@ -54,7 +54,7 @@ def _runner(adapter):
     return runner
 
 
-def _review_task_reopened(delivery_mode, *, payload=True):
+def _review_task_reopened(delivery_mode, *, payload=True, reason=None):
     """A card that went to review and was reopened by the operator.
 
     The real pair (`request_review` then `reopen_review_task`) is used so the
@@ -83,7 +83,7 @@ def _review_task_reopened(delivery_mode, *, payload=True):
             delivery_metadata={"thread_id": "topic-7", "chat_type": "thread"},
         )
         if payload:
-            assert kb.reopen_review_task(conn, task_id)
+            assert kb.reopen_review_task(conn, task_id, reason=reason)
         else:
             # `reopen_review_task` omits the payload entirely when the card lands
             # on `ready` with no implementer to restore; the formatter must not
@@ -151,3 +151,26 @@ def test_review_reopened_without_payload_notifies_ready(tmp_path, monkeypatch):
     assert len(adapter.sent) == 1
     assert "returned to ready for rework" in adapter.sent[0]["text"]
     assert adapter.handled == []
+
+
+def test_review_reopened_reason_reaches_ping_and_wake(tmp_path, monkeypatch):
+    """The operator's reopen reason rides on the event payload into both the
+    channel ping and the wake turn's review detail (#135738)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "reopen-reason.db"))
+    kb.init_db()
+    task_id = _review_task_reopened(
+        "notify+wake", reason="Device verification failed; return to implementer"
+    )
+    adapter = RecordingAdapter()
+
+    asyncio.run(_run_one_tick(monkeypatch, _runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert (
+        f"review reopened — returned to ready for rework → implementer @codex-cua"
+        ": Device verification failed; return to implementer" in text
+    )
+    assert len(adapter.handled) == 1
+    assert "Device verification failed" in adapter.handled[0].text
+    assert _unseen(task_id) == []

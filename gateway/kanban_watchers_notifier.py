@@ -434,15 +434,19 @@ def _fmt_changes_requested(ev, n) -> tuple:
 
 def _fmt_review_reopened(ev, n) -> tuple:
     # An operator returned the review card to its implementer (review -> ready/todo).
-    # The reopen reason lives on the card as a comment, not in the event payload;
-    # the payload carries only the landing status and the restored implementer.
+    # The CLI redacts the reopen reason into the event payload; surface it in the
+    # ping and the wake turn like ``changes_requested`` does. Payload-less events
+    # (a plain ``ready`` landing) keep the bare form.
     payload = ev.payload or {}
     status = str(payload.get("status") or "ready")
     implementer = _safe_review_reason(payload.get("implementer"), 48)
+    reason = _safe_review_reason(payload.get("reason"))
     provenance = t("gateway.kanban.ping.implementer_suffix", implementer=implementer) if implementer else ""
+    if reason:
+        provenance += t("gateway.kanban.ping.reason_suffix", value=reason)
     msg = t("gateway.kanban.ping.review_reopened",
             board_tag=n.board_tag, task_id=n.task_id, status=status, provenance=provenance)
-    return msg, None, None
+    return msg, None, (reason or None)
 
 
 def _fmt_block_loop_detected(ev, n) -> tuple:

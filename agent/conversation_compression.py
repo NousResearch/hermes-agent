@@ -4151,9 +4151,14 @@ def compress_context(
     checkpoint_required = getattr(agent, "compression_checkpoint_required", False) is True
     if getattr(agent, "api_mode", None) == "codex_app_server":
         if checkpoint_required:
-            raise _checkpoint_blocked(
+            blocked = _checkpoint_blocked(
                 "codex_app_server owns the authoritative thread and does not expose a truthful pre-compaction transcript boundary"
             )
+            _emit_bypassed_attempt_telemetry(
+                agent, attempt.started_at, commit_status="aborted", failure_class=f"exception:{type(blocked).__name__}",
+                approx_tokens=approx_tokens, route="codex_app_server",
+            )
+            raise blocked
         return _route_codex_compaction(
             agent, messages, system_message, commit_fence=commit_fence, attempt=attempt, approx_tokens=approx_tokens,
             task_id=task_id, force=force,

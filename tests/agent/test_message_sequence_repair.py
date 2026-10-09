@@ -10,6 +10,7 @@ recovery every turn.
 """
 
 from run_agent import AIAgent
+import pytest
 
 
 def _bare_agent():
@@ -18,8 +19,11 @@ def _bare_agent():
 
 # ── _drop_trailing_empty_response_scaffolding ──────────────────────────────
 
-def test_drop_scaffolding_rewinds_orphan_tool_tail():
-    """When scaffolding is stripped, also rewind the orphan assistant+tool pair."""
+def test_drop_scaffolding_pops_sentinel_keeps_orphan_tool_pair():
+    """Scaffolding strip pops the empty-response sentinel but keeps the orphan
+    assistant(tool_calls)+tool pair: they were saved before the tool ran, so
+    rewinding them would make the model repeat a side effect the durable
+    transcript already records (upstream contract)."""
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": "task"},
@@ -33,7 +37,13 @@ def test_drop_scaffolding_rewinds_orphan_tool_tail():
 
     AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
 
-    assert messages == [{"role": "user", "content": "task"}]
+    assert messages == [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+    ]
 
 
 
@@ -1711,10 +1721,6 @@ _UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
 _STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
 
 
-@pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
-@pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
-
-
 def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
@@ -1770,9 +1776,13 @@ def test_repair_marker_user_merge_keeps_plain_row_addressable():
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs == 1
-    assert len(messages) == 2
-    merged = messages[1]
+    # repairs == 2: one from merging the two user turns, one from Pass 3
+    # (`_ensure_user_leads`) bridging the leading assistant reply — raising a
+    # malformed leading-assistant history to the leading-user invariant.
+    assert repairs == 2
+    assert len(messages) == 3
+    # Pass 3 inserts the bridge at the front, so the merged row moves to index 2.
+    merged = messages[2]
     assert merged["role"] == "user"
     assert not merged.get("display_kind")
     assert merged["_row_id"] == 12135
@@ -1839,6 +1849,8 @@ def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
     assert _DB_PERSISTED_MARKER not in surviving
 
 
+@pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
+@pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
 def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
     """A dropped row is recorded on the survivor before it, or on the first survivor when nothing is kept
     ahead of it (#129162)."""

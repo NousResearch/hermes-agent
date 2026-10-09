@@ -57,6 +57,23 @@ class CredentialPoolAdminMixin:
                 self._persist(status_cleared_ids=list(stale_ids))
             return len(stale)
 
+    def clear_model_cooldowns(self, credential_id: str) -> Optional[PooledCredential]:
+        """Drop only the target's per-model cooldowns, keeping its status fields.
+
+        ``hermes auth refresh`` rotates the grant but leaves ``model_cooldowns``
+        behind, contradicting the command's own help text (#135873). Like the
+        reset paths, the persist declares the cleared id so the disk-recency
+        merge cannot copy the still-binding window back over the cleared row.
+        """
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None or not entry.model_cooldowns:
+                return entry
+            cleared = replace(entry, model_cooldowns=None)
+            self._replace_entry(entry, cleared)
+            self._persist(status_cleared_ids=[cleared.id])
+            return cleared
+
     def remove_index(self, index: int) -> Optional[PooledCredential]:
         with self._lock:
             if index < 1 or index > len(self._entries):

@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import stat
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -34,31 +33,33 @@ def sweep_transcript_media(db) -> int:
     cutoff BEFORE the read snapshot and re-stat each candidate after reading refs;
     both new writes and dedupe hits renew that one-hour publication window.
     """
-    root = _media_root(db.db_path)
-    if root.is_symlink() or root.parent.is_symlink() or not root.is_dir():
+    try:
+        store = _open_store(_media_root(db.db_path), create=False)
+    except OSError:  # missing, or a symlinked/non-directory component: nothing of ours to reclaim
         return 0
-    cutoff = time.time() - MEDIA_GC_GRACE_SECONDS
-    with db._read_ctx() as conn:
-        conn.execute("BEGIN")
-        try:
-            referenced = set()
-            for row in conn.execute("SELECT media_content FROM messages WHERE media_content IS NOT NULL"):
-                for ref in json.loads(row[0])["images"]:
-                    referenced.update(ref[key] for key in ("sha256", "encoded_sha256") if key in ref)
-        finally:
-            conn.rollback()
-    removed = 0
-    for path in root.iterdir():
-        if path.name in referenced or not (re.fullmatch(r"[0-9a-f]{64}", path.name) or path.name.startswith(".write-")):
-            continue
-        try:
-            info = path.lstat()
-            if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        except FileNotFoundError:  # another sweeper won
-            continue
-    return removed
+    with store as (base, dir_fd):
+        cutoff = time.time() - MEDIA_GC_GRACE_SECONDS
+        with db._read_ctx() as conn:
+            conn.execute("BEGIN")
+            try:
+                referenced = set()
+                for row in conn.execute("SELECT media_content FROM messages WHERE media_content IS NOT NULL"):
+                    for ref in json.loads(row[0])["images"]:
+                        referenced.update(ref[key] for key in ("sha256", "encoded_sha256") if key in ref)
+            finally:
+                conn.rollback()
+        removed = 0
+        for name in os.listdir(base if dir_fd is None else dir_fd):
+            if name in referenced or not (re.fullmatch(r"[0-9a-f]{64}", name) or name.startswith(".write-")):
+                continue
+            try:
+                info = os.stat(os.path.join(base, name), dir_fd=dir_fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                    os.unlink(os.path.join(base, name), dir_fd=dir_fd)
+                    removed += 1
+            except FileNotFoundError:  # another sweeper won
+                continue
+        return removed
 
 
 def try_sweep_transcript_media(db, *, enabled: bool = True) -> None:
@@ -86,49 +87,106 @@ def _media_root(db_path) -> Path:
     return Path(db_path).parent / "cache" / "transcript_media"
 
 
-def _owned_root(root: Path) -> Path:
-    """Refuse a store reached through a symlinked ``cache`` or ``transcript_media`` (reads and writes alike)."""
-    if root.resolve() != root.parent.parent.resolve() / "cache" / "transcript_media":
-        raise OSError("transcript media store is not inside its profile")
-    return root
+# POSIX: every store access goes through a no-follow directory descriptor, so a symlinked or
+# swapped ``cache``/``transcript_media`` can neither be created through nor redirect a later
+# open/replace/read. Windows has no dir_fd/O_NOFOLLOW; there the store is checked by path (its
+# symlinks need admin or developer mode), as tools/spill_safety.py does.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIR_FD = bool(_NOFOLLOW) and os.open in os.supports_dir_fd
+_UTIME_NOFOLLOW = {"follow_symlinks": False} if os.utime in os.supports_follow_symlinks else {}
+
+
+class _open_store:
+    """Context manager yielding ``(base, dir_fd)``: join names onto *base* and pass *dir_fd*."""
+
+    def __init__(self, root: Path, *, create: bool):
+        self.fds: list[int] = []
+        if create:
+            from hermes_constants import assert_named_profile_home_live
+            # A stale writer of a deleted profile must not resurrect its home.
+            assert_named_profile_home_live(root)
+        if not _DIR_FD:
+            if create:
+                root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if root.is_symlink() or root.parent.is_symlink() or not root.is_dir():
+                raise OSError("transcript media store is not inside its profile")
+            self.value = (str(root), None)
+            return
+        try:
+            self.fds.append(os.open(root.parent.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)))
+            for name, mode in (("cache", 0o777), ("transcript_media", 0o700)):
+                self.fds.append(self._child(self.fds[-1], name, mode, create))
+        except BaseException:
+            self.__exit__()
+            raise
+        self.value = ("", self.fds[-1])
+
+    @staticmethod
+    def _child(parent: int, name: str, mode: int, create: bool) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
+        try:
+            return os.open(name, flags, dir_fd=parent)
+        except FileNotFoundError:
+            if not create:
+                raise
+        try:
+            os.mkdir(name, mode, dir_fd=parent)
+        except FileExistsError:
+            pass
+        return os.open(name, flags, dir_fd=parent)
+
+    def __enter__(self):
+        return self.value
+
+    def __exit__(self, *_exc) -> None:
+        for fd in reversed(self.fds):
+            os.close(fd)
+        self.fds = []
 
 
 def _put(root: Path, data: bytes) -> str:
-    from hermes_constants import assert_named_profile_home_live
-    from utils import fsync_directory
-
     digest = hashlib.sha256(data).hexdigest()
-    # A stale writer of a deleted profile must not resurrect its home (mkdir_under_hermes_home's contract).
-    assert_named_profile_home_live(root)
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = _owned_root(root) / digest
-    if not target.is_symlink() and target.is_file():
+    with _open_store(root, create=True) as (base, dir_fd):
+        target = os.path.join(base, digest)
         try:
-            os.utime(target, follow_symlinks=False)
-            return digest
-        except FileNotFoundError:  # a sweep won before we renewed the lease
+            if stat.S_ISREG(os.stat(target, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+                os.utime(target, dir_fd=dir_fd, **_UTIME_NOFOLLOW)
+                return digest
+        except FileNotFoundError:  # absent, or a sweep won before we renewed the lease
             pass
-    fd, name = tempfile.mkstemp(prefix=".write-", dir=root)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, target)
-        fsync_directory(root)  # the SQLite reference must never outlive the filename
-    finally:
-        Path(name).unlink(missing_ok=True)
+        name = os.path.join(base, f".write-{os.urandom(8).hex()}")
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | getattr(os, "O_BINARY", 0),
+                     0o600, dir_fd=dir_fd)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, target, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            # The SQLite reference must never outlive the filename.
+            if dir_fd is None:
+                from utils import fsync_directory
+                fsync_directory(base)
+            else:
+                os.fsync(dir_fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
     return digest
 
 
 def _get(root: Path, digest: str) -> bytes:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("invalid transcript media digest")
-    path = _owned_root(root) / digest
-    # A dangling link or a non-regular file must not block replay or escape the store.
-    if path.is_symlink() or not path.is_file():
-        raise OSError("transcript media is not a regular file")
-    data = path.read_bytes()
+    with _open_store(root, create=False) as (base, dir_fd):
+        # A link or a non-regular file must not block replay or escape the store.
+        fd = os.open(os.path.join(base, digest), os.O_RDONLY | _NOFOLLOW | getattr(os, "O_BINARY", 0), dir_fd=dir_fd)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise OSError("transcript media is not a regular file")
+            data = stream.read()
     if hashlib.sha256(data).hexdigest() != digest:
         raise ValueError("transcript media checksum mismatch")
     return data

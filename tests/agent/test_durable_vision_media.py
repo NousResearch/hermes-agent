@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -102,7 +103,6 @@ def test_reference_store_is_deduplicated_and_text_search_stays_clean(db, tmp_pat
 
 @pytest.mark.parametrize("failure", ["missing", "unreadable", "corrupt"])
 def test_unavailable_media_falls_back_to_text(db, tmp_path, monkeypatch, caplog, failure):
-    from pathlib import Path
     from agent.session_persistence import _durable_content
 
     live = _history("envelope")
@@ -113,12 +113,12 @@ def test_unavailable_media_falls_back_to_text(db, tmp_path, monkeypatch, caplog,
     elif failure == "corrupt":
         path.write_bytes(b"damaged")
     else:
-        read_bytes = Path.read_bytes
-        def denied(p):
-            if p == path:
+        real_open = os.open
+        def denied(name, flags, *args, **kwargs):
+            if os.path.basename(name) == path.name:
                 raise PermissionError("unreadable")
-            return read_bytes(p)
-        monkeypatch.setattr(Path, "read_bytes", denied)
+            return real_open(name, flags, *args, **kwargs)
+        monkeypatch.setattr(os, "open", denied)
     with caplog.at_level("DEBUG", logger="hermes_state"):
         restored = db.get_messages_as_conversation("vision", repair_alternation=True)
     assert restored[-1]["content"] == _durable_content(live[-1]["content"])
@@ -604,10 +604,66 @@ def test_media_file_io_runs_outside_the_write_transaction(db, monkeypatch):
 
 @pytest.mark.platforms("posix")
 def test_first_publication_fsyncs_the_store_directory(db, tmp_path, monkeypatch):
-    import utils
+    import stat
     from hermes_state_media import prepare_media_content
 
-    synced = []
-    monkeypatch.setattr(utils, "fsync_directory", lambda path: synced.append(path))
+    real_fsync, synced = os.fsync, []
+    def spy(fd):
+        synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        return real_fsync(fd)
+    monkeypatch.setattr(os, "fsync", spy)
     prepare_media_content(db.db_path, _history("user")[0]["content"])
-    assert synced == [tmp_path / "cache" / "transcript_media"]
+    assert synced == [False, True]  # the image file, then its directory entry
+
+
+@pytest.mark.platforms("posix")
+def test_symlinked_cache_never_creates_the_store_outside(db, tmp_path):
+    from hermes_state_media import prepare_media_content
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache = tmp_path / "cache"
+    if cache.exists():
+        cache.rename(tmp_path / "old-cache")
+    cache.symlink_to(outside, target_is_directory=True)
+    assert prepare_media_content(db.db_path, _history("user")[0]["content"])[1] is None
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("op", ["write", "read"])
+def test_store_swapped_after_validation_is_not_followed(db, tmp_path, monkeypatch, op):
+    """A directory swapped for a symlink between the store check and the file I/O must not redirect it."""
+    import hermes_state_media
+    from hermes_state_media import prepare_media_content
+
+    content = _history("user")[0]["content"]
+    _flush(db, [{"role": "user", "content": content}])
+    store = tmp_path / "cache" / "transcript_media"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for path in store.iterdir():  # the outside copy a redirected read would return
+        (outside / path.name).write_bytes(path.read_bytes())
+    real_enter = hermes_state_media._open_store.__enter__
+    def swap_then_enter(self):
+        store.rename(tmp_path / "moved")
+        store.symlink_to(outside, target_is_directory=True)
+        return real_enter(self)
+    monkeypatch.setattr(hermes_state_media._open_store, "__enter__", swap_then_enter)
+    if op == "write":
+        other = _history("user")[0]["content"]
+        other[1]["image_url"]["url"] = "data:image/png;base64," + base64.b64encode(b"other").decode()
+        before = sorted(p.name for p in outside.iterdir())
+        prepare_media_content(db.db_path, other)
+        assert sorted(p.name for p in outside.iterdir()) == before
+        assert any((tmp_path / "moved").iterdir())
+    else:
+        real_enter_once = swap_then_enter
+        def swap_and_hide(self):
+            result = real_enter_once(self)
+            for path in (tmp_path / "moved").iterdir():  # only the outside copy remains readable by path
+                path.unlink()
+            return result
+        monkeypatch.setattr(hermes_state_media._open_store, "__enter__", swap_and_hide)
+        loaded = db.get_messages_as_conversation("vision", repair_alternation=True)[0]["content"]
+        assert DATA_URL not in json.dumps(loaded)

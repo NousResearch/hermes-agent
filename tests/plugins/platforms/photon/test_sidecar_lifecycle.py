@@ -39,7 +39,7 @@ class _ProbeClient:
     async def __aenter__(self) -> "_ProbeClient":
         return self
 
-    async def __aexit__(self, *a: Any) -> bool:
+    async def __aexit__(self, *a: object) -> bool:
         return False
 
     async def post(self, *a: Any, **k: Any) -> Any:
@@ -52,8 +52,8 @@ class _ProbeClient:
         return _Resp()
 
 
-def _capture_kills(monkeypatch: pytest.MonkeyPatch) -> List[Tuple[int, int]]:
-    kills: List[Tuple[int, int]] = []
+def _capture_kills(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    kills: list[tuple[int, int]] = []
 
     def _fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -91,7 +91,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
-    spawned: Dict[str, Any] = {}
+    spawned: dict[str, Any] = {}
     hidden_flags = 0x08000000
     monkeypatch.setattr(
         "hermes_cli._subprocess_compat.windows_hide_flags",
@@ -103,7 +103,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         stdout = ""
         stderr = ""
 
-    def _fake_run(cmd: List[str], **kwargs: Any) -> _PatchResult:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> _PatchResult:
         spawned["patch_cmd"] = cmd
         spawned["patch_kwargs"] = kwargs
         return _PatchResult()
@@ -119,7 +119,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         def poll() -> None:
             return None
 
-    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _FakeProc:
         spawned["cmd"] = cmd
         spawned["kwargs"] = kwargs
         return _FakeProc()
@@ -161,7 +161,7 @@ async def test_spectrum_patch_runs_off_the_event_loop(
 
     adapter = _make_adapter(monkeypatch)
     main_thread = threading.current_thread()
-    seen: Dict[str, Any] = {}
+    seen: dict[str, Any] = {}
 
     # node_modules present + deps fresh, so we reach the patch run.
     monkeypatch.setattr(photon_adapter.Path, "exists", lambda self: True)

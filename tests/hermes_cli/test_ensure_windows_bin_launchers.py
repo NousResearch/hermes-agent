@@ -120,8 +120,8 @@ def test_no_store_python_refuses_publication(managed_install, tmp_path, monkeypa
 def test_store_python_launcher_boot_the_store_not_the_venv(tmp_path, monkeypatch):
     """With the store materialized, the staged launchers bind to the store
     interpreter and never to the venv python."""
-    home, root = _make_managed(tmp_path, monkeypatch)
-    store, entry = _make_store(tmp_path, monkeypatch)
+    _home, root = _make_managed(tmp_path, monkeypatch)
+    store, _entry = _make_store(tmp_path, monkeypatch)
 
     restored = ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
 
@@ -158,7 +158,7 @@ def test_legacy_venv_trampoline_is_replaced_by_store_launcher(
 
 def test_healthy_store_launcher_is_a_noop(tmp_path, monkeypatch):
     home, root = _make_managed(tmp_path, monkeypatch)
-    store, _entry = _make_store(tmp_path, monkeypatch)
+    _store, _entry = _make_store(tmp_path, monkeypatch)
     bin_dir = home / "bin"
     bin_dir.mkdir()
     local = root / ".hermes" / "bin"
@@ -210,7 +210,7 @@ def test_legacy_bin_restaged_only_while_on_user_path(managed_install):
 
 
 def test_legacy_bin_not_restaged_without_path_consent(managed_install):
-    home, root = managed_install
+    _home, root = managed_install
 
     ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
 
@@ -381,7 +381,7 @@ def test_migration_skips_source_checkouts(tmp_path, monkeypatch):
 
 
 def test_migration_noop_on_posix(managed_install):
-    home, root = managed_install
+    _home, root = managed_install
 
     assert not migrate_windows_bin_path(root, windows=False)
 

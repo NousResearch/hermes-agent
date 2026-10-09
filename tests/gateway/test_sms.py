@@ -196,6 +196,13 @@ class TestTwilioSignatureValidation:
         params = {"From": "+15551234567", "Body": "hello"}
         sig = _compute_twilio_signature("wrong_token", url, params)
         assert adapter._validate_twilio_signature(url, params, sig) is False
+        # A whitespace-only token reads as unset: signatures forged with the blank or empty key are refused.
+        blank = self._make_adapter(auth_token="   ")
+        assert not any(blank._validate_twilio_signature(url, params, _compute_twilio_signature(k, url, params))
+                       for k in ("   ", ""))
+        from plugins.platforms.sms.adapter import check_sms_requirements
+        with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "   "}):
+            assert check_sms_requirements() is False
 
 
     def test_port_variant_443_matches_without_port(self):
@@ -311,6 +318,20 @@ class TestMultiplexProfileScope:
         finally:
             reset_secret_scope(token)
         assert "TWILIO_PHONE_NUMBER required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_with_a_non_string_or_blank_key_fails_closed(self):
+        """A YAML int api_key must not raise, and a blank one must not reach Twilio."""
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        env = {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "", "TWILIO_PHONE_NUMBER": "+15550001111"}
+        with patch.dict(os.environ, env):
+            result = await _standalone_send(PlatformConfig(enabled=True, api_key="   "), "+15550002222", "hi")
+            assert "not configured" in result["error"]
+            env["TWILIO_ACCOUNT_SID"] = ""  # keep the int case off the network
+            with patch.dict(os.environ, env):
+                result = await _standalone_send(PlatformConfig(enabled=True, api_key=123), "+15550002222", "hi")
+        assert "not configured" in result["error"]
 
 
 @pytest.mark.asyncio

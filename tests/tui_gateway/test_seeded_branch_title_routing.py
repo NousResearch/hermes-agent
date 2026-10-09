@@ -17,7 +17,7 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
     db = SessionDB(tmp_path / "state.db")
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_sessions", {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_profile_home", lambda *a: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)

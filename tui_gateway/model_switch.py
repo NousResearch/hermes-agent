@@ -124,7 +124,7 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
             continue
         try:
             reset(token)
-        except Exception as exc:  # noqa: BLE001 — keep releasing the remaining scopes
+        except Exception as exc:
             first_error = first_error or exc
     if first_error is not None:
         raise first_error
@@ -141,13 +141,26 @@ def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = Tru
         _release_profile_runtime_scope_tokens(scopes)
 
 
-def _session_default_model(session: dict) -> str:
-    """The configured default model of the session's OWN profile. Bare ``_resolve_model()`` reads the
-    LAUNCH profile's config, so a secondary session's reply or first state.db row carried the launch
-    profile's model id."""
+def _session_default_route(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` a not-yet-built session of its OWN profile will run on. Bare
+    ``_resolve_startup_runtime()`` reads the LAUNCH profile's config, so a secondary session's reply or
+    first state.db row carried the launch profile's model id. On the Nous free tier the agent build pins
+    ``nous/welcome`` (``pin_model_for_route``), so the configured default (often the silent default,
+    with no provider) is not what the session runs; report the pinned route instead."""
+    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
     with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
                                         hydrate_secrets=False):
-        return _resolve_model()
+        if not _resolve_startup_runtime()[1] and free_tier_route():
+            return GUEST_MODEL, "nous"
+        # Off the free tier, the model id alone: the provider is resolved when the agent is built.
+        return _resolve_model(), ""
+
+
+def _lazy_info_route(session: dict, override: dict) -> dict:
+    """``session.info``'s model and provider for a not-yet-built session: the client's sticky pick when it
+    sent one (so the client does not clobber it), else the profile's default route."""
+    model, provider = (override.get("model"), override.get("provider")) if override else _session_default_route(session)
+    return {"model": model, **({"provider": provider} if provider else {})}
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
@@ -483,15 +496,19 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
-def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
+def _pending_switch_selection_warning(model: str, provider: str, agent: Any = None) -> str | None:
     """Selection-guard message for a model queued mid-turn, or ``None``. Runs BEFORE the pick is
     stashed (the client can still turn the response into a confirm prompt); only pre-resolution
-    inputs exist so it can only under-fire — ``_apply_model_switch`` is the backstop."""
+    inputs exist for the model guards, so they can only under-fire — ``_apply_model_switch`` is the
+    backstop. The live ``agent`` supplies the context-cache guard's session size here, since at turn
+    start that guard can no longer ask and would drop the pick."""
     if not model:
         return None
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
-        warning = combined_selection_warning(model, provider=provider or None)
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
+        warning = combined_selection_warning(
+            model, provider=provider or None, selection_context=selection_context_for_agent(agent))
     except Exception:
         return None
     return warning.message if warning is not None else None

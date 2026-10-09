@@ -345,7 +345,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._queue = _WriteQueue(self._client, home / "retaindb_queue.db")
         soul = (home / "SOUL.md").read_text(encoding="utf-8-sig", errors="replace").strip() if (home / "SOUL.md").exists() else ""
         if soul:  # seed agent identity from SOUL.md in background
-            seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")  # noqa: E731
+            seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")
             spawn_context_thread(_quiet, args=("soul seed", seed), name="retaindb-soul-seed").start()
 
     def system_prompt_block(self) -> str:

@@ -157,7 +157,7 @@ def test_read_sheets_json_formulas(workbook, tmp_path):
     assert notes["rows"][0] == ["Zürich", "Фамилия", "12,5%"]
 
     formulas = json.loads(run("xlsx_read.py", workbook, "--formulas").stdout)
-    entry = [f for f in formulas["formulas"] if f["cell"] == "B6"][0]
+    entry = next(f for f in formulas["formulas"] if f["cell"] == "B6")
     assert entry["formula"] == "=SUM(B2:B4)"
     # openpyxl never computes: cached value absent on a fresh file
     assert entry["cached"] is None
@@ -350,7 +350,7 @@ def test_restructure_insert_rows_shifts_everything(restructure_book):
     # validation + conditional format ranges shifted
     dv = data.data_validations.dataValidation[0]
     assert str(dv.sqref) == "C2:C6"
-    cf = list(data.conditional_formatting)[0]
+    cf = next(iter(data.conditional_formatting))
     assert str(cf.sqref) == "B2:B6"
     # native table expanded
     assert data.tables["SalesTbl"].ref == "A1:C6"

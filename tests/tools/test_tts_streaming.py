@@ -737,7 +737,7 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
             stream_calls.append(text)
             yield b"\x00\x00" * 10
 
-    sd, out = _sd_mock()
+    sd, _out = _sd_mock()
     # Four sentences — each gets its own stream() call.
     sentences = [
         "This is the very first sentence here. ",
@@ -797,7 +797,7 @@ def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
             _time.sleep(0.3)
             prefetch_done.set()
 
-    sd, out = _sd_mock()
+    sd, _out = _sd_mock()
     sentences = [
         "This is the first sentence here. ",
         "This is the second sentence here. ",
@@ -842,7 +842,7 @@ def test_hybrid_single_sentence_still_works(monkeypatch):
             stream_calls.append(text)
             yield b"\x00\x00" * 10
 
-    sd, out = _sd_mock()
+    sd, _out = _sd_mock()
     q = _drain_queue(["Just one complete sentence."])
     stop, done = threading.Event(), threading.Event()
 
@@ -1034,7 +1034,7 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
         return fd, path
 
     monkeypatch.setattr(tts_tool_speaker.tempfile, "mkstemp", tracking_mkstemp)
-    events, _stop, done = _timed_sync_run(monkeypatch,
+    events, _stop, _done = _timed_sync_run(monkeypatch,
                                           ["First full sentence here. ",
                                            "Second full sentence here. "])
     assert len([e for e in events if e[0] == "play"]) == 2

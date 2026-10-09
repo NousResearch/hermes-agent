@@ -559,8 +559,15 @@ class _ConcurrentToolAuthorizationGate:
 @contextlib.contextmanager
 def _registered_tool_worker(agent):
     """Track this worker tid for interrupt fan-out (``AIAgent.interrupt()``); on ANY exit
-    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean."""
+    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean.
+
+    Also clear on entry, before registering: ``interrupt()`` can flag an ident whose thread
+    already exited (a stale ``_execution_thread_id``, a finished delegate child), and this
+    worker may have inherited that ident (#135753). Nothing can target this tid before it is
+    registered, and both call paths re-apply a pending ``_interrupt_requested`` afterwards."""
     tid = threading.current_thread().ident
+    with contextlib.suppress(Exception):
+        _ra()._set_interrupt(False, tid)
     with agent._tool_worker_threads_lock:
         agent._tool_worker_threads.add(tid)
     try:

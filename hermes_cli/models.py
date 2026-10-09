@@ -2214,6 +2214,20 @@ def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
     return "", ""
 
 
+def _anthropic_route_extra_headers(base_url: Optional[str]) -> dict[str, str]:
+    """``extra_headers`` of the ``providers:``/``custom_providers:`` entry routed at *base_url*
+    (the default endpoint when None), else ``{}``. Mirrors the inference client builders so
+    discovery and inference send the same headers — identity keys that span workspaces get a 400
+    from every endpoint unless ``anthropic-workspace-id`` rides along.
+    SECURITY: values may carry credentials — never log them."""
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        return get_custom_provider_extra_headers(str(base_url or "https://api.anthropic.com"))
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for Anthropic model discovery", exc_info=True)
+        return {}
+
+
 def _fetch_anthropic_models(
     timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[list[str]]:
@@ -2242,6 +2256,7 @@ def _fetch_anthropic_models(
         headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
+    headers.update(_anthropic_route_extra_headers(resolved_base_url))
 
     url = _anthropic_models_url(resolved_base_url)
     try:

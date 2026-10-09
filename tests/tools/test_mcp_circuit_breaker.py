@@ -574,38 +574,44 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
     asyncio.run(_scenario())
 
 
-def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch, tmp_path):
-    """Three completed calls whose payload is an error still open the breaker (#10447), but the
-    open-breaker message must not claim the server is unreachable — it answered every time
-    (#11113); a single transport strike in the streak makes it "unreachable" again."""
+def test_application_rejections_do_not_poison_unrelated_tools(monkeypatch, tmp_path):
+    """Three schema rejections prove the transport is healthy and must not make another tool on
+    the same server unavailable. Repeated exact failures are handled by the agent-level guardrail,
+    not the server-health circuit breaker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_tool_handlers import _make_tool_handler
 
-    async def _call_tool_rejects(*a, **kw):
+    calls = []
+
+    async def _call_tool(name, *a, **kw):
+        calls.append(name)
         result = MagicMock()
-        result.is_error = True
+        result.is_error = name == "search_family_calendar"
         block = MagicMock()
-        block.text = "DNS lookup failed for https://nope.invalid"
+        block.text = (
+            "request.unknown_field: extra_forbidden"
+            if result.is_error
+            else "created"
+        )
         result.content = [block]
         result.structured_content = None
         return result
 
-    _install_stub_server(mcp_tool, "srv", _call_tool_rejects)
+    _install_stub_server(mcp_tool, "echo_intake", _call_tool)
     _mcp_loop._ensure_mcp_loop()
     try:
-        handler = _make_tool_handler("srv", "fetch", 10.0)
-        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
-            assert "DNS lookup failed" in json.loads(handler({}))["error"]
-        tripped = json.loads(handler({}))["error"].lower()
-        assert "rejected" in tripped and "unreachable" not in tripped, tripped
+        rejected = _make_tool_handler(
+            "echo_intake", "search_family_calendar", 10.0
+        )
+        create = _make_tool_handler("echo_intake", "create_appointment", 10.0)
 
-        mcp_tool._reset_server_error("srv")
-        mcp_tool._bump_server_error("srv")                      # transport strike
-        mcp_tool._bump_server_error("srv", application=True)
-        mcp_tool._bump_server_error("srv", application=True)
-        assert "unreachable" in json.loads(handler({}))["error"].lower()
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            assert "extra_forbidden" in json.loads(rejected({}))["error"]
+
+        assert json.loads(create({}))["result"] == "created"
+        assert calls == ["search_family_calendar"] * 3 + ["create_appointment"]
+        assert mcp_tool._server_error_counts.get("echo_intake", 0) == 0
     finally:
-        _cleanup(mcp_tool, "srv")
-        mcp_tool._server_errors_all_application.pop("srv", None)
+        _cleanup(mcp_tool, "echo_intake")

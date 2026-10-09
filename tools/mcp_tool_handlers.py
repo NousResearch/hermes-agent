@@ -94,12 +94,6 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
     retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
-    if _core._server_errors_all_application.get(key):
-        # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
-        # model to the user instead of to its own arguments (#11113).
-        return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
-                          f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
-                          f"fix the arguments/URL/target or use a different approach.")
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
                       f"Auto-retry available in ~{retry_in}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
@@ -138,21 +132,13 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     return None, not_connected
 
 
-def _result_is_error(result) -> bool:
-    """True only for a JSON payload carrying an ``error`` key (non-JSON = success)."""
-    try:
-        return "error" in json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
-    flagged as an application error so the open-breaker message stays truthful."""
-    if _result_is_error(result):
-        _core._bump_server_error(server_name, application=True)
-    else:
-        _core._reset_server_error(server_name)
+    """A completed RPC proves server transport health, including truthful ``isError`` results.
+
+    Tool/application errors stay errors for the model and its repeated-exact-failure guardrail,
+    but must not open the server-health breaker or poison unrelated tools on the same server.
+    """
+    _core._reset_server_error(server_name)
     return result
 
 
@@ -178,8 +164,8 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
-    (an application error is still the tool's real answer, and still a breaker strike per #10447);
-    None when the retry raised (caller falls through)."""
+    (an application error is still the tool's real answer and proves transport health); None when
+    the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:

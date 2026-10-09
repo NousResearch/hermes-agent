@@ -61,7 +61,7 @@ def dispatch_replay_provider_failures(bound=None):
         return 0
     try:
         from providers import _LOGGING_READY
-    except Exception:
+    except Exception:  # health: allow BLE001 -- dispatch pre-logging; stderr must stay clean
         return 0
     if not _LOGGING_READY:
         return 0

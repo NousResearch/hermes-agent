@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shlex
+from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,8 @@ _PREFIX_PATTERNS = [
     r"ghu_[A-Za-z0-9]{10,}",            # GitHub user-to-server token
     r"ghs_[A-Za-z0-9]{10,}",            # GitHub server-to-server token
     r"ghr_[A-Za-z0-9]{10,}",            # GitHub refresh token
-    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack tokens
+    r"xapp-\d+-[A-Za-z0-9-]{10,}",      # Slack app-Level token
+    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack bot/app/user tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
@@ -106,6 +108,9 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
+    r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
+    r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -135,6 +140,19 @@ _ENV_ASSIGN_RE = re.compile(
 # The colon-form URL guard (skip when ``://`` present) lives at the call site.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+# Linear pre-gate for the _CFG_*_RE subs below: a text with no secret keyword
+# can never match either pattern, so the (potentially backtrack-heavy) subs
+# are skipped entirely for such text. See the call site in
+# redact_sensitive_text().
+_CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
+
+# Programmatic env lookups (``os.getenv(...)``, ``os.environ[...]``,
+# ``os.environ.get(...)``, ``process.env.X``, ``$ENV{X}``) reference variable
+# *names*, not secret values. When one appears as the VALUE of a KEY=... match
+# it's a code snippet, not a leaked secret — skip redaction (issue #2852).
+_ENV_LOOKUP_VALUE_RE = re.compile(
+    r"^(?:os\.(?:getenv|environ)|process\.env|\$ENV\{)"
+)
 # Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
 _CFG_DOTTED_RE = re.compile(
     rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
@@ -161,6 +179,85 @@ _YAML_ASSIGN_RE = re.compile(
     rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# Word-boundary validation for the mixed/lowercase key patterns above
+# (_CFG_DOTTED_RE, _CFG_ANCHORED_RE, _YAML_ASSIGN_RE).
+#
+# Those key classes allow arbitrary alphanumeric affixes around the secret
+# keyword so real key names like ``client_secret``, ``clientSecret``, and
+# ``s3.secret-key`` match. The side effect: ordinary prose/document words that
+# merely CONTAIN a keyword also matched — ``Secretary: J.Smith`` (secret),
+# ``tokenizer: cl100k_base`` (token), ``author=Smith`` (auth) — mangling
+# legitimate content on the surfaces that run these passes (browser snapshots,
+# log lines, kanban summaries, CLI-echoed command output). Ported from
+# nearai/ironclaw#6129, where the same substring false positive ("Secretary of
+# the Treasury" matching the ``secret`` marker) scrubbed legitimate tool
+# results from the replayed transcript and sent the model into a re-fetch
+# loop.
+#
+# A keyword occurrence only counts when it sits at a word boundary within the
+# key: at the key's edge, next to a non-letter (``_ - . 3``), or at a
+# camelCase transition (``clientSecret``, ``secretKey``, ``APIToken``). A
+# trailing plural ``s`` is treated as part of the keyword (``secrets:``,
+# ``tokens:``). Common concatenated compounds keep matching via explicit
+# alternatives (``authtoken`` ngrok, ``authkey`` tailscale, ``secretkey``
+# minio, ``apikey``). Embedded occurrences inside a larger word
+# (``secretary``, ``tokenizer``, ``authored``, ``credentialing``) no longer
+# match. ALL-CAPS keys keep the legacy embedded matching (``MYTOKEN=…``) — an
+# all-caps key is almost never prose, the same rationale as _ENV_ASSIGN_RE.
+_KEY_KEYWORD_RE = re.compile(
+    r"(?:api|auth|access|refresh|session|secret)[ _.\-]?(?:key|token)"
+    r"|token|secret|passwd|password|credential|auth",
+    re.IGNORECASE,
+)
+
+
+def _is_word_start(s: str, i: int) -> bool:
+    """True if position ``i`` in ``s`` begins a word (not mid-word)."""
+    if i == 0:
+        return True
+    prev, cur = s[i - 1], s[i]
+    if not prev.isalpha():
+        return True
+    if cur.isupper() and prev.islower():
+        return True  # camelCase: clientSecret
+    # Acronym run ending: APIToken — the 'T' begins a new word when it is
+    # followed by lowercase while the preceding run is uppercase.
+    if cur.isupper() and prev.isupper() and i + 1 < len(s) and s[i + 1].islower():
+        return True
+    return False
+
+
+def _is_word_end(s: str, j: int, *, allow_plural: bool = True) -> bool:
+    """True if position ``j`` (exclusive end) in ``s`` ends a word."""
+    if j >= len(s):
+        return True
+    cur = s[j]
+    if not cur.isalpha():
+        return True
+    if cur.isupper() and s[j - 1].islower():
+        return True  # camelCase continuation: secretKey
+    if allow_plural and cur in "sS":
+        return _is_word_end(s, j + 1, allow_plural=False)
+    return False
+
+
+def _key_has_secret_keyword(key: str) -> bool:
+    """True if ``key`` contains a secret keyword at a word boundary.
+
+    Post-match validator for _CFG_DOTTED_RE / _CFG_ANCHORED_RE /
+    _YAML_ASSIGN_RE hits — rejects prose words that merely embed a keyword
+    (``secretary``, ``tokenizer``, ``authored``). Safe to call with the
+    _ENV_ASSIGN_RE key too: all-caps keys short-circuit to the legacy
+    embedded-match behavior.
+    """
+    letters = [c for c in key if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        return True  # legacy all-caps behavior (MYTOKEN=…)
+    for m in _KEY_KEYWORD_RE.finditer(key):
+        if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
+            return True
+    return False
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
@@ -222,6 +319,28 @@ _DB_CONNSTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bare-token credential in a web/transport URL: ``scheme://TOKEN@host``.
+# This is the ``git remote set-url origin https://PASSWORD@github.com/...``
+# shape from issue #6396 — a single opaque credential in the userinfo position
+# with NO ``user:pass`` colon. It is unambiguously a secret: legitimate
+# round-trip URLs (OAuth callbacks, magic links, pre-signed shares — see the
+# "Web-URL redaction is intentionally OFF" note in redact_sensitive_text) carry
+# their tokens in the QUERY STRING, never in bare userinfo. The colon form
+# ``user:pass@`` is deliberately left to pass through (commit "pass web URLs
+# through unchanged", #34029) and is NOT matched here — the token class forbids
+# ``:``. DB schemes are handled by _DB_CONNSTR_RE above and excluded here.
+#
+# Guards against false positives:
+#   - 8+ char floor skips short usernames (git, admin, root, deploy, ubuntu).
+#   - The token class ``[^\s:@/]`` cannot cross ``/``, so an ``@`` sitting in a
+#     path or query (e.g. ``?q=user@example.com``) is never treated as userinfo.
+_URL_BARE_TOKEN_RE = re.compile(
+    r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
+    r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
+    r"(@[^\s]+)",                                   # @host...
+    re.IGNORECASE,
+)
+
 # JWT tokens: header.payload[.signature] — always start with "eyJ" (base64 for "{")
 # Matches 1-part (header only), 2-part (header.payload), and full 3-part JWTs.
 _JWT_RE = re.compile(
@@ -249,6 +368,31 @@ _URL_WITH_QUERY_RE = re.compile(
 # Catches things like `https://user:token@api.example.com/v1/foo`.
 _URL_USERINFO_RE = re.compile(
     r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
+)
+
+# Strict provider-egress URL redaction accepts more URL-reference forms than
+# the display/log helpers above. Parameter delimiters stay in capture groups so
+# redaction preserves the original query/fragment layout byte-for-byte, while
+# the key is decoded separately for classification. Values stop at query or
+# fragment pair separators; both ``&`` and ``;`` are valid in deployed URLs.
+_STRICT_URL_PARAM_RE = re.compile(
+    r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)"
+)
+
+# Match userinfo in both absolute (``scheme://user:pass@host``) and
+# network-path (``//user:pass@host``) references. The authority boundary stops
+# at path/query/fragment delimiters so an ``@`` elsewhere in a URL is ignored.
+#
+# Anchored on the mandatory ``//`` rather than an optional scheme prefix: the
+# scheme sits outside the match either way (replacement callbacks re-emit
+# group(1), so ``https:`` stays untouched in the surrounding text), and the
+# old optional-scheme prefix ``(?:[A-Za-z][A-Za-z0-9+.-]*:)?`` backtracked
+# catastrophically (O(n²)) on long unbroken alphanumeric runs — a 320KB
+# synthetic compaction payload spent ~55s inside this pattern per sub() call.
+# Output-equivalence to the old pattern was fuzz-verified (20k random strings
+# plus targeted URL forms).
+_STRICT_URL_USERINFO_RE = re.compile(
+    r"(//)([^/\s?#@]+)@"
 )
 
 # HTTP access logs often use a relative request target rather than a full URL:
@@ -377,6 +521,66 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
+def _canonical_url_param_name(name: str) -> str:
+    """Decode a URL parameter name for bounded, case-insensitive matching."""
+    decoded = name
+    for _ in range(3):
+        next_value = unquote_plus(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    return decoded.casefold().replace("-", "_")
+
+
+def _redact_strict_url_credentials(text: str) -> str:
+    """Redact credentials from absolute, relative, and network URL references.
+
+    This is intentionally stricter than display/log redaction and is used only
+    at explicit secret-egress boundaries. It preserves original keys,
+    separators, public parameters, hosts, and paths while masking sensitive
+    values and URL userinfo.
+    """
+    def _redact_param(match: re.Match) -> str:
+        if _canonical_url_param_name(match.group(2)) not in _SENSITIVE_QUERY_PARAMS:
+            return match.group(0)
+        return f"{match.group(1)}{match.group(2)}=***"
+
+    def _redact_userinfo(match: re.Match) -> str:
+        userinfo = match.group(2)
+        if ":" in userinfo:
+            username, _, _password = userinfo.partition(":")
+            return f"{match.group(1)}{username}:***@"
+        return f"{match.group(1)}***@"
+
+    text = _STRICT_URL_PARAM_RE.sub(_redact_param, text)
+    return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
+
+
+def redact_cdp_url(value: object) -> str:
+    """Mask secrets in a CDP/browser endpoint URL before it is logged.
+
+    The global ``redact_sensitive_text`` deliberately passes web-URL query
+    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
+    magic-link / pre-signed URLs the agent is meant to follow -- see the
+    web-URL note above). CDP discovery endpoints are NOT such a workflow:
+    their query-string tokens and userinfo passwords are pure credentials
+    that must never reach the logs. So for CDP URLs we opt INTO the two URL
+    redactors that the global pass leaves off.
+
+    This is the single source of truth for redacting a CDP URL that is passed
+    *directly* to a log or error message. Callers that instead need to redact an
+    exception whose text embeds the URL (e.g. a ``websockets`` connect error)
+    should route that through their own error-text helper, which delegates here
+    -- see ``tools.browser_supervisor._redact_cdp_error_text``.
+    """
+    text = redact_sensitive_text("" if value is None else str(value))
+    if not text:
+        return text
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    return text
+
+
 def _redact_http_request_target_query_params(text: str) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""
     def _sub(m: re.Match) -> str:
@@ -435,6 +639,7 @@ def redact_sensitive_text(
     force: bool = False,
     code_file: bool = False,
     file_read: bool = False,
+    redact_url_credentials: bool = False,
 ) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -442,6 +647,11 @@ def redact_sensitive_text(
     Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
+
+    Set redact_url_credentials=True at non-navigation egress boundaries to
+    additionally redact credential-named query parameters and ``user:pass@``
+    URL userinfo. The default remains False because actionable OAuth callback,
+    magic-link, and pre-signed URLs must survive ordinary tool flows unchanged.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
@@ -492,13 +702,33 @@ def redact_sensitive_text(
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)
+                # Programmatic env lookups reference variable *names*, not
+                # secret values — masking them corrupts code snippets in
+                # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``author=Smith`` / ``press.secretary=…`` are prose, not
+                # credentials (ported from nearai/ironclaw#6129). All-caps
+                # keys (the _ENV_ASSIGN_RE shape) short-circuit to legacy
+                # embedded matching inside the helper.
+                if not _key_has_secret_keyword(name):
+                    return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
             # web-URL query params are intentionally passed through (see note
             # near the bottom of this function); _DB_CONNSTR_RE still guards
             # connection-string passwords.
-            if "://" not in text:
+            #
+            # Extra gate: every _CFG_*_RE match requires a secret keyword in
+            # the key, so a text without any secret keyword cannot match —
+            # skipping is exact. This matters because _CFG_DOTTED_RE
+            # backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs
+            # (e.g. base64/hex blobs in compaction payloads); the linear
+            # keyword scan prevents that pathological path on secret-free
+            # text.
+            if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
                 text = _CFG_DOTTED_RE.sub(_redact_env, text)
                 text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
@@ -506,6 +736,11 @@ def redact_sensitive_text(
         if ":" in text and '"' in text:
             def _redact_json(m):
                 key, value = m.group(1), m.group(2)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -515,6 +750,16 @@ def redact_sensitive_text(
         if ":" in text and "://" not in text:
             def _redact_yaml(m):
                 key, sep, value = m.group(1), m.group(2), m.group(3)
+                # Same programmatic-env-lookup exception as _redact_env above
+                # (issue #2852): api_key: os.getenv('X') is a code snippet,
+                # not a leaked secret value.
+                if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Keyword must sit at a word boundary within the key —
+                # ``Secretary: J.Smith`` / ``tokenizer: cl100k_base`` are
+                # document text, not credentials (nearai/ironclaw#6129).
+                if not _key_has_secret_keyword(key):
+                    return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
 
@@ -564,6 +809,16 @@ def redact_sensitive_text(
         else:
             text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
+        # Bare-token userinfo in web/transport URLs: ``scheme://TOKEN@host``.
+        # The git-remote-with-embedded-password shape from #6396. Only the
+        # colon-less bare-token form is redacted — ``user:pass@`` and
+        # query-string tokens are left to pass through (see the web-URL note
+        # below). See _URL_BARE_TOKEN_RE for the false-positive guards.
+        text = _URL_BARE_TOKEN_RE.sub(
+            lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}",
+            text,
+        )
+
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
@@ -575,7 +830,15 @@ def redact_sensitive_text(
     # blanket-redacting param values by name breaks those skills mid-flow.
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
-    # are still caught by _DB_CONNSTR_RE.
+    # are still caught by _DB_CONNSTR_RE. The ONE userinfo case still redacted
+    # is the colon-less bare-token form ``scheme://TOKEN@host`` (#6396, handled
+    # by _URL_BARE_TOKEN_RE in the ``://`` block above): a bare credential in
+    # userinfo is never a round-trip workflow token (those live in the query
+    # string), so masking it can't break a skill. The ``user:pass@`` form is
+    # left to pass through per #34029.
+
+    if redact_url_credentials:
+        text = _redact_strict_url_credentials(text)
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:

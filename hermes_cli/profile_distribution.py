@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli._subprocess_compat import noninteractive_git_env
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +382,8 @@ def _git_clone(url: str, dest: Path) -> None:
             ["git", "clone", "--depth", "1", url, str(dest)],
             check=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc

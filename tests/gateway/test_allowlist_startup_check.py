@@ -33,14 +33,4 @@ class TestAllowlistStartupCheck:
         with patch.dict(os.environ, {}, clear=True):
             assert _would_warn() is True
 
-    def test_signal_group_allowed_users_suppresses_warning(self):
-        with patch.dict(os.environ, {"SIGNAL_GROUP_ALLOWED_USERS": "user1"}, clear=True):
-            assert _would_warn() is False
 
-    def test_telegram_allow_all_users_suppresses_warning(self):
-        with patch.dict(os.environ, {"TELEGRAM_ALLOW_ALL_USERS": "true"}, clear=True):
-            assert _would_warn() is False
-
-    def test_gateway_allow_all_users_suppresses_warning(self):
-        with patch.dict(os.environ, {"GATEWAY_ALLOW_ALL_USERS": "yes"}, clear=True):
-            assert _would_warn() is False

@@ -173,164 +173,80 @@ class TestRTKPlugin:
         assert result is not None
 
 
-# ── 2. Core: pre-tool-call rewrite directives ───────────────────────────
+# ── 2. Rewrites enter the request middleware before authorization ─────────
 
 
-class TestPreToolCallRewriteDirectives:
-    """Tests for the arg-override extraction from pre_tool_call hook results."""
+class TestRewriteMiddleware:
+    def test_preserves_non_command_arguments(self):
+        from hermes_plugins.rtk import _rewrite_terminal_command
 
-    def test_rewrite_directive_collected(self):
-        """A hook returning {"action": "rewrite", "args": {...}} is collected."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        hook_results = [
-            {"action": "rewrite", "args": {"command": "rtk git status"}},
-        ]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides == {"command": "rtk git status"}
-
-    def test_block_directive_not_collected(self):
-        """A hook returning {"action": "block", ...} is not collected as override."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        hook_results = [
-            {"action": "block", "message": "forbidden"},
-        ]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides is None
-
-    def test_none_returns_ignored(self):
-        """Hook callbacks returning None are skipped."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        hook_results = [None, {"action": "rewrite", "args": {"x": "y"}}]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides == {"x": "y"}
-
-    def test_non_dict_returns_ignored(self):
-        """Hook callbacks returning non-dict values are skipped."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        hook_results = ["some string", 42, {"action": "rewrite", "args": {"z": "1"}}]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides == {"z": "1"}
-
-    def test_multiple_rewrite_directives_last_wins(self):
-        """Multiple rewrite directives: last one wins (simple merge, last key wins)."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        hook_results = [
-            {"action": "rewrite", "args": {"command": "rtk git log"}},
-            {"action": "rewrite", "args": {"command": "rtk git status"}},
-        ]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides == {"command": "rtk git status"}
-
-    def test_empty_hook_results(self):
-        """Empty hook results produce empty overrides."""
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _, overrides = get_pre_tool_call_directives("terminal", {})
-        assert overrides is None
-
-
-# ── 3. Core: block and rewrite directives share one hook invocation ───────
-
-
-class TestSingleFireDirectives:
-    """Collect block and rewrite directives without invoking hooks twice."""
-
-    def test_returns_rewrite_without_block(self):
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[
-            {"action": "rewrite", "args": {"command": "rtk git status"}}
-        ]) as invoke:
-            block_msg, rewrite = get_pre_tool_call_directives(
-                "terminal", {"command": "git status"},
+        with patch("shutil.which", return_value="/usr/bin/rtk"), patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="rtk git status", stderr=""),
+        ):
+            result = _rewrite_terminal_command(
+                "terminal", {"command": "git status", "timeout": 30, "cwd": "/tmp"}
             )
-        assert block_msg is None
-        assert rewrite == {"command": "rtk git status"}
-        invoke.assert_called_once()
-
-    def test_returns_block_without_rewrite(self):
-        from hermes_cli.plugins import get_pre_tool_call_directives
-
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[
-            {"action": "block", "message": "forbidden"},
-        ]) as invoke:
-            block_msg, rewrite = get_pre_tool_call_directives(
-                "terminal", {"command": "rm -rf /"},
-            )
-        assert block_msg == "forbidden"
-        assert rewrite is None
-        invoke.assert_called_once()
+        assert result["args"] == {
+            "command": "rtk git status", "timeout": 30, "cwd": "/tmp"
+        }
 
 
 # ── 4. Integration: handle_function_call applies arg overrides ───────────
 
 
 class TestHandleFunctionCallArgMutation:
-    """handle_function_call should apply arg overrides from pre_tool_call hooks."""
+    """Request rewrites remain visible to authorization before dispatch."""
 
-    def test_terminal_command_rewritten_by_plugin(self):
-        """When a pre_tool_call hook returns a rewrite, the terminal command is
-        rewritten before dispatch."""
+    @pytest.mark.parametrize("approved", [True, False])
+    def test_rewritten_command_requires_human_approval(self, approved):
         from model_tools import handle_function_call
 
-        with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch,
-            patch("hermes_cli.plugins.get_pre_tool_call_directives",
-                  return_value=(None, {"command": "rtk git status"})),
-        ):
-            result = handle_function_call(
-                "terminal", {"command": "git status"},
-                task_id="t1",
-            )
-        assert result == '{"ok":true}'
-        # The dispatched args should have the rewritten command
-        dispatched_args = mock_dispatch.call_args[0][1]
-        assert dispatched_args["command"] == "rtk git status"
+        seen = []
+        def hooks(name, **kwargs):
+            if name == "pre_tool_call":
+                seen.append(kwargs["args"])
+                return [{"action": "approve", "message": "review", "rule_key": "terminal:test"}]
+            return []
 
-    def test_no_rewrite_when_hook_returns_nothing(self):
-        """When hooks return nothing, original args are passed through."""
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch,
+            patch("hermes_cli.plugins.has_middleware", return_value=True),
+            patch("hermes_cli.plugins.invoke_middleware", return_value=[
+                {"args": {"command": "rtk git status", "timeout": 30}}
+            ]),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=hooks),
+            patch("tools.approval.request_tool_approval", return_value={
+                "approved": approved, "message": "denied"
+            }) as approval,
+        ):
+            result = handle_function_call("terminal", {"command": "git status", "timeout": 30})
+        assert seen == [{"command": "rtk git status", "timeout": 30}]
+        approval.assert_called_once()
+        if approved:
+            dispatch.assert_called_once()
+            assert dispatch.call_args.args[1] == seen[0]
+            assert result == '{"ok":true}'
+        else:
+            dispatch.assert_not_called()
+            assert "denied" in result
+
+    def test_approval_failure_does_not_dispatch_rewritten_command(self):
         from model_tools import handle_function_call
 
-        with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch,
-            patch("hermes_cli.plugins.get_pre_tool_call_directives",
-                  return_value=(None, None)),
-        ):
-            result = handle_function_call(
-                "terminal", {"command": "git status"},
-                task_id="t1",
-            )
-        dispatched_args = mock_dispatch.call_args[0][1]
-        assert dispatched_args["command"] == "git status"
-
-    def test_block_takes_precedence_over_rewrite(self):
-        """When a block directive and a rewrite directive both appear,
-        block wins and the function returns an error."""
-        from model_tools import handle_function_call
+        def hooks(name, **kwargs):
+            return [{"action": "approve", "message": "review"}] if name == "pre_tool_call" else []
 
         with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as mock_dispatch,
-            patch("hermes_cli.plugins.get_pre_tool_call_directives",
-                  return_value=("forbidden", {"command": "rtk rm -rf /"})),
+            patch("model_tools.registry.dispatch") as dispatch,
+            patch("hermes_cli.plugins.has_middleware", return_value=True),
+            patch("hermes_cli.plugins.invoke_middleware", return_value=[{"args": {"command": "rtk ls"}}]),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=hooks),
+            patch("tools.approval.request_tool_approval", side_effect=RuntimeError("unavailable")),
         ):
-            result = handle_function_call(
-                "terminal", {"command": "rm -rf /"},
-                task_id="t1",
-            )
-        parsed = json.loads(result)
-        assert "error" in parsed
-        mock_dispatch.assert_not_called()
+            result = handle_function_call("terminal", {"command": "ls"})
+        dispatch.assert_not_called()
+        assert "approval gate failed" in result
 
 
 # ── 5. Plugin discovery ──────────────────────────────────────────────────
@@ -343,16 +259,25 @@ class TestRTKPluginDiscovery:
         """The RTK plugin can be discovered and loaded."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(
-            plugins_dir, "rtk",
+            plugins_dir, "rtk_discovery_probe",
             register_body='ctx.register_hook("pre_tool_call", lambda **kw: None)',
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
         from hermes_cli.plugins import PluginManager, _get_enabled_plugins
-        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: {"rtk"})
+        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: {"rtk_discovery_probe"})
 
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        assert "rtk" in mgr._plugins
-        assert mgr._plugins["rtk"].enabled
+        assert "rtk_discovery_probe" in mgr._plugins
+        assert mgr._plugins["rtk_discovery_probe"].enabled
+
+
+def test_rtk_registers_request_middleware():
+    from hermes_plugins import rtk
+
+    ctx = MagicMock()
+    rtk.register(ctx)
+    ctx.register_middleware.assert_called_once_with("tool_request", rtk._rewrite_terminal_command)
+    ctx.register_hook.assert_not_called()

@@ -12,23 +12,15 @@ Hermes 不仅仅是一个 CLI 工具。你可以直接导入 `AIAgent`，在自�
 
 ## 安装
 
-直接从仓库安装 Hermes：
+克隆 Hermes 并创建受支持的可编辑开发环境：
 
 ```bash
-pip install git+https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+uv sync
 ```
 
-或使用 [uv](https://docs.astral.sh/uv/)：
-
-```bash
-uv pip install git+https://github.com/NousResearch/hermes-agent.git
-```
-
-也可以在 `requirements.txt` 中固定版本：
-
-```text
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
-```
+在该检出目录中使用 `uv run python your_app.py` 运行应用。Hermes 不发布用于 `requirements.txt` 安装的受支持 wheel 或源代码发行版。
 
 :::tip
 将 Hermes 作为库使用时，CLI 所需的环境变量同样必须设置。至少需要设置 `OPENROUTER_API_KEY`（若直接访问提供商，则设置 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`）。
@@ -317,7 +309,7 @@ print(review)
 | `disabled_toolsets` | `List[str]` | `None` | 黑名单指定工具集 |
 | `save_trajectories` | `bool` | `False` | 将对话保存为 JSONL |
 | `ephemeral_system_prompt` | `str` | `None` | 自定义系统 prompt（不保存到轨迹文件） |
-| `max_iterations` | `int` | `90` | 每次对话的最大工具调用迭代次数 |
+| `max_iterations` | `int` | `500` | 每次对话的最大工具调用迭代次数 |
 | `skip_context_files` | `bool` | `False` | 跳过加载 AGENTS.md 文件 |
 | `skip_memory` | `bool` | `False` | 禁用持久化内存的读写 |
 | `api_key` | `str` | `None` | API 密钥（回退到环境变量） |
@@ -337,5 +329,5 @@ print(review)
 :::warning
 - **线程安全**：每个线程或任务创建一个 `AIAgent` 实例。切勿在并发调用中共享同一实例。
 - **资源清理**：agent 在对话结束时会自动清理资源（终端会话、浏览器实例）。若在长期运行的进程中使用，请确保每次对话正常结束。
-- **迭代限制**：默认的 `max_iterations=90` 较为宽松。对于简单的问答场景，建议适当降低该值（如 `max_iterations=10`），以防止工具调用循环失控并控制成本。
+- **迭代限制**：默认的 `max_iterations=500` 较为宽松。对于简单的问答场景，建议适当降低该值（如 `max_iterations=10`），以防止工具调用循环失控并控制成本。
 :::

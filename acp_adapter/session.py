@@ -26,31 +26,18 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def _win_path_to_wsl(path: str) -> str | None:
-    """Convert a Windows drive path to its WSL /mnt/<drive>/... equivalent."""
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
-    if not match:
-        return None
-    drive = match.group(1).lower()
-    tail = match.group(2).replace("\\", "/")
-    return f"/mnt/{drive}/{tail}"
-
-
 def _translate_acp_cwd(cwd: str) -> str:
     """Translate Windows ACP cwd values when Hermes itself is running in WSL.
 
     Windows ACP clients can launch ``hermes acp`` inside WSL while still sending
-    editor workspaces as Windows drive paths such as ``E:\\Projects``. Store
-    and execute against the WSL mount path so agents, tools, and persisted ACP
-    sessions all agree on the usable workspace. Native Linux/macOS keeps the
-    original cwd unchanged.
+    editor workspaces as Windows drive paths (``E:\\Projects``) or
+    ``\\\\wsl.localhost\\`` UNC paths. Store and execute against the POSIX form so
+    agents, tools, and persisted ACP sessions all agree on the usable workspace.
+    Native Linux/macOS keeps the original cwd unchanged.
     """
-    from hermes_constants import is_wsl
+    from hermes_constants import translate_cwd_for_wsl_backend
 
-    if not is_wsl():
-        return cwd
-    translated = _win_path_to_wsl(str(cwd))
-    return translated if translated is not None else cwd
+    return translate_cwd_for_wsl_backend(str(cwd))
 
 
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
@@ -61,7 +48,9 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
 
     # Normalize Windows drive paths into the equivalent WSL mount form so
     # ACP history filters match the same workspace across Windows and WSL.
-    translated = _win_path_to_wsl(expanded)
+    from hermes_constants import windows_path_to_wsl
+
+    translated = windows_path_to_wsl(expanded)
     if translated is not None:
         expanded = translated
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
@@ -461,10 +450,47 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history atomically so a
-            # mid-rewrite failure rolls back and the previously persisted
-            # conversation is preserved (salvaged from #13675).
-            db.replace_messages(state.session_id, state.history)
+            # When the agent owns persistence to this same SessionDB it has
+            # already flushed the live transcript incrementally during
+            # run_conversation (append_message), and it preserves pre-compaction
+            # turns non-destructively via archive_and_compact() — keeping them on
+            # disk as searchable active=0/compacted=1 rows. Calling
+            # replace_messages() here would then be a redundant double-write that
+            # DELETEs exactly those archived rows (and, after a compression-driven
+            # id rotation where agent.session_id no longer equals
+            # state.session_id, clobbers the ended parent transcript) — silent
+            # data loss for any ACP conversation long enough to compress.
+            #
+            # Only fall back to the destructive atomic replace when the agent is
+            # NOT persisting itself to this DB (e.g. a test agent factory, or a
+            # fresh create/fork whose copied history the agent has not flushed
+            # yet). That path still rolls back on a mid-rewrite failure so the
+            # previously persisted conversation survives (salvaged from #13675).
+            agent = state.agent
+            agent_db = getattr(agent, "_session_db", None)
+            agent_owns_persistence = (
+                agent_db is not None
+                and agent_db is db
+                and bool(getattr(agent, "_session_db_created", False))
+            )
+            if not agent_owns_persistence:
+                # Even when the current agent doesn't "own" persistence, the
+                # session on disk may already carry compaction-archived rows —
+                # e.g. after a model switch or a /restore, both of which mint a
+                # fresh agent with _session_db_created=False (so the check above
+                # is False) yet leave the durable archived transcript in place.
+                # A full-history replace would DELETE those archived rows just
+                # like the owned-agent case. Guard against it: when archived
+                # rows exist, replace ONLY the live (active=1) set and leave the
+                # archived turns untouched; otherwise the destructive replace is
+                # safe (fresh create/fork with no archived history to lose).
+                try:
+                    has_archived = db.has_archived_messages(state.session_id)
+                except Exception:
+                    has_archived = False
+                db.replace_messages(
+                    state.session_id, state.history, active_only=has_archived
+                )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
@@ -508,9 +534,15 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
+        # Load conversation history. repair_alternation: this restore feeds
+        # LIVE REPLAY — the loaded list becomes the resumed agent's working
+        # conversation. A durable ``user;user`` violation left in state.db would
+        # otherwise re-fire the pre-request defensive repair on every request
+        # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

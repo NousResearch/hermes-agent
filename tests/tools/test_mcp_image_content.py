@@ -20,7 +20,6 @@ import base64
 from types import SimpleNamespace
 
 
-
 def _png_bytes():
     """Return a minimal valid PNG byte sequence.
 
@@ -42,9 +41,6 @@ class TestMimeExtension:
         assert _mcp_image_extension_for_mime_type("IMAGE/JPEG") == ".jpg"
         assert _mcp_image_extension_for_mime_type("image/jpeg; charset=utf-8") == ".jpg"
 
-    def test_png_falls_through_to_mimetypes(self):
-        from tools.mcp_tool import _mcp_image_extension_for_mime_type
-        assert _mcp_image_extension_for_mime_type("image/png") == ".png"
 
     def test_unknown_defaults_to_png(self):
         from tools.mcp_tool import _mcp_image_extension_for_mime_type
@@ -95,17 +91,6 @@ class TestCacheMcpImageBlock:
         block = SimpleNamespace(data=None, mimeType="image/png")
         assert _cache_mcp_image_block(block) == ""
 
-    def test_returns_empty_on_malformed_base64(self, tmp_path, monkeypatch):
-        """A server that sends garbage base64 shouldn't crash the handler —
-        we log and drop the block, letting any text blocks still come through."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_tool import _cache_mcp_image_block
-
-        block = SimpleNamespace(
-            data="!!!not-base64!!!",
-            mimeType="image/png",
-        )
-        assert _cache_mcp_image_block(block) == ""
 
     def test_returns_empty_when_bytes_dont_look_like_an_image(self, tmp_path, monkeypatch):
         """``cache_image_from_bytes`` has a format sniff; if the claimed

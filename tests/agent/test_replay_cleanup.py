@@ -32,55 +32,58 @@ def _tool(content):
     return {"role": "tool", "tool_call_id": "c1", "content": content}
 
 
-def test_is_interrupted_tool_result_markers():
-    assert is_interrupted_tool_result("[Command interrupted]")
-    assert is_interrupted_tool_result("foo\nexit_code: 130 (interrupt)\nbar")
-    assert not is_interrupted_tool_result("exit_code: 0\nclean output")
-    assert not is_interrupted_tool_result("ordinary tool output")
-    assert not is_interrupted_tool_result(None)
 
 
-def test_strip_dangling_tool_call_tail_removes_unanswered_tail():
-    history = [_user("hi"), _assistant_tc("write_file")]
-    out = strip_dangling_tool_call_tail(history)
-    assert out == [_user("hi")]
 
 
-def test_strip_dangling_tool_call_tail_preserves_answered_pair():
-    history = [_user("hi"), _assistant_tc("read_file"), _tool("contents")]
-    out = strip_dangling_tool_call_tail(history)
-    assert out == history  # answered -> untouched
 
 
-def test_strip_interrupted_tool_tails_removes_interrupted_block():
-    history = [_user("hi"), _assistant_tc("terminal"), _tool("[Command interrupted]")]
-    out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
 
 
-def test_strip_interrupted_tool_tails_preserves_successful_block():
-    history = [_user("hi"), _assistant_tc("read_file"), _tool("ok"),
-               {"role": "assistant", "content": "done"}]
-    out = strip_interrupted_tool_tails(history)
-    assert out == history
+def test_mixed_dangling_batch_uses_truthful_per_call_wording():
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "read", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "write", "function": {"name": "write_file", "arguments": "{}"}},
+        ],
+    }
+    out = strip_dangling_tool_call_tail([_user("hi"), assistant])
+
+    read_result, write_result = out[-2:]
+    assert read_result["effect_disposition"] == "none"
+    assert "no effect" in read_result["content"].lower()
+    assert "unknown" not in read_result["content"].lower()
+    assert write_result["effect_disposition"] == "unknown"
+    assert "unknown" in write_result["content"].lower()
 
 
-def test_strip_interrupted_tool_tails_removes_orphan_interrupted_tool():
-    history = [_user("hi"), _tool("[Command interrupted] exit_code: 130 interrupt")]
-    out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
+
+
+
+
+
+
+
+
 
 
 def test_sanitize_replay_history_combines_both():
-    # interrupted block in the middle + dangling tail at the end
+    # interrupted block is removed; a dangling read-only call is safe to erase
     history = [
         _user("first"),
         _assistant_tc("terminal"), _tool("[Command interrupted]"),
         _user("second"),
-        _assistant_tc("write_file"),  # dangling
+        _assistant_tc("read_file"),  # dangling
     ]
     out = sanitize_replay_history(history)
-    assert out == [_user("first"), _user("second")]
+    assert out[:2] == [
+        _user("first"),
+        _assistant_tc("terminal"),
+    ]
+    assert out[2]["effect_disposition"] == "unknown"
+    assert out[-1] == _user("second")
 
 
 def test_sanitize_replay_history_noop_on_clean_history():

@@ -38,9 +38,83 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Anthropic (and Bedrock/Vertex/Azure fronting it) reject tool input schemas
+# whose property keys don't match this pattern. Cloudflare's flat API MCP
+# ships 61 such keys (query-filter params like ``issue_class~neq`` and
+# ``meta.<field>[<operator>]``) — one bad key anywhere in the tools array
+# 400s the entire request.
+_PROP_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
+
+
+def sanitize_property_key(key: str) -> str:
+    """Deterministically map an arbitrary property key to a conforming one."""
+    new = _PROP_KEY_BAD_CHARS.sub("_", key)[:64]
+    return new or "param"
+
+
+def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
+    """Return {original_key: conforming_key} for one properties dict.
+
+    Identity entries are omitted. Deterministic: keys are processed in
+    insertion order and collisions deduped with numeric suffixes, so the
+    model-visible schema AND the dispatch-time reverse map (computed
+    independently from the registry's original schema) always agree.
+    """
+    renames: dict[str, str] = {}
+    taken = {k for k in props if _PROP_KEY_RE.match(k)}
+    for key in props:
+        if _PROP_KEY_RE.match(key):
+            continue
+        base = sanitize_property_key(key)
+        candidate, i = base, 2
+        while candidate in taken:
+            suffix = f"_{i}"
+            candidate = base[: 64 - len(suffix)] + suffix
+            i += 1
+        taken.add(candidate)
+        renames[key] = candidate
+        logger.debug(
+            "schema_sanitizer[%s]: renamed property key %r -> %r "
+            "(provider key-pattern compat)", path, key, candidate,
+        )
+    return renames
+
+
+def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+    """Map sanitized property keys in model-emitted args back to wire names.
+
+    ``params_schema`` is the ORIGINAL (unsanitized) parameters schema from the
+    registry. Recurses into object-typed values and array items so nested
+    renamed keys are restored too. Unknown keys pass through untouched.
+    """
+    if not isinstance(params_schema, dict) or not isinstance(args, dict):
+        return args
+    props = params_schema.get("properties")
+    if not isinstance(props, dict):
+        return args
+    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
+    out = {}
+    for key, value in args.items():
+        orig = reverse.get(key, key)
+        subschema = props.get(orig)
+        if isinstance(subschema, dict):
+            if isinstance(value, dict):
+                value = unrename_tool_args(subschema, value)
+            elif isinstance(value, list) and isinstance(subschema.get("items"), dict):
+                value = [
+                    unrename_tool_args(subschema["items"], item)
+                    if isinstance(item, dict) else item
+                    for item in value
+                ]
+        out[orig] = value
+    return out
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -235,7 +309,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
       ``{"type": <value>}`` so downstream consumers see a dict.
     - Injects ``properties: {}`` into object-typed nodes missing it.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
-      ``nullable: true`` as a hint).
+      ``nullable: true`` as a hint), and multi-type arrays like
+      ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no
+      branch is dropped (ported from anomalyco/opencode#31877).
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
       ``anyOf``, ``oneOf``, ``allOf``, and ``$defs`` / ``definitions``.
     """
@@ -266,32 +342,57 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if not isinstance(node, dict):
         return node
 
+    # Compute property-key renames up front so the ``required`` branch below
+    # can remap regardless of dict iteration order (``required`` may precede
+    # ``properties`` in the source dict).
+    prop_renames: dict[str, str] = {}
+    if isinstance(node.get("properties"), dict):
+        prop_renames = _rename_property_keys(node["properties"], f"{path}.properties")
+
     out: dict = {}
     for key, value in node.items():
-        # type: [X, "null"] → type: X (the backend's tool-call parser only
-        # accepts singular string types; nullable is lost but the call still
-        # succeeds, and the model can still pass null on its own.)
+        # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common
+        # in MCP tool schemas) are rejected by several tool-call backends:
+        #   * llama.cpp's grammar generator only accepts a singular string type.
+        #   * Gemini (including OpenAI-compatible transports such as GitHub
+        #     Copilot proxying to Gemini) rejects the array form outright —
+        #     plain @ai-sdk/google rewrites it, but the OpenAI-compatible path
+        #     forwards it verbatim and the backend 400s.
+        #
+        # Normalize per the SDK's behavior:
+        #   * single non-null type → ``type: X`` (+ ``nullable: true`` if the
+        #     array also contained "null"). No data lost.
+        #   * multiple non-null types → ``anyOf`` of single-type schemas, so
+        #     EVERY branch survives instead of silently dropping all but the
+        #     first. ``null`` is lifted into ``nullable: true``.
+        #   * all-null / empty → ``type: "null"`` (or object fallback).
+        # Ported from anomalyco/opencode#31877.
         if key == "type" and isinstance(value, list):
-            non_null = [t for t in value if t != "null"]
-            if len(non_null) == 1 and isinstance(non_null[0], str):
+            has_null = "null" in value
+            non_null = [t for t in value if isinstance(t, str) and t != "null"]
+            if len(non_null) == 1:
                 out["type"] = non_null[0]
-                if "null" in value:
+                if has_null:
                     out.setdefault("nullable", True)
                 continue
-            # Fallback: pick the first string type, drop the rest.
-            first_str = next((t for t in value if isinstance(t, str) and t != "null"), None)
-            if first_str:
-                out["type"] = first_str
+            if len(non_null) >= 2:
+                # Preserve all branches as a union instead of dropping them.
+                out["anyOf"] = [{"type": t} for t in non_null]
+                if has_null:
+                    out.setdefault("nullable", True)
                 continue
-            # All-null or empty list → treat as object.
-            out["type"] = "object"
+            # No usable non-null type: all-null array → type: "null";
+            # otherwise an empty/garbage array → object fallback.
+            out["type"] = "null" if has_null else "object"
             continue
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
-            out[key] = {
-                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")
-                for sub_k, sub_v in value.items()
-            }
+            renames = prop_renames if key == "properties" else {}
+            new_props = {}
+            for sub_k, sub_v in value.items():
+                out_k = renames.get(sub_k, sub_k)
+                new_props[out_k] = _sanitize_node(sub_v, f"{path}.{key}.{out_k}")
+            out[key] = new_props
         elif key in {"items", "additionalProperties"}:
             if isinstance(value, bool):
                 # Keep bool ``additionalProperties`` as-is — it's a valid form
@@ -305,15 +406,22 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 _sanitize_node(item, f"{path}.{key}[{i}]")
                 for i, item in enumerate(value)
             ]
-        elif key in {"required", "enum", "examples"}:
+        elif key in {"required", "enum", "examples", "dependentRequired"}:
             # Schema "sibling" keywords whose values are NOT schemas:
             #  - ``required``: list of property-name strings
             #  - ``enum``: list of literal values (any JSON type)
             #  - ``examples``: list of example values (any JSON type)
+            #  - ``dependentRequired``: mapping of property names to lists of
+            #    required property-name strings (JSON Schema 2020-12)
             # Recursing into these with _sanitize_node() would mis-interpret
             # literal strings like "path" as bare-string schemas and replace
-            # them with {"type": "object"} dicts. Pass through unchanged.
-            out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
+            # them with {"type": "object"} dicts. Pass through unchanged
+            # (remapping ``required`` entries through the property renames).
+            if key == "required" and prop_renames and isinstance(value, list):
+                out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r
+                            for r in value]
+            else:
+                out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 

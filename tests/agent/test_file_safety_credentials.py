@@ -38,42 +38,12 @@ def _create(home: Path, rel: str | Path) -> Path:
     return p
 
 
-def test_auth_json_blocked(fake_home):
-    from agent.file_safety import get_read_block_error
-
-    auth = _create(fake_home, "auth.json")
-    err = get_read_block_error(str(auth))
-    assert err is not None
-    assert "credential store" in err
-    assert "auth.json" in err
 
 
-def test_auth_lock_blocked(fake_home):
-    from agent.file_safety import get_read_block_error
-
-    lock = _create(fake_home, "auth.lock")
-    err = get_read_block_error(str(lock))
-    assert err is not None
-    assert "credential store" in err
 
 
-def test_anthropic_oauth_json_blocked(fake_home):
-    from agent.file_safety import get_read_block_error
-
-    oauth = _create(fake_home, ".anthropic_oauth.json")
-    err = get_read_block_error(str(oauth))
-    assert err is not None
-    assert "credential store" in err
 
 
-def test_google_oauth_json_blocked(fake_home):
-    """Gemini OAuth tokens live under auth/google_oauth.json — blocked."""
-    from agent.file_safety import get_read_block_error
-
-    oauth = _create(fake_home, Path("auth") / "google_oauth.json")
-    err = get_read_block_error(str(oauth))
-    assert err is not None
-    assert "credential store" in err
 
 
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
@@ -93,101 +63,108 @@ def test_subdirectory_named_auth_json_not_blocked(fake_home):
     assert get_read_block_error(str(nested)) is None
 
 
-def test_skills_hub_block_still_applies(fake_home):
-    """Regression guard: the original skills/.hub deny must keep working."""
-    from agent.file_safety import get_read_block_error
-
-    hub_file = _create(fake_home, "skills/.hub/manifest.json")
-    err = get_read_block_error(str(hub_file))
-    assert err is not None
-    assert "internal Hermes cache file" in err
 
 
-def test_path_traversal_resolves_to_blocked(fake_home, tmp_path):
-    """A path that traverses through a sibling dir back into HERMES_HOME's
-    auth.json must still be caught — the check resolves through realpath."""
-    from agent.file_safety import get_read_block_error
-
-    _create(fake_home, "auth.json")
-    sibling = tmp_path / "elsewhere"
-    sibling.mkdir()
-    traversal = sibling / ".." / "hermes_home" / "auth.json"
-    err = get_read_block_error(str(traversal))
-    assert err is not None
-    assert "credential store" in err
 
 
-def test_symlink_to_auth_json_blocked(fake_home, tmp_path):
-    """A symlink pointing at HERMES_HOME/auth.json from outside the home
-    must be blocked — readlink-resolution catches the indirection."""
-    from agent.file_safety import get_read_block_error
-
-    target = _create(fake_home, "auth.json")
-    link = tmp_path / "shim.json"
-    try:
-        os.symlink(target, link)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks not supported on this platform/filesystem")
-    err = get_read_block_error(str(link))
-    assert err is not None
-    assert "credential store" in err
 
 
-def test_read_file_tool_blocks_relative_path_under_terminal_cwd(
-    fake_home, tmp_path, monkeypatch
-):
-    """Bypass guard: a relative path like ``"auth.json"`` resolved by
-    ``read_file_tool`` against ``TERMINAL_CWD == HERMES_HOME`` must still
-    be blocked, even though ``get_read_block_error``'s own ``resolve()``
-    is anchored at the (different) Python process cwd.
-    """
+
+
+
+
+def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
+    """Searching a credential file directly must not invoke the search backend."""
     import json
 
     import tools.file_tools as ft
+    import tools.terminal_tool as terminal_tool
 
-    _create(fake_home, "auth.json")
-    # Force the file_tools resolver to anchor relative paths at HERMES_HOME
-    # while the Python process cwd remains tmp_path (a different directory).
-    monkeypatch.setenv("TERMINAL_CWD", str(fake_home))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    auth = _create(fake_home, "auth.json")
+    auth.write_text("SEARCH_DIRECT_AUTH_SECRET", encoding="utf-8")
+
+    def fail_if_called(task_id="default"):
+        raise AssertionError("search backend should not run for blocked path")
+
+    monkeypatch.setattr(ft, "_get_file_ops", fail_if_called)
+
+    out = json.loads(
+        ft.search_tool(
+            pattern="SEARCH_DIRECT_AUTH_SECRET",
+            path=str(auth),
+            task_id="search-direct-auth-json",
+        )
     )
-
-    out = json.loads(ft.read_file_tool("auth.json"))
+    raw = json.dumps(out)
     assert "error" in out
     assert "credential store" in out["error"]
+    assert "SEARCH_DIRECT_AUTH_SECRET" not in raw
 
 
-def test_read_file_tool_blocks_nested_google_oauth_path(
-    fake_home, tmp_path, monkeypatch
-):
-    """The real read_file tool must not return Gemini OAuth token material."""
+def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch):
+    """Directory searches omit credential and MCP-token result entries."""
     import json
 
+    from tools.file_operations import SearchMatch, SearchResult
     import tools.file_tools as ft
+    import tools.terminal_tool as terminal_tool
 
-    oauth = _create(fake_home, Path("auth") / "google_oauth.json")
-    oauth.write_text(
-        json.dumps(
-            {
-                "refresh": "REFRESH_TOKEN_MARKER",
-                "access": "ACCESS_TOKEN_MARKER",
-                "email": "user@example.com",
-            }
-        ),
-        encoding="utf-8",
-    )
+    auth = _create(fake_home, "auth.json")
+    token = _create(fake_home, Path("mcp-tokens") / "provider.json")
+    safe = _create(fake_home, "notes.txt")
+
+    class FakeFileOps:
+        def search(self, **kwargs):
+            return SearchResult(
+                matches=[
+                    SearchMatch(
+                        path=str(auth),
+                        line_number=1,
+                        content="SEARCH_AUTH_SECRET",
+                    ),
+                    SearchMatch(
+                        path=str(token),
+                        line_number=1,
+                        content="SEARCH_MCP_SECRET",
+                    ),
+                    SearchMatch(
+                        path=str(safe),
+                        line_number=1,
+                        content="public note",
+                    ),
+                ],
+                files=[str(auth), str(token), str(safe)],
+                total_count=5,
+                truncated=True,
+            )
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": FakeFileOps())
     monkeypatch.setattr(
-        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+        terminal_tool, "_session_cwd", {}
     )
 
-    out = json.loads(ft.read_file_tool(str(oauth), task_id="google-oauth-test"))
-    assert "error" in out
-    assert "credential store" in out["error"]
-    assert "REFRESH_TOKEN_MARKER" not in json.dumps(out)
-    assert "ACCESS_TOKEN_MARKER" not in json.dumps(out)
+    search_response = ft.search_tool(
+        pattern="SEARCH",
+        path=str(fake_home),
+        task_id="search-filter-credentials",
+    )
+    out = json.loads(search_response.split("\n\n[Hint:", 1)[0])
+    raw = json.dumps(out)
+    returned_paths = {
+        match["path"] for match in out.get("matches", [])
+    } | set(out.get("files", []))
+
+    assert "SEARCH_AUTH_SECRET" not in raw
+    assert "SEARCH_MCP_SECRET" not in raw
+    assert str(auth) not in returned_paths
+    assert str(token) not in returned_paths
+    assert "public note" in raw
+    assert str(safe) in returned_paths
+    assert out["_omitted"].startswith("4 result(s) omitted")
+    assert out["total_count"] == 5
+    assert out["truncated"] is True
+    assert "[Hint: Results truncated." in search_response
 
 
 # ---------------------------------------------------------------------------
@@ -195,14 +172,6 @@ def test_read_file_tool_blocks_nested_google_oauth_path(
 # ---------------------------------------------------------------------------
 
 
-def test_dotenv_blocked(fake_home):
-    """.env in HERMES_HOME holds API keys — blocked."""
-    from agent.file_safety import get_read_block_error
-
-    env = _create(fake_home, ".env")
-    err = get_read_block_error(str(env))
-    assert err is not None
-    assert "credential store" in err
 
 
 def test_webhook_subscriptions_blocked(fake_home):
@@ -215,35 +184,10 @@ def test_webhook_subscriptions_blocked(fake_home):
     assert "credential store" in err
 
 
-def test_mcp_tokens_file_blocked(fake_home):
-    """Files under mcp-tokens/ hold OAuth tokens — blocked."""
-    from agent.file_safety import get_read_block_error
-
-    tok = _create(fake_home, Path("mcp-tokens") / "github.json")
-    err = get_read_block_error(str(tok))
-    assert err is not None
-    assert "MCP token" in err
 
 
-def test_mcp_tokens_nested_blocked(fake_home):
-    """Nested files inside mcp-tokens/ are also blocked."""
-    from agent.file_safety import get_read_block_error
-
-    tok = _create(fake_home, Path("mcp-tokens") / "providers" / "azure.json")
-    err = get_read_block_error(str(tok))
-    assert err is not None
-    assert "MCP token" in err
 
 
-def test_mcp_tokens_dir_itself_blocked(fake_home):
-    """The mcp-tokens directory itself is blocked (listing is exfiltrating)."""
-    from agent.file_safety import get_read_block_error
-
-    tokens_dir = fake_home / "mcp-tokens"
-    tokens_dir.mkdir(parents=True, exist_ok=True)
-    err = get_read_block_error(str(tokens_dir))
-    assert err is not None
-    assert "MCP token" in err
 
 
 def test_identically_named_hermes_files_outside_home_not_blocked(

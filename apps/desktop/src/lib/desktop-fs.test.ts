@@ -5,6 +5,7 @@ import { $connection } from '@/store/session'
 import {
   desktopDefaultCwd,
   desktopFileDiff,
+  desktopFsCacheKey,
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
@@ -122,6 +123,56 @@ describe('desktop filesystem facade', () => {
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
   })
 
+  it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {
+    $connection.set({
+      mode: 'remote',
+      remoteKind: 'ssh',
+      remoteHost: 'operator@remote-box',
+      baseUrl: 'http://127.0.0.1:41001'
+    } as never)
+    const first = desktopFsCacheKey()
+
+    $connection.set({
+      mode: 'remote',
+      remoteKind: 'ssh',
+      remoteHost: 'operator@remote-box',
+      baseUrl: 'http://127.0.0.1:52002'
+    } as never)
+
+    expect(desktopFsCacheKey()).toBe(first)
+    expect(first).toContain('operator@remote-box')
+    expect(first).not.toContain('41001')
+  })
+
+  it('separates SSH filesystem caches by ownership and profile', () => {
+    $connection.set({
+      mode: 'remote',
+      remoteKind: 'ssh',
+      remoteHost: 'host-a',
+      remoteIdentity: 'owner-a',
+      profile: 'one'
+    } as never)
+    const first = desktopFsCacheKey()
+    $connection.set({
+      mode: 'remote',
+      remoteKind: 'ssh',
+      remoteHost: 'host-a',
+      remoteIdentity: 'owner-b',
+      profile: 'one'
+    } as never)
+    const otherOwner = desktopFsCacheKey()
+    $connection.set({
+      mode: 'remote',
+      remoteKind: 'ssh',
+      remoteHost: 'host-a',
+      remoteIdentity: 'owner-a',
+      profile: 'two'
+    } as never)
+
+    expect(otherOwner).not.toBe(first)
+    expect(desktopFsCacheKey()).not.toBe(first)
+  })
+
   it('routes file diffs through backend git in remote mode', async () => {
     $connection.set({ mode: 'remote' } as never)
 
@@ -142,12 +193,22 @@ describe('desktop filesystem facade', () => {
     expect(selectPaths).not.toHaveBeenCalled()
   })
 
+  it('uses the local Electron picker for remote file selection', async () => {
+    const remoteSelect = vi.fn(async () => ['/remote/project'])
+    $connection.set({ mode: 'remote' } as never)
+    setDesktopFsRemotePicker({ selectPaths: remoteSelect })
+
+    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual(['/local'])
+
+    expect(selectPaths).toHaveBeenCalledWith({ directories: false, multiple: false })
+    expect(remoteSelect).not.toHaveBeenCalled()
+  })
+
   it('limits the remote picker to single-directory selection', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
     $connection.set({ mode: 'remote' } as never)
     setDesktopFsRemotePicker({ selectPaths: remoteSelect })
 
-    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual([])
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/remote/project'])
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })

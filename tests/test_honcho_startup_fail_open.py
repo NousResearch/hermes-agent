@@ -22,6 +22,12 @@ def _configured_hybrid_config() -> _FakeHonchoConfig:
         base_url="http://127.0.0.1:8000",
         recall_mode="hybrid",
         init_on_session_start=False,
+        injection_frequency="every-turn",
+        context_cadence=1,
+        dialectic_cadence=1,
+        query_rewrite=False,
+        first_turn_base_wait=3.0,
+        first_turn_dialectic_wait=2.0,
         dialectic_depth=1,
         dialectic_depth_levels=None,
         reasoning_heuristic=True,
@@ -39,11 +45,13 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
-def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
-    """Slow Honcho session creation must not block agent startup."""
+
+
+def test_stalled_init_only_delays_first_turn_prefetch(monkeypatch):
+    """A stalled session init may bound-wait on turn 1 only; every later
+    prefetch must keep the fail-open contract and return immediately."""
     provider = HonchoMemoryProvider()
     cfg = _configured_hybrid_config()
-    started = threading.Event()
     release = threading.Event()
 
     monkeypatch.setattr(
@@ -51,21 +59,24 @@ def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monke
         lambda: cfg,
     )
 
-    def slow_session_init(self, cfg, session_id, **kwargs):
-        started.set()
-        release.wait(timeout=5)
-        self._session_initialized = True
+    def stalled_session_init(self, cfg, session_id, **kwargs):
+        release.wait(timeout=10)
 
-    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", slow_session_init)
-
-    start = time.perf_counter()
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", stalled_session_init)
     provider.initialize("session-1", platform="cli")
-    elapsed = time.perf_counter() - start
+    provider._FIRST_TURN_BASE_TIMEOUT = 1.0
 
     try:
-        assert elapsed < 0.5
-        assert started.wait(timeout=1)
-        assert provider._session_key == "test-session"
+        provider._turn_count = 1
+        start = time.perf_counter()
+        assert provider.prefetch("first question") == ""
+        assert time.perf_counter() - start >= 0.5  # turn 1 waited (bounded)
+
+        for turn in (2, 3, 4):
+            provider._turn_count = turn
+            start = time.perf_counter()
+            assert provider.prefetch("follow-up question") == ""
+            assert time.perf_counter() - start < 0.4  # fail-open, no wait
     finally:
         release.set()
         init_thread = getattr(provider, "_init_thread", None)
@@ -97,77 +108,57 @@ def test_honcho_background_init_rechecks_state_after_lock_race():
     assert provider._session_initialized is True
 
 
-def test_honcho_prefetch_returns_without_waiting_for_first_context_fetch():
-    """First-turn context injection must fail open when Honcho is slow."""
+
+
+def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
+    """Session init and base retrieval share one configured turn-1 deadline."""
     provider = HonchoMemoryProvider()
     cfg = _configured_hybrid_config()
-    cfg.timeout = 0.1
-    fetch_started = threading.Event()
+    cfg.first_turn_base_wait = 0.5
+    cfg.timeout = None
+    release_context = threading.Event()
 
     class SlowManager:
         def get_prefetch_context(self, session_key, user_message=None):
-            fetch_started.set()
-            time.sleep(5)
+            release_context.wait(timeout=5)
             return {"representation": "late"}
 
-        def prefetch_context(self, session_key, user_message=None):
-            fetch_started.set()
+        def set_context_result(self, session_key, result):
+            pass
 
         def pop_context_result(self, session_key):
             return {}
 
+    def finish_init():
+        time.sleep(0.3)
+        provider._manager = SlowManager()
+        provider._session_initialized = True
+
     provider._config = cfg
-    provider._manager = SlowManager()
     provider._session_key = "test-session"
-    provider._session_initialized = True
+    provider._recall_mode = "context"
     provider._turn_count = 1
-
-    start = time.perf_counter()
-    result = provider.prefetch("what do you know about me?")
-    elapsed = time.perf_counter() - start
-
-    assert result == ""
-    assert elapsed < 0.5
-    assert fetch_started.is_set()
-
-
-
-def test_honcho_sync_turn_does_not_start_network_write_before_session_init():
-    """Session-end sync must not create a blocking writer before init finishes."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_hybrid_config()
-    get_started = threading.Event()
-    background_started = threading.Event()
-    release_init = threading.Event()
-
-    class SlowManager:
-        def get_or_create(self, session_key):
-            get_started.set()
-            time.sleep(5)
-            return SimpleNamespace()
-
-        def _flush_session(self, session):
-            pass
-
-    provider._config = cfg
-    provider._manager = SlowManager()
-    provider._session_key = "test-session"
-    provider._session_initialized = False
-    provider._start_session_init_background = background_started.set
-    provider._init_thread = threading.Thread(
-        target=lambda: release_init.wait(timeout=5), daemon=True
-    )
+    provider._last_dialectic_turn = 0
+    provider._FIRST_TURN_BASE_TIMEOUT = cfg.first_turn_base_wait
+    provider._init_thread = threading.Thread(target=finish_init, daemon=True)
     provider._init_thread.start()
 
     try:
-        provider.sync_turn("hello", "world")
-
-        assert provider._sync_thread is None
-        assert background_started.is_set()
-        assert not get_started.wait(timeout=0.1)
+        started = time.perf_counter()
+        assert provider.prefetch("what do you know about me?") == ""
+        elapsed = time.perf_counter() - started
+        # Property: prefetch waits for init (0.3s sleep) but is bounded by
+        # first_turn_base_wait rather than blocking forever on the slow
+        # context fetch. The old 0.4..0.65 window was 0.25s wide — pure
+        # scheduler noise on a loaded runner. Lower bound proves the wait
+        # happened; loose upper bound proves it didn't hang.
+        assert 0.25 <= elapsed < 2.0
     finally:
-        release_init.set()
-        provider._init_thread.join(timeout=1)
+        release_context.set()
+        provider._init_thread.join(timeout=10)
+
+
+
 
 
 def test_honcho_sync_turn_waits_for_full_background_startup(monkeypatch):
@@ -256,28 +247,6 @@ def test_honcho_system_prompt_advertises_active_while_background_init_runs(monke
             init_thread.join(timeout=1)
 
 
-def test_honcho_tools_eager_init_still_ready_on_return(monkeypatch):
-    """tools + initOnSessionStart=true keeps its ready-on-return contract."""
-    provider = HonchoMemoryProvider()
-    cfg = _configured_tools_config(init_on_session_start=True)
-
-    monkeypatch.setattr(
-        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-        lambda: cfg,
-    )
-
-    def fake_session_init(self, cfg, session_id, **kwargs):
-        self._manager = SimpleNamespace()
-        self._session_key = "test-session"
-        self._session_initialized = True
-
-    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", fake_session_init)
-
-    provider.initialize("session-1", platform="cli")
-
-    assert provider._session_initialized is True
-    assert provider._manager is not None
-    assert provider._init_thread is None
 
 
 def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatch):

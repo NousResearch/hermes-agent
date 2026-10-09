@@ -106,6 +106,10 @@ class ChronosCronScheduler(CronScheduler):
         Does NOT block and does NOT spawn a 60s wake (DQ-1) — that is the whole
         point of scale-to-zero. The machine wakes only on a NAS→agent fire.
         """
+        # A new provider lifecycle cannot prove what an interrupted prior
+        # process did. Classify those attempts unknown for audit only; do not
+        # requeue them here.
+        self.recover_interrupted()
         try:
             self.reconcile()
         except Exception as e:

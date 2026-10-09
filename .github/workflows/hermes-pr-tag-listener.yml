@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   notify:
-    uses: jleechanorg/.github/.github/workflows/hermes-pr-tag-listener.yml@main
+    uses: jleechanorg/.github/.github/workflows/hermes-pr-tag-listener.yml@3f9707627da75e55a79d13518c6cfb886a10ead6
     with:
       slack_channel: ${{ vars.HERMES_SLACK_CHANNEL || '#worldai-bugs' }}
       dispatch_ao: 'false'

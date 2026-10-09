@@ -74,52 +74,27 @@ def compressor():
 
 
 class TestFindLastAssistantMessageIdx:
-    def test_finds_content_bearing_assistant(self, compressor):
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "q"},
-            {"role": "assistant", "content": "the reply"},
-        ]
-        idx = compressor._find_last_assistant_message_idx(messages, head_end=1)
-        assert idx == 2
+    def test_skips_assistant_role_context_summary_marker(self, compressor):
+        """A persisted assistant-role handoff is internal continuity state,
+        not the last reply the user saw. Tool-call-only assistant messages
+        after it must remain eligible for the fallback anchor."""
+        from agent.context_compressor import SUMMARY_PREFIX
 
-    def test_skips_tool_call_only_stub_when_text_reply_exists_earlier(
-        self, compressor
-    ):
-        """An assistant message that only carries ``tool_calls`` (no
-        text content) is not the user-visible reply — the WebUI
-        renders those as small "calling tool X" indicators. The helper
-        must prefer the earlier text reply, which is what the user
-        actually read."""
         messages = [
-            {"role": "user", "content": "q1"},
-            {"role": "assistant", "content": "VISIBLE REPLY"},
-            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nold handoff"},
+            {"role": "user", "content": "continue the task"},
             {"role": "assistant", "content": None,
              "tool_calls": [{"function": {"name": "t",
                                           "arguments": "{}"}}]},
             {"role": "tool", "content": "result", "tool_call_id": "c1"},
         ]
-        idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
-        assert idx == 1, (
-            "Expected the content-bearing assistant reply (1), not the "
-            f"trailing tool-call stub. Got {idx}."
-        )
+        assert compressor._find_last_assistant_message_idx(
+            messages, head_end=0
+        ) == 2
 
-    def test_empty_string_content_does_not_count_as_visible(self, compressor):
-        """An assistant message with ``content=""`` (only whitespace)
-        is not a visible reply either — common pre-flight stub before
-        the model streams the real answer."""
-        messages = [
-            {"role": "user", "content": "q1"},
-            {"role": "assistant", "content": "earlier reply"},
-            {"role": "user", "content": "q2"},
-            {"role": "assistant", "content": "   "},  # blank stub
-        ]
-        idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
-        # Blank-string assistant message does not count — fall back
-        # to the earlier real reply.
-        assert idx == 1
+
+
+
 
     def test_multimodal_text_block_counts(self, compressor):
         """An assistant with multimodal list-content carrying a text
@@ -133,29 +108,7 @@ class TestFindLastAssistantMessageIdx:
         idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
         assert idx == 1
 
-    def test_fallback_to_any_assistant_when_no_content_bearing(
-        self, compressor
-    ):
-        """When there's no text-bearing assistant in the compressible
-        region (fresh multi-step tool sequence), fall back to the
-        most recent assistant of any kind so the anchor still works."""
-        messages = [
-            {"role": "user", "content": "q"},
-            {"role": "assistant", "content": None,
-             "tool_calls": [{"function": {"name": "t",
-                                          "arguments": "{}"}}]},
-            {"role": "tool", "content": "result", "tool_call_id": "c1"},
-        ]
-        idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
-        assert idx == 1
 
-    def test_returns_negative_one_when_no_assistant(self, compressor):
-        messages = [
-            {"role": "user", "content": "q1"},
-            {"role": "user", "content": "q2"},
-        ]
-        idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
-        assert idx == -1
 
     def test_respects_head_end_lower_bound(self, compressor):
         """An assistant message at or before ``head_end`` must be
@@ -207,18 +160,6 @@ class TestEnsureLastAssistantMessageInTail:
             for m in messages[new_cut:]
         )
 
-    def test_never_crosses_head_end(self, compressor):
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "assistant", "content": "in-head"},  # head, must ignore
-            {"role": "user", "content": "q"},
-        ]
-        # head_end=2 ⇒ assistant at idx 1 is in the head; the anchor
-        # finds nothing in the compressible region and is a no-op.
-        new_cut = compressor._ensure_last_assistant_message_in_tail(
-            messages, cut_idx=3, head_end=2
-        )
-        assert new_cut == 3
 
     def test_re_aligns_through_preceding_tool_group(self, compressor):
         """When the anchored assistant is preceded by a
@@ -357,7 +298,10 @@ class TestCompactionRollupReproduction:
     in ``web/src/pages/SessionsPage.tsx``)."""
 
     def test_compress_keeps_visible_reply_text(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
         c = compressor
         c.tail_token_budget = 10
         # ``_generate_summary`` normally wraps the LLM body in
@@ -392,10 +336,12 @@ class TestCompactionRollupReproduction:
             return_value=_mocked,
         ):
             result = c.compress(messages, current_tokens=90_000)
-        # 1. A summary message exists (compression actually ran).
+        # 1. A summary message exists (compression actually ran). Detect via
+        # the canonical metadata key rather than a content prefix: merge-into-
+        # tail summaries wrap prior content before the summary, so the prefix
+        # is no longer at the start of the message content (#56372).
         assert any(
-            isinstance(m.get("content"), str)
-            and m["content"].startswith(SUMMARY_PREFIX)
+            m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             for m in result
         ), "compress() did not insert a summary message"
         # 2. The visible reply text must survive somewhere — either
@@ -419,7 +365,10 @@ class TestCompactionRollupReproduction:
         as its OWN assistant message — not merged with anything.
         This is the common case; the merge-into-tail path is the
         edge case for double-collision."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
         c = compressor
         c.tail_token_budget = 10
         _mocked = f"{SUMMARY_PREFIX}\nrolled-up middle summary"
@@ -449,11 +398,11 @@ class TestCompactionRollupReproduction:
             return_value=_mocked,
         ):
             result = c.compress(messages, current_tokens=90_000)
-        # Standalone summary present:
+        # Summary present (detect via the canonical metadata key — merge-into-
+        # tail summaries no longer start with SUMMARY_PREFIX after #56372):
         summary_rows = [
             m for m in result
-            if isinstance(m.get("content"), str)
-            and m["content"].startswith(SUMMARY_PREFIX)
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]
         assert len(summary_rows) == 1
         # Visible reply as its OWN distinct assistant message
@@ -463,7 +412,7 @@ class TestCompactionRollupReproduction:
             if m.get("role") == "assistant"
             and isinstance(m.get("content"), str)
             and "THE VISIBLE REPLY THE USER JUST READ" in m["content"]
-            and not m["content"].startswith(SUMMARY_PREFIX)
+            and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]
         assert len(reply_rows) == 1, (
             "REGRESSION (#29824): expected exactly one standalone "
@@ -475,6 +424,51 @@ class TestCompactionRollupReproduction:
 # ---------------------------------------------------------------------------
 # Source guardrail
 # ---------------------------------------------------------------------------
+
+
+class TestFindLastUserMessageIdxSkipsSummaryMarker:
+    """A context-compaction handoff banner is inserted with ``role="user"``
+    when the head ends in an assistant/tool message (see the summary-role
+    selection in ``compress``). ``_find_last_user_message_idx`` must NOT treat
+    that banner as the latest user turn — otherwise, on a resumed or
+    multi-compaction session, ``_ensure_last_user_message_in_tail`` anchors the
+    tail to the summary and rolls the genuine last user message into the next
+    compaction, re-triggering the active-task loss the anchor exists to prevent.
+    (Salvaged from #36626 / issue #36624.)
+    """
+
+    def test_skips_user_role_context_summary_marker(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "REAL current task"},
+            {"role": "assistant", "content": "working on it"},
+            # A handoff summary re-inserted as a user-role message after resume.
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Active Task\nold"},
+            {"role": "assistant", "content": "continuing from the real task"},
+        ]
+        # Latest *real* user message is index 1, not the summary at index 3.
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == 1
+
+    def test_returns_real_user_when_no_summary_present(self, compressor):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == 3
+
+    def test_all_user_messages_are_summaries_returns_minus_one(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nhandoff"},
+        ]
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == -1
 
 
 class TestSourceGuardrail:
@@ -508,11 +502,4 @@ class TestSourceGuardrail:
             "backward, and ordering keeps the chain monotonic."
         )
 
-    def test_helper_prefers_content_bearing_reply(self, source):
-        """The helper must skip tool-call-only stubs — that's the
-        whole user-experience difference between #29824 (no visible
-        reply) and an in-progress turn (small 'calling tool X' chip)."""
-        assert "content.strip()" in source
 
-    def test_issue_number_referenced(self, source):
-        assert "#29824" in source

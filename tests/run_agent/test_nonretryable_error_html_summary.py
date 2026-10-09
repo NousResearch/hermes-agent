@@ -72,7 +72,6 @@ def _make_agent() -> AIAgent:
     a.client = MagicMock()
     a._cached_system_prompt = "You are helpful."
     a._use_prompt_caching = False
-    a.tool_delay = 0
     a.compression_enabled = False
     a.save_trajectories = False
     return a

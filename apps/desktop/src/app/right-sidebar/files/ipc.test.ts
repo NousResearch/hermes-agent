@@ -82,6 +82,33 @@ describe('readProjectDir', () => {
     expect(readFileDataUrl).toHaveBeenCalledWith('C:/repo/.gitignore')
   })
 
+  it('filters gitignored entries when Windows path casing differs across IPC results', async () => {
+    gitRoot.mockResolvedValue('C:\\Repo')
+    readDir.mockImplementation(async path => {
+      if (path === 'c:\\repo\\src') {
+        return ok([
+          { name: 'debug.log', path: 'c:\\repo\\src\\debug.log', isDirectory: false },
+          { name: 'keep.ts', path: 'c:\\repo\\src\\keep.ts', isDirectory: false }
+        ])
+      }
+
+      if (path === 'C:/Repo') {
+        return ok([{ name: '.gitignore', path: 'C:/Repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === 'C:/Repo/src') {
+        return ok([])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('src/*.log\n'))
+
+    const result = await readProjectDir('c:\\repo\\src', 'c:\\repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
+  })
+
   it('does not fetch .gitignore contents when listings do not contain .gitignore', async () => {
     gitRoot.mockResolvedValue('/repo')
     readDir.mockImplementation(async path => {

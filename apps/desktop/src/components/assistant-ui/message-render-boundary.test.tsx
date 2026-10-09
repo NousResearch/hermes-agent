@@ -13,7 +13,7 @@ function Boom({ error }: { error: Error | null }): null {
   return null
 }
 
-const lookupError = new Error('tapClientLookup: Index 2 out of bounds (length: 2)')
+const lookupError = new Error('useClientLookup: Index 2 out of bounds (length: 2)')
 
 describe('MessageRenderBoundary', () => {
   it('renders children when nothing throws', () => {
@@ -26,7 +26,7 @@ describe('MessageRenderBoundary', () => {
     expect(screen.getByText('content')).toBeTruthy()
   })
 
-  it('swallows the transient tapClientLookup out-of-bounds store race', () => {
+  it('swallows the transient useClientLookup out-of-bounds store race', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const { container } = render(

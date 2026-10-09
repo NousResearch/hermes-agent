@@ -801,7 +801,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-参见 **[构建插件指南](/guides/build-a-hermes-plugin)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
+参见 **[构建插件指南](/developer-guide/plugins)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
 
 ---
 

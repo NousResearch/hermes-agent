@@ -110,12 +110,12 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
     try:
-        return json.loads(tf.read_text())
+        return json.loads(tf.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError):
         bak = tf.with_suffix(".json.bak")
         if bak.exists():
             try:
-                data = json.loads(bak.read_text())
+                data = json.loads(bak.read_text(encoding="utf-8"))
                 _log("WARN: tracked.json corrupted — restored from .bak")
                 return data
             except Exception:
@@ -129,7 +129,7 @@ def save_tracked(tracked: List[Dict[str, Any]]) -> None:
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
     tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2))
+    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
     if tf.exists():
         shutil.copy2(tf, tf.with_suffix(".json.bak"))
     tmp.replace(tf)
@@ -166,9 +166,13 @@ def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
     never be deleted.
 
-    This only matches the directory itself and known control-plane files
-    (``jobs.json``, ``.tick.lock``) — it does NOT blanket-protect
-    everything under ``cron/`` because ``cron/output/`` is disposable.
+    This matches, by EXACT path only, the ``cron/`` directory itself, known
+    control-plane files (``jobs.json``, ``.tick.lock``), and the ``output/``
+    root directory. It does NOT (and must not be "simplified" to) blanket-match
+    everything under ``cron/output/`` — those run artifacts are disposable and
+    are cleaned by retention policy; only the ``output/`` root itself is
+    protected, because deleting it wholesale erases every job's retained run
+    history at once.
     """
     # Lazily build the set once per process so HERMES_HOME is resolved
     # exactly once.
@@ -177,6 +181,7 @@ def _is_protected_cron_path(p: Path) -> bool:
         for parent in ("cron", "cronjobs"):
             base = hermes_home / parent
             _PROTECTED_CRON_PATHS.add(str(base))
+            _PROTECTED_CRON_PATHS.add(str(base / "output"))
             _PROTECTED_CRON_PATHS.add(str(base / "jobs.json"))
             _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
     resolved = str(p.resolve())
@@ -566,7 +571,7 @@ def guess_category(path: Path) -> Optional[str]:
             # (e.g. ``jobs.json``, ``.tick.lock``) must never be
             # auto-tracked — deleting it wipes the live scheduler
             # registry. See issue #32164.
-            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+            if len(rel.parts) >= 3 and rel.parts[1] == "output":
                 return "cron-output"
             return None
         if top == "cache":

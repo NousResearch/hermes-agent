@@ -8,6 +8,8 @@ import {
 import {
   type AssistantRuntime,
   type ExternalStoreAdapter,
+  fromThreadMessageLike,
+  generateId,
   type ThreadMessage,
   useRuntimeAdapters
 } from '@assistant-ui/react'
@@ -33,14 +35,81 @@ const shallowEqual = (a: object, b: object): boolean => {
 
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
-function syncRepositoryIncrementally(
+/**
+ * Write only the items whose (message, parentId) pair actually moved.
+ *
+ * `useRuntimeMessageRepository` caches normalized ThreadMessages by source
+ * identity, so a settled turn keeps the SAME object across renders. That makes
+ * an identity check a sound "did this change?" test: during streaming exactly
+ * one item — the growing tail — differs, and the other N-1 writes were pure
+ * overhead that grew with transcript length.
+ *
+ * Returns false when the export is stale (an id in `existing` is gone, or an
+ * incoming message has no repository entry yet), so the caller falls back to
+ * the full rebuild rather than guessing.
+ */
+function applyChangedMessages(
+  repository: ExternalStoreThreadRuntimeCore['repository'],
+  existing: readonly { message: ThreadMessage; parentId: string | null }[],
+  incoming: readonly { message: ThreadMessage; parentId: string | null }[]
+): boolean {
+  if (existing.length !== incoming.length) {
+    return false
+  }
+
+  const existingById = new Map(existing.map(item => [item.message.id, item]))
+
+  for (const item of incoming) {
+    const current = existingById.get(item.message.id)
+
+    if (!current) {
+      return false
+    }
+
+    // Reference identity, not deep equality: the conversion cache guarantees a
+    // stable object for an unchanged turn, and a changed turn is a new object.
+    if (current.message !== item.message || current.parentId !== item.parentId) {
+      repository.addOrUpdateMessage(item.parentId, item.message)
+    }
+  }
+
+  return true
+}
+
+export function syncRepositoryIncrementally(
   runtime: ExternalStoreThreadRuntimeCore,
   messageRepository: NonNullable<ExternalStoreAdapter['messageRepository']>
 ): readonly ThreadMessage[] {
   const repository = (runtime as unknown as { repository: ExternalStoreThreadRuntimeCore['repository'] }).repository
-  const incomingIds = new Set(messageRepository.messages.map(({ message }) => message.id))
+  const incoming = messageRepository.messages
+  const existing = repository.export().messages
+  const headId = messageRepository.headId ?? incoming.at(-1)?.message.id ?? null
 
-  for (const { message, parentId } of messageRepository.messages) {
+  // A thread switch swaps in a fully-DISJOINT transcript (no id carries over).
+  // Reconciling two unrelated trees in place — grafting the new chain onto the
+  // old one, then pruning — can strand a stale head/branch, so there's nothing
+  // to preserve: clear the tree first (leaves→root), then rebuild clean.
+  const incomingIds = new Set(incoming.map(({ message }) => message.id))
+  const disjoint = existing.length > 0 && !existing.some(({ message }) => incomingIds.has(message.id))
+
+  // Steady-state streaming: same message set, one item changed. Skip the
+  // whole-transcript rewrite, the prune scan, and the second export. resetHead
+  // deletes the head's descendants, so it only runs when the head really moved.
+  if (!disjoint && applyChangedMessages(repository, existing, incoming)) {
+    if (repository.headId !== headId) {
+      repository.resetHead(headId)
+    }
+
+    return repository.getMessages()
+  }
+
+  if (disjoint) {
+    for (const { message } of [...existing].reverse()) {
+      repository.deleteMessage(message.id)
+    }
+  }
+
+  for (const { message, parentId } of incoming) {
     repository.addOrUpdateMessage(parentId, message)
   }
 
@@ -49,8 +118,6 @@ function syncRepositoryIncrementally(
       repository.deleteMessage(message.id)
     }
   }
-
-  const headId = messageRepository.headId ?? messageRepository.messages.at(-1)?.message.id ?? null
 
   repository.resetHead(headId)
 
@@ -134,11 +201,17 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       self._notifyEventSubscribers(store.isRunning ? 'runStart' : 'runEnd', {})
     }
 
+    // metadata.isOptimistic keeps this placeholder ephemeral: core evicts
+    // off-branch optimistic messages on head moves and omits them from export().
     if (hasUpcomingMessage(isRunning, messages)) {
-      self._assistantOptimisticId = this.repository.appendOptimisticMessage(messages.at(-1)?.id ?? null, {
-        role: 'assistant',
-        content: []
-      })
+      const optimisticId = generateId()
+      this.repository.addOrUpdateMessage(
+        messages.at(-1)?.id ?? null,
+        fromThreadMessageLike({ role: 'assistant', content: [], metadata: { isOptimistic: true } }, optimisticId, {
+          type: 'running'
+        })
+      )
+      self._assistantOptimisticId = optimisticId
     }
 
     this.repository.resetHead(self._assistantOptimisticId ?? messages.at(-1)?.id ?? null)

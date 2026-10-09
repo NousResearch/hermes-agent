@@ -1,14 +1,14 @@
 ---
-title: "Tensorrt Llm — Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency"
+title: "Tensorrt Llm — High-throughput LLM inference on NVIDIA GPUs"
 sidebar_label: "Tensorrt Llm"
-description: "Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency"
+description: "High-throughput LLM inference on NVIDIA GPUs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Tensorrt Llm
 
-Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency. Use for production deployment on NVIDIA GPUs (A100/H100), when you need 10-100x faster inference than PyTorch, or for serving models with quantization (FP8/INT4), in-flight batching, and multi-GPU scaling.
+High-throughput LLM inference on NVIDIA GPUs.
 
 ## Skill metadata
 
@@ -16,7 +16,7 @@ Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest l
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/tensorrt-llm` |
 | Path | `optional-skills/mlops/tensorrt-llm` |
-| Version | `1.0.0` |
+| Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `tensorrt-llm`, `torch` |
@@ -57,13 +57,15 @@ NVIDIA's open-source library for optimizing LLM inference with state-of-the-art 
 ### Installation
 
 ```bash
-# Docker (recommended)
-docker pull nvidia/tensorrt_llm:latest
+# Docker (recommended) — images are on NGC (nvcr.io), not Docker Hub.
+# Replace x.y.z with the desired version (e.g. 1.2.1). Browse tags on NGC:
+# https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release/tags
+docker pull nvcr.io/nvidia/tensorrt-llm/release:x.y.z
 
-# pip install
-pip install tensorrt_llm==1.2.0rc3
+# pip install (current stable GA)
+pip install tensorrt_llm
 
-# Requires CUDA 13.0.0, TensorRT 10.13.2, Python 3.10-3.12
+# Requires CUDA 13.2.1, TensorRT 10.x, Python 3.10-3.12
 ```
 
 ### Basic inference

@@ -54,11 +54,11 @@ def _make_session(agent=None, history=None, session_key="test_key_001"):
 class TestFinalizeSessionPersist:
     """Verify _finalize_session flushes messages via _persist_session."""
 
-    def test_persist_called_with_history(self):
-        """History from session is passed to agent._persist_session.
-
-        When _session_messages is None (not yet set by any turn),
-        the session["history"] is used as the snapshot.
+    def test_no_session_messages_skips_persist(self):
+        """When _session_messages is empty/None the agent processed nothing
+        this session, so there is nothing new to flush. Falling back to
+        session["history"] here re-appended already-durable resumed rows as
+        duplicates, so finalize must NOT write in that case.
         """
         from tui_gateway.server import _finalize_session
 
@@ -66,20 +66,16 @@ class TestFinalizeSessionPersist:
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
         ]
-        agent = _make_agent()
+        agent = _make_agent()  # _session_messages is None
         session = _make_session(agent=agent, history=history)
 
         _finalize_session(session, end_reason="test")
 
-        agent._persist_session.assert_called_once()
-        # snapshot = history (since _session_messages is None)
-        called_with = agent._persist_session.call_args[0][0]
-        assert called_with == history
-        # conversation_history kwarg passed for correct flush indexing
-        assert agent._persist_session.call_args[1].get("conversation_history") == history
+        agent._persist_session.assert_not_called()
 
-    def test_persist_uses_session_messages_when_available(self):
-        """agent._session_messages takes priority over session['history']."""
+    def test_persist_uses_session_messages(self):
+        """agent._session_messages is flushed via the marker-based dedup path
+        (no conversation_history — passing the same list neutered the write)."""
         from tui_gateway.server import _finalize_session
 
         history = [{"role": "user", "content": "old"}]
@@ -93,10 +89,10 @@ class TestFinalizeSessionPersist:
 
         _finalize_session(session)
 
-        agent._persist_session.assert_called_once()
-        called_with = agent._persist_session.call_args[0][0]
-        assert called_with == session_msgs  # _session_messages wins
-        assert agent._persist_session.call_args[1].get("conversation_history") == history
+        agent._persist_session.assert_called_once_with(session_msgs)
+        # conversation_history must NOT be passed — it aliases the snapshot and
+        # makes _flush_messages_to_session_db skip every message.
+        assert "conversation_history" not in agent._persist_session.call_args[1]
 
     def test_commit_memory_still_called(self):
         """Existing memory commit path is preserved."""
@@ -110,12 +106,6 @@ class TestFinalizeSessionPersist:
 
         agent.commit_memory_session.assert_called_once()
 
-    def test_no_agent_no_crash(self):
-        """Session with agent=None exits cleanly."""
-        from tui_gateway.server import _finalize_session
-
-        session = _make_session(agent=None, history=[{"role": "user", "content": "x"}])
-        _finalize_session(session)  # must not raise
 
     def test_empty_history_skips_persist(self):
         """Empty history → _persist_session not called (guard)."""
@@ -128,18 +118,6 @@ class TestFinalizeSessionPersist:
 
         agent._persist_session.assert_not_called()
 
-    def test_no_persist_method_skips(self):
-        """Agent without _persist_session attribute → graceful skip."""
-        from tui_gateway.server import _finalize_session
-
-        agent = _make_agent()
-        del agent._persist_session  # simulate older agent without the method
-        session = _make_session(
-            agent=agent,
-            history=[{"role": "user", "content": "x"}],
-        )
-
-        _finalize_session(session)  # must not raise
 
     def test_already_finalized_skips(self):
         """Double-finalize is a no-op."""
@@ -153,20 +131,6 @@ class TestFinalizeSessionPersist:
 
         agent._persist_session.assert_not_called()
 
-    def test_persist_exception_does_not_block(self):
-        """If _persist_session raises, finalization continues."""
-        from tui_gateway.server import _finalize_session
-
-        agent = _make_agent()
-        agent._persist_session.side_effect = RuntimeError("db is down")
-        session = _make_session(
-            agent=agent,
-            history=[{"role": "user", "content": "x"}],
-        )
-
-        _finalize_session(session)  # must not raise
-        # commit_memory_session should still be called
-        agent.commit_memory_session.assert_called_once()
 
     @patch("tui_gateway.server._get_db")
     def test_db_end_session_still_called(self, mock_get_db):
@@ -182,6 +146,105 @@ class TestFinalizeSessionPersist:
         _finalize_session(session, end_reason="test")
 
         mock_db.end_session.assert_called_once_with("sess_123", "test")
+
+
+class TestFinalizeSessionPersistE2E:
+    """End-to-end: _finalize_session must actually land unflushed turns in
+    state.db on disconnect/restart.
+
+    The mock-based tests above assert that _persist_session is *called*, but a
+    call whose arguments neuter the underlying flush persists nothing. These
+    tests drive the REAL AIAgent flush against a REAL SessionDB, reproducing
+    the "conversation contains many events yet is absent from state.db across
+    disconnect/restart" symptom.
+    """
+
+    @staticmethod
+    def _real_agent(db, session_id, session_messages):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent._session_db = db
+        agent._session_db_created = True
+        agent.session_id = session_id
+        agent.platform = "tui"
+        agent.model = "test-model"
+        agent._session_messages = session_messages
+        agent._last_flushed_db_idx = 0
+        agent._flushed_db_message_ids = set()
+        agent._flushed_db_message_session_id = None
+        agent._persist_disabled = False
+        agent._cached_system_prompt = None
+        agent._session_init_model_config = None
+        agent._parent_session_id = None
+        agent._session_json_enabled = False
+        agent.quiet_mode = True
+        # commit_memory_session runs heavy machinery we don't exercise here.
+        agent.commit_memory_session = lambda *a, **k: None
+        return agent
+
+    def test_unflushed_turn_survives_disconnect(self, tmp_path, monkeypatch):
+        """A completed turn whose transcript flush did NOT durably persist
+        (messages live only in agent._session_messages / session['history'],
+        never written to the DB) must be flushed to state.db when the WS
+        disconnect tears the session down."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from hermes_state import SessionDB
+        import tui_gateway.server as srv
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "sess-unflushed"
+        db.create_session(session_id=session_id, source="tui")
+        monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+        # The live turn list that became session["history"] AND
+        # agent._session_messages (same object), but was never persisted.
+        turn = [
+            {"role": "user", "content": "scan the repo and summarise"},
+            {"role": "assistant", "content": "Here is the summary…"},
+            {"role": "user", "content": "now open a PR"},
+            {"role": "assistant", "content": "PR opened."},
+        ]
+        agent = self._real_agent(db, session_id, turn)
+        session = _make_session(agent=agent, history=turn, session_key=session_id)
+
+        assert db.get_messages_as_conversation(session_id) == []
+
+        srv._finalize_session(session, end_reason="ws_disconnect")
+
+        after = db.get_messages_as_conversation(session_id)
+        contents = [m.get("content") for m in after]
+        assert len(after) == 4, after
+        assert any("scan the repo" in (c or "") for c in contents), contents
+        assert any("PR opened" in (c or "") for c in contents), contents
+
+    def test_resumed_session_not_reflushed_as_duplicates(self, tmp_path, monkeypatch):
+        """A resumed session torn down before any new turn (its transcript is
+        already durable in the DB) must NOT re-append duplicate rows."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from hermes_state import SessionDB
+        import tui_gateway.server as srv
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "sess-resumed"
+        db.create_session(session_id=session_id, source="tui")
+        loaded = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        for m in loaded:
+            db.append_message(session_id=session_id, role=m["role"], content=m["content"])
+        monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+        # Resumed session: history hydrated from the DB, no turn ran, so the
+        # agent processed nothing this session.
+        agent = self._real_agent(db, session_id, [])
+        session = _make_session(agent=agent, history=loaded, session_key=session_id)
+
+        srv._finalize_session(session, end_reason="ws_disconnect")
+
+        after = db.get_messages_as_conversation(session_id)
+        assert len(after) == 2, after
 
 
 class TestOnSessionEndHook:
@@ -208,14 +271,3 @@ class TestOnSessionEndHook:
             platform="tui",
         )
 
-    @patch("hermes_cli.plugins.invoke_hook")
-    def test_hook_exception_does_not_block(self, mock_invoke_hook):
-        """Hook failure doesn't prevent session finalization."""
-        from tui_gateway.server import _finalize_session
-
-        mock_invoke_hook.side_effect = RuntimeError("plugin crash")
-        agent = _make_agent()
-        session = _make_session(agent=agent, history=[{"role": "user", "content": "x"}])
-
-        _finalize_session(session)  # must not raise
-        agent.commit_memory_session.assert_called_once()

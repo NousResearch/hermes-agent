@@ -142,18 +142,44 @@ POST http://host:8644/p/coder/webhooks/<route>
 An unknown or unconfigured profile in the prefix returns `404`. Because the one
 shared listener already serves every profile this way, a **secondary profile
 must not enable a port-binding platform itself** — doing so is a config error
-and the gateway refuses to start, naming the profile and platform:
+that skips the entire secondary profile while the default and other healthy
+profiles continue. The warning names the skipped profile and every conflicting
+platform:
 
 ```
-Profile 'coder' enables the port-binding platform 'webhook', but
-gateway.multiplex_profiles is on. ... Remove platforms.webhook from profile
-'coder's config.yaml (configure it only on the default profile).
+Skipping secondary profile 'coder' due to port-binding config error: Profile
+'coder' enables port-binding platform(s) webhook, but gateway.multiplex_profiles
+is on. ... Remove these platform entries from profile 'coder's config.yaml or
+configure them only on the default profile.
 ```
 
 Port-binding platforms covered by this rule: `webhook`, `api_server`,
-`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`. Configure
-any of these **only on the default profile**; every profile is reachable through
-its `/p/<profile>/` prefix.
+`msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
+`whatsapp_cloud`, `line`. Configure any of these **only on the default profile**;
+every profile is reachable through its `/p/<profile>/` prefix.
+
+Authentication follows the profile named in the URL. Unprefixed endpoints keep
+using the default listener's existing credentials.
+
+- `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
+  `~/.hermes/profiles/coder/.env`; the default listener key is rejected.
+- A webhook route that targets `coder` must declare `profile: coder` beside
+  its existing route-specific `secret` in the default profile's
+  `config.yaml`. That secret is then accepted only at
+  `/p/coder/webhooks/<route>` and is rejected on every other profile prefix.
+- Webhook routes without `profile` remain default-profile routes and are not
+  reachable through a named profile prefix.
+
+Keep port-binding platforms disabled in secondary profile configs. The shared
+listener and its route definitions stay on the default profile; profile
+binding controls which profile each authenticated webhook route may execute.
+Named API requests fail closed when the target profile has no
+`API_SERVER_KEY`.
+
+Only this shared-listener conflict degrades to a skipped profile. Security
+configuration errors remain fatal: for example, an `open` own-policy platform
+without `GATEWAY_ALLOW_ALL_USERS` or its platform-specific allow-all opt-in
+still aborts gateway startup rather than silently dropping the unsafe profile.
 
 #### 3. Per-credential platforms still need their own token per profile
 
@@ -188,6 +214,50 @@ into a shared environment (this also means subprocesses like MCP servers and
 Kanban workers only ever see their own profile's secrets). Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
+
+### Routing shared-bot chats to profiles (`profile_routes`)
+
+Multiplexing selects a profile per **credential** (each profile's own bot
+token) or per **URL prefix** (`/p/<profile>/` for HTTP platforms). When several
+communities share **one** bot token — for example one Discord bot serving many
+guilds — you can additionally route specific guilds/channels/threads to
+different profiles with `gateway.profile_routes`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  profile_routes:
+    # An entire Discord server → one profile
+    - name: acme-server
+      platform: discord
+      guild_id: "1234567890"
+      profile: acme
+
+    # One channel in that server → a different profile
+    - name: acme-support
+      platform: discord
+      guild_id: "1234567890"
+      chat_id: "9876543210"
+      profile: acme-support
+
+    # A Telegram group (no guild concept — chat_id only)
+    - name: tg-group
+      platform: telegram
+      chat_id: "-1001234567890"
+      profile: tg-profile
+```
+
+Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
+all declared fields must hold (AND), and a route keyed on a channel also
+matches threads/forum posts whose parent is that channel. Messages that match
+no route stay on the default/active profile. The routed profile gets the full
+per-profile isolation described above (config, skills, memory, credentials,
+session namespace). Routing works on every platform adapter, not just Discord.
+
+`profile_routes` requires `gateway.multiplex_profiles: true`; with
+multiplexing off the routes are ignored. If a route names a profile that does
+not exist on disk, the gateway logs a warning naming the profile and source and
+falls back to the default home.
 
 ## Start, stop, or restart all gateways at once
 

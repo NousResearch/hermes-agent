@@ -356,6 +356,42 @@ def get_curated_nous_models() -> list[str] | None:
     return out or None
 
 
+def _default_model_from_block(block: dict[str, Any] | None) -> str | None:
+    """Return the id of the model entry labeled ``"default": true``, or None."""
+    if not isinstance(block, dict):
+        return None
+    for m in block.get("models", []):
+        if isinstance(m, dict) and m.get("default"):
+            mid = str(m.get("id") or "").strip()
+            if mid:
+                return mid
+    return None
+
+
+def get_default_model_from_cache(provider: str) -> str | None:
+    """Return the catalog's labeled default model for ``provider`` — cache only.
+
+    The manifest marks exactly one model entry per provider with
+    ``"default": true``; that entry is the model Hermes silently lands on when
+    the user never picked one. This accessor reads ONLY the in-process copy or
+    the disk cache — it NEVER triggers a network fetch, so it is safe on hot
+    resolution paths (agent build, gateway session setup) that must stay
+    network-free. The cache is kept fresh by the picker/`hermes update` paths;
+    when no cached manifest exists (fresh install, offline), returns None and
+    the caller falls back to the in-repo constant.
+    """
+    if _catalog_cache is not None:
+        block = _catalog_cache.get("providers", {}).get(provider)
+        found = _default_model_from_block(block)
+        if found:
+            return found
+    disk_data, _mtime = _read_disk_cache()
+    if disk_data is not None:
+        block = disk_data.get("providers", {}).get(provider)
+        return _default_model_from_block(block)
+    return None
+
+
 def seed_cache_from_checkout(project_root: "Path | str") -> bool:
     """Overwrite the disk cache with the catalog shipped in a local checkout.
 

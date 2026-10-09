@@ -17,24 +17,15 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+// Level classification is unit-tested in @/lib/log-classify; it prefers the
+// structured level token and falls back to word-boundary matching so payload
+// text like "parse_errors=0" can't render an INFO line red.
+import { classifyLine } from "@/lib/log-classify";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
-
-function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
-  const upper = line.toUpperCase();
-  if (
-    upper.includes("ERROR") ||
-    upper.includes("CRITICAL") ||
-    upper.includes("FATAL")
-  )
-    return "error";
-  if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
-  if (upper.includes("DEBUG")) return "debug";
-  return "info";
-}
 
 const LINE_COLORS: Record<string, string> = {
   error: "text-destructive",

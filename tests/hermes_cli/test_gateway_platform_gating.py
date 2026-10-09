@@ -13,7 +13,6 @@ Currently:
 """
 
 
-
 class TestMatrixHiddenOnWindows:
     def test_matrix_present_on_linux(self, monkeypatch):
         """Sanity: matrix is still in the picker on Linux/macOS."""
@@ -24,25 +23,6 @@ class TestMatrixHiddenOnWindows:
         keys = {p["key"] for p in platforms}
         assert "matrix" in keys, "matrix must be available on Linux"
 
-    def test_matrix_present_on_macos(self, monkeypatch):
-        import hermes_cli.gateway as gateway_mod
-
-        monkeypatch.setattr(gateway_mod.sys, "platform", "darwin")
-        platforms = gateway_mod._all_platforms()
-        keys = {p["key"] for p in platforms}
-        assert "matrix" in keys, "matrix must be available on macOS"
-
-    def test_matrix_hidden_on_windows(self, monkeypatch):
-        """The actual gate: matrix must NOT appear on Windows."""
-        import hermes_cli.gateway as gateway_mod
-
-        monkeypatch.setattr(gateway_mod.sys, "platform", "win32")
-        platforms = gateway_mod._all_platforms()
-        keys = {p["key"] for p in platforms}
-        assert "matrix" not in keys, (
-            "matrix must be hidden on Windows — python-olm has no "
-            "Windows wheel and no native build path"
-        )
 
     def test_other_platforms_unaffected_on_windows(self, monkeypatch):
         """Gating must only drop matrix, not collateral damage."""

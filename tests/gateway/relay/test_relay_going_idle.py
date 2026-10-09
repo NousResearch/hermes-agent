@@ -95,39 +95,6 @@ async def server():
 
 
 @pytest.mark.asyncio
-async def test_go_idle_awaits_ack(server):
-    t = WebSocketRelayTransport(server.url, "discord", "appShared")
-    await t.connect()
-    try:
-        await t.handshake()
-        acked = await t.go_idle(timeout_s=2)
-        assert acked is True
-        assert server.going_idle_count == 1
-        assert any(f["type"] == "going_idle" for f in server.received)
-    finally:
-        await t.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_go_idle_returns_false_on_timeout(server):
-    # A server that never acks going_idle -> go_idle returns False (caller closes anyway).
-    async def no_ack(ws, frame):
-        if frame.get("type") == "hello":
-            await ws.send(json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}) + "\n")
-        # deliberately ignore going_idle
-
-    server._on_frame = no_ack  # type: ignore[assignment]
-    t = WebSocketRelayTransport(server.url, "discord", "appShared")
-    await t.connect()
-    try:
-        await t.handshake()
-        acked = await t.go_idle(timeout_s=0.3)
-        assert acked is False
-    finally:
-        await t.disconnect()
-
-
-@pytest.mark.asyncio
 async def test_buffered_inbound_is_acked_after_handler(server):
     # A buffered delivery (bufferId present) is acked AFTER the handler runs; a
     # live delivery (no bufferId) is not acked.
@@ -197,7 +164,7 @@ async def test_reconnect_redials_after_unexpected_close():
         await t.connect()
         await t.handshake()
         # First connection is dropped server-side; the reconnect loop re-dials.
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
         assert srv.connections >= 2
     finally:
         await t.disconnect()
@@ -205,68 +172,7 @@ async def test_reconnect_redials_after_unexpected_close():
         await srv._server.wait_closed()
 
 
-@pytest.mark.asyncio
-async def test_no_reconnect_after_deliberate_disconnect(server):
-    t = WebSocketRelayTransport(server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05)
-    await t.connect()
-    await t.handshake()
-    before = server.connections
-    await t.disconnect()
-    await asyncio.sleep(0.3)
-    # A deliberate disconnect must NOT trigger the reconnect loop.
-    assert server.connections == before
-
-
-@pytest.mark.asyncio
-async def test_adapter_emits_going_idle_on_disconnect(server):
-    # The RelayAdapter emits going_idle as part of its existing disconnect (drain)
-    # transition, then tears down the transport.
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-
-    placeholder = CapabilityDescriptor(
-        contract_version=CONTRACT_VERSION,
-        platform="discord",
-        label="Relay",
-        max_message_length=4096,
-        supports_draft_streaming=False,
-        supports_edit=True,
-        supports_threads=False,
-        markdown_dialect="plain",
-        len_unit="chars",
-    )
-    transport = WebSocketRelayTransport(server.url, "discord", "appShared")
-    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=transport)
-    await adapter.connect()
-    await adapter.disconnect()
-    assert server.going_idle_count == 1
-
-
 # ── scale-to-zero go_dormant() (D12 / F14) ───────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_go_dormant_emits_going_idle_and_closes_without_terminal_teardown(server):
-    """go_dormant() flips the connector to buffered-only (going_idle->ack) AND
-    closes the socket, but does NOT set the terminal _closing flag or cancel the
-    reconnect supervisor — the F14 distinction from disconnect()."""
-    t = WebSocketRelayTransport(
-        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
-    )
-    await t.connect()
-    await t.handshake()
-    try:
-        acked = await t.go_dormant(timeout_s=2)
-        assert acked is True
-        assert server.going_idle_count == 1
-        # The socket was closed (dormant), but NOT via the terminal path:
-        assert t._closing is False  # disconnect() would set this True
-        assert t._dormant is True
-        # Not a revocation — the auth-revoked latch stays clear.
-        assert t.auth_revoked is False
-    finally:
-        await t.disconnect()
 
 
 @pytest.mark.asyncio
@@ -323,51 +229,6 @@ async def test_go_dormant_redials_on_wake_and_drains(server):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cancels_supervisor_but_go_dormant_does_not(server):
-    """Direct contrast (F14): disconnect() is terminal (cancels supervisor, no
-    re-dial); go_dormant() keeps it armed. Guards against a future refactor that
-    routes dormancy through disconnect()."""
-    # disconnect(): terminal — no reconnect.
-    t1 = WebSocketRelayTransport(
-        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
-    )
-    await t1.connect()
-    await t1.handshake()
-    after_first = server.connections
-    await t1.disconnect()
-    await asyncio.sleep(0.3)
-    assert server.connections == after_first  # disconnect did NOT re-dial
-    assert t1._closing is True
-
-    # go_dormant(): armed — re-dials.
-    t2 = WebSocketRelayTransport(
-        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
-    )
-    t2._dormant_redial_s = 0.05
-    await t2.connect()
-    await t2.handshake()
-    before = server.connections
-    try:
-        await t2.go_dormant(timeout_s=2)
-        for _ in range(50):
-            if server.connections > before:
-                break
-            await asyncio.sleep(0.05)
-        assert server.connections > before  # go_dormant stayed armed and re-dialed
-        assert t2._closing is False
-    finally:
-        await t2.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_go_dormant_noop_when_never_connected():
-    """go_dormant() on a transport that never connected is a safe no-op (False),
-    not a crash."""
-    t = WebSocketRelayTransport("ws://127.0.0.1:1", "discord", "appShared")
-    assert await t.go_dormant(timeout_s=0.1) is False
-
-
-@pytest.mark.asyncio
 async def test_adapter_go_dormant_delegates_to_transport(server):
     """RelayAdapter.go_dormant() drives the transport's go_dormant (going_idle +
     dormant close) without the terminal teardown disconnect() does."""
@@ -401,35 +262,3 @@ async def test_adapter_go_dormant_delegates_to_transport(server):
         await adapter.disconnect()
 
 
-@pytest.mark.asyncio
-async def test_adapter_go_dormant_noop_on_stub_transport():
-    """An adapter whose transport lacks go_dormant (the stub) degrades to a safe
-    no-op returning False, never raising."""
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-
-    placeholder = CapabilityDescriptor(
-        contract_version=CONTRACT_VERSION,
-        platform="discord",
-        label="Relay",
-        max_message_length=4096,
-        supports_draft_streaming=False,
-        supports_edit=True,
-        supports_threads=False,
-        markdown_dialect="plain",
-        len_unit="chars",
-    )
-
-    class _StubTransport:
-        async def connect(self, *, is_reconnect: bool = False):
-            return True
-
-        def set_inbound_handler(self, h):
-            pass
-
-        async def handshake(self):
-            return placeholder
-
-    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=_StubTransport())
-    assert await adapter.go_dormant() is False

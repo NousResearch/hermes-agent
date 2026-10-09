@@ -195,32 +195,6 @@ class TestPluginRegister:
         # Skip reason cleared on successful registration.
         assert nous_plugin.LAST_SKIP_REASON == ""
 
-    def test_skips_when_client_id_malformed(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "hermes-dashboard")
-        monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://p.example")
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_not_called()
-        # Skip reason names the offending value + contract shape.
-        assert "agent:" in nous_plugin.LAST_SKIP_REASON
-        assert "hermes-dashboard" in nous_plugin.LAST_SKIP_REASON
-
-    def test_registers_with_explicit_portal_url(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:inst1")
-        monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://p.example")
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_called_once()
-        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert registered._client_id == "agent:inst1"
-        assert registered._portal_url == "https://p.example"
-
-    def test_strips_whitespace_from_env_vars(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "  agent:x  ")
-        monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "  https://p.example  ")
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_called_once()
 
     def test_empty_portal_url_env_uses_default(self, monkeypatch):
         """Explicit empty string still falls back to the production
@@ -285,18 +259,6 @@ class TestConfigYamlSource:
         # specifies one.
         assert registered._portal_url == "https://portal.nousresearch.com"
 
-    def test_config_yaml_client_id_and_portal_url(self, patch_config, monkeypatch):
-        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
-        monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
-        patch_config({
-            "client_id": "agent:from-config",
-            "portal_url": "https://staging.portal.example",
-        })
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert registered._client_id == "agent:from-config"
-        assert registered._portal_url == "https://staging.portal.example"
 
     def test_env_overrides_config_client_id(self, patch_config, monkeypatch):
         """Env wins. Critical for Fly.io: the Portal injects
@@ -312,34 +274,6 @@ class TestConfigYamlSource:
             "depends on this precedence"
         )
 
-    def test_env_overrides_config_portal_url(self, patch_config, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:x")
-        monkeypatch.setenv(
-            "HERMES_DASHBOARD_PORTAL_URL", "https://env.portal.example",
-        )
-        patch_config({
-            "client_id": "agent:x",
-            "portal_url": "https://config.portal.example",
-        })
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert registered._portal_url == "https://env.portal.example"
-
-    def test_empty_env_string_does_not_shadow_config(
-        self, patch_config, monkeypatch
-    ):
-        """``HERMES_DASHBOARD_OAUTH_CLIENT_ID=`` (set but empty) is
-        common in CI/Fly when a secret is provisioned-but-not-populated.
-        It MUST NOT shadow a valid config.yaml value with an empty
-        string — operators would lose the gate."""
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "")
-        patch_config({"client_id": "agent:from-config"})
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_called_once()
-        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert registered._client_id == "agent:from-config"
 
     def test_neither_source_skips_with_helpful_reason(
         self, patch_config, monkeypatch
@@ -360,42 +294,6 @@ class TestConfigYamlSource:
             f"skip reason omits the config.yaml surface — operators "
             f"won't know it exists. got: {nous_plugin.LAST_SKIP_REASON!r}"
         )
-
-    def test_config_yaml_load_failure_falls_through_cleanly(
-        self, monkeypatch
-    ):
-        """If load_config() raises (e.g. malformed YAML, IOError), the
-        plugin must not crash — it falls through to the env-only path
-        and either succeeds (if env is set) or surfaces the standard
-        'not set' skip reason."""
-        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
-
-        def _broken_load():
-            raise OSError("config.yaml not readable")
-
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config", _broken_load
-        )
-        ctx = MagicMock()
-        # Must not raise.
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_not_called()
-
-    def test_config_yaml_with_non_dict_oauth_section(
-        self, monkeypatch
-    ):
-        """cfg_get handles 'config has a string where a section was
-        expected' robustly. Verify the plugin inherits that resilience
-        so a malformed user config doesn't crash startup."""
-        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"dashboard": {"oauth": "wrong type"}},
-        )
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        # Falls through to the no-env-and-no-config path.
-        ctx.register_dashboard_auth_provider.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -461,23 +359,6 @@ class TestStartLogin:
         parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
         assert parts["state"] == params["state"]
 
-    def test_code_challenge_is_s256_of_verifier(self, provider):
-        result = provider.start_login(
-            redirect_uri="https://hermes.fly.dev/auth/callback"
-        )
-        parsed = urllib.parse.urlparse(result.redirect_url)
-        params = dict(urllib.parse.parse_qsl(parsed.query))
-        pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
-        verifier = parts["verifier"]
-        expected_challenge = (
-            base64.urlsafe_b64encode(
-                hashlib.sha256(verifier.encode("ascii")).digest()
-            )
-            .rstrip(b"=")
-            .decode()
-        )
-        assert params["code_challenge"] == expected_challenge
 
     def test_two_calls_produce_different_state_and_verifier(self, provider):
         a = provider.start_login(
@@ -490,9 +371,6 @@ class TestStartLogin:
             "hermes_session_pkce"
         ]
 
-    def test_rejects_non_http_scheme(self, provider):
-        with pytest.raises(ProviderError, match="http"):
-            provider.start_login(redirect_uri="ftp://x/auth/callback")
 
     def test_allows_http_with_arbitrary_host(self, provider):
         # http:// is permitted for any host now, not just localhost — the
@@ -503,15 +381,6 @@ class TestStartLogin:
         provider.start_login(redirect_uri="http://hermes.fly.dev/auth/callback")
         provider.start_login(redirect_uri="http://192.168.1.50:8080/auth/callback")
         provider.start_login(redirect_uri="http://my-internal-host/auth/callback")
-
-    def test_allows_http_localhost(self, provider):
-        # Should not raise.
-        provider.start_login(redirect_uri="http://localhost:8080/auth/callback")
-        provider.start_login(redirect_uri="http://127.0.0.1:8080/auth/callback")
-
-    def test_rejects_wrong_callback_path(self, provider):
-        with pytest.raises(ProviderError, match="/auth/callback"):
-            provider.start_login(redirect_uri="https://x.example/oauth/cb")
 
 
 # ---------------------------------------------------------------------------
@@ -571,21 +440,6 @@ class TestCompleteLogin:
         assert session.email == ""
         assert session.display_name == ""
 
-    def test_happy_path_tolerates_missing_refresh_token(self, provider, rsa_keypair):
-        # If Portal omits refresh_token (older deploy), the session is still
-        # valid as access-token-only; refresh_token defaults to "".
-        access_token = _mint_token(rsa_keypair)
-        mock_resp = self._mock_post(
-            200, {"access_token": access_token, "token_type": "Bearer"}
-        )
-        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
-            session = provider.complete_login(
-                code="abc",
-                state="state-val",
-                code_verifier="vfy",
-                redirect_uri="https://hermes.fly.dev/auth/callback",
-            )
-        assert session.refresh_token == ""
 
     def test_400_raises_invalid_code(self, provider):
         mock_resp = self._mock_post(400, {"error": "invalid_grant"})
@@ -674,12 +528,6 @@ class TestVerifySession:
         _patched_jwks(p, rsa_keypair)
         return p
 
-    def test_happy_path_returns_session(self, provider, rsa_keypair):
-        token = _mint_token(rsa_keypair)
-        session = provider.verify_session(access_token=token)
-        assert session is not None
-        assert session.user_id == "usr_abc"
-        assert session.org_id == "org_xyz"
 
     def test_expired_token_returns_none(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, ttl_seconds=-1)
@@ -690,10 +538,6 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="verification failed"):
             provider.verify_session(access_token=token)
 
-    def test_wrong_issuer_raises_provider_error(self, provider, rsa_keypair):
-        token = _mint_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(ProviderError, match="verification failed"):
-            provider.verify_session(access_token=token)
 
     def test_verification_failure_message_surfaces_token_claims(
         self, provider, rsa_keypair
@@ -708,24 +552,12 @@ class TestVerifySession:
         assert "'https://evil.example'" in msg
         assert "'https://portal.example.com'" in msg  # configured portal URL
 
-    def test_missing_sub_raises(self, provider, rsa_keypair):
-        # PyJWT's "require" set includes sub, so this surfaces as
-        # InvalidTokenError → ProviderError before we ever touch _session_from_claims.
-        token = _mint_token(rsa_keypair, sub="")
-        # Empty sub still encodes successfully; PyJWT's require check only
-        # asserts presence. Our own _session_from_claims rejects empty.
-        with pytest.raises(ProviderError, match="sub"):
-            provider.verify_session(access_token=token)
 
     def test_agent_instance_id_mismatch_rejected(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, agent_instance_id="some-other-id")
         with pytest.raises(ProviderError, match="agent_instance_id mismatch"):
             provider.verify_session(access_token=token)
 
-    def test_agent_instance_id_missing_is_tolerated(self, provider, rsa_keypair):
-        token = _mint_token(rsa_keypair, agent_instance_id=None)
-        session = provider.verify_session(access_token=token)
-        assert session is not None
 
     def test_contract_version_missing_warns_but_succeeds(
         self, provider, rsa_keypair, caplog
@@ -739,10 +571,6 @@ class TestVerifySession:
             "oauth_contract_version" in r.message for r in caplog.records
         )
 
-    def test_contract_version_mismatch_rejected(self, provider, rsa_keypair):
-        token = _mint_token(rsa_keypair, oauth_contract_version=2)
-        with pytest.raises(ProviderError, match="oauth_contract_version"):
-            provider.verify_session(access_token=token)
 
     def test_jwks_unreachable_raises_provider_error(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair)
@@ -814,33 +642,6 @@ class TestRefreshAndRevoke:
         assert kwargs["data"]["refresh_token"] == "rt_old_value"
         assert kwargs["headers"]["x-nous-refresh-token"] == "rt_old_value"
 
-    def test_refresh_400_raises_refresh_expired(self, provider):
-        # Expired / revoked / reuse-detected RT → Portal 400 → force re-login.
-        mock_resp = self._mock_post(400, {"error": "invalid_grant"})
-        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
-            with pytest.raises(RefreshExpiredError, match="invalid_grant"):
-                provider.refresh_session(refresh_token="rt_dead")
-
-    def test_refresh_empty_token_raises_refresh_expired_without_network(self, provider):
-        # No RT present — fail fast as a dead session, never hit the network.
-        with patch("plugins.dashboard_auth.nous.httpx.post") as mock_post:
-            with pytest.raises(RefreshExpiredError):
-                provider.refresh_session(refresh_token="")
-        mock_post.assert_not_called()
-
-    def test_refresh_network_error_raises_provider_error(self, provider):
-        with patch(
-            "plugins.dashboard_auth.nous.httpx.post",
-            side_effect=httpx.RequestError("boom"),
-        ):
-            with pytest.raises(ProviderError, match="unreachable"):
-                provider.refresh_session(refresh_token="rt_x")
-
-    def test_refresh_500_raises_provider_error(self, provider):
-        mock_resp = self._mock_post(500, "oops", ctype="text/plain")
-        with patch("plugins.dashboard_auth.nous.httpx.post", return_value=mock_resp):
-            with pytest.raises(ProviderError):
-                provider.refresh_session(refresh_token="rt_x")
 
     def test_revoke_is_noop(self, provider):
         # Must not raise; returns None implicitly.

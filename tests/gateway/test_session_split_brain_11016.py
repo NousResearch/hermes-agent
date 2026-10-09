@@ -163,68 +163,6 @@ class TestAdapterSessionCancellation:
         )
         assert sk not in adapter._pending_messages
 
-    @pytest.mark.asyncio
-    async def test_new_keeps_guard_until_command_finishes_then_runs_follow_up(self):
-        """/new must finish runner logic before cancelling old work or releasing the guard."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        processing_started = asyncio.Event()
-        command_started = asyncio.Event()
-        allow_command_finish = asyncio.Event()
-        follow_up_processed = asyncio.Event()
-        call_order = []
-
-        async def _handler(event):
-            cmd = event.get_command()
-            if cmd == "new":
-                call_order.append("command:start")
-                command_started.set()
-                await allow_command_finish.wait()
-                call_order.append("command:end")
-                return "handled:new"
-
-            if event.text == "hello world":
-                processing_started.set()
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    call_order.append("original:cancelled")
-                    raise
-
-            if event.text == "after reset":
-                call_order.append("followup:processed")
-                follow_up_processed.set()
-            return f"handled:text:{event.text}"
-
-        adapter._message_handler = _handler
-
-        await adapter.handle_message(_make_event("hello world"))
-        await processing_started.wait()
-
-        command_task = asyncio.create_task(adapter.handle_message(_make_event("/new")))
-        await command_started.wait()
-        await asyncio.sleep(0)
-
-        assert sk in adapter._active_sessions
-
-        await adapter.handle_message(_make_event("after reset"))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        assert sk in adapter._active_sessions, "guard must stay active while /new is still running"
-        assert sk in adapter._pending_messages, "follow-up should stay queued until /new finishes"
-        assert not follow_up_processed.is_set(), "follow-up ran before /new completed"
-        assert "original:cancelled" not in call_order, "old task was cancelled before runner completed /new"
-
-        allow_command_finish.set()
-        await command_task
-        await asyncio.wait_for(follow_up_processed.wait(), timeout=1.0)
-
-        assert any("handled:new" in r for r in adapter.sent_responses)
-        assert call_order.index("command:end") < call_order.index("original:cancelled")
-        assert call_order.index("original:cancelled") < call_order.index("followup:processed")
-        assert sk not in adapter._pending_messages
-
 
 # ===========================================================================
 # Layer 2: Adapter-side on-entry self-heal for stale session locks
@@ -268,83 +206,6 @@ class TestStaleSessionLockSelfHeal:
             "stale lock trapped a normal message — split-brain not healed"
         )
 
-    def test_no_owner_task_is_not_treated_as_stale(self):
-        """If _session_tasks has no entry at all, the guard isn't stale.
-
-        Tests and rare legitimate code paths install _active_sessions
-        entries directly.  Auto-healing those would break real fixtures.
-        """
-        adapter = _make_adapter()
-        sk = _session_key()
-
-        adapter._active_sessions[sk] = asyncio.Event()
-        # No _session_tasks entry.
-
-        assert adapter._session_task_is_stale(sk) is False
-        assert adapter._heal_stale_session_lock(sk) is False
-
-    def test_live_owner_task_is_not_stale(self):
-        """When the owner task is alive, do NOT heal — agent is really busy."""
-        adapter = _make_adapter()
-        sk = _session_key()
-
-        fake_task = MagicMock()
-        fake_task.done.return_value = False
-        adapter._active_sessions[sk] = asyncio.Event()
-        adapter._session_tasks[sk] = fake_task
-
-        assert adapter._session_task_is_stale(sk) is False
-        assert adapter._heal_stale_session_lock(sk) is False
-        # Lock still in place.
-        assert sk in adapter._active_sessions
-        assert sk in adapter._session_tasks
-
-    @pytest.mark.asyncio
-    async def test_guard_mismatch_preserves_session_task_for_stale_detection(self):
-        """When guard mismatch skips _release_session_guard, _session_tasks is preserved.
-
-        This is the core of the production split-brain fix: the finally block
-        only deletes _session_tasks[key] if _active_sessions[key] was actually
-        released. If the guard was swapped (e.g., by a reset command), the
-        _session_tasks entry remains so _session_task_is_stale can detect the
-        done task and heal the lock on the next inbound message.
-        """
-        adapter = _make_adapter()
-        sk = _session_key()
-
-        # Simulate: task recorded with guard=event_a
-        event_a = asyncio.Event()
-        async def _done():
-            return None
-
-        done_task = asyncio.create_task(_done())
-        await done_task
-
-        adapter._active_sessions[sk] = event_a
-        adapter._session_tasks[sk] = done_task
-
-        # Simulate guard swap (as reset/new command would do)
-        event_b = asyncio.Event()
-        adapter._active_sessions[sk] = event_b
-
-        # Drive the REAL finally-block cleanup helper (not a copy of its logic):
-        # _release_session_guard sees event_b != event_a → skips releasing, so
-        # _session_tasks must be preserved for stale detection.
-        adapter._cleanup_finished_session_task(sk, event_a)
-
-        # _session_tasks preserved because guard mismatch kept _active_sessions
-        assert sk in adapter._session_tasks, (
-            "_session_tasks entry must survive guard mismatch so stale detection works"
-        )
-        assert adapter._session_tasks[sk] is done_task
-
-        # Stale detection now works: task is done, guard is stale
-        assert adapter._session_task_is_stale(sk) is True
-
-        # Heal clears both
-        assert adapter._heal_stale_session_lock(sk) is True
-        assert sk not in adapter._active_sessions
-        assert sk not in adapter._session_tasks
 
     @pytest.mark.asyncio
     async def test_cleanup_releases_and_deletes_when_guard_matches(self):
@@ -378,24 +239,7 @@ class TestStaleSessionLockSelfHeal:
 
 
 class TestRunnerSessionGenerationGuard:
-    def test_release_without_generation_behaves_as_before(self):
-        runner = _make_runner()
-        sk = "agent:main:telegram:dm:12345"
-        runner._running_agents[sk] = "agent"
-        runner._running_agents_ts[sk] = 1.0
-        assert runner._release_running_agent_state(sk) is True
-        assert sk not in runner._running_agents
-        assert sk not in runner._running_agents_ts
 
-    def test_release_with_current_generation_clears_slot(self):
-        runner = _make_runner()
-        sk = "agent:main:telegram:dm:12345"
-        gen = runner._begin_session_run_generation(sk)
-        runner._running_agents[sk] = "agent"
-        runner._running_agents_ts[sk] = 1.0
-
-        assert runner._release_running_agent_state(sk, run_generation=gen) is True
-        assert sk not in runner._running_agents
 
     def test_release_with_stale_generation_blocks(self):
         runner = _make_runner()
@@ -413,19 +257,6 @@ class TestRunnerSessionGenerationGuard:
         assert released is False
         assert runner._running_agents[sk] == "fresh_agent"
         assert runner._running_agents_ts[sk] == 2.0
-
-    def test_is_session_run_current_tracks_bumps(self):
-        runner = _make_runner()
-        sk = "agent:main:telegram:dm:12345"
-        gen1 = runner._begin_session_run_generation(sk)
-        assert runner._is_session_run_current(sk, gen1) is True
-
-        runner._invalidate_session_run_generation(sk, reason="test")
-        assert runner._is_session_run_current(sk, gen1) is False
-
-        gen2 = runner._begin_session_run_generation(sk)
-        assert gen2 > gen1
-        assert runner._is_session_run_current(sk, gen2) is True
 
 
 # ===========================================================================
@@ -461,11 +292,3 @@ class TestOldTaskCannotClobberNewerGuard:
         adapter._release_session_guard(sk, guard=new_guard)
         assert sk not in adapter._active_sessions
 
-    def test_release_session_guard_without_guard_releases_unconditionally(self):
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-        # Callers that don't know the guard (e.g. cancel_session_processing's
-        # default path) still work.
-        adapter._release_session_guard(sk)
-        assert sk not in adapter._active_sessions

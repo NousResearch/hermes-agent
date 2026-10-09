@@ -143,7 +143,14 @@ class PtyBridge:
         # simple terminal probes like `tput cols` fail before winsize reads.
         # Preserve explicit caller overrides, but backfill a sensible default
         # when TERM is missing or blank.
-        spawn_env = (os.environ.copy() if env is None else env.copy())
+        # env=None fallback: callers own env policy (process_registry already
+        # sanitizes). Build via the factory with exact preservation so the
+        # site stays findable without changing inherited content.
+        from tools.environments.local import build_subprocess_env
+        spawn_env = (
+            build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+            if env is None else env.copy()
+        )
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]

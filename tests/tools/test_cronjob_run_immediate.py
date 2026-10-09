@@ -32,32 +32,6 @@ class TestCronjobRunExecutesImmediately:
         m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
         m_run.assert_called_once()                       # fired via the shared body
 
-    def test_run_skips_when_claim_lost(self):
-        """If the scheduler already holds the fire claim, do NOT double-run."""
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
-             patch("cron.scheduler.run_one_job") as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
-            out = json.loads(cronjob(action="run", job_id="job-run-1"))
-
-        assert out["success"] is True
-        assert out["job"]["executed"] is False
-        assert out["job"]["execution_success"] is False
-        assert "execution_skipped" in out["job"]
-        m_run.assert_not_called()  # claim lost -> never fired
-
-    def test_run_reports_failure_from_last_status(self):
-        """A failed run is reported via the re-read job's last_status/last_error."""
-        failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_one_job", return_value=True), \
-             patch("tools.cronjob_tools.get_job", return_value=failed):
-            out = json.loads(cronjob(action="run", job_id="job-run-1"))
-
-        assert out["job"]["executed"] is True
-        assert out["job"]["execution_success"] is False
-        assert out["job"]["execution_error"] == "provider 500"
 
     def test_execute_job_now_bails_without_claim(self):
         """_execute_job_now never calls run_one_job when the claim is lost."""

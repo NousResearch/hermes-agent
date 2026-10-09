@@ -17,7 +17,7 @@ Contract (presence-based, mirroring ``.restart_notify.json``):
 
   * begin-drain  → write ``{HERMES_HOME}/.drain_request.json`` with
     ``{"action": "drain", "requested_at": <iso>, "principal": <str>,
-    "epoch": <instantiation-epoch>}``.
+    "epoch": <instantiation-epoch>, "suppress_notification": <bool>}``.
   * cancel-drain → remove the marker.
   * The gateway watcher treats **presence of a marker stamped with the current
     instantiation epoch** as "external drain active": flip
@@ -133,7 +133,10 @@ def drain_request_path(home: Optional[Path] = None) -> Path:
 
 
 def write_drain_request(
-    *, principal: str = "drain-control", home: Optional[Path] = None
+    *,
+    principal: str = "drain-control",
+    suppress_notification: bool = False,
+    home: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Write the begin-drain marker. Returns the payload written.
 
@@ -144,12 +147,24 @@ def write_drain_request(
     Stamps the marker with :func:`current_instantiation_epoch` so a marker that
     later survives a machine restart on the durable HERMES_HOME volume can be
     recognised as stale and ignored (NS-570).
+
+    ``suppress_notification`` is a generic "be quiet on the shutdown that ends
+    this drain" flag. When the drain culminates in a process exit (e.g. NAS
+    recreates the machine for an auto-update image migration), the gateway's
+    shutdown path reads it via :func:`drain_notification_suppressed` and skips
+    the *home-channel* "gateway shutting down" broadcast — the operator-flavoured
+    ping that would otherwise fire on every routine auto-update, potentially
+    dozens of times a day. It NEVER suppresses the per-active-session interrupt
+    ping. The gateway stays agnostic about *why* the drain is quiet; the policy
+    of which drain causes set the flag lives entirely in the caller (NAS). The
+    field defaults False so legacy/operator drains behave exactly as before.
     """
     payload = {
         "action": "drain",
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "principal": principal,
         "epoch": current_instantiation_epoch(),
+        "suppress_notification": bool(suppress_notification),
     }
     atomic_json_write(drain_request_path(home), payload)
     return payload
@@ -209,6 +224,31 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     if _marker_epoch_is_stale(body):
         return False
     return True
+
+
+def drain_notification_suppressed(*, home: Optional[Path] = None) -> bool:
+    """True iff an ACTIVE drain marker asks to suppress the shutdown broadcast.
+
+    "Active" means exactly what :func:`drain_requested` means — a marker present
+    AND stamped with the current instantiation epoch. A stale (other-epoch)
+    marker that survived a machine restart on the durable HERMES_HOME volume is
+    ignored here just as it is for drain state (NS-570): we must never let an
+    orphaned marker's flag silence a *fresh* gateway's legitimate shutdown
+    broadcast.
+
+    Only honours the flag when it is explicitly truthy in the marker body. A
+    legacy marker without the field, a corrupt/contentless ``{}`` body, or an
+    absent marker all read as "not suppressed" (False) — fail toward the louder,
+    more-visible behaviour, consistent with :func:`read_drain_request`'s
+    never-raise contract. The gateway's shutdown path uses this to skip ONLY the
+    home-channel broadcast; the per-active-session interrupt ping is unaffected.
+    """
+    body = read_drain_request(home=home)
+    if body is None:
+        return False
+    if _marker_epoch_is_stale(body):
+        return False
+    return bool(body.get("suppress_notification"))
 
 
 def read_drain_request(*, home: Optional[Path] = None) -> Optional[dict[str, Any]]:

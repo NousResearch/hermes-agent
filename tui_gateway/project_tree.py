@@ -12,6 +12,7 @@ all key off these exact strings:
 
   - explicit project id .......... ``p_<hex>`` (from projects.db)
   - auto/discovered project id ... the repo root path
+  - home (no-project) bucket ..... ``__no_project__``
   - repo node id ................. the repo root path
   - main branch lane id .......... ``<repoRoot>::branch::<branch>`` (or ``::branch::``)
   - kanban bucket lane id ........ ``<repoRoot>::kanban``
@@ -34,12 +35,32 @@ from typing import Any, Callable, Optional
 # cwd is not in a git repo (or cannot be probed, e.g. a remote backend).
 Resolve = Callable[[str], Optional[dict]]
 
+# A "does this directory still exist?" predicate, injected for the same reason
+# ``Resolve`` is: the builder stays pure and unit-testable. Defaults to assuming
+# everything exists, which preserves the previous behavior for callers that
+# can't stat (remote backends), where guessing "gone" would wrongly hide a
+# project that lives on the other host.
+Exists = Callable[[str], bool]
+
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the `t_…` id kanban_db
 # mints) collapse into one lane; user-named "New worktree" dirs under
 # `.worktrees/` stay as their own lanes.
 _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
+
+# The synthetic bucket holding every session no project claimed — a chat with no
+# cwd at all, or one whose folder can't be promoted (the bare home dir, HERMES
+# state, a workspace that has since been deleted). Without it those sessions are
+# invisible in the grouped view. The desktop labels it "Home"; the id/flag stay
+# named for what the bucket MEANS, since that's what membership keys off.
+NO_PROJECT_ID = "__no_project__"
+NO_PROJECT_LABEL = "Home"
+
+# How many sibling candidates to try when recovering a deleted worktree's parent
+# repo (see ``_probe_sibling_worktree``). Each miss costs a git probe, so keep it
+# tight — real suffixes are one or two segments.
+_MAX_SIBLING_PROBES = 4
 
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
@@ -60,6 +81,42 @@ def _segments(path: str) -> list[str]:
     return [s for s in re.split(r"[/\\]", (path or "").rstrip("/\\")) if s]
 
 
+def _is_windows_path(path: str) -> bool:
+    value = (path or "").strip()
+    # Drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any backslash-rooted path
+    # — the root-relative `\wsl.localhost\…` / `\Users\…` spellings included. A
+    # single leading `/` stays POSIX (case-sensitive).
+    return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\", "//"))
+
+
+def _comparison_segments(path: str) -> list[str]:
+    """Path segments suitable for identity comparisons on any host.
+
+    Windows paths remain case-insensitive even when tests or remote backends run
+    on POSIX. Display paths and emitted IDs keep their original spelling.
+    """
+    segs = _segments(path)
+    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
+
+
+def _path_key(path: str) -> str:
+    """Canonical comparison key (separator/trailing-slash agnostic)."""
+    return "/".join(_comparison_segments(path))
+
+
+def _lane_key(path_or_lane: str) -> str:
+    """Canonicalize only the path portion of a lane id.
+
+    Branch labels remain byte-preserved; repo/worktree paths follow platform path
+    identity so equivalent Windows spellings do not create duplicate lanes.
+    """
+    for marker in ("::branch::", "::kanban"):
+        if marker in path_or_lane:
+            root, suffix = path_or_lane.split(marker, 1)
+            return f"{_path_key(root)}{marker}{suffix}"
+    return _path_key(path_or_lane)
+
+
 def base_name(path: str) -> str:
     segs = _segments(path)
     return segs[-1] if segs else ""
@@ -73,8 +130,8 @@ def kanban_worktree_dir(path: str) -> Optional[str]:
 
 def _is_path_under(folder: str, target: str) -> bool:
     """True when ``target`` equals ``folder`` or is nested under it (segment-wise)."""
-    f = _segments(folder)
-    t = _segments(target)
+    f = _comparison_segments(folder)
+    t = _comparison_segments(target)
     if not f or len(f) > len(t):
         return False
     return all(f[i] == t[i] for i in range(len(f)))
@@ -108,6 +165,44 @@ def _placement(
         "is_main": is_main,
         "is_kanban": is_kanban,
     }
+
+
+def _parent_dir(path: str) -> str:
+    """The containing directory of ``path`` (``""`` once the root is passed)."""
+    stripped = re.sub(r"[/\\]+$", "", path or "")
+    return re.sub(r"[/\\]+$", "", re.sub(r"[^/\\]+$", "", stripped))
+
+
+def _probe_sibling_worktree(cwd: str, resolve: Resolve) -> str:
+    """The parent repo root of a deleted ``<repo>-<suffix>`` worktree, else ``""``.
+
+    A deleted worktree dir can't be probed, so walk back up its name — trimming
+    one ``-<segment>`` at a time — and return the first sibling that resolves.
+
+    The session's cwd is frequently a SUBDIR of the deleted worktree (an agent
+    that ``cd``-ed into ``<repo>-<suffix>/apps/desktop``), whose basename shares
+    nothing with the repo. So the trim is applied to each ANCESTOR, deepest
+    first, not just to the leaf — otherwise the probe silently no-ops and the
+    dead path gets minted as its own top-level project. Probes are bounded in
+    total (each costs a git invocation) and served from the shared probe cache.
+    """
+    probes = 0
+    path = re.sub(r"[/\\]+$", "", cwd or "")
+
+    while path and probes < _MAX_SIBLING_PROBES:
+        parts = base_name(path).split("-")
+
+        for i in range(len(parts) - 1, 0, -1):
+            if probes >= _MAX_SIBLING_PROBES:
+                break
+            probes += 1
+            info = resolve(_with_base_name(path, "-".join(parts[:i])))
+            if info and info.get("repo_root"):
+                return (info["repo_root"] or "").strip()
+
+        path = _parent_dir(path)
+
+    return ""
 
 
 def _place_by_heuristic(path: str) -> Optional[dict]:
@@ -158,6 +253,14 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
             return _placement(persisted_root, _kanban_lane_id(persisted_root), "kanban", kanban_dir, False, True)
         b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
         return _placement(persisted_root, _branch_lane_id(persisted_root, b), b, persisted_root, True, False)
+
+    # Unresolvable cwd: a deleted ``<repo>-<suffix>`` worktree still belongs to
+    # its parent. It has no checkout to return to, so absorb it into the trunk
+    # lane rather than stranding a dead-path lane in the project forever.
+    sibling_root = _probe_sibling_worktree(cwd, resolve) if resolve else ""
+    if sibling_root:
+        b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
+        return _placement(sibling_root, _branch_lane_id(sibling_root, b), b, sibling_root, True, False)
 
     return _place_by_heuristic(cwd)
 
@@ -249,7 +352,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         if not placement:
             continue
 
-        entry = lanes.get(placement["lane_key"])
+        lane_identity = _lane_key(placement["lane_key"])
+        entry = lanes.get(lane_identity)
         if entry is None:
             entry = {
                 "group": {
@@ -264,7 +368,7 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "repo_label": placement["repo_label"],
                 "repo_path": placement["repo_path"],
             }
-            lanes[placement["lane_key"]] = entry
+            lanes[lane_identity] = entry
         entry["group"]["sessions"].append(session)
 
     repos: dict[str, dict] = {}
@@ -275,7 +379,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         if not hydrate:
             group["sessions"] = []
 
-        repo = repos.get(entry["repo_key"])
+        repo_identity = _path_key(entry["repo_key"])
+        repo = repos.get(repo_identity)
         if repo is None:
             repo = {
                 "id": entry["repo_key"],
@@ -284,7 +389,7 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "groups": [],
                 "sessionCount": 0,
             }
-            repos[entry["repo_key"]] = repo
+            repos[repo_identity] = repo
         repo["groups"].append(group)
         repo["sessionCount"] += count
 
@@ -311,7 +416,12 @@ def _seed_folder_repos(
     empty) project body. Folders already covered by a session-derived repo (same
     git root) are left untouched.
     """
-    seen = {r["id"] for r in repos} | {r["path"] for r in repos if r.get("path")}
+    seen = {
+        _path_key(value)
+        for repo in repos
+        for value in (repo.get("id"), repo.get("path"))
+        if value
+    }
     seeded = list(repos)
 
     for folder in folders or []:
@@ -320,10 +430,11 @@ def _seed_folder_repos(
             continue
         info = resolve(raw) if resolve else None
         root = (info or {}).get("repo_root") or re.sub(r"[/\\]+$", "", raw)
-        if not root or root in seen:
+        root_key = _path_key(root)
+        if not root_key or root_key in seen:
             continue
         seeded.append({"id": root, "label": base_name(root) or root, "path": root, "groups": [], "sessionCount": 0})
-        seen.add(root)
+        seen.add(root_key)
 
     if len(seeded) != len(repos):
         _disambiguate_labels(seeded)
@@ -347,7 +458,7 @@ class _FolderIndex:
         self._by_path: dict[str, tuple[dict, int]] = {}
         for project in projects:
             for folder in project.get("folders") or []:
-                segs = _segments(folder.get("path") or "")
+                segs = _comparison_segments(folder.get("path") or "")
                 if not segs:
                     continue
                 key = "/".join(segs)
@@ -359,7 +470,7 @@ class _FolderIndex:
 
     def match(self, target: str) -> tuple[Optional[dict], int]:
         """Owning project for ``target`` by longest ancestor folder, + its depth."""
-        segs = _segments(target or "")
+        segs = _comparison_segments(target or "")
         # Longest prefix first → deepest (most specific) folder wins.
         for end in range(len(segs), 0, -1):
             hit = self._by_path.get("/".join(segs[:end]))
@@ -406,6 +517,7 @@ def _project_node(
     color: Any = None,
     icon: Any = None,
     is_auto: bool = False,
+    is_no_project: bool = False,
 ) -> dict:
     return {
         "id": pid,
@@ -414,6 +526,7 @@ def _project_node(
         "color": color,
         "icon": icon,
         "isAuto": is_auto,
+        "isNoProject": is_no_project,
         "sessionCount": session_count,
         "lastActive": last_active,
         "repos": repos,
@@ -430,6 +543,8 @@ def build_tree(
     preview_limit: int = 3,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
+    is_junk_cwd: Optional[Callable[[str], bool]] = None,
+    exists: Optional[Exists] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -437,9 +552,14 @@ def build_tree(
     ``sessions`` are projected session-row dicts (must carry ``id``, ``cwd``,
     ``git_branch``, ``git_repo_root``, ``started_at``, ``last_active``).
     ``discovered_repos`` are ``{"root", "label", "sessions", "last_active"}``.
-    ``is_junk_root`` flags roots that must never become an AUTO project (the
-    bare home dir, the HERMES_HOME subtree) — their sessions fall through to the
-    flat Recents list. User-created projects are honored regardless.
+    ``is_junk_root`` flags git roots that must never become an AUTO project (the
+    bare home dir, the HERMES_HOME subtree). ``is_junk_cwd`` is the narrower
+    policy for non-git session folders: selected descendants may be intentional
+    workspaces even when their parent tree contains Hermes state. User-created
+    projects are honored regardless. ``exists`` reports whether a directory is
+    still on disk, so a session whose workspace was DELETED (a removed worktree,
+    a scratch dir under /tmp) doesn't get promoted to a phantom AUTO project;
+    omit it (remote backends) to keep every candidate.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -448,6 +568,8 @@ def build_tree(
     """
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
+    _junk_cwd = is_junk_cwd or (lambda _cwd: False)
+    _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
@@ -493,34 +615,84 @@ def build_tree(
             )
         )
 
-    # Tier 2: auto projects from leftover sessions, one per common git repo root.
-    by_repo: dict[str, list[dict]] = {}
+    # Tier 2: auto projects from leftover sessions. Prefer the common git repo
+    # root, then fall back to the session cwd for historical/non-git workspaces.
+    # The pre-Projects desktop grouped every non-empty cwd; keeping that fallback
+    # prevents upgrades from flattening those sessions into Recents.
+    by_auto_root: dict[str, dict] = {}
+    # Every session no tier could place. These are the Home bucket's rows.
+    homeless: list[dict] = []
+
+    def _add_auto(root: str, session: dict) -> None:
+        key = _path_key(root)
+        if not key:
+            homeless.append(session)
+            return
+        bucket = by_auto_root.setdefault(key, {"root": root, "sessions": []})
+        bucket["sessions"].append(session)
+
     for session in unowned:
         root = _session_repo_root(session, resolve)
         if root:
-            by_repo.setdefault(root, []).append(session)
+            # A real git root uses the stricter repo policy. Do not reinterpret a
+            # filtered internal repo as a cwd-only project. A root that no longer
+            # exists is a stale persisted value (the repo was deleted after the
+            # session ran) and must not resurrect as a project.
+            if not _junk(root) and _exists(root):
+                _add_auto(root, session)
+            else:
+                homeless.append(session)
+            continue
+
+        cwd = (session.get("cwd") or "").strip()
+        if not cwd or _junk_cwd(cwd):
+            homeless.append(session)
+            continue
+        placement = _place(
+            cwd,
+            (session.get("git_branch") or "").strip(),
+            resolve,
+            (session.get("git_repo_root") or "").strip(),
+        )
+        # A placement that only echoes back the unresolvable cwd is the
+        # path-only heuristic guessing — it never found a repo. When that dir is
+        # also gone from disk (a deleted worktree whose name shares no prefix
+        # with its parent, a removed /tmp scratch dir), promoting it mints a
+        # phantom project that can never be opened and can only be dismissed by
+        # hand. The session goes to Home instead.
+        if placement and _exists(placement["repo_key"]):
+            _add_auto(placement["repo_key"], session)
+        else:
+            homeless.append(session)
 
     seen: set[str] = set()
-    for repo_root, repo_sessions in by_repo.items():
-        # The home dir / HERMES_HOME subtree is config + state, never a project;
-        # its sessions stay loose in Recents (not scoped to a phantom project).
-        if _junk(repo_root):
-            continue
-        repos = _build_repos(repo_sessions, resolve, hydrate)
-        repo_node = next((r for r in repos if r["id"] == repo_root or r["path"] == repo_root), None)
+    for bucket in by_auto_root.values():
+        auto_root = bucket["root"]
+        auto_sessions = bucket["sessions"]
+        auto_key = _path_key(auto_root)
+        repos = _build_repos(auto_sessions, resolve, hydrate)
+        repo_node = next(
+            (
+                repo
+                for repo in repos
+                if _path_key(repo.get("id") or repo.get("path") or "") == auto_key
+            ),
+            None,
+        )
         if repo_node is None:
+            homeless.extend(auto_sessions)
             continue
-        seen.add(repo_root)
-        scoped_ids.extend(s["id"] for s in repo_sessions if s.get("id"))
+        seen.add(auto_key)
+        scoped_ids.extend(s["id"] for s in auto_sessions if s.get("id"))
         result.append(
             _project_node(
-                pid=repo_root,
-                label=base_name(repo_root) or repo_root,
-                path=repo_root,
+                pid=auto_root,
+                label=base_name(auto_root) or auto_root,
+                path=auto_root,
                 repos=repos,
                 session_count=repo_node["sessionCount"],
-                last_active=_last_active(repo_sessions),
-                preview_sessions=_previews(repo_sessions),
+                last_active=_last_active(auto_sessions),
+                preview_sessions=_previews(auto_sessions),
                 is_auto=True,
             )
         )
@@ -533,9 +705,10 @@ def build_tree(
             continue
         info = resolve(raw_root) if resolve else None
         root = (info or {}).get("repo_root") or raw_root
-        if root in seen or _junk(root) or _project_for_path(folder_index, root):
+        root_key = _path_key(root)
+        if root_key in seen or _junk(root) or _project_for_path(folder_index, root):
             continue
-        seen.add(root)
+        seen.add(root_key)
         label = repo.get("label") or base_name(root) or root
         result.append(
             _project_node(
@@ -554,5 +727,42 @@ def build_tree(
     # repos in different parents). Grow path prefixes so each is distinct.
     # Explicit projects keep their user-chosen names untouched.
     _disambiguate_labels([p for p in result if p.get("isAuto")])
+
+    # Tier 0: everything the tiers above could not place, so the grouped view
+    # loses no session. It has no folder, hence no repo/lane structure — the one
+    # synthetic lane exists purely to carry the rows in the tree's shape. Leads
+    # the list; omitted entirely when empty, so a project-less install is blank.
+    if homeless:
+        homeless.sort(key=_session_time, reverse=True)
+        scoped_ids.extend(s["id"] for s in homeless if s.get("id"))
+        lane = {
+            "id": NO_PROJECT_ID,
+            "label": NO_PROJECT_LABEL,
+            "path": None,
+            "isMain": False,
+            "isKanban": False,
+            "sessions": homeless if hydrate else [],
+        }
+        result.insert(
+            0,
+            _project_node(
+                pid=NO_PROJECT_ID,
+                label=NO_PROJECT_LABEL,
+                path=None,
+                repos=[
+                    {
+                        "id": NO_PROJECT_ID,
+                        "label": NO_PROJECT_LABEL,
+                        "path": None,
+                        "groups": [lane],
+                        "sessionCount": len(homeless),
+                    }
+                ],
+                session_count=len(homeless),
+                last_active=_last_active(homeless),
+                preview_sessions=_previews(homeless),
+                is_no_project=True,
+            ),
+        )
 
     return {"projects": result, "scoped_session_ids": scoped_ids}

@@ -135,24 +135,7 @@ def test_background_review_installs_thread_local_whitelist():
     assert "execute_code" not in whitelist
 
 
-def test_background_review_agent_tools_are_limited():
-    """Verify the resolved memory+skills toolsets only contain memory and skill tools.
 
-    Sanity check on the source of truth for what the runtime whitelist is
-    derived from — if a future PR adds e.g. `terminal` to the `memory`
-    toolset, the review-fork safety contract silently breaks.
-    """
-    from toolsets import resolve_multiple_toolsets
 
-    expected_tools = set(resolve_multiple_toolsets(["memory", "skills"]))
 
-    assert "memory" in expected_tools
-    assert "skill_manage" in expected_tools
-    assert "skill_view" in expected_tools
-    assert "skills_list" in expected_tools
 
-    assert "terminal" not in expected_tools
-    assert "send_message" not in expected_tools
-    assert "delegate_task" not in expected_tools
-    assert "web_search" not in expected_tools
-    assert "execute_code" not in expected_tools

@@ -1,6 +1,6 @@
 ---
 name: hermes-agent-skill-authoring
-description: "Author in-repo SKILL.md: frontmatter, validator, structure, and writing-quality principles."
+description: "Author in-repo SKILL.md files: frontmatter and structure."
 version: 1.1.0
 author: Hermes Agent
 license: MIT
@@ -35,6 +35,10 @@ Source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`. Hard requ
 - Parses as a YAML mapping.
 - `name` field present.
 - `description` field present, ≤ **1024 chars** (`MAX_DESCRIPTION_LENGTH`).
+  **Long descriptions are truncated to 57 chars + "..." in the system
+  prompt skill index** (`extract_skill_description` in `agent/skill_utils.py`);
+  longer text is visible via `skills_list()` and `skill_view()`.
+  Front-load the trigger phrase.
 - Non-empty body after the closing `---`.
 
 Peer-matched shape used by every skill under `skills/software-development/`:
@@ -42,7 +46,7 @@ Peer-matched shape used by every skill under `skills/software-development/`:
 ```yaml
 ---
 name: my-skill-name               # lowercase, hyphens, ≤64 chars (MAX_NAME_LENGTH)
-description: Use when <trigger>. <one-line behavior>.
+description: Use when <trigger>. <one-line behavior>.   # first 57 chars shown in system prompt
 version: 1.1.0
 author: Hermes Agent
 license: MIT
@@ -57,7 +61,9 @@ metadata:
 
 ## Size Limits
 
-- Description: ≤ 1024 chars (enforced).
+- Description: ≤ 1024 chars (enforced). **Long descriptions render as the first 57 chars
+  plus "..." in the system prompt skill index;** the rest is visible via `skills_list()`
+  and `skill_view()`.
 - Full SKILL.md: ≤ 100,000 chars (enforced as `MAX_SKILL_CONTENT_CHARS`, ~36k tokens).
 - Peer skills in `software-development/` sit at **8-14k chars**. Aim for that range. If you're pushing past 20k, split into `references/*.md` and reference them from SKILL.md.
 
@@ -121,7 +127,7 @@ Not every section is mandatory, but `Overview` + `When to Use` + actionable body
 skills/<category>/<skill-name>/SKILL.md
 ```
 
-Categories currently in repo (confirm with `ls skills/`): `autonomous-ai-agents`, `creative`, `data-science`, `devops`, `dogfood`, `email`, `gaming`, `github`, `leisure`, `mcp`, `media`, `mlops/*`, `note-taking`, `productivity`, `red-teaming`, `research`, `smart-home`, `social-media`, `software-development`.
+Categories currently in repo (confirm with `ls skills/`): `autonomous-ai-agents`, `creative`, `data-science`, `devops`, `email`, `gaming`, `github`, `leisure`, `mcp`, `media`, `mlops/*`, `note-taking`, `productivity`, `red-teaming`, `research`, `smart-home`, `social-media`, `software-development`.
 
 Pick the closest existing category. Don't invent new top-level categories casually.
 
@@ -165,7 +171,11 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 2. **Leading whitespace before `---`.** The validator checks `content.startswith("---")`; any leading blank line or BOM fails validation.
 
-3. **Description too generic.** Peer descriptions start with "Use when ..." and describe the *trigger class*, not the one task. "Use when debugging X" > "Debug X".
+3. **Description too generic or trigger buried past char 57.** The system prompt
+   skill index truncates long descriptions at 57 chars. Peer descriptions start
+   with "Use when ..." and complete the trigger class within that window.
+   - Good: `Use when debugging Hermes skill discovery failures.`
+   - Bad: `This skill contains detailed guidance for agents working on Hermes skill discovery failures.`
 
 4. **Forgetting the author/license/metadata block.** Not validator-enforced, but every peer has it; omitting makes the skill look half-finished.
 
@@ -185,7 +195,8 @@ Pick the closest existing category. Don't invent new top-level categories casual
 - [ ] Frontmatter starts at byte 0 with `---`, closes with `\n---\n`
 - [ ] `name`, `description`, `version`, `author`, `license`, `metadata.hermes.{tags, related_skills}` all present
 - [ ] Name ≤ 64 chars, lowercase + hyphens
-- [ ] Description ≤ 1024 chars and starts with "Use when ..."
+- [ ] Description ≤ 1024 chars, trigger phrase self-contained within first 57 chars,
+      and starts with "Use when ..."
 - [ ] Total file ≤ 100,000 chars (aim for 8-15k)
 - [ ] Structure: `# Title` → `## Overview` → `## When to Use` → body → `## Common Pitfalls` → `## Verification Checklist`
 - [ ] Each ordered step has a checkable completion criterion

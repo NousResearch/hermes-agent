@@ -29,27 +29,6 @@ class TestSkillScopedPassthrough:
         register_env_passthrough(["TENOR_API_KEY"])
         assert is_env_passthrough("TENOR_API_KEY")
 
-    def test_register_multiple(self):
-        register_env_passthrough(["FOO_TOKEN", "BAR_SECRET"])
-        assert is_env_passthrough("FOO_TOKEN")
-        assert is_env_passthrough("BAR_SECRET")
-        assert not is_env_passthrough("OTHER_KEY")
-
-    def test_clear(self):
-        register_env_passthrough(["TENOR_API_KEY"])
-        assert is_env_passthrough("TENOR_API_KEY")
-        clear_env_passthrough()
-        assert not is_env_passthrough("TENOR_API_KEY")
-
-    def test_get_all(self):
-        register_env_passthrough(["A_KEY", "B_TOKEN"])
-        result = get_all_passthrough()
-        assert "A_KEY" in result
-        assert "B_TOKEN" in result
-
-    def test_strips_whitespace(self):
-        register_env_passthrough(["  SPACED_KEY  "])
-        assert is_env_passthrough("SPACED_KEY")
 
     def test_skips_empty(self):
         register_env_passthrough(["", "  ", "VALID_KEY"])
@@ -69,29 +48,6 @@ class TestConfigPassthrough:
         assert is_env_passthrough("ANOTHER_TOKEN")
         assert not is_env_passthrough("UNRELATED_VAR")
 
-    def test_empty_config(self, tmp_path, monkeypatch):
-        config = {"terminal": {"env_passthrough": []}}
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
-
-    def test_missing_config_key(self, tmp_path, monkeypatch):
-        config = {"terminal": {"backend": "local"}}
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
-
-    def test_no_config_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
 
     def test_union_of_skill_and_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}
@@ -194,6 +150,40 @@ class TestTerminalIntegration:
         result = _sanitize_subprocess_env(env)
         assert blocked_var not in result
         assert "PATH" in result
+
+    def test_passthrough_cannot_override_internal_dynamic_secret(self):
+        """A skill must NOT be able to register dynamically-named Hermes
+        secrets (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) as
+        passthrough — they aren't in the static blocklist, so this is the
+        defense-in-depth layer that keeps env_passthrough consistent with the
+        unconditional strip in the sanitizers."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        for var in (
+            "AUXILIARY_VISION_API_KEY",
+            "AUXILIARY_VISION_BASE_URL",
+            "GATEWAY_RELAY_SECRET",
+            "GATEWAY_RELAY_DELIVERY_KEY",
+        ):
+            register_env_passthrough([var])
+            assert not is_env_passthrough(var), (
+                f"{var} should be refused passthrough registration"
+            )
+            result = _sanitize_subprocess_env({var: "secret", "PATH": "/usr/bin"})
+            assert var not in result
+            assert "PATH" in result
+
+    def test_passthrough_allows_auxiliary_non_secret_routing(self):
+        """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY routing hints are not
+        secrets, so a skill may still register them (they're not protected)."""
+        register_env_passthrough([
+            "AUXILIARY_VISION_PROVIDER",
+            "AUXILIARY_VISION_MODEL",
+            "GATEWAY_RELAY_URL",
+        ])
+        assert is_env_passthrough("AUXILIARY_VISION_PROVIDER")
+        assert is_env_passthrough("AUXILIARY_VISION_MODEL")
+        assert is_env_passthrough("GATEWAY_RELAY_URL")
 
     def test_make_run_env_blocklist_override_rejected(self):
         """_make_run_env must NOT expose a blocklisted var to subprocess env

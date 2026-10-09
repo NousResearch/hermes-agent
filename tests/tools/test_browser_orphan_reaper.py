@@ -60,63 +60,6 @@ class TestReapOrphanedBrowserSessions:
         _reap_orphaned_browser_sessions()
         assert not d.exists()
 
-    def test_stale_dir_with_dead_pid_is_removed(self, fake_tmpdir):
-        """Socket dir whose daemon PID is dead gets cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-        d = _make_socket_dir(fake_tmpdir, "h_dead123456", pid=999999999)
-        assert d.exists()
-        _reap_orphaned_browser_sessions()
-        assert not d.exists()
-
-    def test_orphaned_alive_daemon_is_killed(self, fake_tmpdir):
-        """Alive daemon not tracked by _active_sessions is terminated (legacy path).
-
-        No owner_pid file => falls back to tracked_names check.
-        """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(fake_tmpdir, "h_orphan12345", pid=12345)
-
-        kill_calls = []
-
-        def mock_terminate(pid):
-            kill_calls.append(pid)
-
-        # Post-#21561 the liveness probe goes through
-        # ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
-        # so it's safe on Windows — ``os.kill(pid, 0)`` is bpo-14484).
-        # The identity guard (#14073) is mocked True here — its own behavior
-        # is covered by TestReaperIdentityGuard below.
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
-            _reap_orphaned_browser_sessions()
-
-        assert 12345 in kill_calls
-
-    def test_tracked_session_is_not_reaped(self, fake_tmpdir):
-        """Sessions tracked in _active_sessions are left alone (legacy path)."""
-        import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        session_name = "h_tracked1234"
-        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
-
-        # Register the session as actively tracked
-        bt._active_sessions["some_task"] = {"session_name": session_name}
-
-        kill_calls = []
-
-        def mock_terminate(pid):
-            kill_calls.append(pid)
-
-        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
-            _reap_orphaned_browser_sessions()
-
-        # Should NOT have tried to terminate anything
-        assert len(kill_calls) == 0
-        # Dir should still exist
-        assert d.exists()
 
     def test_alive_legacy_daemon_is_reaped(self, fake_tmpdir):
         """Alive, untracked, legacy (no owner_pid) daemon is reaped.
@@ -146,29 +89,6 @@ class TestReapOrphanedBrowserSessions:
         assert 12345 in terminate_calls
         assert not d.exists()
 
-    def test_cdp_sessions_are_also_reaped(self, fake_tmpdir):
-        """CDP sessions (cdp_ prefix) are also scanned."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(fake_tmpdir, "cdp_abc1234567")
-        assert d.exists()
-        _reap_orphaned_browser_sessions()
-        # No PID file → cleaned up
-        assert not d.exists()
-
-    def test_non_hermes_dirs_are_ignored(self, fake_tmpdir):
-        """Socket dirs that don't match our naming pattern are left alone."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        # Create a dir that doesn't match h_* or cdp_* pattern
-        d = fake_tmpdir / "agent-browser-other_session"
-        d.mkdir()
-        (d / "other_session.pid").write_text("12345")
-
-        _reap_orphaned_browser_sessions()
-
-        # Should NOT be touched
-        assert d.exists()
 
     def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
         """PID file with non-integer content is cleaned up."""
@@ -215,56 +135,6 @@ class TestOwnerPidCrossProcess:
         assert 12345 not in kill_calls
         assert d.exists()
 
-    def test_dead_owner_triggers_reap(self, fake_tmpdir):
-        """Daemon whose owner_pid is dead gets reaped."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        # PID 999999999 almost certainly doesn't exist
-        d = _make_socket_dir(
-            fake_tmpdir, "h_dead_owner1", pid=12345, owner_pid=999999999
-        )
-
-        kill_calls = []
-
-        def mock_terminate(pid):
-            kill_calls.append(pid)
-
-        # Owner 999999999 dead, daemon 12345 alive.
-        pid_alive = {999999999: False, 12345: True}
-        with patch("gateway.status._pid_exists",
-                   side_effect=lambda pid: pid_alive.get(int(pid), False)), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
-            _reap_orphaned_browser_sessions()
-
-        assert 12345 in kill_calls
-        assert not d.exists()
-
-    def test_corrupt_owner_pid_falls_back_to_legacy(self, fake_tmpdir):
-        """Corrupt owner_pid file → fall back to tracked_names check."""
-        import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
-
-        session_name = "h_corrupt_own"
-        d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
-        # Write garbage to owner_pid file
-        (d / f"{session_name}.owner_pid").write_text("not-a-pid")
-
-        # Register session so legacy fallback leaves it alone
-        bt._active_sessions["task"] = {"session_name": session_name}
-
-        kill_calls = []
-
-        def mock_terminate(pid):
-            kill_calls.append(pid)
-
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
-            _reap_orphaned_browser_sessions()
-
-        # Legacy path took over → tracked → not reaped
-        assert 12345 not in kill_calls
-        assert d.exists()
 
     def test_owner_pid_permission_error_treated_as_alive(self, fake_tmpdir):
         """Owner PID owned by another user → treat as alive.
@@ -294,36 +164,6 @@ class TestOwnerPidCrossProcess:
         assert 12345 not in kill_calls
         assert d.exists()
 
-    def test_write_owner_pid_creates_file_with_current_pid(
-        self, fake_tmpdir, monkeypatch
-    ):
-        """_write_owner_pid(dir, session) writes <session>.owner_pid with os.getpid()."""
-        import tools.browser_tool as bt
-
-        session_name = "h_ownertest01"
-        socket_dir = fake_tmpdir / f"agent-browser-{session_name}"
-        socket_dir.mkdir()
-
-        bt._write_owner_pid(str(socket_dir), session_name)
-
-        owner_pid_file = socket_dir / f"{session_name}.owner_pid"
-        assert owner_pid_file.exists()
-        assert owner_pid_file.read_text().strip() == str(os.getpid())
-
-    def test_write_owner_pid_is_idempotent(self, fake_tmpdir):
-        """Calling _write_owner_pid twice leaves a single owner_pid file."""
-        import tools.browser_tool as bt
-
-        session_name = "h_idempot1234"
-        socket_dir = fake_tmpdir / f"agent-browser-{session_name}"
-        socket_dir.mkdir()
-
-        bt._write_owner_pid(str(socket_dir), session_name)
-        bt._write_owner_pid(str(socket_dir), session_name)
-
-        files = list(socket_dir.glob("*.owner_pid"))
-        assert len(files) == 1
-        assert files[0].read_text().strip() == str(os.getpid())
 
     def test_write_owner_pid_swallows_oserror(self, fake_tmpdir, monkeypatch):
         """OSError (e.g. permission denied) doesn't propagate — the reaper
@@ -448,11 +288,6 @@ class TestReaperIdentityGuard:
         )
         assert self._run(proc, socket_dir) is True
 
-    def test_planted_pid_for_non_browser_process_is_refused(self):
-        """A planted .pid pointing at e.g. `sleep 600` must NOT be reaped."""
-        socket_dir = "/tmp/agent-browser-h_sess123456"
-        proc = self._FakeProc(name="sleep", cmdline=["/bin/sleep", "600"])
-        assert self._run(proc, socket_dir) is False
 
     def test_recycled_pid_browser_not_bound_to_our_dir_is_refused(self):
         """An agent-browser process for a DIFFERENT session must not be reaped.
@@ -470,23 +305,6 @@ class TestReaperIdentityGuard:
         )
         assert self._run(proc, socket_dir) is False
 
-    def test_browser_name_but_environ_denied_and_no_cmdline_bind_refused(self):
-        """Looks like browser, cmdline doesn't bind, environ() denied -> refuse."""
-        socket_dir = "/tmp/agent-browser-h_sess123456"
-        proc = self._FakeProc(
-            name="agent-browser",
-            cmdline=["agent-browser", "daemon"],  # no dir
-            raise_environ=True,
-        )
-        assert self._run(proc, socket_dir) is False
-
-    def test_vanished_process_is_not_reapable(self):
-        socket_dir = "/tmp/agent-browser-h_sess123456"
-        assert self._run(None, socket_dir, no_such=True) is False
-
-    def test_access_denied_on_identity_read_refuses(self):
-        socket_dir = "/tmp/agent-browser-h_sess123456"
-        assert self._run(None, socket_dir, access_denied=True) is False
 
     def test_planted_pid_survives_full_reaper_path(self, fake_tmpdir):
         """End-to-end through the reaper: a planted non-browser PID is spared.

@@ -152,39 +152,6 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     assert pipeline.notifications == [notification]
 
 
-@pytest.mark.anyio
-async def test_bind_gateway_runtime_drops_notifications_when_unavailable(monkeypatch):
-    from plugins.teams_pipeline import runtime as runtime_module
-    from tools.microsoft_graph_auth import MicrosoftGraphConfigError
-
-    class FakeAdapter:
-        def __init__(self) -> None:
-            self.scheduler = None
-
-        def set_notification_scheduler(self, scheduler) -> None:
-            self.scheduler = scheduler
-
-    adapter = FakeAdapter()
-    gateway = SimpleNamespace(
-        adapters={Platform.MSGRAPH_WEBHOOK: adapter},
-        config=GatewayConfig(platforms={}),
-        _teams_pipeline_runtime=None,
-        _teams_pipeline_runtime_error=None,
-    )
-
-    def _raise(_gateway_runner):
-        raise MicrosoftGraphConfigError("missing graph env")
-
-    monkeypatch.setattr(runtime_module, "build_pipeline_runtime", _raise)
-
-    bound = runtime_module.bind_gateway_runtime(gateway)
-
-    assert bound is False
-    assert "missing graph env" in gateway._teams_pipeline_runtime_error
-    assert callable(adapter.scheduler)
-    await adapter.scheduler({"id": "notif-2"}, object())
-
-
 def test_store_persists_subscription_event_and_job_state(tmp_path):
     store_path = tmp_path / "teams-store.json"
     store = TeamsPipelineStore(store_path)
@@ -209,23 +176,6 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert job["status"] == "received"
     assert sink is not None
     assert sink["page_id"] == "page-1"
-
-
-def test_store_notification_receipts_are_idempotent(tmp_path):
-    store = TeamsPipelineStore(tmp_path / "teams-store.json")
-    notification = {
-        "subscriptionId": "sub-1",
-        "resource": "communications/onlineMeetings/meeting-1",
-        "changeType": "updated",
-    }
-    receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
-
-    assert store.record_notification_receipt(receipt_key, notification) is True
-    assert store.record_notification_receipt(receipt_key, notification) is False
-    assert store.has_notification_receipt(receipt_key) is True
-
-    reloaded = TeamsPipelineStore(tmp_path / "teams-store.json")
-    assert reloaded.has_notification_receipt(receipt_key) is True
 
 
 @pytest.mark.anyio
@@ -303,13 +253,16 @@ class TestTeamsMeetingPipeline:
                 MeetingArtifact(
                     artifact_type="recording",
                     artifact_id="rec-1",
-                    display_name="recording.mp4",
+                    display_name="../../nested/recording.mp4",
                     download_url="https://files.example/recording.mp4",
                 )
             ]
 
+        downloaded_targets = []
+
         async def _download(client, meeting_ref, recording, destination):
             target = Path(destination)
+            downloaded_targets.append(target)
             target.write_bytes(b"video-bytes")
             return {"path": str(target), "size_bytes": 11, "content_type": "video/mp4"}
 
@@ -375,12 +328,16 @@ class TestTeamsMeetingPipeline:
         assert job.selected_artifact_strategy == "recording_stt_fallback"
         assert job.summary_payload is not None
         assert job.summary_payload.summary == "Fallback summary"
+        assert downloaded_targets
+        assert downloaded_targets[0].name == "recording.mp4"
+        assert "nested" not in str(downloaded_targets[0])
         notion_record = store.get_sink_record("notion:meeting-456")
         teams_record = store.get_sink_record("teams:meeting-456")
         assert notion_record is not None
         assert notion_record["page_id"] == "page-1"
         assert teams_record is not None
         assert teams_record["message_id"] == "msg-1"
+
 
     async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _rewrite_terminal_command(
     tool_name: str, args: dict, **kwargs
 ) -> Optional[Dict[str, Any]]:
-    """pre_tool_call hook that rewrites terminal commands through rtk.
+    """Request middleware that rewrites terminal commands through rtk.
 
     Returns a rewrite directive when the command can be optimized,
     None otherwise (pass-through).
@@ -58,9 +58,9 @@ def _rewrite_terminal_command(
         return None
 
     logger.debug("rtk rewrite: %s -> %s", command[:60], rewritten[:60])
-    return {"action": "rewrite", "args": {"command": rewritten}}
+    return {"action": "rewrite", "args": {**args, "command": rewritten}}
 
 
 def register(ctx):
-    """Plugin entry point — register the RTK pre_tool_call hook."""
-    ctx.register_hook("pre_tool_call", _rewrite_terminal_command)
+    """Plugin entry point — register RTK request middleware."""
+    ctx.register_middleware("tool_request", _rewrite_terminal_command)

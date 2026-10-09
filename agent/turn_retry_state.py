@@ -45,6 +45,7 @@ class TurnRetryState:
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
+    vertex_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False
@@ -72,6 +73,10 @@ class TurnRetryState:
     # was rolled back off ``messages`` and the loop should re-issue the API
     # call against the newly-activated provider (#32421).
     restart_with_rebuilt_messages: bool = False
+    # A user correction cancelled the in-flight provider request. The outer
+    # loop must append a role-safe checkpoint + user message, rebuild the API
+    # payload, and retry the same logical iteration.
+    restart_with_redirected_messages: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

@@ -3,7 +3,6 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
@@ -20,38 +19,12 @@ import {
 import { notify } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
-import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
 
 function Caption({ children, className }: { children: ReactNode; className?: string }) {
   return <p className={cn(CAPTION, className)}>{children}</p>
-}
-
-function ToggleRow(props: {
-  checked: boolean
-  description: string
-  disabled?: boolean
-  label: string
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <ListRow
-      action={
-        <Switch
-          aria-label={props.label}
-          checked={props.checked}
-          disabled={props.disabled}
-          onCheckedChange={on => {
-            triggerHaptic('selection')
-            props.onChange(on)
-          }}
-        />
-      }
-      description={props.description}
-      title={props.label}
-    />
-  )
 }
 
 export function NotificationsSettings() {
@@ -78,8 +51,6 @@ export function NotificationsSettings() {
         onChange={setNativeNotifyEnabled}
       />
 
-      <div className="my-1 h-px bg-border/30" />
-
       {NATIVE_NOTIFICATION_KINDS.map(kind => (
         <ToggleRow
           checked={prefs.enabled && prefs.kinds[kind]}
@@ -90,8 +61,6 @@ export function NotificationsSettings() {
           onChange={on => setNativeNotifyKind(kind, on)}
         />
       ))}
-
-      <div className="my-1 h-px bg-border/30" />
 
       <ListRow
         action={

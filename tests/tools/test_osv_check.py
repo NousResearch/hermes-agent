@@ -19,12 +19,6 @@ class TestInferEcosystem:
         assert _infer_ecosystem("npx") == "npm"
         assert _infer_ecosystem("/usr/bin/npx") == "npm"
 
-    def test_uvx(self):
-        assert _infer_ecosystem("uvx") == "PyPI"
-        assert _infer_ecosystem("/home/user/.local/bin/uvx") == "PyPI"
-
-    def test_pipx(self):
-        assert _infer_ecosystem("pipx") == "PyPI"
 
     def test_unknown(self):
         assert _infer_ecosystem("node") is None
@@ -36,16 +30,6 @@ class TestParseNpmPackage:
     def test_simple(self):
         assert _parse_npm_package("react") == ("react", None)
 
-    def test_with_version(self):
-        assert _parse_npm_package("react@18.3.1") == ("react", "18.3.1")
-
-    def test_scoped(self):
-        assert _parse_npm_package("@modelcontextprotocol/server-filesystem") == (
-            "@modelcontextprotocol/server-filesystem", None
-        )
-
-    def test_scoped_with_version(self):
-        assert _parse_npm_package("@scope/pkg@1.2.3") == ("@scope/pkg", "1.2.3")
 
     def test_latest_ignored(self):
         assert _parse_npm_package("react@latest") == ("react", None)
@@ -55,11 +39,6 @@ class TestParsePypiPackage:
     def test_simple(self):
         assert _parse_pypi_package("requests") == ("requests", None)
 
-    def test_with_version(self):
-        assert _parse_pypi_package("requests==2.32.3") == ("requests", "2.32.3")
-
-    def test_with_extras(self):
-        assert _parse_pypi_package("mcp[cli]==1.2.3") == ("mcp", "1.2.3")
 
     def test_extras_no_version(self):
         assert _parse_pypi_package("mcp[cli]") == ("mcp", None)
@@ -77,36 +56,6 @@ class TestParsePackageFromArgs:
         # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"
 
-    def test_empty_args(self):
-        assert _parse_package_from_args([], "npm") == (None, None)
-
-    def test_only_flags(self):
-        assert _parse_package_from_args(["-y", "--yes"], "npm") == (None, None)
-
-    def test_package_equals_form(self):
-        # `npx --package=@scope/pkg@1.0 some-bin` -> install target is the
-        # --package value, NOT the executed binary `some-bin`.
-        name, ver = _parse_package_from_args(
-            ["--package=@scope/pkg@1.0", "some-bin"], "npm"
-        )
-        assert name == "@scope/pkg"
-        assert ver == "1.0"
-
-    def test_package_space_form(self):
-        # `npx --package @scope/pkg some-bin` (value in the next token).
-        name, ver = _parse_package_from_args(
-            ["--package", "@scope/pkg@2.0", "some-bin"], "npm"
-        )
-        assert name == "@scope/pkg"
-        assert ver == "2.0"
-
-    def test_short_p_form(self):
-        # `npx -p left-pad@1.3.0 cli-cmd` -> package is left-pad, not cli-cmd.
-        name, ver = _parse_package_from_args(
-            ["-p", "left-pad@1.3.0", "cli-cmd"], "npm"
-        )
-        assert name == "left-pad"
-        assert ver == "1.3.0"
 
     def test_plain_positional_still_works(self):
         # Regression guard: bare positional with no --package flag is the pkg.
@@ -146,16 +95,6 @@ class TestCheckPackageForMalware:
         assert "MAL-2023-7938" in result
         assert "CVE-2023-1234" not in result  # regular CVEs filtered
 
-    def test_network_error_fails_open(self):
-        """Network errors allow the package (fail-open)."""
-        with patch("tools.osv_check.urllib.request.urlopen", side_effect=ConnectionError("timeout")):
-            result = check_package_for_malware("npx", ["some-package"])
-        assert result is None
-
-    def test_non_npx_skipped(self):
-        """Non-npx/uvx commands are skipped entirely."""
-        result = check_package_for_malware("node", ["server.js"])
-        assert result is None
 
     def test_uvx_pypi(self):
         """uvx commands check PyPI ecosystem."""

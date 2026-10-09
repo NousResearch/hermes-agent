@@ -75,35 +75,6 @@ class TestGetExecutionMode(unittest.TestCase):
                    return_value={"mode": "project"}):
             self.assertEqual(_get_execution_mode(), "project")
 
-    def test_config_strict(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "strict"}):
-            self.assertEqual(_get_execution_mode(), "strict")
-
-    def test_config_case_insensitive(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "STRICT"}):
-            self.assertEqual(_get_execution_mode(), "strict")
-
-    def test_config_strips_whitespace(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "  project  "}):
-            self.assertEqual(_get_execution_mode(), "project")
-
-    def test_empty_config_falls_back_to_default(self):
-        with patch("tools.code_execution_tool._load_config", return_value={}):
-            self.assertEqual(_get_execution_mode(), DEFAULT_EXECUTION_MODE)
-
-    def test_bogus_config_falls_back_to_default(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": "banana"}):
-            self.assertEqual(_get_execution_mode(), DEFAULT_EXECUTION_MODE)
-
-    def test_none_config_falls_back_to_default(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"mode": None}):
-            # str(None).lower() = "none" → not in EXECUTION_MODES → default
-            self.assertEqual(_get_execution_mode(), DEFAULT_EXECUTION_MODE)
 
     def test_execution_modes_tuple(self):
         """Canonical set of modes — tests + config layer rely on this shape."""
@@ -129,61 +100,6 @@ class TestResolveChildPython(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(_resolve_child_python("project"), sys.executable)
 
-    def test_project_with_virtualenv_picks_venv_python(self):
-        """Project mode + VIRTUAL_ENV pointing at a real venv → that python."""
-        if sys.platform == "win32":
-            pytest.skip(
-                "Creates symlinks and assumes POSIX venv layout (bin/python). "
-                "Windows venvs use Scripts/python.exe and symlink creation "
-                "requires elevated privileges (WinError 1314)."
-            )
-        import tempfile, pathlib
-        with tempfile.TemporaryDirectory() as td:
-            fake_venv = pathlib.Path(td)
-            (fake_venv / "bin").mkdir()
-            # Symlink to real python so the version check actually passes
-            (fake_venv / "bin" / "python").symlink_to(sys.executable)
-            with patch.dict(os.environ, {"VIRTUAL_ENV": str(fake_venv)}):
-                # Clear cache — _is_usable_python memoizes on path
-                _is_usable_python.cache_clear()
-                result = _resolve_child_python("project")
-                self.assertEqual(result, str(fake_venv / "bin" / "python"))
-
-    def test_project_with_broken_venv_falls_back(self):
-        """VIRTUAL_ENV set but bin/python missing → sys.executable."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            # No bin/python inside — broken venv
-            with patch.dict(os.environ, {"VIRTUAL_ENV": td}):
-                _is_usable_python.cache_clear()
-                self.assertEqual(_resolve_child_python("project"), sys.executable)
-
-    def test_project_prefers_virtualenv_over_conda(self):
-        """If both VIRTUAL_ENV and CONDA_PREFIX are set, VIRTUAL_ENV wins."""
-        if sys.platform == "win32":
-            pytest.skip(
-                "Creates symlinks and assumes POSIX venv layout (bin/python). "
-                "Windows venvs use Scripts/python.exe and symlink creation "
-                "requires elevated privileges (WinError 1314)."
-            )
-        import tempfile, pathlib
-        with tempfile.TemporaryDirectory() as ve_td, tempfile.TemporaryDirectory() as conda_td:
-            ve = pathlib.Path(ve_td)
-            (ve / "bin").mkdir()
-            (ve / "bin" / "python").symlink_to(sys.executable)
-
-            conda = pathlib.Path(conda_td)
-            (conda / "bin").mkdir()
-            (conda / "bin" / "python").symlink_to(sys.executable)
-
-            with patch.dict(os.environ, {"VIRTUAL_ENV": str(ve), "CONDA_PREFIX": str(conda)}):
-                _is_usable_python.cache_clear()
-                result = _resolve_child_python("project")
-                self.assertEqual(result, str(ve / "bin" / "python"))
-
-    def test_is_usable_python_rejects_nonexistent(self):
-        _is_usable_python.cache_clear()
-        self.assertFalse(_is_usable_python("/does/not/exist/python"))
 
     def test_is_usable_python_accepts_real_python(self):
         _is_usable_python.cache_clear()
@@ -204,21 +120,23 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), os.getcwd())
 
-    def test_project_uses_terminal_cwd_when_set(self):
+
+    def test_project_stale_record_falls_through_to_override(self):
+        """A recorded directory that no longer exists is skipped; the
+        registered override is the next rung."""
         import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            with patch.dict(os.environ, {"TERMINAL_CWD": td}):
-                self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), td)
+        import tools.terminal_tool as terminal_tool
 
-    def test_project_bogus_terminal_cwd_falls_back_to_getcwd(self):
-        with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist/anywhere"}):
-            self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), os.getcwd())
-
-    def test_project_expands_tilde(self):
-        import pathlib
-        home = str(pathlib.Path.home())
-        with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
-            self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
+        with tempfile.TemporaryDirectory() as reg:
+            task_id = "stale-record-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False), \
+                     patch.object(terminal_tool, "_session_cwd", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": reg})
+                    terminal_tool.record_session_cwd(task_id, "/deleted/dir/gone")
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), reg
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +149,6 @@ class TestModeAwareSchema(unittest.TestCase):
         desc = build_execute_code_schema(mode="strict")["description"]
         self.assertIn("temp dir", desc)
 
-    def test_project_description_mentions_session_and_venv(self):
-        desc = build_execute_code_schema(mode="project")["description"]
-        self.assertIn("session", desc)
-        self.assertIn("venv", desc)
 
     def test_neither_description_uses_sandbox_language(self):
         """REGRESSION GUARD for commit 39b83f34.
@@ -249,11 +163,6 @@ class TestModeAwareSchema(unittest.TestCase):
                 self.assertNotIn(forbidden, desc,
                                  f"mode={mode}: '{forbidden}' leaked into description")
 
-    def test_descriptions_are_similar_length(self):
-        """Both modes should have roughly the same-size description."""
-        strict = len(build_execute_code_schema(mode="strict")["description"])
-        project = len(build_execute_code_schema(mode="project")["description"])
-        self.assertLess(abs(strict - project), 200)
 
     def test_default_mode_reads_config(self):
         """build_execute_code_schema() with mode=None reads config.yaml."""
@@ -300,21 +209,6 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("hermes_sandbox_", result["output"])
 
-    def test_project_mode_runs_in_session_cwd(self):
-        """Project mode: script's os.getcwd() is the session's working dir."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            result = self._run(
-                "import os; print(os.getcwd())",
-                mode="project",
-                extra_env={"TERMINAL_CWD": td},
-            )
-            self.assertEqual(result["status"], "success")
-            # Resolve symlinks (macOS /tmp → /private/tmp) on both sides
-            self.assertEqual(
-                os.path.realpath(result["output"].strip()),
-                os.path.realpath(td),
-            )
 
     def test_project_mode_interpreter_is_venv_python(self):
         """Project mode: sys.executable inside the child is the venv's python

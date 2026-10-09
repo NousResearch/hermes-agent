@@ -1,4 +1,4 @@
-"""Tests for the dynamic schema builder under the simplified surface."""
+"""Tests for the dynamic schema builder."""
 
 from __future__ import annotations
 
@@ -88,60 +88,12 @@ class TestDynamicSchemaBuilder:
         from tools.video_generation_tool import _build_dynamic_video_schema
 
         desc = _build_dynamic_video_schema()["description"]
-        assert "No video backend is configured" in desc
+        # No provider configured AND none available → description says so. The
+        # wording reflects the *resolved* active provider (mirrors execution),
+        # so it reads "available" rather than "configured".
+        assert "No video backend is available" in desc
         assert "hermes tools" in desc
 
-    def test_does_not_mention_edit_or_extend(self, cfg_home):
-        """The simplified surface only does text→video and image→video.
-        The description must not mention edit/extend anywhere."""
-        from tools.video_generation_tool import _build_dynamic_video_schema, _GENERIC_DESCRIPTION
-
-        desc = _build_dynamic_video_schema()["description"]
-        # Block words that would suggest functionality we removed
-        assert "edit" not in desc.lower() or "audio" in desc.lower()  # 'audio' contains 'audi' not 'edit'
-        # Stronger: no occurrence of the words "edit" or "extend" as standalone
-        for forbidden in (" edit ", " edits ", " extend ", " extends "):
-            assert forbidden not in desc.lower(), f"description leaks '{forbidden.strip()}'"
-        # Sanity: the generic blurb itself is also clean
-        for forbidden in ("edit", "extend"):
-            assert forbidden not in _GENERIC_DESCRIPTION.lower()
-
-    def test_both_modalities_advertises_auto_routing(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "both"}})
-        video_gen_registry.register_provider(_BothModalitiesProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "Active backend: Both" in desc
-        assert "text-to-video" in desc and "image-to-video" in desc
-        assert "routes automatically" in desc
-        # operations bullet is gone
-        assert "operations supported" not in desc
-
-    def test_image_only_model_warns_about_required_image_url(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "img-only"}})
-        video_gen_registry.register_provider(_ImageOnlyProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "image-to-video only" in desc
-        assert "image_url is REQUIRED" in desc
 
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry

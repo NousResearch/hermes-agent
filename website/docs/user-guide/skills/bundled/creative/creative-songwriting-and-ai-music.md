@@ -296,3 +296,21 @@ Style can drift in extensions — restate genre/mood when extending.
 - Don't be precious about rules. If a line breaks meter but hits
   harder, keep it. The feeling is what matters. Craft serves art,
   not the other way around.
+
+---
+
+## 10. Local / Open-Source Music Generation
+
+For local, GPU-based generation instead of Suno, two optional skills
+cover this (heavy dependencies, so not installed by default):
+
+- **heartmula** — full songs with vocals from lyrics + tags
+  (open-source Suno alternative, 8-16GB VRAM):
+  `hermes skills install official/creative/heartmula`
+- **audiocraft** — Meta's MusicGen (instrumental text-to-music) and
+  AudioGen (sound effects):
+  `hermes skills install official/creative/audiocraft-audio-generation`
+
+The lyric-writing and prompting craft in this skill applies to
+heartmula too — its input format is lyrics with bracketed structure
+tags plus comma-separated style tags.

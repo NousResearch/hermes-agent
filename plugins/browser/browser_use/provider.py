@@ -313,5 +313,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
                     "url": "https://browser-use.com",
                 },
             ],
-            "post_setup": "agent_browser",
+            # Cloud-scoped hook: installs the agent-browser CLI only (no
+            # local Chromium — Browser Use hosts the browser).
+            "post_setup": "browserbase",
         }

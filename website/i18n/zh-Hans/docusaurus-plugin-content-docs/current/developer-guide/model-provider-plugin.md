@@ -256,7 +256,7 @@ acme-inference = "acme_hermes_plugin:register"
 
 ……其中 `acme_hermes_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
 
-完整的入口点设置请参阅 [构建 Hermes 插件](/guides/build-a-hermes-plugin#distribute-via-pip)。
+完整的入口点设置请参阅 [构建 Hermes 插件](/developer-guide/plugins#distribute-via-pip)。
 
 ## 相关页面
 
@@ -264,4 +264,4 @@ acme-inference = "acme_hermes_plugin:register"
 - [添加提供商](/developer-guide/adding-providers) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
 - [Memory Provider 插件](/developer-guide/memory-provider-plugin)
 - [Context Engine 插件](/developer-guide/context-engine-plugin)
-- [构建 Hermes 插件](/guides/build-a-hermes-plugin) — 通用插件编写指南
+- [构建 Hermes 插件](/developer-guide/plugins) — 通用插件编写指南

@@ -66,8 +66,12 @@ runtime/
 
 # ---------- Not needed inside the Docker image ----------
 
-# Desktop app source (Tauri/Electron); never installed in the container
+# Desktop app source (Tauri/Electron); never installed in the container.
+# apps/shared is the dashboard↔desktop websocket helper and is linked from
+# web/package.json as a file: workspace dep — keep it in the build context.
 apps/
+!apps/shared/
+!apps/shared/**
 
 # Test suite — not shipped in production images
 tests/
@@ -92,9 +96,6 @@ packaging/
 # Design and planning documents
 plans/
 .plans/
-
-# ACP registry manifest (icon + agent.json) — not consumed at runtime
-acp_registry/
 
 # Repo-level dotfiles that are git-only or dev-tooling config
 .env.example

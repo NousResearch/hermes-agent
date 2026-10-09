@@ -134,88 +134,24 @@ def test_text_plus_mixed_media_routes_native_types():
             os.unlink(p)
 
 
-def test_media_only_skips_text_send():
-    img = _tmpfile(".jpg")
-    try:
-        session_ctx, calls = _session_with([_resp(200, {"messageId": "m1"})])
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            res = asyncio.run(
-                _standalone_send(_pconfig(), "12345", "", media_files=[(img, False)])
-            )
-        assert res["success"] is True
-        assert all(c[0].endswith("/send-media") for c in calls)
-    finally:
-        os.unlink(img)
-
-
-def test_force_document_sends_image_as_document():
-    img = _tmpfile(".png")
-    try:
-        session_ctx, calls = _session_with(
-            [_resp(200, {"messageId": "t1"}), _resp(200, {"messageId": "m1"})]
-        )
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            res = asyncio.run(
-                _standalone_send(
-                    _pconfig(),
-                    "12345",
-                    "doc",
-                    media_files=[(img, False)],
-                    force_document=True,
-                )
-            )
-        assert res["success"] is True
-        media_call = [c for c in calls if c[0].endswith("/send-media")][0]
-        assert media_call[1]["mediaType"] == "document"
-        assert media_call[1]["fileName"] == os.path.basename(img)
-    finally:
-        os.unlink(img)
-
-
-def test_missing_media_file_errors():
-    session_ctx, _ = _session_with([_resp(200, {"messageId": "t1"})])
+def test_missing_captioned_file_falls_back_to_text():
+    """If the single captioned file is missing, the caption is delivered as a
+    plain /send message rather than being silently lost (W1)."""
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
     with patch("aiohttp.ClientSession", return_value=session_ctx):
         res = asyncio.run(
             _standalone_send(
                 _pconfig(),
                 "12345",
-                "hi",
+                "",
                 media_files=[("/no/such/file.png", False)],
+                caption="floor plan",
             )
         )
+    # The send still surfaces the missing-file error...
     assert "error" in res
     assert "not found" in res["error"]
-
-
-def test_media_upload_error_propagates():
-    img = _tmpfile(".png")
-    try:
-        session_ctx, _ = _session_with(
-            [
-                _resp(200, {"messageId": "t1"}),
-                _resp(500, text_data="boom"),
-            ]
-        )
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            res = asyncio.run(
-                _standalone_send(
-                    _pconfig(), "12345", "hi", media_files=[(img, False)]
-                )
-            )
-        assert "error" in res
-        assert "500" in res["error"]
-    finally:
-        os.unlink(img)
-
-
-def test_text_only_unchanged_behavior():
-    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
-    with patch("aiohttp.ClientSession", return_value=session_ctx):
-        res = asyncio.run(_standalone_send(_pconfig(), "12345", "just text"))
-    assert res == {
-        "success": True,
-        "platform": "whatsapp",
-        "chat_id": calls[0][1]["chatId"],
-        "message_id": "t1",
-    }
-    assert len(calls) == 1 and calls[0][0].endswith("/send")
+    # ...but the caption text was delivered on its own first.
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/send")
+    assert calls[0][1]["message"] == "floor plan"

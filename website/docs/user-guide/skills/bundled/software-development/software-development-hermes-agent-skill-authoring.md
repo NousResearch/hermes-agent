@@ -1,14 +1,14 @@
 ---
-title: "Hermes Agent Skill Authoring — Author in-repo SKILL"
+title: "Hermes Agent Skill Authoring — Author in-repo SKILL.md files: frontmatter and structure"
 sidebar_label: "Hermes Agent Skill Authoring"
-description: "Author in-repo SKILL"
+description: "Author in-repo SKILL.md files: frontmatter and structure"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Hermes Agent Skill Authoring
 
-Author in-repo SKILL.md: frontmatter, validator, structure.
+Author in-repo SKILL.md files: frontmatter and structure.
 
 ## Skill metadata
 
@@ -16,7 +16,7 @@ Author in-repo SKILL.md: frontmatter, validator, structure.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/hermes-agent-skill-authoring` |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -53,6 +53,10 @@ Source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`. Hard requ
 - Parses as a YAML mapping.
 - `name` field present.
 - `description` field present, ≤ **1024 chars** (`MAX_DESCRIPTION_LENGTH`).
+  **Long descriptions are truncated to 57 chars + "..." in the system
+  prompt skill index** (`extract_skill_description` in `agent/skill_utils.py`);
+  longer text is visible via `skills_list()` and `skill_view()`.
+  Front-load the trigger phrase.
 - Non-empty body after the closing `---`.
 
 Peer-matched shape used by every skill under `skills/software-development/`:
@@ -60,8 +64,8 @@ Peer-matched shape used by every skill under `skills/software-development/`:
 ```yaml
 ---
 name: my-skill-name               # lowercase, hyphens, ≤64 chars (MAX_NAME_LENGTH)
-description: Use when <trigger>. <one-line behavior>.
-version: 1.0.0
+description: Use when <trigger>. <one-line behavior>.   # first 57 chars shown in system prompt
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -75,9 +79,34 @@ metadata:
 
 ## Size Limits
 
-- Description: ≤ 1024 chars (enforced).
+- Description: ≤ 1024 chars (enforced). **Long descriptions render as the first 57 chars
+  plus "..." in the system prompt skill index;** the rest is visible via `skills_list()`
+  and `skill_view()`.
 - Full SKILL.md: ≤ 100,000 chars (enforced as `MAX_SKILL_CONTENT_CHARS`, ~36k tokens).
 - Peer skills in `software-development/` sit at **8-14k chars**. Aim for that range. If you're pushing past 20k, split into `references/*.md` and reference them from SKILL.md.
+
+## Writing Quality Principles
+
+A skill exists to make the agent's process more predictable. Predictability does **not** mean identical output every run; it means the agent reliably follows the same useful discipline.
+
+Use these quality checks when writing or editing any skill:
+
+1. **Optimize for process predictability.** Ask: what behavior should change when this skill loads? If a line does not change behavior, cut it.
+2. **Choose the right context load.** A model-invoked Hermes skill pays for its description every turn. Keep descriptions focused on trigger classes and the skill's distinctive behavior. Put details in the body or linked references.
+3. **Use an information hierarchy.** Put always-needed steps in `SKILL.md`; put branch-specific or bulky reference material in `references/`, `templates/`, or `scripts/` and point to it only when needed.
+4. **End steps with completion criteria.** Each ordered step should say how the agent knows it is done. Good criteria are checkable and, when it matters, exhaustive: "every modified file accounted for" beats "summarize changes."
+5. **Co-locate rules with the concept they govern.** Avoid scattering one idea across the file. Keep definition, caveats, examples, and verification near each other.
+6. **Use strong leading words.** Prefer compact concepts the model already knows — e.g. "tight loop," "tracer bullet," "root cause," "regression test" — over long repeated explanations. A good leading word saves tokens and anchors behavior.
+7. **Prune duplication and no-ops.** Keep each meaning in one source of truth. Sentence by sentence, ask whether the sentence changes agent behavior versus the default. If not, delete it rather than polishing it.
+8. **Watch for premature completion.** If agents tend to rush a step, first sharpen that step's completion criterion. Split the sequence only when later steps distract from doing the current step well.
+
+Common quality failures:
+
+- **Premature completion** — the skill lets the agent move on before the work is genuinely done.
+- **Duplication** — the same rule appears in multiple places and drifts.
+- **Sediment** — stale lines remain because adding felt safer than deleting.
+- **Sprawl** — too much always-visible material; push branch-specific reference behind pointers.
+- **No-op prose** — generic advice the agent would already follow without the skill.
 
 ## Peer-Matched Structure
 
@@ -116,7 +145,7 @@ Not every section is mandatory, but `Overview` + `When to Use` + actionable body
 skills/<category>/<skill-name>/SKILL.md
 ```
 
-Categories currently in repo (confirm with `ls skills/`): `autonomous-ai-agents`, `creative`, `data-science`, `devops`, `dogfood`, `email`, `gaming`, `github`, `leisure`, `mcp`, `media`, `mlops/*`, `note-taking`, `productivity`, `red-teaming`, `research`, `smart-home`, `social-media`, `software-development`.
+Categories currently in repo (confirm with `ls skills/`): `autonomous-ai-agents`, `creative`, `data-science`, `devops`, `email`, `gaming`, `github`, `leisure`, `mcp`, `media`, `mlops/*`, `note-taking`, `productivity`, `red-teaming`, `research`, `smart-home`, `social-media`, `software-development`.
 
 Pick the closest existing category. Don't invent new top-level categories casually.
 
@@ -160,7 +189,11 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 2. **Leading whitespace before `---`.** The validator checks `content.startswith("---")`; any leading blank line or BOM fails validation.
 
-3. **Description too generic.** Peer descriptions start with "Use when ..." and describe the *trigger class*, not the one task. "Use when debugging X" > "Debug X".
+3. **Description too generic or trigger buried past char 57.** The system prompt
+   skill index truncates long descriptions at 57 chars. Peer descriptions start
+   with "Use when ..." and complete the trigger class within that window.
+   - Good: `Use when debugging Hermes skill discovery failures.`
+   - Bad: `This skill contains detailed guidance for agents working on Hermes skill discovery failures.`
 
 4. **Forgetting the author/license/metadata block.** Not validator-enforced, but every peer has it; omitting makes the skill look half-finished.
 
@@ -168,7 +201,11 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 6. **Expecting the current session to see the new skill.** It won't. The skill loader is initialized at session start. Verify in a fresh session or via `skill_view` using the exact path.
 
-7. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
+7. **Letting skills accumulate sediment.** A skill should get shorter or sharper over time. When adding a rule, remove the old wording it replaces; don't layer advice forever.
+
+8. **Writing no-op prose.** "Be careful," "be thorough," and "use best practices" rarely change model behavior. Replace with a checkable completion criterion or a stronger leading word.
+
+9. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
 
 ## Verification Checklist
 
@@ -176,8 +213,13 @@ Pick the closest existing category. Don't invent new top-level categories casual
 - [ ] Frontmatter starts at byte 0 with `---`, closes with `\n---\n`
 - [ ] `name`, `description`, `version`, `author`, `license`, `metadata.hermes.{tags, related_skills}` all present
 - [ ] Name ≤ 64 chars, lowercase + hyphens
-- [ ] Description ≤ 1024 chars and starts with "Use when ..."
+- [ ] Description ≤ 1024 chars, trigger phrase self-contained within first 57 chars,
+      and starts with "Use when ..."
 - [ ] Total file ≤ 100,000 chars (aim for 8-15k)
 - [ ] Structure: `# Title` → `## Overview` → `## When to Use` → body → `## Common Pitfalls` → `## Verification Checklist`
+- [ ] Each ordered step has a checkable completion criterion
+- [ ] Description is trigger-focused and avoids duplicated body content
+- [ ] Bulky or branch-specific reference is progressively disclosed in linked files
+- [ ] No-op prose and duplicated rules removed
 - [ ] `related_skills` references resolve in-repo (or are explicitly OK to be user-local)
 - [ ] `git add skills/<category>/<name>/ && git commit` completed on the intended branch

@@ -1,18 +1,47 @@
+import { PassThrough } from 'stream'
+
+import { Box, renderSync } from '@hermes/ink'
+import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { findStableBoundary } from '../components/streamingMarkdown.js'
-// We test the pure boundary logic by rendering the component's ref
-// behaviour through repeated calls. Since React isn't being rendered here,
-// we reach into the module to test findStableBoundary via its exported
-// behaviour — but the pure helper isn't exported. So test the component's
-// observable output: pass sequential text values and verify the stable
-// prefix never retreats.
-//
-// Strategy: mount StreamingMd in isolation and observe which <Md>
-// instances it renders (by text prop). Without a DOM renderer that's
-// heavy, so we validate the helper behaviour by directly invoking the
-// fence/boundary logic via a re-exported surface.
+import { Md } from '../components/markdown.js'
+import { advanceScan, createScanState, findStableBoundary } from '../components/streamingMarkdown.js'
+import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+const BEL = String.fromCharCode(7)
+const ESC = String.fromCharCode(27)
+const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+
+const renderPlain = (node: React.ReactNode) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(node, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return output
+    .replace(OSC_RE, '')
+    .split('\n')
+    .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
+}
 
 describe('findStableBoundary', () => {
   it('returns -1 when no blank line exists yet', () => {
@@ -111,11 +140,182 @@ describe('findStableBoundary', () => {
   })
 })
 
-describe('streaming theme assumption', () => {
-  it('theme is exportable (component import sanity check)', () => {
-    // Sanity that the theme we pass doesn't change shape. Component import
-    // already happens above — this is a smoke test that the module graph
-    // for streamingMarkdown wires up without cycles.
-    expect(DEFAULT_THEME.color.accent).toBeTruthy()
+// A corpus exercising every construct the boundary scanner must respect:
+// paragraphs, fenced code (with blank lines and $$ bait inside), display
+// math ($$ and \[), setext headings, tables, lists, quotes, headings.
+const CORPUS = [
+  'Intro paragraph explaining the plan in some detail.\n',
+  '\nSection Title\n=============\n',
+  '\nA paragraph before code.\n',
+  '\n```ts\nconst a = 1\n\nconst b = 2\n// $$ not math $$\n```\n',
+  '\nBetween-blocks narration.\n',
+  '\n$$\nE = mc^2\n\n\\sum_i x_i\n$$\n',
+  '\n- item one\n- item two\n\n1. first\n2. second\n',
+  '\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+  '\n> quoted wisdom\n> second line\n',
+  '\n\\[\nx^2 + y^2 = z^2\n\\]\n',
+  '\n## Closing heading\n',
+  '\nFinal paragraph without a trailing newline'
+].join('')
+
+const mulberry32 = (seed: number) => () => {
+  seed |= 0
+  seed = (seed + 0x6d2b79f5) | 0
+
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+describe('advanceScan (incremental scanner)', () => {
+  it('reconstructs the input exactly: blocks + tail === text', () => {
+    const state = createScanState()
+
+    advanceScan(CORPUS, state)
+
+    expect(state.blocks.join('')).toHaveLength(state.settledLen)
+    expect(state.blocks.join('') + CORPUS.slice(state.settledLen)).toBe(CORPUS)
+    expect(state.blocks.length).toBeGreaterThan(5)
+  })
+
+  it('produces identical blocks fed incrementally at arbitrary cut points', () => {
+    const oneShot = createScanState()
+
+    advanceScan(CORPUS, oneShot)
+
+    for (let seed = 1; seed <= 8; seed++) {
+      const rand = mulberry32(seed)
+      const state = createScanState()
+
+      let pos = 0
+
+      while (pos < CORPUS.length) {
+        pos = Math.min(CORPUS.length, pos + 1 + Math.floor(rand() * 7))
+
+        const prevBlocks = state.blocks.length
+
+        advanceScan(CORPUS.slice(0, pos), state)
+
+        // Append-only: previously committed blocks never change.
+        expect(state.blocks.length).toBeGreaterThanOrEqual(prevBlocks)
+      }
+
+      expect(state.blocks).toEqual(oneShot.blocks)
+      expect(state.settledLen).toBe(oneShot.settledLen)
+    }
+  })
+
+  it('is idempotent when called again with the same text', () => {
+    const state = createScanState()
+
+    advanceScan(CORPUS, state)
+
+    const blocks = [...state.blocks]
+
+    advanceScan(CORPUS, state)
+
+    expect(state.blocks).toEqual(blocks)
+  })
+
+  it('holds a partial trailing line in the tail even if it looks fence-like', () => {
+    // "``" could grow into "```ts" — the scanner must not judge the line
+    // until its newline arrives.
+    const state = createScanState()
+
+    advanceScan('para\n\n``', state)
+
+    expect(state.blocks).toEqual(['para\n\n'])
+    expect(state.codeOpen).toBe(false)
+
+    advanceScan('para\n\n```ts\ncode\n\nstill code', state)
+
+    // The blank line inside the now-open fence must not commit a block.
+    expect(state.blocks).toEqual(['para\n\n'])
+    expect(state.codeOpen).toBe(true)
+
+    advanceScan('para\n\n```ts\ncode\n\nstill code\n```\n\nafter\n\n', state)
+
+    expect(state.blocks).toEqual(['para\n\n', '```ts\ncode\n\nstill code\n```\n\n', 'after\n\n'])
+    expect(state.codeOpen).toBe(false)
+  })
+
+  it('does not commit whitespace-only blocks on 3+ newline runs', () => {
+    const state = createScanState()
+
+    advanceScan('alpha\n\n\n\nbeta\n\n', state)
+
+    expect(state.blocks).toEqual(['alpha\n\n', '\n\nbeta\n\n'])
+    expect(state.blocks.join('')).toBe('alpha\n\n\n\nbeta\n\n')
+  })
+
+  it('keeps a setext heading contiguous with its paragraph', () => {
+    // A setext underline attaches to the line above; the only committed
+    // boundary is the blank line, so the pair can never be torn apart or
+    // retroactively merged (the desktop splitter needed a fix for this,
+    // #67176 — blank-line boundaries are immune by construction).
+    const state = createScanState()
+
+    advanceScan('Title\n', state)
+    advanceScan('Title\n====\n', state)
+    advanceScan('Title\n====\n\nbody\n\n', state)
+
+    expect(state.blocks).toEqual(['Title\n====\n\n', 'body\n\n'])
+  })
+})
+
+describe('StreamingMd rendering equivalence', () => {
+  it('settled blocks + tail render identically to one combined Md', () => {
+    const state = createScanState()
+
+    advanceScan(CORPUS, state)
+
+    const tail = CORPUS.slice(state.settledLen)
+    const t = DEFAULT_THEME
+
+    const split = renderPlain(
+      React.createElement(
+        Box,
+        { flexDirection: 'column' },
+        ...state.blocks.map((block, i) => React.createElement(Md, { key: i, t, text: block })),
+        tail ? React.createElement(Md, { key: 'tail', t, text: tail }) : null
+      )
+    )
+
+    const combined = renderPlain(React.createElement(Md, { t, text: CORPUS }))
+
+    expect(split).toEqual(combined)
+  })
+
+  it('renders split/combined identically at every streamed step', () => {
+    const rand = mulberry32(42)
+    const state = createScanState()
+    const t = DEFAULT_THEME
+
+    let pos = 0
+
+    while (pos < CORPUS.length) {
+      pos = Math.min(CORPUS.length, pos + 24 + Math.floor(rand() * 200))
+
+      const text = CORPUS.slice(0, pos)
+
+      advanceScan(text, state)
+
+      const tail = text.slice(state.settledLen)
+
+      const split = renderPlain(
+        React.createElement(
+          Box,
+          { flexDirection: 'column' },
+          ...state.blocks.map((block, i) => React.createElement(Md, { key: i, t, text: block })),
+          tail ? React.createElement(Md, { key: 'tail', t, text: tail }) : null
+        )
+      )
+
+      const combined = renderPlain(React.createElement(Md, { t, text }))
+
+      expect(split).toEqual(combined)
+    }
   })
 })

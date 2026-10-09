@@ -29,6 +29,7 @@ export { default as useStdin } from './src/ink/hooks/use-stdin.ts'
 export { useTabStatus } from './src/ink/hooks/use-tab-status.ts'
 export { useTerminalFocus } from './src/ink/hooks/use-terminal-focus.ts'
 export { useTerminalTitle } from './src/ink/hooks/use-terminal-title.ts'
+export type { TerminalTitlePair } from './src/ink/hooks/use-terminal-title.ts'
 export { useTerminalViewport } from './src/ink/hooks/use-terminal-viewport.ts'
 export { default as measureElement } from './src/ink/measure-element.ts'
 export { createRoot, forceRedraw, default as render, renderSync } from './src/ink/root.ts'
@@ -36,5 +37,6 @@ export type { Instance, RenderOptions, Root } from './src/ink/root.ts'
 export { stringWidth } from './src/ink/stringWidth.ts'
 export type { MouseTrackingMode } from './src/ink/termio/dec.ts'
 export { wrapAnsi } from './src/ink/wrapAnsi.ts'
-export { default as TextInput, UncontrolledTextInput } from 'ink-text-input'
-export type { Props as TextInputProps } from 'ink-text-input'
+// 'ink-text-input' types deliberately not re-exported here; see
+// src/entry-exports.ts for the full rationale (#31227). Use the
+// '@hermes/ink/text-input' subpath when the upstream widget is needed.

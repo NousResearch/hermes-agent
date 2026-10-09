@@ -1,3 +1,5 @@
+import { normalize } from '@/lib/text'
+
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
 const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
 
@@ -154,7 +156,7 @@ export function codiconForFilename(path: string | undefined): string {
 // Last path segment's extension (or the bare lowercased name for `Dockerfile`,
 // `Makefile`, …). Shared by the icon and Shiki-language resolvers.
 function filenameExtToken(path: string | undefined): string {
-  const base = (path || '').replace(/\\/g, '/').split('/').pop()?.trim().toLowerCase() || ''
+  const base = normalize((path || '').replace(/\\/g, '/').split('/').pop())
   const dot = base.lastIndexOf('.')
 
   return dot > 0 ? base.slice(dot + 1) : base

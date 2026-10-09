@@ -42,6 +42,7 @@ TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+_TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
 
 
 def check_sms_requirements() -> bool:
@@ -118,7 +119,10 @@ class SmsAdapter(BasePlatformAdapter):
                 self._webhook_port,
             )
 
-        app = web.Application()
+        # client_max_size bounds every read path — including chunked bodies
+        # with no Content-Length — before the handler's own 413 checks run
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
@@ -253,7 +257,9 @@ class SmsAdapter(BasePlatformAdapter):
             hashlib.sha1,
         )
         computed = base64.b64encode(mac.digest()).decode("utf-8")
-        return hmac.compare_digest(computed, signature)
+        # Compare as bytes: compare_digest raises TypeError on a str with
+        # non-ASCII characters, and the signature is a raw request header.
+        return hmac.compare_digest(computed.encode(), signature.encode())
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:
@@ -293,7 +299,20 @@ class SmsAdapter(BasePlatformAdapter):
         from aiohttp import web
 
         try:
+            content_length = request.content_length
+            if content_length is not None and content_length > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
+                return web.Response(
+                    text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    content_type="application/xml",
+                    status=413,
+                )
             raw = await request.read()
+            if len(raw) > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
+                return web.Response(
+                    text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    content_type="application/xml",
+                    status=413,
+                )
             # Twilio sends form-encoded data, not JSON
             form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except Exception as e:

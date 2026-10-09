@@ -84,7 +84,9 @@ export function ReviewPane() {
       {(loading || isRepo) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
-            <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
+            {/* Pure self-naming label — redundant under a zone tab that already
+                says "review", so the zone header hides it (styles.css). */}
+            <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button
@@ -133,11 +135,9 @@ export function ReviewPane() {
               <Codicon name="refresh" size="0.8125rem" spinning={loading} />
             </Button>
           </Tip>
-          <Tip label={c.close}>
-            <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
-              <Codicon name="close" size="0.8125rem" />
-            </Button>
-          </Tip>
+          <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
+            <Codicon name="close" size="0.8125rem" />
+          </Button>
         </RightSidebarSectionHeader>
       )}
 
@@ -182,17 +182,15 @@ export function ReviewPane() {
                 <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
               </Button>
             </Tip>
-            <Tip label={c.close}>
-              <Button
-                aria-label={c.close}
-                className={ACTION_BTN}
-                onClick={clearReviewSelection}
-                size="icon-xs"
-                variant="ghost"
-              >
-                <Codicon name="close" size="0.8rem" />
-              </Button>
-            </Tip>
+            <Button
+              aria-label={c.close}
+              className={ACTION_BTN}
+              onClick={clearReviewSelection}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="close" size="0.8rem" />
+            </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-1 pb-1">
             {diffLoading ? (
@@ -200,7 +198,7 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel diff={diff} path={selectedFile.path} />
+              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}

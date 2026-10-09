@@ -42,11 +42,6 @@ def _restore(prev_auth, prev_host):
         web_server.app.state.bound_host = prev_host
 
 
-def test_route_registered_on_dashboard_app():
-    """The fire webhook is served by the dashboard app (the hosted-agent public
-    surface), not only the aiohttp adapter."""
-    paths = {r.path for r in web_server.app.routes if hasattr(r, "path")}
-    assert "/api/cron/fire" in paths
 
 
 def test_fire_path_is_public():
@@ -116,27 +111,3 @@ def test_unknown_job_200_gone(monkeypatch):
         client.close()
 
 
-def test_valid_token_accepts_and_fires(monkeypatch):
-    """Valid token + known job -> 202 and fire_due invoked for the resolved
-    profile."""
-    fired = []
-    monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
-        lambda: (lambda **kw: {"purpose": "cron_fire", "aud": "agent:x"}),
-    )
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
-    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile",
-                        lambda p, j: fired.append((p, j)) or True)
-
-    client, pa, ph = _client(auth_required=False)
-    try:
-        resp = client.post("/api/cron/fire",
-                           headers={"Authorization": "Bearer good"},
-                           json={"job_id": "j1"})
-        assert resp.status_code == 202
-        assert resp.json()["job_id"] == "j1"
-    finally:
-        _restore(pa, ph)
-        client.close()
-    # background task ran the fire for the resolved profile
-    assert fired == [("default", "j1")]

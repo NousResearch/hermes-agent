@@ -28,7 +28,7 @@ _READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_LIMIT = 2000
 
-_servers: Dict[str, "LightpandaServer"] = {}
+_servers: dict[str, "LightpandaServer"] = {}
 _servers_lock = threading.Lock()
 
 
@@ -193,7 +193,7 @@ def _write_record(server: LightpandaServer) -> None:
         logger.debug("could not write lightpanda record for %s: %s", server.session_name, e)
 
 
-def launch_lightpanda(session_name: str, *, block_private_networks: bool = False) -> Tuple[Optional[LightpandaServer], Optional[str]]:
+def launch_lightpanda(session_name: str, *, block_private_networks: bool = False) -> tuple[Optional[LightpandaServer], Optional[str]]:
     """Start ``lightpanda serve`` on a free loopback port; ``(server, None)`` once ``/json/version`` answers,
     else ``(None, error)``. stderr goes to ``<state_dir>/<session>.log`` so a chatty child never blocks on a pipe."""
     binary = find_lightpanda_binary()

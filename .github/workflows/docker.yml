@@ -170,6 +170,12 @@ jobs:
           # release, so the stamp needs both its ancestry and release tags.
           fetch-depth: 0
 
+      # The stamp and boundary scripts run on the runner's python3, whose
+      # version depends on the runner image. Pin it instead of trusting it.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       - name: Write install stamp
         env:
           RELEASE_VERSION: ${{ needs.mode.outputs.release == 'true' && inputs.version || '' }}

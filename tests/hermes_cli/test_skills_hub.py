@@ -778,3 +778,30 @@ def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundle
     (real / "llm-wiki" / "SKILL.md").unlink()  # missing behind the symlink: refused, and still bundled
     assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is False
     assert rows == [("bundled", "success"), ("bundled", "failed")]
+
+
+def test_built_in_restore_into_a_leftover_dir_never_writes_through_links_or_over_user_files(tmp_path):
+    """The leftover-tolerant restore copied with dirs_exist_ok: it followed a symlinked file out of
+    skills/ (clobbering the target), overwrote a user-edited file, and called a dir holding another
+    skill's SKILL.md the built-in "already available"."""
+    from tools import skill_usage, skills_sync
+    from tools.skills_sync_bundled_ops import ensure_bundled_skill
+
+    src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["arxiv"]
+    dest = skill_usage._skills_dir() / src.parent.name / "arxiv"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("USER SECRET\n")
+    (dest / "scripts").mkdir(parents=True)
+    (dest / "scripts" / "search_arxiv.py").symlink_to(victim)
+    assert ensure_bundled_skill("arxiv")["action"] == "not_restored"
+    assert victim.read_text() == "USER SECRET\n" and not (dest / "SKILL.md").exists()
+
+    (dest / "scripts" / "search_arxiv.py").unlink()
+    (dest / "scripts" / "search_arxiv.py").write_text("# my local edits\n")
+    assert ensure_bundled_skill("arxiv")["action"] == "restored"
+    assert (dest / "scripts" / "search_arxiv.py").read_text() == "# my local edits\n"
+    assert (dest / "SKILL.md").read_bytes() == (src / "SKILL.md").read_bytes()
+
+    (dest / "SKILL.md").write_text("---\nname: my-own-thing\ndescription: x\n---\nmine\n")
+    assert ensure_bundled_skill("arxiv")["action"] == "not_restored"
+    assert "my-own-thing" in (dest / "SKILL.md").read_text()

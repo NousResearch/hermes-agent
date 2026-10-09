@@ -1,6 +1,7 @@
 """Bundled-skill maintenance ops: reset, diff, list-modified, opt-out, remove-pristine.
 Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call time."""
 
+import os
 import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -79,7 +80,10 @@ def ensure_bundled_skill(name: str) -> dict:
     """Make bundled ``name`` active: ``{ok, action, path, message}``, action ``present`` (any active
     copy, user edits included, is left alone), ``restored`` (copied from the bundled source and
     re-tracked, so an opt-out, curator prune or manual delete no longer hides it), or
-    ``hub_shadowed`` (a hub install owns the name; it is the user's to remove, never overwritten)."""
+    ``hub_shadowed`` (a hub install owns the name; it is the user's to remove, never overwritten).
+    A restore into a leftover dir only adds the missing files (a user file is never overwritten) and
+    the manifest records the bundled hash, so a dest that kept user files reads as user-modified and
+    ``hermes update`` leaves it alone: intended, the user's data wins."""
     from tools import skill_usage
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
     src = bundled_by_name[name]
@@ -91,19 +95,27 @@ def ensure_bundled_skill(name: str) -> dict:
             f"`hermes skills install {name}`.")}
     # The rglob walk does not descend a symlinked category the loader follows, so the canonical
     # SKILL.md counts as present too.
+    skill_md = dest / "SKILL.md"
     active = next((md.parent for md in ss._iter_active_skill_mds()
                    if ss._read_skill_name(md, md.parent.name) == name), None) or (
-        dest if (dest / "SKILL.md").is_file() else None)
+        dest if skill_md.is_file() and ss._read_skill_name(skill_md, name) == name else None)
     if active is not None or name in ss._build_external_skill_index():
         return {"ok": True, "action": "present", "path": active, "message": ""}
     try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
+        from pm.filesystem import is_junction
         from tools.skills_hub_install import _resolve_lock_install_path
         rel = dest.relative_to(ss._skills_dir()).as_posix()
         _resolve_lock_install_path(rel, dest.name)
-        # A dir with no SKILL.md (a delete or earlier copy that died partway) is no skill; copying
-        # around its leftovers beats failing with EEXIST on every retry.
+        # A dir with no SKILL.md (a delete or earlier copy that died partway) is no skill; filling in
+        # its missing files beats failing with EEXIST on every retry. A link inside it would carry the
+        # copy out of skills/, and a SKILL.md there is another skill: refuse both.
+        if os.path.lexists(skill_md):
+            raise ValueError("the directory holds a different skill's SKILL.md")
+        if dest.exists() and any(p.is_symlink() or is_junction(p) for p in dest.rglob("*")):
+            raise ValueError("the leftover directory contains a symlink or junction")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest, ignore=_ignore_runtime_cache, dirs_exist_ok=True)
+        shutil.copytree(src, dest, ignore=_ignore_runtime_cache, dirs_exist_ok=True,
+                        copy_function=lambda s, d: d if os.path.lexists(d) else shutil.copy2(s, d))
     except (OSError, ValueError) as e:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}

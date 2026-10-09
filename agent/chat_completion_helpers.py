@@ -1854,7 +1854,16 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
-def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
+def _log_fallback_activated(
+    agent,
+    reason,
+    old_model,
+    old_provider,
+    fb_model,
+    fb_provider,
+    *,
+    effect_sink=None,
+) -> None:
     """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
     persists the turn as a transient failure otherwise, and nothing in the log says the paid
     model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
@@ -1886,10 +1895,10 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
             remedy,
         )
 
-    defer = getattr(agent, "_defer_token_budget_effect", None)
-    if callable(defer) and defer(publish):
-        return
-    publish()
+    if effect_sink is not None:
+        effect_sink.defer(publish)
+    else:
+        publish()
 
 
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
@@ -1956,7 +1965,9 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     return False
 
 
-def _update_fallback_context_compressor(agent) -> None:
+def _update_fallback_context_compressor(
+    agent, *, transition=None, effect_sink=None
+) -> None:
     """Point compression limits at the fallback model's context window (not the primary's),
     respecting the explicit model.context_length config override."""
     compressor = getattr(agent, "context_compressor", None)
@@ -1970,16 +1981,27 @@ def _update_fallback_context_compressor(agent) -> None:
         config_context_length=getattr(agent, "_config_context_length", None),
         custom_providers=getattr(agent, "_custom_providers", None),
     )
-    compressor.update_model(  # callable api_key preserved → call_llm
-        model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
-        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
-    )
+    compressor_route = {
+        "model": agent.model,
+        "context_length": fb_context_length,
+        "base_url": agent.base_url,
+        "api_key": getattr(agent, "api_key", ""),
+        "provider": agent.provider,
+        "api_mode": agent.api_mode,
+    }
+    if transition is not None:
+        transition.stage_compressor_route(compressor, **compressor_route)
+    else:
+        compressor.update_model(**compressor_route)  # callable api_key preserved → call_llm
     # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
     # resolving an auxiliary client while the primary route is failing (#114707).
     if getattr(agent, "_compression_feasibility_checked", False) is True:
         from agent.conversation_compression import revalidate_compression_feasibility
-        revalidate_compression_feasibility(agent)
+        if effect_sink is not None:
+            effect_sink.defer(lambda: revalidate_compression_feasibility(agent))
+        else:
+            revalidate_compression_feasibility(agent)
 
 
 def _reresolve_fallback_reasoning_config(agent) -> None:
@@ -2020,21 +2042,40 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
 
 
-def _buffer_fallback_notice(agent, notice: str) -> None:
+def _buffer_fallback_notice(
+    agent, notice: str, *, transition=None, effect_sink=None
+) -> None:
     """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
     _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
     publish = lambda: agent._buffer_diagnostic_status(notice)
-    defer = getattr(agent, "_defer_token_budget_effect", None)
-    if not (callable(defer) and defer(publish)):
-        publish()
-    pending = getattr(agent, "_pending_fallback_notice", None)
-    if isinstance(pending, list):
-        pending.append(notice)
+    if effect_sink is not None:
+        effect_sink.defer(publish)
     else:
-        agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
+        publish()
+
+    def commit_pending_notice() -> None:
+        pending = getattr(agent, "_pending_fallback_notice", None)
+        if isinstance(pending, list):
+            pending.append(notice)
+        else:
+            agent._pending_fallback_notice = (
+                [str(pending), notice] if pending else [notice]
+            )
+
+    if transition is not None:
+        transition.defer_coordinator(commit_pending_notice)
+    else:
+        commit_pending_notice()
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
+def try_activate_fallback(
+    agent,
+    reason: "FailoverReason | None" = None,
+    reset_at=None,
+    *,
+    transition=None,
+    effect_sink=None,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
@@ -2127,7 +2168,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
                 provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
             agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
-            _update_fallback_context_compressor(agent)
+            _update_fallback_context_compressor(
+                agent, transition=transition, effect_sink=effect_sink
+            )
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
@@ -2138,12 +2181,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
-            _buffer_fallback_notice(agent, notice)
+            _buffer_fallback_notice(
+                agent, notice, transition=transition, effect_sink=effect_sink
+            )
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
-            _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
+            _log_fallback_activated(
+                agent,
+                reason,
+                old_model,
+                old_provider,
+                fb_model,
+                fb_provider,
+                effect_sink=effect_sink,
+            )
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)

@@ -12,6 +12,156 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class _TokenBudgetEffectSink:
+    """Post-commit publication journal passed explicitly to route helpers."""
+
+    def __init__(self) -> None:
+        self._callbacks = []
+
+    def defer(self, callback) -> bool:
+        self._callbacks.append(callback)
+        return True
+
+    def discard(self) -> None:
+        self._callbacks.clear()
+
+    def publish(self) -> None:
+        callbacks, self._callbacks = self._callbacks, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                # A committed route is valid even if a dashboard, notice or
+                # billing sink is temporarily unavailable.
+                logger.warning(
+                    "failed to publish committed token-budget transition effect",
+                    exc_info=True,
+                )
+
+
+class _TokenBudgetTransition:
+    """Order component-owned tickets without inspecting their private state."""
+
+    def __init__(self, owner) -> None:
+        self.owner = owner
+        self.effect_sink = _TokenBudgetEffectSink()
+        self._guard_ticket = None
+        self._compressor = None
+        self._compressor_route = None
+        self._compressor_ticket = None
+        self._owner_tickets = []
+        self._coordinator_commits = []
+
+    @property
+    def compressor_route(self):
+        return self._compressor_route
+
+    @property
+    def has_final_compressor_ticket(self) -> bool:
+        return self._compressor_ticket is not None
+
+    def _require_ticket_factory(self, compressor):
+        prepare = getattr(compressor, "prepare_route_update", None)
+        if callable(prepare):
+            return prepare
+        from agent.token_budget_policy import TokenBudgetPolicyError
+
+        raise TokenBudgetPolicyError(
+            "enabled token-budget policy requires the context engine to expose "
+            "prepare_route_update() for atomic route changes"
+        )
+
+    def prepare_compressor_guard(self) -> None:
+        compressor = getattr(self.owner, "context_compressor", None)
+        if compressor is None:
+            return
+        prepare = self._require_ticket_factory(compressor)
+        route = self.owner._token_budget_compressor_route(compressor)
+        self._compressor = compressor
+        self._guard_ticket = prepare(**route)
+
+    def stage_compressor_route(self, compressor, **route) -> None:
+        self._require_ticket_factory(compressor)
+        self._compressor = compressor
+        staged = dict(route)
+        if staged.get("max_tokens") is None:
+            current_max = getattr(compressor, "max_tokens", None)
+            if current_max is not None:
+                # ``update_model(max_tokens=None)`` preserves the live output
+                # reservation. Materialize it so a later policy removal can
+                # restore the exact pre-policy destination route.
+                staged["max_tokens"] = current_max
+        self._compressor_route = staged
+
+    def capture_helper_route_if_needed(self) -> None:
+        if self._compressor_route is not None:
+            return
+        compressor = getattr(self.owner, "context_compressor", None)
+        if compressor is None:
+            return
+        self._require_ticket_factory(compressor)
+        self._compressor = compressor
+        self._compressor_route = self.owner._token_budget_compressor_route(compressor)
+
+    def _release_guard(self) -> None:
+        ticket, self._guard_ticket = self._guard_ticket, None
+        if ticket is not None:
+            ticket.abort()
+
+    def stage_final_compressor(self, route) -> None:
+        self._release_guard()
+        if not isinstance(route, Mapping):
+            return
+        compressor = self._compressor or getattr(
+            self.owner, "context_compressor", None
+        )
+        if compressor is None:
+            return
+        prepare = self._require_ticket_factory(compressor)
+        self._compressor = compressor
+        self._compressor_route = dict(route)
+        self._compressor_ticket = prepare(**self._compressor_route)
+
+    def add_owner_ticket(self, ticket) -> None:
+        if ticket is not None:
+            self._owner_tickets.append(ticket)
+
+    def defer_coordinator(self, callback) -> None:
+        self._coordinator_commits.append(callback)
+
+    def has_owner_work(self) -> bool:
+        return bool(self._owner_tickets or self._coordinator_commits)
+
+    def _tickets_in_commit_order(self):
+        tickets = []
+        if self._compressor_ticket is not None:
+            tickets.append(self._compressor_ticket)
+        tickets.extend(self._owner_tickets)
+        return tickets
+
+    def commit_owner_tickets(self) -> None:
+        self._release_guard()
+        for ticket in self._tickets_in_commit_order():
+            ticket.commit()
+        for callback in self._coordinator_commits:
+            callback()
+
+    def abort(self) -> None:
+        self.effect_sink.discard()
+        for ticket in reversed(self._tickets_in_commit_order()):
+            try:
+                ticket.abort()
+            except Exception:
+                logger.debug("owner ticket abort failed", exc_info=True)
+        try:
+            self._release_guard()
+        except Exception:
+            logger.debug("compressor guard abort failed", exc_info=True)
+
+    def publish(self) -> None:
+        self.effect_sink.publish()
+
+
 class TokenBudgetRuntimeMixin:
     _TOKEN_BUDGET_BOOKKEEPING_FIELDS = (
         "_fallback_index",
@@ -266,36 +416,9 @@ class TokenBudgetRuntimeMixin:
                     else None
                 ),
             }
-        compressor = values.get("context_compressor", missing)
-        compressor_fields = {}
-        if compressor is not missing and compressor is not None:
-            for name in (
-                "model",
-                "context_length",
-                "base_url",
-                "api_key",
-                "provider",
-                "api_mode",
-                "threshold_percent",
-                "threshold_tokens",
-                "max_tokens",
-                "_tail_token_budget",
-                "tail_token_budget",
-                "summary_target_ratio",
-                "model_thresholds",
-            ):
-                try:
-                    value = getattr(compressor, name)
-                except (AttributeError, TypeError):
-                    continue
-                compressor_fields[name] = {
-                    "value": value,
-                    "state": self._snapshot_token_budget_runtime_value(value, memo),
-                }
         return {
             "missing": missing,
             "fields": captured,
-            "compressor_fields": compressor_fields,
         }
 
     def _restore_token_budget_runtime(self, snapshot):
@@ -321,28 +444,14 @@ class TokenBudgetRuntimeMixin:
             except Exception:
                 logger.debug("failed to restore rolled-back field %s", name, exc_info=True)
 
-        # Restore original resources after references point back at them. This
-        # includes in-place SDK-client mutation, mutable credential pools, and
-        # policy baseline maps; no blind transport deepcopy is involved.
+        # Restore agent-owned containers after references point back at them.
+        # Foreign components (compressor and credential pool) are identities;
+        # their tickets own compensation.
         restored_nodes = set()
         for captured in fields.values():
             if not isinstance(captured, dict) or not captured.get("present"):
                 continue
             self._restore_token_budget_runtime_value(captured.get("state"), restored_nodes)
-        compressor = getattr(self, "context_compressor", None)
-        compressor_fields = snapshot.get("compressor_fields") or {}
-        if compressor is not None and isinstance(compressor_fields, dict):
-            for name, captured in compressor_fields.items():
-                try:
-                    setattr(compressor, name, captured.get("value"))
-                    self._restore_token_budget_runtime_value(
-                        captured.get("state"), restored_nodes
-                    )
-                except Exception:
-                    logger.debug(
-                        "failed to restore compressor field %s", name, exc_info=True
-                    )
-
         original_clients = {
             id(captured.get("value"))
             for name, captured in fields.items()
@@ -373,8 +482,8 @@ class TokenBudgetRuntimeMixin:
         """Whether a False helper result dirtied rollback-critical runtime state.
 
         A normal False may still record retry/cooldown bookkeeping.  Detect
-        only route, credentials, clients, policy baselines, and compressor
-        state so that allowed bookkeeping remains visible to the caller.
+        only route, credentials, clients, policy baselines, and context-engine
+        identity so that allowed bookkeeping remains visible to the caller.
         """
         if not isinstance(snapshot, dict):
             return False
@@ -397,16 +506,6 @@ class TokenBudgetRuntimeMixin:
             if current is not previous and current != previous:
                 return True
             if not self._token_budget_runtime_value_matches(current, captured.get("state")):
-                return True
-        compressor = getattr(self, "context_compressor", None)
-        for name, captured in (snapshot.get("compressor_fields") or {}).items():
-            try:
-                current = getattr(compressor, name)
-            except (AttributeError, TypeError):
-                return True
-            if not self._token_budget_runtime_value_matches(
-                current, captured.get("state")
-            ):
                 return True
         return False
 
@@ -447,57 +546,37 @@ class TokenBudgetRuntimeMixin:
         policy = config.get("token_budget_policy") if isinstance(config, Mapping) else None
         return isinstance(policy, Mapping) and policy.get("enabled") is True
 
-    def _defer_token_budget_effect(self, callback):
-        """Queue one external effect while an enabled-policy transition prepares."""
-        effects = vars(self).get("_token_budget_deferred_effects")
-        if not isinstance(effects, list):
-            return False
-        effects.append(callback)
-        return True
-
-    def _begin_token_budget_effects(self):
-        if "_token_budget_deferred_effects" in vars(self):
-            raise RuntimeError("nested token-budget transition is not supported")
-        self._token_budget_deferred_effects = []
-
-    def _discard_token_budget_effects(self):
-        vars(self).pop("_token_budget_deferred_effects", None)
-
-    def _commit_token_budget_effects(self):
-        effects = vars(self).pop("_token_budget_deferred_effects", [])
-        for callback in effects:
-            try:
-                callback()
-            except Exception:
-                # These surfaces were best-effort before staging. A committed
-                # runtime remains valid even if its dashboard/status sink fails.
-                logger.warning(
-                    "failed to publish committed token-budget transition effect",
-                    exc_info=True,
-                )
-
     def _run_token_budget_transition(self, config, helper):
-        """Prepare runtime+policy, then publish route side effects exactly once."""
+        """Sequence owner tickets, then publish explicit post-commit effects."""
         if not self._token_budget_policy_enabled(config):
             return helper()
 
         snapshot = self._snapshot_token_budget_runtime()
-        self._begin_token_budget_effects()
+        transition = _TokenBudgetTransition(self)
         try:
-            result = helper()
+            # Capability check and owner snapshot happen before any route/client
+            # helper mutation. Third-party engines therefore fail closed here.
+            transition.prepare_compressor_guard()
+            result = helper(transition, transition.effect_sink)
             if result is False:
-                self._discard_token_budget_effects()
+                if transition.has_owner_work():
+                    transition.commit_owner_tickets()
+                    transition.publish()
+                    return result
+                transition.abort()
                 if self._failed_transition_mutated_runtime(snapshot):
                     bookkeeping = self._snapshot_token_budget_bookkeeping()
                     self._restore_token_budget_runtime(snapshot)
                     self._restore_token_budget_bookkeeping(bookkeeping)
                 return result
-            self._apply_runtime_token_budget(config)
+            transition.capture_helper_route_if_needed()
+            self._apply_runtime_token_budget(config, transition)
+            transition.commit_owner_tickets()
         except Exception:
-            self._discard_token_budget_effects()
+            transition.abort()
             self._restore_token_budget_runtime(snapshot)
             raise
-        self._commit_token_budget_effects()
+        transition.publish()
         return result
 
     def _cleanup_failed_token_budget_initialization(
@@ -619,29 +698,57 @@ class TokenBudgetRuntimeMixin:
             else:
                 vars(self).pop(name, None)
 
-    def _synchronize_token_budget_compressor_derivatives(self, engine, resolution):
-        """Recompute compressor-owned values invalidated by a soft-cap override."""
-        # ContextCompressor exposes an invalidating private cache and a
-        # mode-aware ``tail_token_budget`` property. Use it instead of
-        # duplicating its lean-tail calculation. Legacy engines expose only a
-        # summary ratio, for which the historical threshold-derived formula is
-        # the compatible derivation.
-        if hasattr(engine, "_tail_token_budget"):
-            engine._tail_token_budget = None
-            _ = engine.tail_token_budget
-            return
-        ratio = getattr(engine, "summary_target_ratio", None)
-        if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
-            engine.tail_token_budget = int(resolution.soft_budget * ratio)
+    def _token_budget_compressor_route(self, engine=None):
+        """Return public route inputs; owner-private state stays inside its ticket."""
+        engine = engine or getattr(self, "context_compressor", None)
+        if engine is None:
+            return None
+        context_length = getattr(engine, "context_length", None)
+        if type(context_length) is not int or context_length <= 0:
+            from agent.token_budget_policy import TokenBudgetPolicyError
 
-    def _apply_runtime_token_budget(self, config=None):
+            raise TokenBudgetPolicyError(
+                "ticket-capable context engine must expose a positive context_length"
+            )
+        return {
+            "model": getattr(engine, "model", getattr(self, "model", "")),
+            "context_length": context_length,
+            "base_url": getattr(engine, "base_url", getattr(self, "base_url", "")),
+            "api_key": getattr(engine, "api_key", getattr(self, "api_key", "")),
+            "provider": getattr(engine, "provider", getattr(self, "provider", "")),
+            "api_mode": getattr(engine, "api_mode", getattr(self, "api_mode", "")),
+            "max_tokens": getattr(engine, "max_tokens", None),
+        }
+
+    @staticmethod
+    def _invoke_transition_helper(
+        helper, args, kwargs, transition=None, effect_sink=None
+    ):
+        """Pass explicit sinks when supported; legacy test/plugin helpers stay callable."""
+        if transition is None and effect_sink is None:
+            return helper(*args, **kwargs)
+        import inspect
+
+        try:
+            parameters = inspect.signature(helper).parameters
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            parameters, accepts_kwargs = {}, False
+        call_kwargs = dict(kwargs)
+        if accepts_kwargs or "transition" in parameters:
+            call_kwargs["transition"] = transition
+        if accepts_kwargs or "effect_sink" in parameters:
+            call_kwargs["effect_sink"] = effect_sink
+        return helper(*args, **call_kwargs)
+
+    def _apply_runtime_token_budget(self, config=None, transition=None):
         """Synchronize the active route's fail-closed token budget.
 
-        Model switches, provider fallback and primary restoration all build or
-        update the context engine before returning to ``AIAgent``.  Keeping
-        this synchronization at the concrete runtime boundary ensures that
-        ``max_tokens``, the compressor window, and status describe the same
-        effective route without changing the cached system prompt.
+        Policy owns agent scalar/container state. The context engine owns the
+        staged route ticket and its durable compensation.
         """
         if config is None:
             config = self._load_preflight_token_budget_config()
@@ -651,60 +758,58 @@ class TokenBudgetRuntimeMixin:
             apply_runtime_token_budget,
         )
 
-        resolution = apply_runtime_token_budget(self, config)
-        if resolution is None:
+        owns_transition = transition is None
+        baselines = getattr(self, "_token_budget_route_baselines", None)
+        if (
+            owns_transition
+            and not self._token_budget_policy_enabled(config)
+            and not baselines
+        ):
+            resolution = apply_runtime_token_budget(self, config)
             self._token_budget_applied_identity = _runtime_route_identity(self)
-            return None
+            return resolution
 
-        engine = getattr(self, "context_compressor", None)
-        if engine is not None:
-            update_model = getattr(engine, "update_model", None)
-            if callable(update_model):
-                import inspect
-
-                kwargs = {
-                    "model": self.model,
-                    "context_length": resolution.effective_context,
-                    "base_url": self.base_url,
-                    "api_key": self.api_key,
-                    "provider": self.provider,
-                    "api_mode": self.api_mode,
-                }
-                try:
-                    accepts_max_tokens = "max_tokens" in inspect.signature(
-                        update_model
-                    ).parameters
-                except (TypeError, ValueError):
-                    accepts_max_tokens = False
-                if accepts_max_tokens:
-                    # Built-in compressors use this reservation while deriving
-                    # their internal budgets.  Older plugin ABI variants do
-                    # not accept it, so preserve their historical call shape.
-                    update_model(**kwargs, max_tokens=resolution.max_output)
-                else:
-                    update_model(**kwargs)
-
-            # ``update_model`` may apply a model-specific compression ratio.
-            # The policy's soft budget is route-authoritative, so calibrate
-            # the effective engine state explicitly afterward.  This also
-            # supports lean plugin engines that expose fields but no updater.
-            for name, value in (
-                ("context_length", resolution.effective_context),
-                ("max_tokens", resolution.max_output),
-                ("threshold_percent", resolution.compression_threshold),
-                ("threshold_tokens", resolution.soft_budget),
+        snapshot = self._snapshot_token_budget_runtime() if owns_transition else None
+        active_transition = transition or _TokenBudgetTransition(self)
+        try:
+            if owns_transition:
+                active_transition.prepare_compressor_guard()
+            active_transition.capture_helper_route_if_needed()
+            resolution = apply_runtime_token_budget(
+                self,
+                config,
+                compressor_route=active_transition.compressor_route,
+                compressor_target_sink=active_transition.stage_final_compressor,
+            )
+            if (
+                resolution is None
+                and not owns_transition
+                and not active_transition.has_final_compressor_ticket
+                and isinstance(active_transition.compressor_route, Mapping)
             ):
-                setattr(engine, name, value)
-            self._synchronize_token_budget_compressor_derivatives(engine, resolution)
-
-        status = self._token_budget_status
-        status["runtime_context"] = resolution.effective_context
-        status["runtime_soft_budget"] = resolution.soft_budget
-        status["runtime_output_reserve"] = (
-            resolution.effective_context - resolution.soft_budget
-        )
-        self._token_budget_applied_identity = _runtime_route_identity(self)
-
+                # A policy-enabled config can legitimately have no rule for
+                # the destination provider. The route helper still owns a
+                # staged compressor change that must commit unchanged.
+                active_transition.stage_final_compressor(
+                    active_transition.compressor_route
+                )
+            if resolution is not None:
+                status = self._token_budget_status
+                status["runtime_context"] = resolution.effective_context
+                status["runtime_soft_budget"] = resolution.soft_budget
+                status["runtime_output_reserve"] = (
+                    resolution.effective_context - resolution.soft_budget
+                )
+            self._token_budget_applied_identity = _runtime_route_identity(self)
+            if owns_transition:
+                active_transition.commit_owner_tickets()
+        except Exception:
+            active_transition.abort()
+            if snapshot is not None:
+                self._restore_token_budget_runtime(snapshot)
+            raise
+        if owns_transition:
+            active_transition.publish()
         return resolution
 
     def switch_model(
@@ -720,36 +825,52 @@ class TokenBudgetRuntimeMixin:
         from agent.agent_runtime_helpers import switch_model
 
         config = self._load_preflight_token_budget_config()
-        def transition():
+        def run_transition(transition=None, effect_sink=None):
             args = (self, new_model, new_provider, api_key, base_url, api_mode)
-            return (
-                switch_model(*args)
-                if capabilities is None
-                else switch_model(*args, capabilities=capabilities)
+            kwargs = {} if capabilities is None else {"capabilities": capabilities}
+            return self._invoke_transition_helper(
+                switch_model,
+                args,
+                kwargs,
+                transition,
+                effect_sink,
             )
 
-        return self._run_token_budget_transition(config, transition)
+        return self._run_token_budget_transition(config, run_transition)
 
     def _try_activate_fallback(self, reason=None, reset_at=None):
         """Activate fallback only after policy validation, rolling back failures."""
         from agent.chat_completion_helpers import try_activate_fallback
 
         config = self._load_preflight_token_budget_config()
-        def transition():
-            if reset_at is None:
-                return try_activate_fallback(self, reason)
-            return try_activate_fallback(self, reason, reset_at=reset_at)
+        def run_transition(transition=None, effect_sink=None):
+            kwargs = {} if reset_at is None else {"reset_at": reset_at}
+            return self._invoke_transition_helper(
+                try_activate_fallback,
+                (self, reason),
+                kwargs,
+                transition,
+                effect_sink,
+            )
 
-        return self._run_token_budget_transition(config, transition)
+        return self._run_token_budget_transition(config, run_transition)
 
     def _restore_primary_runtime(self):
         """Restore primary only after policy validation, rolling back failures."""
         from agent.agent_runtime_helpers import restore_primary_runtime
 
         config = self._load_preflight_token_budget_config()
-        return self._run_token_budget_transition(
-            config, lambda: restore_primary_runtime(self)
-        )
+
+        def run_transition(transition=None, effect_sink=None):
+            return self._invoke_transition_helper(
+                restore_primary_runtime,
+                (self,),
+                {},
+                transition,
+                effect_sink,
+            )
+
+        return self._run_token_budget_transition(config, run_transition)
 
     def _build_api_kwargs(self, api_messages, tools_for_api=None):
         """Build request kwargs while preserving explicit one-shot output caps."""

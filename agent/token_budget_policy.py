@@ -570,42 +570,20 @@ def _copy_runtime_value(value: Any) -> Any:
     return value
 
 
-def _snapshot_compressor_state(compressor: Any) -> dict[str, Any] | None:
-    """Capture every instance-owned compressor field for a route baseline."""
-    if compressor is None:
-        return None
-    try:
-        return _copy_runtime_value(dict(vars(compressor)))
-    except TypeError:
-        # Slotted plugin compressors have no general complete state contract.
-        # Keep the route's scalar output baseline but never pretend we captured
-        # fields that cannot be restored safely.
-        return None
-
-
-def _restore_compressor_state(compressor: Any, state: dict[str, Any] | None) -> None:
-    """Restore a previously captured complete compressor baseline in place."""
-    if compressor is None or state is None:
-        return
-    try:
-        values = vars(compressor)
-    except TypeError:
-        return
-    values.clear()
-    values.update(_copy_runtime_value(state))
-
-
 def _capture_route_baseline(
-    agent: Any, route: tuple[str, str, str, str, str]
+    agent: Any,
+    route: tuple[str, str, str, str, str],
+    *,
+    compressor_route: Mapping[str, Any] | None = None,
+    compressor_object: Any = None,
 ) -> None:
-    """Record pre-policy runtime state once, never replacing an active baseline."""
+    """Record pre-policy route inputs once, never foreign component internals."""
     baselines = getattr(agent, "_token_budget_route_baselines", None)
     if not isinstance(baselines, dict):
         baselines = {}
         agent._token_budget_route_baselines = baselines
     if route in baselines:
         return
-    compressor = getattr(agent, "context_compressor", None)
     # An in-place credential rotation keeps the same physical runtime and
     # compressor. Reuse that route's original pre-policy baseline; capturing
     # the current state here would record account A's policy-mutated window as
@@ -616,42 +594,51 @@ def _capture_route_baseline(
             isinstance(existing_route, tuple)
             and existing_route[:-1] == physical_route
             and isinstance(existing, Mapping)
-            and existing.get("compressor_object") is compressor
+            and existing.get("compressor_object") is compressor_object
         ):
             baselines[route] = {
                 "max_tokens": existing.get("max_tokens"),
-                "compressor": _copy_runtime_value(existing.get("compressor")),
-                "compressor_object": compressor,
+                "compressor_route": _copy_runtime_value(
+                    existing.get("compressor_route")
+                ),
+                "compressor_object": compressor_object,
             }
             return
     baselines[route] = {
         "max_tokens": getattr(agent, "max_tokens", None),
-        "compressor": _snapshot_compressor_state(compressor),
-        "compressor_object": compressor,
+        "compressor_route": _copy_runtime_value(compressor_route),
+        "compressor_object": compressor_object,
     }
 
 
 def _restore_route_baseline(
     agent: Any, route: tuple[str, str, str, str, str]
-) -> bool:
-    """Restore and retire the exact route's pre-policy state, if available."""
+) -> tuple[bool, dict[str, Any] | None]:
+    """Restore agent-owned output state and return owner route inputs."""
     baselines = getattr(agent, "_token_budget_route_baselines", None)
     if not isinstance(baselines, dict):
-        return False
+        return False, None
     baseline = baselines.pop(route, None)
     if not isinstance(baseline, Mapping):
-        return False
+        return False, None
     agent.max_tokens = baseline.get("max_tokens")
-    compressor = getattr(agent, "context_compressor", None)
-    # A switch normally reuses the compressor instance. Do not copy fields
-    # from a different plugin instance onto the current one.
-    if compressor is baseline.get("compressor_object"):
-        _restore_compressor_state(compressor, baseline.get("compressor"))
-    return True
+    if (
+        getattr(agent, "context_compressor", None)
+        is not baseline.get("compressor_object")
+    ):
+        return True, None
+    compressor_route = baseline.get("compressor_route")
+    if not isinstance(compressor_route, Mapping):
+        return True, None
+    return True, _copy_runtime_value(dict(compressor_route))
 
 
 def apply_runtime_token_budget(
-    agent: Any, config: Mapping[str, Any] | None
+    agent: Any,
+    config: Mapping[str, Any] | None,
+    *,
+    compressor_route: Mapping[str, Any] | None = None,
+    compressor_target_sink: Any = None,
 ) -> TokenBudgetResolution | None:
     """Resolve policy for ``agent`` and apply output/status fields.
 
@@ -706,17 +693,30 @@ def apply_runtime_token_budget(
         agent._configured_max_tokens_captured = True
     if result is None:
         agent._token_budget_status = None
-        if not _restore_route_baseline(agent, route):
+        restored, restored_compressor_route = _restore_route_baseline(agent, route)
+        if not restored:
             # Legacy and non-policy routes use the configured output baseline.
             # A route baseline, when present, wins because it records a prior
             # policy application for this exact provider/model/endpoint.
             agent.max_tokens = configured_max
+        if callable(compressor_target_sink) and isinstance(
+            restored_compressor_route, Mapping
+        ):
+            compressor_target_sink(
+                _copy_runtime_value(dict(restored_compressor_route))
+            )
         return None
 
     # This happens after a switch/fallback has built the destination engine,
     # preserving the baseline produced by that transition. Subsequent policy
     # refreshes for the same route intentionally do not overwrite it.
-    _capture_route_baseline(agent, route)
+    compressor_object = getattr(agent, "context_compressor", None)
+    _capture_route_baseline(
+        agent,
+        route,
+        compressor_route=compressor_route,
+        compressor_object=compressor_object,
+    )
     if (
         isinstance(configured_max, int)
         and not isinstance(configured_max, bool)
@@ -740,6 +740,11 @@ def apply_runtime_token_budget(
     agent._token_budget_status["request_output_cap"] = (
         None if codex_provider_default else agent.max_tokens
     )
+    if callable(compressor_target_sink) and isinstance(compressor_route, Mapping):
+        target = _copy_runtime_value(dict(compressor_route))
+        target["context_length"] = result.effective_context
+        target["max_tokens"] = result.max_output
+        compressor_target_sink(target)
     return result
 
 

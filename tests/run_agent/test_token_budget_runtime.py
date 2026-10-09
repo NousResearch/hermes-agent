@@ -25,6 +25,39 @@ class _Compressor:
         self.calls.append({**kwargs, "max_tokens": max_tokens})
         self.context_length = kwargs["context_length"]
         self.max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        self.threshold_tokens = min(
+            int(self.context_length * self.threshold_percent),
+            self.context_length - self.max_tokens,
+        )
+        self.tail_token_budget = int(
+            self.threshold_tokens * self.summary_target_ratio
+        )
+
+    def prepare_route_update(self, *, max_tokens=None, **kwargs):
+        """Small component-owned ticket double used by policy-on coordinator tests."""
+        owner = self
+        snapshot = copy.deepcopy(vars(self))
+        state = "prepared"
+
+        class Ticket:
+            def commit(self):
+                nonlocal state
+                if state == "committed":
+                    return
+                if state == "aborted":
+                    raise RuntimeError("cannot commit an aborted compressor ticket")
+                owner.update_model(max_tokens=max_tokens, **kwargs)
+                state = "committed"
+
+            def abort(self):
+                nonlocal state
+                if state == "aborted":
+                    return
+                owner.__dict__.clear()
+                owner.__dict__.update(copy.deepcopy(snapshot))
+                state = "aborted"
+
+        return Ticket()
 
 
 class _SlottedTicketCompressor:
@@ -107,7 +140,7 @@ def _install_runtime(agent, compressor):
 
 
 def _owned_compressor_state(compressor):
-    """Fields the agent explicitly owns across a route transaction."""
+    """Public route values the compressor ticket must compensate atomically."""
     names = (
         "context_length",
         "max_tokens",
@@ -257,12 +290,12 @@ def test_fallback_and_primary_restore_reapply_runtime_budget(monkeypatch):
     assert agent._token_budget_status["runtime_output_reserve"] == 81_600
 
 
-def test_policy_removal_restores_complete_same_route_compressor_baseline(monkeypatch):
+def test_policy_removal_restores_public_same_route_compressor_baseline(monkeypatch):
     _patch_policy(monkeypatch)
     compressor = _Compressor()
     agent = object.__new__(AIAgent)
     _install_runtime(agent, compressor)
-    baseline = copy.deepcopy(vars(compressor))
+    baseline = _owned_compressor_state(compressor)
 
     AIAgent._apply_runtime_token_budget(agent)
     assert compressor.threshold_tokens == 190_400
@@ -271,7 +304,35 @@ def test_policy_removal_restores_complete_same_route_compressor_baseline(monkeyp
 
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
     assert AIAgent._apply_runtime_token_budget(agent) is None
-    assert vars(compressor) == baseline
+    assert _owned_compressor_state(compressor) == baseline
+    assert compressor.route_only_state == {"origin": "initial"}
+    assert agent.max_tokens == 128_000
+    assert agent._token_budget_status is None
+
+
+def test_policy_removal_does_not_apply_old_baseline_to_replacement_compressor(
+    monkeypatch,
+):
+    """A saved route belongs to the compressor instance that produced it."""
+    _patch_policy(monkeypatch)
+    original = _Compressor()
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, original)
+    AIAgent._apply_runtime_token_budget(agent)
+
+    replacement = _Compressor()
+    replacement.context_length = 640_000
+    replacement.max_tokens = 64_000
+    replacement.threshold_tokens = 512_000
+    replacement.tail_token_budget = 102_400
+    replacement.route_only_state = {"origin": "replacement"}
+    agent.context_compressor = replacement
+    before = copy.deepcopy(vars(replacement))
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    assert AIAgent._apply_runtime_token_budget(agent) is None
+
+    assert vars(replacement) == before
     assert agent.max_tokens == 128_000
     assert agent._token_budget_status is None
 
@@ -301,12 +362,18 @@ def test_hot_reload_legacy_three_models_fails_before_switch_then_migrates_and_re
     )
     before_compressor = _owned_compressor_state(compressor)
 
-    def fake_switch(runtime, *_args):
+    def fake_switch(runtime, *_args, transition=None, **_kwargs):
         calls.append("switch")
         runtime.model = "gpt-5.6-sol"
-        runtime.context_compressor.context_length = 1_000_000
-        runtime.context_compressor.threshold_tokens = 800_000
-        runtime.context_compressor.route_only_state = {"origin": "switch"}
+        transition.stage_compressor_route(
+            runtime.context_compressor,
+            model=runtime.model,
+            context_length=1_000_000,
+            base_url=runtime.base_url,
+            api_key=runtime.api_key,
+            provider=runtime.provider,
+            api_mode=runtime.api_mode,
+        )
         return "switched"
 
     monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", fake_switch)
@@ -325,8 +392,9 @@ def test_hot_reload_legacy_three_models_fails_before_switch_then_migrates_and_re
     current["config"] = {}
     assert AIAgent._apply_runtime_token_budget(agent) is None
     assert compressor.context_length == 1_000_000
+    assert compressor.max_tokens == 128_000
     assert compressor.threshold_tokens == 800_000
-    assert compressor.route_only_state == {"origin": "switch"}
+    assert compressor.route_only_state == {"origin": "initial"}
 
 
 def test_invalid_policy_preflights_fallback_and_restore_without_mutation(monkeypatch):
@@ -384,7 +452,7 @@ def test_policy_apply_failure_after_switch_rolls_back_full_runtime(monkeypatch):
         runtime.context_compressor.route_only_state = {"origin": "mutated"}
         return "switched"
 
-    def fail_apply(runtime, _config=None):
+    def fail_apply(runtime, _config=None, _transition=None):
         runtime.max_tokens = 1
         runtime.context_compressor.threshold_tokens = 1
         raise RuntimeError("policy sync failed")
@@ -419,7 +487,7 @@ def test_policy_apply_failure_after_fallback_or_restore_rolls_back(monkeypatch):
         runtime.context_compressor.route_only_state = {"origin": "mutated"}
         return True
 
-    def fail_apply(runtime, _config=None):
+    def fail_apply(runtime, _config=None, _transition=None):
         runtime.max_tokens = 1
         runtime.context_compressor.threshold_tokens = 1
         raise RuntimeError("policy sync failed")
@@ -1203,14 +1271,14 @@ def test_policy_failure_discards_staged_billing_route_write(monkeypatch):
     agent._session_db = session_db
     agent.session_id = "session-1"
 
-    def switch(runtime, *_args):
+    def switch(runtime, *_args, effect_sink=None, **_kwargs):
         runtime.provider = "anthropic"
         runtime.model = "claude-fallback"
         runtime.base_url = "https://api.anthropic.com"
         runtime.api_mode = "anthropic_messages"
         from agent.agent_runtime_helpers import _persist_switch_billing_route
 
-        _persist_switch_billing_route(runtime)
+        _persist_switch_billing_route(runtime, effect_sink=effect_sink)
         return "switched"
 
     monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", switch)
@@ -1233,12 +1301,17 @@ def test_policy_failure_discards_staged_fallback_notification(monkeypatch):
     notifications = []
     agent._buffer_diagnostic_status = notifications.append
 
-    def fallback(runtime, *_args):
+    def fallback(runtime, *_args, transition=None, effect_sink=None, **_kwargs):
         runtime.provider = "anthropic"
         runtime.model = "claude-fallback"
         from agent.chat_completion_helpers import _buffer_fallback_notice
 
-        _buffer_fallback_notice(runtime, "fallback activated")
+        _buffer_fallback_notice(
+            runtime,
+            "fallback activated",
+            transition=transition,
+            effect_sink=effect_sink,
+        )
         return True
 
     monkeypatch.setattr(
@@ -1531,7 +1604,7 @@ def test_policy_failure_discards_deferred_fallback_success_log(monkeypatch, capl
     agent = object.__new__(AIAgent)
     _install_runtime(agent, _Compressor())
 
-    def fallback(runtime, *_args):
+    def fallback(runtime, *_args, effect_sink=None, **_kwargs):
         runtime.model = "claude-fallback"
         _log_fallback_activated(
             runtime,
@@ -1540,6 +1613,7 @@ def test_policy_failure_discards_deferred_fallback_success_log(monkeypatch, capl
             "openai-codex",
             "claude-fallback",
             "anthropic",
+            effect_sink=effect_sink,
         )
         return True
 
@@ -1553,3 +1627,353 @@ def test_policy_failure_discards_deferred_fallback_success_log(monkeypatch, capl
     with pytest.raises(RuntimeError, match="policy sync failed"):
         agent._try_activate_fallback()
     assert "Fallback activated" not in caplog.text
+
+
+class _CoordinatorClient:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+class _CoordinatorTicket:
+    def __init__(self, name, events, *, fail=False):
+        self.name = name
+        self.events = events
+        self.fail = fail
+        self.state = "prepared"
+
+    def commit(self):
+        if self.state == "committed":
+            return
+        self.events.append(f"{self.name}:commit")
+        if self.fail:
+            raise RuntimeError(f"{self.name} commit failed")
+        self.state = "committed"
+
+    def abort(self):
+        if self.state == "aborted":
+            return
+        self.events.append(f"{self.name}:abort")
+        self.state = "aborted"
+
+
+class _CoordinatorCompressor:
+    def __init__(self, events, *, fail_final=False):
+        self.events = events
+        self.fail_final = fail_final
+        self.model = "gpt-6-astra"
+        self.context_length = 872_000
+        self.max_tokens = 128_000
+        self.threshold_percent = 0.8
+        self.threshold_tokens = 697_600
+        self.base_url = "https://chatgpt.com/backend-api/codex"
+        self.api_key = "test-only-opaque-token"
+        self.provider = "openai-codex"
+        self.api_mode = "codex_responses"
+        self.durable_resets = 0
+
+    def prepare_route_update(self, *, model, context_length, max_tokens=None, **kwargs):
+        owner = self
+        before = {
+            "model": self.model,
+            "context_length": self.context_length,
+            "max_tokens": self.max_tokens,
+            "threshold_tokens": self.threshold_tokens,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "durable_resets": self.durable_resets,
+        }
+        final = model != self.model or context_length != self.context_length
+        state = "prepared"
+
+        class Ticket:
+            def commit(self):
+                nonlocal state
+                if state == "committed":
+                    return
+                owner.events.append("compressor:commit")
+                if final and owner.fail_final:
+                    raise RuntimeError("compressor commit failed")
+                owner.model = model
+                owner.context_length = context_length
+                owner.max_tokens = owner.max_tokens if max_tokens is None else max_tokens
+                owner.threshold_tokens = min(
+                    int(context_length * owner.threshold_percent),
+                    context_length - owner.max_tokens,
+                )
+                owner.base_url = kwargs.get("base_url", "")
+                owner.api_key = kwargs.get("api_key", "")
+                owner.provider = kwargs.get("provider", "")
+                owner.api_mode = kwargs.get("api_mode", "")
+                owner.durable_resets += 1
+                state = "committed"
+
+            def abort(self):
+                nonlocal state
+                if state == "aborted":
+                    return
+                owner.events.append("compressor:abort")
+                for name, value in before.items():
+                    setattr(owner, name, value)
+                state = "aborted"
+
+        return Ticket()
+
+
+def _stage_recording_transition(
+    runtime,
+    events,
+    replacement,
+    credential_ticket,
+    *,
+    transition=None,
+    effect_sink=None,
+):
+    assert transition is not None
+    assert effect_sink is not None
+    events.append("route/helper")
+    runtime.provider = "openai-codex"
+    runtime.model = "gpt-5.6-sol"
+    runtime.client = replacement
+    transition.stage_compressor_route(
+        runtime.context_compressor,
+        model=runtime.model,
+        context_length=272_000,
+        base_url=runtime.base_url,
+        api_key=runtime.api_key,
+        provider=runtime.provider,
+        api_mode=runtime.api_mode,
+    )
+    transition.add_owner_ticket(credential_ticket)
+    transition.defer_coordinator(lambda: events.append("coordinator:commit"))
+    for name in ("log", "notice", "billing"):
+        effect_sink.defer(lambda name=name: events.append(name))
+    return "switched"
+
+
+def test_owner_tickets_commit_before_success_effects(monkeypatch):
+    """Every success publication follows route, policy and owner commits."""
+    _patch_policy(monkeypatch)
+    events = []
+    compressor = _CoordinatorCompressor(events)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    agent.client = _CoordinatorClient()
+    replacement = _CoordinatorClient()
+    credential_ticket = _CoordinatorTicket("credential", events)
+
+    real_apply = token_budget_policy.apply_runtime_token_budget
+
+    def record_policy(*args, **kwargs):
+        events.append("policy:commit")
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(token_budget_policy, "apply_runtime_token_budget", record_policy)
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers.switch_model",
+        lambda runtime, *_args, **kwargs: _stage_recording_transition(
+            runtime, events, replacement, credential_ticket, **kwargs
+        ),
+    )
+
+    assert agent.switch_model("gpt-5.6-sol", "openai-codex") == "switched"
+
+    commits = {
+        name: events.index(name)
+        for name in (
+            "route/helper",
+            "policy:commit",
+            "compressor:commit",
+            "credential:commit",
+            "coordinator:commit",
+        )
+    }
+    publications = [events.index(name) for name in ("log", "notice", "billing")]
+    assert max(commits.values()) < min(publications)
+    assert replacement.close_calls == 0
+
+
+@pytest.mark.parametrize("failed_owner", ("compressor", "policy", "credential"))
+def test_owner_commit_failure_aborts_reverse_order_and_closes_only_candidate(
+    monkeypatch, failed_owner
+):
+    """A failed owner commit compensates owners in reverse and retires no original."""
+    _patch_policy(monkeypatch)
+    events = []
+    compressor = _CoordinatorCompressor(
+        events, fail_final=failed_owner == "compressor"
+    )
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    original = _CoordinatorClient()
+    candidate = _CoordinatorClient()
+    agent.client = original
+    credential_ticket = _CoordinatorTicket(
+        "credential", events, fail=failed_owner == "credential"
+    )
+    original_route = (agent.provider, agent.model, agent.client)
+
+    real_apply = token_budget_policy.apply_runtime_token_budget
+
+    def maybe_fail_policy(*args, **kwargs):
+        events.append("policy:commit")
+        if failed_owner == "policy":
+            raise RuntimeError("policy commit failed")
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(
+        token_budget_policy, "apply_runtime_token_budget", maybe_fail_policy
+    )
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers.switch_model",
+        lambda runtime, *_args, **kwargs: _stage_recording_transition(
+            runtime, events, candidate, credential_ticket, **kwargs
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=f"{failed_owner} commit failed"):
+        agent.switch_model("gpt-5.6-sol", "openai-codex")
+
+    assert (agent.provider, agent.model, agent.client) == original_route
+    assert original.close_calls == 0
+    assert candidate.close_calls == 1
+    assert not {"log", "notice", "billing"}.intersection(events)
+    if failed_owner in {"compressor", "credential"}:
+        aborts = [event for event in events if event.endswith(":abort")]
+        assert aborts[-2:] == ["credential:abort", "compressor:abort"]
+
+
+@pytest.mark.parametrize("failed_owner", ("compressor", "policy"))
+def test_request_identity_repair_abort_preserves_ephemeral_and_durable_state(
+    monkeypatch, failed_owner
+):
+    """Identity repair fails before request one-shots or durable state are consumed."""
+    config = _policy_config()
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+    monkeypatch.setattr(
+        "agent.token_budget_policy.detect_provider_context_evidence",
+        lambda **_kwargs: None,
+    )
+    events = []
+    compressor = _CoordinatorCompressor(
+        events, fail_final=failed_owner == "compressor"
+    )
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+
+    class Pool:
+        def current(self):
+            return SimpleNamespace(id="account-b")
+
+    agent._credential_pool = Pool()
+    agent._credential_pool_entry_id = "account-b"
+    agent._token_budget_policy_config = config
+    agent._token_budget_policy_config_validated = True
+    agent._token_budget_applied_identity = (
+        "openai-codex",
+        "gpt-6-astra",
+        "https://chatgpt.com/backend-api/codex",
+        "codex_responses",
+        "account-a",
+    )
+    one_shot_reasoning = {"enabled": True, "effort": "high"}
+    agent._ephemeral_max_output_tokens = 32_768
+    agent._ephemeral_reasoning_off = True
+    agent._wire_reasoning_config = one_shot_reasoning
+    before_policy = copy.deepcopy(getattr(agent, "_token_budget_route_baselines", {}))
+    builder_calls = []
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.build_api_kwargs",
+        lambda *_args, **_kwargs: builder_calls.append(True) or {},
+    )
+
+    if failed_owner == "policy":
+        monkeypatch.setattr(
+            token_budget_policy,
+            "apply_runtime_token_budget",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("policy commit failed")
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match=f"{failed_owner} commit failed"):
+        agent._build_api_kwargs([])
+
+    assert builder_calls == []
+    assert compressor.durable_resets == 0
+    assert agent._ephemeral_max_output_tokens == 32_768
+    assert agent._ephemeral_reasoning_off is True
+    assert agent._wire_reasoning_config is one_shot_reasoning
+    assert getattr(agent, "_token_budget_route_baselines", {}) == before_policy
+
+
+def test_policy_off_does_not_create_token_budget_tickets(monkeypatch):
+    """The policy-off fast path stays direct while credential veto remains owner-safe."""
+    from agent.agent_runtime_helpers import restore_primary_runtime as direct_restore
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    ticket_calls = []
+
+    class Compressor(_Compressor):
+        def prepare_route_update(self, **kwargs):
+            ticket_calls.append(kwargs)
+            return super().prepare_route_update(**kwargs)
+
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, Compressor())
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers.switch_model",
+        lambda *_args, **_kwargs: "switch",
+    )
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.try_activate_fallback",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers.restore_primary_runtime",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.build_api_kwargs",
+        lambda *_args, **_kwargs: {"model": "gpt-6-astra"},
+    )
+
+    assert agent.switch_model("gpt-5.6-sol", "openai-codex") == "switch"
+    assert agent._try_activate_fallback() is False
+    assert agent._restore_primary_runtime() is False
+    agent._token_budget_policy_config = {}
+    assert agent._build_api_kwargs([]) == {"model": "gpt-6-astra"}
+    assert ticket_calls == []
+
+    class PoolTicket:
+        candidate = SimpleNamespace(id="preferred", label="preferred")
+
+        def __init__(self):
+            self.abort_calls = 0
+
+        def abort(self):
+            self.abort_calls += 1
+
+    pool_ticket = PoolTicket()
+
+    class Pool:
+        def prepare_reclaim(self, *_args, **_kwargs):
+            return pool_ticket
+
+    vetoed = object.__new__(AIAgent)
+    _install_runtime(vetoed, Compressor())
+    vetoed._fallback_activated = False
+    vetoed._fallback_index = 3
+    vetoed._credential_pool = Pool()
+    vetoed._credential_pool_entry_id = "fallback"
+    vetoed._credential_pool_revert_id = "preferred"
+    vetoed._prepare_credential_swap = lambda _entry: None
+
+    assert direct_restore(vetoed) is False
+    assert vetoed._credential_pool_revert_id == "preferred"
+    assert pool_ticket.abort_calls == 1
+    assert ticket_calls == []

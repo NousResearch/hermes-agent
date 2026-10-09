@@ -1191,7 +1191,35 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         )
 
 
-def _revert_credential_rotation(agent) -> None:
+class _CredentialRevertTransitionTicket:
+    """Coordinator adapter; pool and swap retain all compensation ownership."""
+
+    def __init__(self, pool_ticket, swap_ticket) -> None:
+        self._pool_ticket = pool_ticket
+        self._swap_ticket = swap_ticket
+        self._entry = None
+        self._state = "prepared"
+
+    def commit(self) -> None:
+        if self._state == "committed":
+            return
+        if self._state == "aborted":
+            raise RuntimeError("cannot commit an aborted credential revert ticket")
+        entry = self._pool_ticket.commit()
+        if self._swap_ticket.commit(entry) is False:
+            raise RuntimeError("credential replacement was refused")
+        self._entry = entry
+        self._state = "committed"
+
+    def abort(self) -> None:
+        if self._state == "aborted":
+            return
+        self._swap_ticket.abort()
+        self._pool_ticket.abort()
+        self._state = "aborted"
+
+
+def _revert_credential_rotation(agent, *, transition=None, effect_sink=None) -> None:
     """Move a live session back onto the credential a quota bench rotated it off, once the bench
     lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
     session keeps billing the fallback for its whole life (#114501). Credential-only: the
@@ -1201,7 +1229,12 @@ def _revert_credential_rotation(agent) -> None:
         return
     pool = getattr(agent, "_credential_pool", None)
     if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
-        agent._credential_pool_revert_id = None
+        if transition is not None:
+            transition.defer_coordinator(
+                lambda: setattr(agent, "_credential_pool_revert_id", None)
+            )
+        else:
+            agent._credential_pool_revert_id = None
         return
     pool_ticket = None
     swap_ticket = None
@@ -1212,6 +1245,26 @@ def _revert_credential_rotation(agent) -> None:
         swap_ticket = agent._prepare_credential_swap(pool_ticket.candidate)
         if swap_ticket is None:
             pool_ticket.abort()
+            return
+        if transition is not None:
+            transition.add_owner_ticket(
+                _CredentialRevertTransitionTicket(pool_ticket, swap_ticket)
+            )
+            transition.defer_coordinator(
+                lambda: setattr(agent, "_credential_pool_revert_id", None)
+            )
+            entry_id = getattr(pool_ticket.candidate, "id", "?")
+            entry_label = getattr(pool_ticket.candidate, "label", "?")
+
+            def publish_revert_log() -> None:
+                logger.info(
+                    "Credential %s (%s) available again — reverted pool rotation",
+                    entry_id,
+                    entry_label,
+                )
+
+            if effect_sink is not None:
+                effect_sink.defer(publish_revert_log)
             return
         entry = pool_ticket.commit()
         if swap_ticket.commit(entry) is False:
@@ -1230,14 +1283,16 @@ def _revert_credential_rotation(agent) -> None:
     )
 
 
-def restore_primary_runtime(agent) -> bool:
+def restore_primary_runtime(agent, *, transition=None, effect_sink=None) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
-        _revert_credential_rotation(agent)
+        _revert_credential_rotation(
+            agent, transition=transition, effect_sink=effect_sink
+        )
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -1291,15 +1346,28 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
         _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
-        )
+        compressor_route = {
+            "model": rt["compressor_model"],
+            "context_length": rt["compressor_context_length"],
+            "base_url": rt["compressor_base_url"],
+            "api_key": rt["compressor_api_key"],
+            "provider": rt["compressor_provider"],
+            "api_mode": rt.get("compressor_api_mode", ""),
+        }
+        if transition is not None:
+            transition.stage_compressor_route(
+                agent.context_compressor, **compressor_route
+            )
+        else:
+            agent.context_compressor.update_model(**compressor_route)
         # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
         if getattr(agent, "_compression_feasibility_checked", False) is True:
             from agent.conversation_compression import revalidate_compression_feasibility
-            revalidate_compression_feasibility(agent)
+
+            if effect_sink is not None:
+                effect_sink.defer(lambda: revalidate_compression_feasibility(agent))
+            else:
+                revalidate_compression_feasibility(agent)
         _rebind_primary_credential_pool(
             agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
@@ -1322,8 +1390,9 @@ def restore_primary_runtime(agent) -> bool:
                 agent.model,
                 agent.provider,
             )
-        defer = getattr(agent, "_defer_token_budget_effect", None)
-        if not (callable(defer) and defer(publish_restore_log)):
+        if effect_sink is not None:
+            effect_sink.defer(publish_restore_log)
+        else:
             publish_restore_log()
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -1338,8 +1407,9 @@ def restore_primary_runtime(agent) -> bool:
                 with contextlib.suppress(Exception):
                     agent._emit_diagnostic_status(notice)
 
-            defer = getattr(agent, "_defer_token_budget_effect", None)
-            if not (callable(defer) and defer(publish_restore_notice)):
+            if effect_sink is not None:
+                effect_sink.defer(publish_restore_notice)
+            else:
                 publish_restore_notice()
         return True
     except Exception as e:
@@ -2193,7 +2263,15 @@ def _resolve_switch_context_length(agent, snapshot):
     return custom_providers, effective
 
 
-def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
+def _update_switch_compressor(
+    agent,
+    custom_providers,
+    effective_context_length,
+    snapshot,
+    *,
+    transition=None,
+    effect_sink=None,
+) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
     if custom_providers is None:
@@ -2210,7 +2288,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
-        agent.context_compressor.update_model(
+        compressor_route = dict(
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
@@ -2218,18 +2296,30 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        if transition is not None:
+            transition.stage_compressor_route(
+                agent.context_compressor, **compressor_route
+            )
+        else:
+            agent.context_compressor.update_model(**compressor_route)
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
     # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
     # clamp lands before the first compaction on the new window, not after it (#114707).
     from agent.conversation_compression import revalidate_compression_feasibility
-    revalidate_compression_feasibility(agent)
+    if effect_sink is not None:
+        effect_sink.defer(lambda: revalidate_compression_feasibility(agent))
+    else:
+        revalidate_compression_feasibility(agent)
 
 
-def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
+def _build_primary_runtime_snapshot(
+    agent, api_mode, *, compressor_route=None
+) -> Dict[str, Any]:
     """The ``_primary_runtime`` record that persists a switch across turns."""
     cc = getattr(agent, "context_compressor", None) or None
+    staged = compressor_route if isinstance(compressor_route, dict) else {}
     rt = {
         "model": agent.model,
         "provider": agent.provider,
@@ -2247,12 +2337,20 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         # See #75091.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
-        "compressor_model": getattr(cc, "model", agent.model),
-        "compressor_base_url": getattr(cc, "base_url", agent.base_url),
-        "compressor_api_key": getattr(cc, "api_key", ""),
-        "compressor_provider": getattr(cc, "provider", agent.provider),
-        "compressor_context_length": cc.context_length if cc else 0,
-        "compressor_api_mode": getattr(cc, "api_mode", agent.api_mode),
+        "compressor_model": staged.get("model", getattr(cc, "model", agent.model)),
+        "compressor_base_url": staged.get(
+            "base_url", getattr(cc, "base_url", agent.base_url)
+        ),
+        "compressor_api_key": staged.get("api_key", getattr(cc, "api_key", "")),
+        "compressor_provider": staged.get(
+            "provider", getattr(cc, "provider", agent.provider)
+        ),
+        "compressor_context_length": staged.get(
+            "context_length", cc.context_length if cc else 0
+        ),
+        "compressor_api_mode": staged.get(
+            "api_mode", getattr(cc, "api_mode", agent.api_mode)
+        ),
         "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
     }
     if api_mode == "anthropic_messages":
@@ -2264,13 +2362,20 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
     return rt
 
 
-def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
+def _finish_switch(
+    agent, new_provider, old_norm, new_norm, *, transition=None
+) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
-    agent._credential_pool_revert_id = None
+    if transition is not None:
+        transition.defer_coordinator(
+            lambda: setattr(agent, "_credential_pool_revert_id", None)
+        )
+    else:
+        agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
@@ -2288,7 +2393,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
         logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
 
 
-def _persist_switch_billing_route(agent) -> None:
+def _persist_switch_billing_route(agent, *, effect_sink=None) -> None:
     """Persist the billing route so dashboard Model cards show the post-switch provider."""
     # _session_db / session_id may be unset (tests, bare agents).
     session_db = getattr(agent, "_session_db", None)
@@ -2312,14 +2417,23 @@ def _persist_switch_billing_route(agent) -> None:
                 "Failed to persist billing route after model switch", exc_info=True
             )
 
-    defer = getattr(agent, "_defer_token_budget_effect", None)
-    if callable(defer) and defer(publish):
-        return
-    publish()
+    if effect_sink is not None:
+        effect_sink.defer(publish)
+    else:
+        publish()
 
 
 def switch_model(
-    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    capabilities=None,
+    *,
+    transition=None,
+    effect_sink=None,
 ):
     """Switch the model/provider in-place for a live agent (rebuild clients, caching flags,
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
@@ -2355,7 +2469,14 @@ def switch_model(
         provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
-        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
+        _update_switch_compressor(
+            agent,
+            custom_providers,
+            effective_context_length,
+            snapshot,
+            transition=transition,
+            effect_sink=effect_sink,
+        )
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:
@@ -2376,8 +2497,14 @@ def switch_model(
     # short-circuiting the freshly selected healthy provider.
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
-    agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
-    _finish_switch(agent, new_provider, old_norm, new_norm)
+    agent._primary_runtime = _build_primary_runtime_snapshot(
+        agent,
+        api_mode,
+        compressor_route=(transition.compressor_route if transition is not None else None),
+    )
+    _finish_switch(
+        agent, new_provider, old_norm, new_norm, transition=transition
+    )
     def publish_switch_log():
         logger.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -2386,10 +2513,11 @@ def switch_model(
             new_model,
             new_provider,
         )
-    defer = getattr(agent, "_defer_token_budget_effect", None)
-    if not (callable(defer) and defer(publish_switch_log)):
+    if effect_sink is not None:
+        effect_sink.defer(publish_switch_log)
+    else:
         publish_switch_log()
-    _persist_switch_billing_route(agent)
+    _persist_switch_billing_route(agent, effect_sink=effect_sink)
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):

@@ -26,6 +26,7 @@ class DelegateRouteVerdict:
 
     kind: Literal["not_delegate", "recoverable", "invalid", "unverified"]
     owner_id: Optional[str] = None
+    owner_end_state: Optional[tuple[Optional[float], Optional[str]]] = None
 
 
 def _origin_json(source) -> Optional[str]:
@@ -152,11 +153,128 @@ def _delegate_owner_from_route_rows(
                     return DelegateRouteVerdict("invalid")
             except (TypeError, ValueError):
                 return DelegateRouteVerdict("invalid")
-    return DelegateRouteVerdict("recoverable", str(owner["id"]))
+    return DelegateRouteVerdict(
+        "recoverable", str(owner["id"]), (owner.get("ended_at"), owner.get("end_reason")),
+    )
 
 
 class SessionRecoveryMixin:
     """SessionStore durable-row recovery and the SQLite side of routing transitions."""
+
+    def _reconcile_poisoned_delegate_route(
+        self, session_key: str, observed: SessionEntry, source: SessionSource,
+        *, quarantine_invalid: bool = True,
+    ) -> Optional[SessionEntry]:
+        """Restore a proven chat owner before an inbound turn can wait on a delegate lease.
+
+        Old gateway builds could persist a child as this key's route and stamp its peer row.
+        Ordinary stale-session recovery misses it because the child remains live. The rare
+        repair holds the route lock while rechecking the DB proof and publishing the owner;
+        it never ends or acquires the still-running child's execution session.
+        """
+        from gateway.session import _now, is_internal_subagent_row, transport_profile_of
+
+        db = self._db_for_key(session_key)
+        if db is None:
+            fallback_entry = (self._routing_fallback_baseline or {}).get(session_key)
+            if self._routing_db_loaded or (
+                fallback_entry is not None and fallback_entry["session_id"] == observed.session_id
+            ):
+                raise RuntimeError(
+                    f"Cannot verify session provenance for route {session_key}; retry when state.db is available"
+                )
+            return observed
+        try:
+            routed_row = db.get_session(observed.session_id)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot verify session provenance for route {session_key}; retry the inbound turn"
+            ) from exc
+        if not is_internal_subagent_row(routed_row):
+            return observed
+
+        with self._lock:
+            current = self._entry_locked(session_key)
+            if current is not observed:
+                return current
+            verdict = self._poisoned_delegate_route_verdict(
+                session_key=session_key, entry=current, source=source, db=db,
+            )
+            if verdict.kind == "unverified" or not self._routing_db_loaded:
+                raise RuntimeError(
+                    f"Cannot verify session provenance for route {session_key}; retry the inbound turn"
+                )
+            if verdict.kind == "not_delegate":
+                return current
+            if verdict.kind == "recoverable" and verdict.owner_id:
+                try:
+                    owner_row = db.get_session(verdict.owner_id)
+                    if owner_row is None or is_internal_subagent_row(owner_row):
+                        raise ValueError("verified owner row disappeared or became a delegate")
+                    if verdict.owner_end_state is None or db.reopen_session(
+                        verdict.owner_id, expected_end_state=verdict.owner_end_state,
+                    ) is not True:
+                        raise ValueError("verified owner lifecycle changed during recovery")
+                except Exception as exc:
+                    logger.warning(
+                        "Could not reopen verified owner %s for poisoned route %s",
+                        verdict.owner_id, session_key, exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"Cannot reopen verified owner for route {session_key}; retry the inbound turn"
+                    ) from exc
+                else:
+                    try:
+                        created_at = datetime.fromtimestamp(float(owner_row["started_at"]))
+                    except (KeyError, TypeError, ValueError, OSError):
+                        created_at = current.created_at
+                    repaired = replace(
+                        current, session_id=verdict.owner_id, created_at=created_at,
+                        updated_at=_now(), origin=source, platform=source.platform,
+                        chat_type=source.chat_type, transport_profile=transport_profile_of(source),
+                        active_turn_token=None, active_turn_started_at=None,
+                        suspended=False, resume_pending=False, resume_reason=None,
+                        last_resume_marked_at=None,
+                    )
+                    data = self._entries_as_dicts()
+                    data[session_key] = repaired.to_dict()
+                    self._persist_routing_data(
+                        data, self._next_routing_generation_locked(), require_primary=True,
+                    )
+                    self._entries[session_key] = repaired
+                    clear_child_peer = getattr(db, "clear_poisoned_delegate_gateway_peer", None)
+                    if callable(clear_child_peer):
+                        try:
+                            clear_child_peer(current.session_id, session_key)
+                        except Exception:
+                            logger.warning(
+                                "Could not clear legacy gateway peer on delegate %s",
+                                current.session_id, exc_info=True,
+                            )
+                    logger.warning(
+                        "Restored poisoned gateway route %s from delegate %s to owner %s",
+                        session_key, current.session_id, verdict.owner_id,
+                    )
+                    return repaired
+
+            # The row is definitely an internal execution session, but the previous owner
+            # cannot be proven. Quarantine this key; the normal exact-peer recovery below may
+            # find a newer human session, otherwise it creates a fresh one. Do not end the child.
+            # Completion preflight may restore a proven owner, but cannot remove a route on
+            # behalf of a stale event. Ordinary inbound owns quarantine and fresh creation.
+            if not quarantine_invalid:
+                return None
+            data = self._entries_as_dicts()
+            data.pop(session_key, None)
+            self._persist_routing_data(
+                data, self._next_routing_generation_locked(), require_primary=True,
+            )
+            self._entries.pop(session_key, None)
+            logger.warning(
+                "Quarantined poisoned gateway route %s from delegate %s (verdict=%s)",
+                session_key, current.session_id, verdict.kind,
+            )
+            return None
 
     def _poisoned_delegate_route_verdict(
         self, *, session_key: str, entry: SessionEntry, source: SessionSource, db,

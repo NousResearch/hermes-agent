@@ -98,7 +98,7 @@ class TestGatewayPinningFailsClosed:
 
 
     @pytest.mark.asyncio
-    async def test_live_spawning_session_rebinds_from_different_route(self):
+    async def test_live_previous_session_cannot_replace_current_route(self):
         current = self._entry("sess_current")
         pinned = self._entry("sess_live")
         runner = self._make_runner(
@@ -110,10 +110,8 @@ class TestGatewayPinningFailsClosed:
             current, "sess_live"
         )
 
-        assert resolved is pinned
-        runner.session_store.switch_session.assert_called_once_with(
-            current.session_key, "sess_live", expected_session_id=current.session_id,
-        )
+        assert resolved is None
+        self._assert_no_route_change(runner)
 
     @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):
@@ -163,6 +161,7 @@ class TestGatewayPinningFailsClosed:
             switched_entry=tip,
         )
 
+        runner.session_store.lookup_by_session_key.return_value = current
         resolved = await runner._resolve_async_delegation_session(
             current, "sess_parent"
         )
@@ -194,6 +193,7 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.advance_compression_session = MagicMock(return_value=tip)
         runner._async_session_store = AsyncSessionStore(runner.session_store)
 
+        runner.session_store.lookup_by_session_key.return_value = current
         resolved = await runner._resolve_async_delegation_session(
             current, "sess_parent"
         )
@@ -209,7 +209,7 @@ class TestGatewayPinningFailsClosed:
 async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     """A non-compression re-pin that resolved its row across an await must not move the route
     after the run was invalidated (/stop) or the route was replaced (/new, /resume) meanwhile;
-    an undisturbed pin still lands. Real store + real resolver; the DB lookup is event-gated.
+    an unrelated ordinary pin never overrides the owner. Real store + real resolver; the DB lookup is event-gated.
     Scenario by the #113690 reporter."""
     import asyncio
     from types import SimpleNamespace
@@ -235,7 +235,7 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     runner._session_db = SimpleNamespace(get_session=AsyncMock(side_effect=get_session))
     task = asyncio.create_task(runner._resolve_async_delegation_session(entry, "test-pinned"))
     await asyncio.wait_for(entered.wait(), 3)
-    expected = "test-pinned"
+    expected = entry.session_id
     if boundary != "none":
         runner._invalidate_session_run_generation(entry.session_key, reason="test boundary")
         assert not runner._is_session_run_current(entry.session_key, generation)
@@ -247,10 +247,7 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     result = await asyncio.wait_for(task, 3)
 
     assert store.lookup_by_session_key(entry.session_key).session_id == expected
-    if boundary == "none":
-        assert result is not None and result.session_id == expected
-    else:
-        assert result is None
+    assert result is None
 
 
 class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
@@ -339,8 +336,8 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
         getattr(runner.session_store, "switch_session").assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_ordinary_pin_still_rebinds_on_a_guarded_platform(self):
-        """The guard rejects rows that cannot own the route, not pinning itself."""
+    async def test_ordinary_same_key_pin_does_not_rebind(self):
+        """Same-key history alone is not proof of current conversation ownership."""
         current = self._discord_entry("sess_chat")
         pinned = self._discord_entry("sess_peer")
         runner = self._make_runner(
@@ -350,10 +347,8 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
 
         resolved = await runner._resolve_async_delegation_session(current, "sess_peer")
 
-        assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once_with(
-            current.session_key, "sess_peer", expected_session_id="sess_chat",
-        )
+        assert resolved is None
+        runner.session_store.switch_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delegate_provenance_is_guarded_on_other_platforms(self):

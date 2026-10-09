@@ -655,7 +655,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release")
+    "heartbeat_seconds", "persist_on_release", "handoff_note")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -2693,8 +2693,9 @@ def _redact_process_result(result: dict) -> dict:
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
             result[key] = redact_terminal_output(value, command)
-    if isinstance(command, str) and command:
-        result["command"] = redact_sensitive_text(command, code_file=True)
+    for key in ("command", "handoff_note"):
+        if isinstance(value := result.get(key), str) and value:
+            result[key] = redact_sensitive_text(value, code_file=True)
     return result
 
 

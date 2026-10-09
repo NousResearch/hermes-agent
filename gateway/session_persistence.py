@@ -439,8 +439,14 @@ class SessionPersistenceMixin:
         self._reconcile_recovered_routing_locked()
         return self._entries_as_dicts(), self._next_routing_generation_locked()
 
-    def _persist_routing_data(self, data: dict[str, Any], generation: int) -> None:
-        """Serialize all whole-index writers through one durable write lock."""
+    def _persist_routing_data(
+        self, data: dict[str, Any], generation: int, *, require_primary: bool = False,
+    ) -> None:
+        """Serialize whole-index writers; provenance repair requires the authoritative DB commit.
+
+        A JSON-only repair cannot authorize clearing the child's durable peer: startup prefers
+        the unchanged DB route, which would then have lost the evidence needed to recover it.
+        """
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
                 return
@@ -453,12 +459,16 @@ class SessionPersistenceMixin:
                         data[key] = json.loads(entry_json)
             db_saved = False
             replacer = self._routing_db_method("replace_gateway_routing_entries")
+            if require_primary and replacer is None:
+                raise RuntimeError("Cannot persist recovered route; retry when state.db is available")
             if replacer is not None:
                 try:
                     replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
+                    if require_primary:
+                        raise
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
                     self._save_sessions_json(data)

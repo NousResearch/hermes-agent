@@ -50,7 +50,7 @@ def test_watcher_stays_pending_without_a_serving_gateway(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Route guard: a delegate child never registers a route-following watcher
+# Child watchers retain metadata; consumers enforce live-owner delivery policy.
 # ---------------------------------------------------------------------------
 
 
@@ -127,14 +127,13 @@ def _spawn_and_record(monkeypatch, platform, *, delegated_child):
     return json.loads(raw), armed
 
 
-def test_delegate_child_on_a_route_guard_platform_registers_no_watcher(monkeypatch):
-    """The child's pin would BE the route: decide before registering, not after
-    (2026-09-17 dev-Discord hijack, #57498)."""
+def test_delegate_child_on_a_route_guard_platform_retains_watcher(monkeypatch):
+    """Handoff and opt-in need a watcher; delivery verifies the current owner."""
     from gateway.config import Platform
 
     result, armed = _spawn_and_record(monkeypatch, Platform.DISCORD, delegated_child=True)
 
-    assert armed == []
+    assert armed == ["armed"]
     assert result["notify_on_complete"] is False
     assert "subagent_note" in result
 

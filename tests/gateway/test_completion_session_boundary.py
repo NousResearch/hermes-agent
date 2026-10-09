@@ -11,19 +11,22 @@ async-delegation path already uses (``_classify_completion_target``):
 - retry (transient DB uncertainty)       -> watcher re-polls
 - deliver (live / idle-ended parent)     -> proceed as today
 
-Unstamped legacy events keep today's deliver-always behavior.
+Unstamped legacy gateway events remain retrievable without waking a new conversation.
 """
 
 import asyncio
 import json
 from collections import OrderedDict
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_constants import get_hermes_home
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -39,28 +42,35 @@ def isolated_registry(tmp_path, monkeypatch):
 
 
 class _SessionDB:
-    def __init__(self, row, tip=None):
-        self._row = row
+    def __init__(self, rows, tip=None):
+        self._rows = rows
         self._tip = tip
 
     async def get_session(self, session_id):
-        return self._row
+        return self._rows.get(session_id)
 
     async def get_compression_tip(self, session_id):
         return self._tip
 
 
-def _runner(adapter, *, session_db=...):
+def _runner(adapter, *, session_db=..., owner_session_id="sess-current"):
     def admit(event):
         event._gateway_accepted = True
     adapter.handle_message.side_effect = admit
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner.session_store = SimpleNamespace(
-        _ensure_loaded=lambda: None,
-        _entries={},
+    runner.config = GatewayConfig()
+    store = runner.session_store = SessionStore(get_hermes_home() / "sessions", runner.config)
+    store._ensure_loaded()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    key = store._generate_session_key(source)
+    now = datetime.now(timezone.utc)
+    store._entries[key] = SessionEntry(
+        session_key=key, session_id=owner_session_id, created_at=now, updated_at=now,
+        origin=source, platform=source.platform,
     )
+    store._db.create_session(owner_session_id, "telegram", session_key=key)
     runner._session_source_cache = {}
     runner._completion_delivery_lock = __import__("threading").Lock()
     runner._completion_deliveries_inflight = set()
@@ -192,7 +202,7 @@ def test_completion_from_user_closed_session_is_dropped(
     runner = _runner(
         adapter,
         session_db=_SessionDB(
-            {"ended_at": 1786288000.0, "end_reason": "session_reset"}
+            {"sess-closed": {"ended_at": 1786288000.0, "end_reason": "session_reset"}}
         ),
     )
 
@@ -212,8 +222,10 @@ def test_completion_after_idle_end_still_delivers(
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(
         adapter,
+        owner_session_id="sess-idle",
         session_db=_SessionDB(
-            {"ended_at": 1786288000.0, "end_reason": "idle_timeout"}
+            {"sess-idle": {"id": "sess-idle", "session_key": "agent:main:telegram:dm:123",
+                           "ended_at": 1786288000.0, "end_reason": "idle_timeout"}}
         ),
     )
 
@@ -227,7 +239,9 @@ def test_completion_after_idle_end_still_delivers(
 def test_completion_from_live_session_delivers(monkeypatch, isolated_registry):
     _finished_session(isolated_registry)
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB({"ended_at": None}))
+    runner = _runner(adapter, owner_session_id="sess-live", session_db=_SessionDB({
+        "sess-live": {"id": "sess-live", "session_key": "agent:main:telegram:dm:123", "ended_at": None},
+    }))
 
     _run_watcher(
         monkeypatch, runner, _watcher("proc_boundary", "sess-live"),
@@ -236,16 +250,15 @@ def test_completion_from_live_session_delivers(monkeypatch, isolated_registry):
     adapter.handle_message.assert_awaited_once()
 
 
-def test_unstamped_legacy_completion_delivers(monkeypatch, isolated_registry):
-    """Events without the spawn-time stamp keep today's behavior even when a
-    session DB is present."""
+def test_unstamped_legacy_completion_does_not_inject(monkeypatch, isolated_registry):
+    """The current chat key cannot prove which conversation spawned a legacy job."""
     _finished_session(isolated_registry)
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_SessionDB({}))
 
     _run_watcher(monkeypatch, runner, _watcher("proc_boundary"))
 
-    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.assert_not_awaited()
 
 
 def test_retry_verdict_returns_false_for_watcher_repoll():
@@ -266,7 +279,7 @@ def test_retry_verdict_returns_false_for_watcher_repoll():
 
 def test_terminal_verdict_returns_none_without_injection():
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_SessionDB({}))
 
     result = asyncio.run(
         runner._deliver_completion_notification(
@@ -287,7 +300,7 @@ def test_async_delegation_gate_unchanged():
     delegation-owned gate (terminal verdict -> None), proving the completion
     branch did not fork or shadow the delegation policy."""
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_SessionDB({}))
 
     evt = {
         "type": "async_delegation",

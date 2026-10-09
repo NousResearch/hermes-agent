@@ -14,7 +14,6 @@ current owner. An unrelated pin is dropped before it can disclose output across 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Dict, Optional, cast
 
@@ -22,56 +21,6 @@ from gateway.session import SessionEntry, is_internal_subagent_row
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
-
-# Platforms where a pinned async-delegation completion may re-point the channel route,
-# so a pin must be a verified session OF that channel before switch_session runs.
-# The extra peer-key checks are Discord-only by #131942's decision. Delegate provenance
-# itself is guarded on every messaging platform.
-_ROUTE_GUARD_PLATFORMS = ("discord",)
-
-
-def _route_guard_platform(session_entry: SessionEntry) -> str:
-    """Route-guard platform this session serves, lowercased; "" when unguarded/unknown."""
-    platform = getattr(session_entry, "platform", None)
-    name = getattr(platform, "value", platform)
-    if not name:
-        # gateway/session.py build_session_key layout is <ns>:<platform>:<chat_type>[...] with
-        # ns = "agent:main" (default) or "agent:<profile>" — always two tokens, so the platform
-        # is token 2 ("agent:dev:discord:thread:..."). Fall back to it when the entry has no
-        # platform object (legacy/hand-built entries).
-        parts = str(getattr(session_entry, "session_key", "") or "").split(":")
-        name = parts[2] if len(parts) > 2 and parts[0] == "agent" else ""
-    name = str(name or "").strip().lower()
-    return name if name in _ROUTE_GUARD_PLATFORMS else ""
-
-
-def _pin_route_rejection(pinned_row: Dict[str, Any], session_entry: SessionEntry) -> str:
-    """Reason a pinned completion row cannot own *session_entry*'s route, else "".
-
-    A delegate child (or any session that never carried this channel's key) must never
-    become the route: switch_session would end the chat's real session and re-stamp the
-    child row as the channel's (2026-09-17 dev Discord hijack).
-    """
-    if is_internal_subagent_row(pinned_row):
-        return "pinned row has delegate execution provenance"
-    raw_config = pinned_row.get("model_config")
-    if isinstance(raw_config, str):
-        try:
-            raw_config = json.loads(raw_config)
-        except (ValueError, TypeError):
-            # A session row's model_config is JSON text when written by the store; a row that
-            # carries something else simply has no delegation markers to inspect.
-            raw_config = {}
-    if isinstance(raw_config, dict) and raw_config.get("_delegate_from"):
-        return f"pinned row is a delegate child of {raw_config['_delegate_from']}"
-    parent = str(pinned_row.get("parent_session_id") or "")
-    if parent and parent == str(getattr(session_entry, "session_id", "") or ""):
-        return f"pinned row was spawned by the route's own session {parent}"
-    row_key = pinned_row.get("session_key")
-    if row_key is not None and str(row_key) != str(getattr(session_entry, "session_key", "") or ""):
-        return f"pinned row session_key {row_key!r} is not this route"
-    return ""
-
 
 class GatewayNotificationRouteGuardMixin:
     """Route ownership for pinned async-delegation completions."""
@@ -97,6 +46,42 @@ class GatewayNotificationRouteGuardMixin:
             return await self._watch_owner_db_for_key(session_key)
         return cast(Any, self._session_db)
 
+    async def _classify_completion_target(self, parent_session_id: str, session_key: str = "") -> str:
+        """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
+        session live or compression-rotated with a live continuation; the resolver still retargets),
+        ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
+        rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
+        try:
+            session_db = (await self._route_owner_session_db(session_key)
+                          if session_key else getattr(self, "_session_db", None))
+            if session_db is None:
+                return "retry"
+            parent = await session_db.get_session(parent_session_id)
+        except Exception:
+            logger.debug("Async-completion pre-flight parent lookup failed for %s", parent_session_id, exc_info=True)
+            return "retry"
+        if parent is None:
+            return "terminal"
+        if not parent.get("ended_at"):
+            return "deliver"
+        end_reason = str(parent.get("end_reason") or "")
+        if end_reason != "compression":
+            # Only a USER-closed session (/new, user_exit, session_switch) is unreachable unless a
+            # legacy delegate hijack caused the switch; idle/timeout ends stay routable.
+            return await self._classify_non_compression_target(parent, parent_session_id, end_reason)
+        try:
+            tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            if not tip_session_id or tip_session_id == parent_session_id:
+                # Rotation mid-flight: continuation not visible yet. Retry, don't drop.
+                return "retry"
+            tip = await session_db.get_session(tip_session_id)
+        except Exception:
+            logger.debug("Async-completion pre-flight tip lookup failed for %s", parent_session_id, exc_info=True)
+            return "retry"
+        if tip is None or tip.get("ended_at"):
+            return "retry"
+        return "deliver"
+
     async def _classify_non_compression_target(
         self, parent: Dict[str, Any], parent_session_id: str, end_reason: str,
     ) -> str:
@@ -116,6 +101,7 @@ class GatewayNotificationRouteGuardMixin:
                         repaired = await asyncio.to_thread(
                             store._reconcile_poisoned_delegate_route,
                             session_key, entry, entry.origin,
+                            quarantine_invalid=False,
                         )
                     except Exception:
                         logger.debug(
@@ -172,7 +158,9 @@ class GatewayNotificationRouteGuardMixin:
             logger.debug("Process watch route lookup failed for %s", pin, exc_info=True)
             return "retry"
 
-    async def _watcher_message_route_owned(self, watcher: dict, process: Any) -> bool:
+    async def _watcher_message_route_owned(
+        self, watcher: dict, process: Any, *, raise_lookup_errors: bool = False,
+    ) -> bool:
         """Prove a direct process status still addresses its spawning conversation."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
         from tools.process_registry_notifications import should_surface_notification
@@ -187,13 +175,17 @@ class GatewayNotificationRouteGuardMixin:
             generation = self._current_session_run_generation(key)
             entry = await self.async_session_store.lookup_by_session_key(key)
             if entry is None:
+                if raise_lookup_errors and not getattr(self.session_store, "_routing_db_loaded", True):
+                    raise RuntimeError("Process watcher routing database unavailable")
                 return False
             try:
                 session_db = await self._watch_owner_db_for_key(key)
                 if session_db is None:
-                    return False
+                    raise RuntimeError("Process watcher owner database unavailable")
                 row = await session_db.get_session(pin)
             except Exception:
+                if raise_lookup_errors:
+                    raise
                 logger.debug("Process watcher parent lookup failed for %s", pin, exc_info=True)
                 return False
             if row is None:
@@ -202,9 +194,11 @@ class GatewayNotificationRouteGuardMixin:
             if reason in _USER_BOUNDARY_END_REASONS:
                 return False
             if is_internal_subagent_row(row):
-                owns = await self._delegate_pin_belongs_to_route(session_db, row, entry)
+                owns = await self._delegate_pin_belongs_to_route(
+                    session_db, row, entry, raise_lookup_errors=raise_lookup_errors)
             elif reason == "compression":
-                owns = await self._resolve_compression_lineage_target(session_db, entry, pin) == entry.session_id
+                owns = await self._resolve_compression_lineage_target(
+                    session_db, entry, pin, raise_lookup_errors=raise_lookup_errors) == entry.session_id
             else:
                 owns = pin == entry.session_id and row.get("session_key") == key
             if not owns or not await self._unchanged_completion_route(entry, generation):
@@ -213,6 +207,45 @@ class GatewayNotificationRouteGuardMixin:
                      "task_id": getattr(process, "task_id", "")}
             return (str(getattr(process, "session_key", "") or "").strip() in {"", key, entry.session_id}
                     and should_surface_notification(owner))
+
+    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict, session) -> Optional[bool]:
+        """True sent, None terminally suppressed, False temporarily unavailable."""
+        from gateway.run import _non_conversational_metadata
+        from gateway.dead_targets import classify_dead_error
+        try:
+            source = await asyncio.to_thread(self._build_process_event_source, watcher)
+            adapter = self._resolve_injection_adapter(platform_name, source)
+            if not adapter:
+                return False
+            if not chat_id or not await self._watcher_message_route_owned(
+                watcher, session, raise_lookup_errors=True,
+            ):
+                return None
+            send_meta = {"thread_id": thread_id} if thread_id else None
+            metadata = _non_conversational_metadata(send_meta, platform=platform_name)
+            send_for_platform = getattr(adapter, "send_for_platform", None)
+            if callable(send_for_platform):
+                result = await send_for_platform(platform_name, chat_id, message_text, metadata=metadata)
+            else:
+                result = await adapter.send(chat_id, message_text, metadata=metadata)
+            return self._watcher_send_result(result)
+        except Exception as exc:
+            logger.debug("Watcher delivery unavailable for %s", watcher.get("session_id"), exc_info=True)
+            return None if classify_dead_error(str(exc)) else False
+
+    @staticmethod
+    def _watcher_send_result(result) -> Optional[bool]:
+        """Retain transient failures without repeatedly sending to permanent failures."""
+        from gateway.dead_targets import classify_dead_error
+        from gateway.platforms.base import BasePlatformAdapter
+        if getattr(result, "success", None) is not False:
+            return True
+        error = getattr(result, "error", "") or ""
+        retryable = (getattr(result, "retryable", False)
+                     or getattr(result, "retry_after", None) is not None
+                     or BasePlatformAdapter._is_rate_limited_error(error)
+                     or BasePlatformAdapter._is_retryable_error(error))
+        return False if retryable and not classify_dead_error(error) else None
 
     async def _delegate_pin_belongs_to_route(
         self, session_db: Any, pinned_row: Dict[str, Any], entry: SessionEntry,
@@ -335,130 +368,52 @@ class GatewayNotificationRouteGuardMixin:
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str,
+        *, raise_lookup_errors: bool = False,
     ) -> Optional[SessionEntry]:
-        """Resolve an async completion to its verified owning gateway session.
+        """Resolve only the current owner, its child, or a verified compression continuation.
 
-        Follow compression-rotation lineage (parent row ended, child continues), but never let a
-        late completion override an unrelated /new or restored route. Unknown ownership fails
-        closed; the result stays in the delegation records.
+        A matching chat key is historical peer identity, not evidence that no reset happened.
+        Never use a completion to switch an ordinary previous conversation back into the route.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = await self._route_owner_session_db(session_entry.session_key)
-        if session_db is None:
-            logger.warning(
-                "Async-delegation completion has no session database; "
-                "dropping injection (#55578 fail-closed)."
-            )
-            return None
-        pinned_row = None
-        # Snapshot the run generation before the row lookup awaits: a /stop or /new landing while
-        # the lookup is pending must not let this completion re-point the route afterwards.
-        run_generation = self._current_session_run_generation(session_entry.session_key)
+
+        generation = self._current_session_run_generation(session_entry.session_key)
         try:
-            pinned_row = await session_db.get_session(pinned_session_id)
-        except Exception:
-            logger.debug("Async-delegation parent lookup failed for %s", pinned_session_id, exc_info=True)
-        if pinned_row is None:
-            logger.warning(
-                "Async-delegation completion has unknown spawning session %s; "
-                "dropping injection (#55578 fail-closed).", pinned_session_id,
-            )
-            return None
-        target_session_id = pinned_session_id
-        follows_compression = False
-        if pinned_row.get("ended_at"):
-            _end_reason = str(pinned_row.get("end_reason") or "")
-            if _end_reason in _USER_BOUNDARY_END_REASONS:
-                logger.warning(
-                    "Async-delegation completion pinned to user-closed session %s "
-                    "(end_reason=%r); dropping injection instead of resurrecting it "
-                    "(#55578 fail-closed).", pinned_session_id, _end_reason,
-                )
+            session_db = await self._route_owner_session_db(session_entry.session_key)
+            if session_db is None:
+                raise RuntimeError("Completion owner database unavailable")
+            row = await session_db.get_session(pinned_session_id)
+            if row is None:
                 return None
-            if _end_reason != "compression":
-                # Idle/timeout end (scale-to-zero norm): retarget only when this pin is
-                # proven to belong to the current chat. Delegate children need ancestry;
-                # ordinary gateway rows need the same durable key.
-                owns_route = (
-                    await self._delegate_pin_belongs_to_route(session_db, pinned_row, session_entry)
-                    if is_internal_subagent_row(pinned_row)
-                    else pinned_row.get("session_key") == session_entry.session_key
+            reason = str(row.get("end_reason") or "") if row.get("ended_at") else ""
+            if reason in _USER_BOUNDARY_END_REASONS:
+                return None
+            if is_internal_subagent_row(row):
+                owns = await self._delegate_pin_belongs_to_route(
+                    session_db, row, session_entry, raise_lookup_errors=True,
                 )
-                if not owns_route:
-                    logger.warning("Async-delegation completion for ended session %s has no verified chat owner",
-                                   pinned_session_id)
+                return await self._unchanged_completion_route(session_entry, generation) if owns else None
+            if reason != "compression":
+                if pinned_session_id != session_entry.session_id:
                     return None
-                logger.info(
-                    "Async-delegation completion pinned to %s-ended session %s; "
-                    "retargeting to the chat's current session %s.",
-                    _end_reason or "idle", pinned_session_id, session_entry.session_id,
-                )
-                return await self._unchanged_completion_route(session_entry, run_generation)
-            follows_compression = True
-            target_session_id = await self._resolve_compression_lineage_target(
-                session_db, session_entry, pinned_session_id,
+                row_key = row.get("session_key")
+                if row_key is not None and row_key != session_entry.session_key:
+                    return None
+                return await self._unchanged_completion_route(session_entry, generation)
+            target = await self._resolve_compression_lineage_target(
+                session_db, session_entry, pinned_session_id, raise_lookup_errors=True,
             )
-            if target_session_id is None:
+            if target is None:
                 return None
-        if target_session_id == session_entry.session_id:
-            if is_internal_subagent_row(pinned_row):
-                logger.warning("Async-delegation completion route %s is itself a delegate child; dropping injection",
-                               session_entry.session_key)
+            if not await self._unchanged_completion_route(session_entry, generation):
                 return None
-            return await self._unchanged_completion_route(session_entry, run_generation)
-        if not follows_compression:
-            guard_platform = _route_guard_platform(session_entry)
-            # Delegate provenance is platform-independent. The additional peer-key checks
-            # retain their narrower Discord compatibility boundary from #131942.
-            rejection = (
-                _pin_route_rejection(pinned_row, session_entry)
-                if guard_platform or is_internal_subagent_row(pinned_row) else ""
+            if target == session_entry.session_id:
+                return session_entry
+            return await self.async_session_store.advance_compression_session(
+                session_entry.session_key, session_entry.session_id, target,
             )
-            if rejection:
-                # A child may report to its verified coordinator. A foreign pin, branch, or
-                # unknown lineage must never disclose its output to this chat.
-                child_of_route = (
-                    await self._delegate_pin_belongs_to_route(session_db, pinned_row, session_entry)
-                    if is_internal_subagent_row(pinned_row) else False
-                )
-                logger.warning(
-                    "Async-delegation completion pinned to %s rejected for %s route %s (%s); "
-                    "%s (#57498 route guard).",
-                    target_session_id, guard_platform, session_entry.session_key, rejection,
-                    "delivering to verified coordinator " + session_entry.session_id if child_of_route
-                    else "dropping injection without a verified owner",
-                )
-                return (
-                    await self._unchanged_completion_route(session_entry, run_generation)
-                    if child_of_route else None
-                )
-        prior_session_id = session_entry.session_id
-        if not self._is_session_run_current(session_entry.session_key, run_generation):
-            logger.warning(
-                "Async-delegation completion for routing key %s was invalidated while resolving pinned "
-                "session %s; leaving the route on %s and dropping injection.",
-                session_entry.session_key, pinned_session_id, prior_session_id,
-            )
+        except Exception:
+            if raise_lookup_errors:
+                raise
+            logger.debug("Completion owner resolution unavailable for %s", pinned_session_id, exc_info=True)
             return None
-        if follows_compression:
-            switched = await self.async_session_store.advance_compression_session(
-                session_entry.session_key, prior_session_id, target_session_id,
-            )
-        else:
-            # CAS on the session this completion resolved against: a route replaced meanwhile
-            # (/new, /resume) wins over the stale completion.
-            switched = await self.async_session_store.switch_session(
-                session_entry.session_key, target_session_id, expected_session_id=prior_session_id,
-            )
-        if switched is None:
-            logger.warning(
-                "Async-delegation completion could not bind routing key %s to "
-                "owning session %s (route moved or unknown); dropping injection.",
-                session_entry.session_key, target_session_id,
-            )
-            return None
-        logger.info(
-            "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
-            target_session_id, prior_session_id, session_entry.session_key,
-        )
-        return switched

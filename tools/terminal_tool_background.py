@@ -68,9 +68,9 @@ _ROUTING_FIELDS = (
 )
 
 
-# Platforms whose channel route can be re-pointed by a pinned async-delegation
-# completion, i.e. where a delegate child must never register a gateway completion
-# watcher (the pin would be the CHILD's session id and the route would follow it).
+# Platforms whose channel route needs delegation-aware notification ownership.
+# The consumer verifies ownership; producer metadata must survive for handoff,
+# explicit child-notification opt-in, and unread-result accounting.
 # Discord-only by decision (2026-09-18): every other platform keeps today's behavior
 # until it is proven the same way.
 _ROUTE_GUARD_PLATFORMS = ("discord",)
@@ -210,24 +210,14 @@ def spawn_background_process(
         if notify_on_complete:
             from agent.delegation_context import is_delegated_child_context
             child_context = is_delegated_child_context()
-            if child_context and is_route_guard_platform(proc_session.watcher_platform):
-                # A delegate child's completion can never own a chat route: the watcher pin
-                # would be the CHILD's session id and the channel route would follow it
-                # (2026-09-17 dev Discord hijack). Decide BEFORE registering the watcher and
-                # drop it on the process record, not only in the model-facing JSON.
-                notify_on_complete = False
-                logger.info(
-                    "background proc %s: delegate child on route-guard platform %r; "
-                    "completion watcher NOT registered",
-                    proc_session.id, proc_session.watcher_platform,
-                )
-            else:
-                proc_session.notify_on_complete = True
-                result_data["notify_on_complete"] = True
-                if completion_output_chars:
-                    proc_session.completion_output_chars = int(completion_output_chars)
-                if proc_session.watcher_platform:
-                    _register_completion_watcher(process_registry, proc_session, session_key)
+            # Suppression belongs to the consumer, where the live owner and profile
+            # policy are known. Clearing this flag loses unread results and opt-in.
+            proc_session.notify_on_complete = True
+            result_data["notify_on_complete"] = True
+            if completion_output_chars:
+                proc_session.completion_output_chars = int(completion_output_chars)
+            if proc_session.watcher_platform:
+                _register_completion_watcher(process_registry, proc_session, session_key)
             if child_context:
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
@@ -240,6 +230,8 @@ def spawn_background_process(
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
+        # The launch checkpoint precedes routing and notification setup.
+        process_registry._write_checkpoint()
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
@@ -249,7 +241,7 @@ def spawn_background_process(
 
 
 _SUBAGENT_NOTIFY_NOTE = (
-    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "You are a subagent: by default this process's completion notice will NOT reach your parent, and the process is killed when "
     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
@@ -282,6 +274,7 @@ def yield_to_background_handler(
             owner_task_id=task_id or effective_task_id, session_key=session_key,
             output_so_far=output_so_far)
         _stamp_routing_if_gateway(process_registry, session, session_key)
+        process_registry._write_checkpoint()
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
@@ -341,8 +334,11 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
                          "with poll/log and report it instead)."}
     if session.notify_on_complete and session.watcher_platform and not session.watcher_interval:
         _register_completion_watcher(process_registry, session, session.session_key)
+    # Persist after watcher arming too: restart must retain both the new owner
+    # and the descriptor needed to deliver its result.
+    process_registry._write_checkpoint()
     handed.append({"session_id": session.id, "command": session.command, "note": note})
     return {"status": "handed_off", "session_id": session.id, "command": session.command,
-            "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "
+            "note": "Your parent now owns this process and will receive its notifications; you will not. Mention the handoff "
                     "in your final answer."}
 

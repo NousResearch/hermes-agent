@@ -1203,6 +1203,16 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
+            if evt.get("type") in {"completion", "async_delegation"}:
+                from gateway.run_notifications_receipts import prepare_completion_owner
+                try:
+                    owner_ready = await prepare_completion_owner(self, synth_event)
+                except Exception as exc:
+                    # No adapter has accepted this event: storage uncertainty must refund
+                    # the primary and every sibling instead of exhausting their retry budget.
+                    raise WakeNotAccepted("completion owner lookup unavailable") from exc
+                if not owner_ready:
+                    return None
             await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted:
@@ -1262,41 +1272,6 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                 self._completion_deliveries_inflight.add(identity)
             return seen
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
-        """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
-        session live or compression-rotated with a live continuation; the resolver still retargets),
-        ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
-        rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
-            return "retry"
-        try:
-            parent = await session_db.get_session(parent_session_id)
-        except Exception:
-            logger.debug("Async-completion pre-flight parent lookup failed for %s", parent_session_id, exc_info=True)
-            return "retry"
-        if parent is None:
-            return "terminal"
-        if not parent.get("ended_at"):
-            return "deliver"
-        end_reason = str(parent.get("end_reason") or "")
-        if end_reason != "compression":
-            # Only a USER-closed session (/new, user_exit, session_switch) is unreachable unless a
-            # legacy delegate hijack caused the switch; idle/timeout ends stay routable.
-            return await self._classify_non_compression_target(parent, parent_session_id, end_reason)
-        try:
-            tip_session_id = await session_db.get_compression_tip(parent_session_id)
-            if not tip_session_id or tip_session_id == parent_session_id:
-                # Rotation mid-flight: continuation not visible yet. Retry, don't drop.
-                return "retry"
-            tip = await session_db.get_session(tip_session_id)
-        except Exception:
-            logger.debug("Async-completion pre-flight tip lookup failed for %s", parent_session_id, exc_info=True)
-            return "retry"
-        if tip is None or tip.get("ended_at"):
-            return "retry"
-        return "deliver"
-
     @staticmethod
     def _settle_durable_claim(kind: str, delegation_id: str, claim_id: str) -> None:
         """Best-effort ``drop``/``release`` of a durable completion claim."""
@@ -1313,7 +1288,7 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id)
+            verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
@@ -1367,16 +1342,20 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                     return claim
         elif evt_type != "completion":
             return claim
-        # Background completions carry only session_key, so after /new the OLD session's notification
-        # would land in the NEW one. Stamped events get the async-delegation pre-flight; unstamped deliver.
+        # A chat key cannot establish which conversation spawned an old completion.
+        # Raw API sessions retain their separate exact-session delivery path.
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if not parent_session_id:
+            if not _raw_process_event_session_id(evt):
+                if claim.claim_id:
+                    self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+                claim.proceed = False
             return claim
         # Pre-flight (#65838-class): adapter acceptance is NOT proof of delivery — the inner #55578 resolver
         # can still fail closed inside the message pipeline AFTER the adapter accepted, which would falsely
         # acknowledge the durable row as delivered. Verify the target here, before acceptance, and give
         # drops an honest durable disposition.
-        verdict = await self._classify_completion_target(parent_session_id)
+        verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
@@ -1397,7 +1376,7 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         elif verdict == "retry":
             # Transient uncertainty: tell the watcher to re-poll rather than drop or misroute.
             if claim.claim_id:
-                self._settle_durable_claim("release", claim.delegation_id, claim.claim_id)
+                self._settle_durable_claim("defer", claim.delegation_id, claim.claim_id)
             claim.proceed, claim.early_result = False, False
         return claim
 
@@ -1448,6 +1427,7 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         try:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
+                refused = claim.early_result is False  # Refund already-claimed batch siblings too.
                 return claim.early_result
             if identity is not None:
                 if self._completion_identity_seen(identity, claim=True):
@@ -1814,21 +1794,16 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         adapter = self._resolve_injection_adapter(platform_name, source)
         return session_key in (getattr(adapter, "_active_sessions", None) or {})
 
-    async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict, session) -> None:
-        from gateway.run import _non_conversational_metadata
-        source = await asyncio.to_thread(self._build_process_event_source, watcher)
-        adapter = self._resolve_injection_adapter(platform_name, source)
-        if adapter and chat_id:
-            if not await self._watcher_message_route_owned(watcher, session):
-                return
-            with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
-                send_meta = {"thread_id": thread_id} if thread_id else None
-                metadata = _non_conversational_metadata(send_meta, platform=platform_name)
-                send_for_platform = getattr(adapter, "send_for_platform", None)
-                if callable(send_for_platform):
-                    await send_for_platform(platform_name, chat_id, message_text, metadata=metadata)
-                else:
-                    await adapter.send(chat_id, message_text, metadata=metadata)
+    async def _present_watcher_final(self, watcher: dict, session, message_text: str) -> Optional[bool]:
+        from gateway.warning_notifications import warning_notifications_enabled
+        platform = watcher.get("platform", "")
+        async with self._completion_event_scope(watcher):
+            if session.exit_code not in {0, None} and not warning_notifications_enabled(platform):
+                return None
+            return await self._send_watcher_message(
+                platform, watcher.get("chat_id", ""), watcher.get("thread_id", ""),
+                message_text, watcher, session,
+            )
 
     @staticmethod
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
@@ -1863,6 +1838,7 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             "exit_code": session.exit_code,
             "completion_reason": getattr(session, "completion_reason", "exited"),
             "termination_source": getattr(session, "termination_source", ""),
+            "handoff_note": _redact_gateway_user_facing_secrets(getattr(session, "handoff_note", "") or ""),
             "output": _redact_gateway_user_facing_secrets(_out),
             # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
             "parent_session_id": (
@@ -1934,6 +1910,16 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
             session = process_registry.get(session_id)
             if session is None:
                 break
+            # Handoff changes the registry owner while this task is already polling.
+            # Keep its live descriptor aligned without starting a second watcher.
+            live_key = str(getattr(session, "session_key", "") or "")
+            if live_key.startswith("agent:"):
+                watcher = dict(watcher, session_key=live_key)
+            live_pin = str(getattr(session, "parent_session_id", "") or "")
+            if live_pin:
+                watcher = dict(watcher, parent_session_id=live_pin)
+            agent_notify = getattr(session, "notify_on_complete", agent_notify)
+            silent = notify_mode == "off" and not agent_notify
             owner_evt = {"owner_task_id": getattr(session, "owner_task_id", ""),
                          "task_id": getattr(session, "task_id", "")}
             async with self._completion_event_scope(watcher):
@@ -1983,11 +1969,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                     notify_mode == "error" and session.exit_code not in {0, None}
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
-                    from gateway.warning_notifications import present_notification
-                    async with self._completion_event_scope(watcher):
-                        await present_notification(
-                            lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher, session),
-                            platform=platform_name, diagnostic=session.exit_code not in {0, None})
+                    if await self._present_watcher_final(watcher, session, message_text) is False:
+                        continue
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 await self._send_watcher_message(

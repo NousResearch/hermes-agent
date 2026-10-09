@@ -117,12 +117,13 @@ async def test_native_stop_escapes_poisoned_route_and_next_inbound_restores_owne
     _stamp(db, "delegate-child", started_at=200.0, **peer)
     now = datetime.now()
     store = runner.session_store
-    store._loaded = True
-    store._entries[key] = SessionEntry(
-        session_key=key, session_id="delegate-child", created_at=now,
-        updated_at=now, origin=source, platform=Platform.DISCORD, chat_type="thread",
-    )
-    store._save()
+    store._ensure_loaded()
+    with store._lock:
+        store._entries[key] = SessionEntry(
+            session_key=key, session_id="delegate-child", created_at=now,
+            updated_at=now, origin=source, platform=Platform.DISCORD, chat_type="thread",
+        )
+        store._save()
 
     interrupted = MagicMock()
     with delegation._records_lock:

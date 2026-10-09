@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.5`:
+# On macOS, `npx -y apple-mail-mcp@2.20.6`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.5 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.6 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -174,12 +174,29 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # GHSA-68fv-2mgg-jv7q), not in the shipped bundle. The by-id changes also
 # reach `get-message-headers` and reply/forward, which stay disabled below.
 # No new tools: still 52 tools, all 18 default_enabled entries resolve.
+#
+# 2.20.6 is re-pinned on the same footing — a follow-up defect in a
+# default_enabled tool, found by @j5pu re-testing 2.20.5's own fix (#270).
+# The unscoped by-id scan's size-guard probe (`count of messages of mb`,
+# used to skip mailboxes over `APPLE_MAIL_MAX_BYID_SCAN_MAILBOX`) is not
+# reliably cheap: ~5-7 s on real 255k/794k-message mailboxes. It runs on
+# every mailbox the scan visits, so two or three large ones in a row burned
+# the whole 9 s in-script budget before the per-mailbox size check — which
+# only fires between mailboxes — ever got to stop the walk, and `get-message`
+# / `get-thread` were SIGKILLed with no diagnostic instead of the intended
+# "skipped, size unknown" outcome. The probe is now wrapped in its own 3 s
+# timeout and treated as over-threshold on expiry. @j5pu's broader point —
+# that an abandoned AppleScript probe keeps Mail.app's single serial event
+# queue busy regardless of this cap, so the real fix needs to avoid asking
+# Mail.app for a size at all (IMAP STATUS, or a cached/remembered size) — is
+# **not** addressed by 2.20.6 and remains open upstream (#270). No new
+# tools: still 52 tools, all 18 default_enabled entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.5"
+    - "apple-mail-mcp@2.20.6"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

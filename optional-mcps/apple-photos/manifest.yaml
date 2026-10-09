@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-photos-mcp@2.1.14`:
+# On macOS, `npx -y apple-photos-mcp@2.1.20`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.1.14 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.1.20 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 21 tools, every one carrying a description;
 #   - resolves all 13 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -49,12 +49,23 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # published package, `build/index.js` is byte-identical to 2.1.12 and the
 # runtime dependency ranges are unchanged. Its shipped delta is
 # `src/utils/photos_reader.py` (the opt-in cache), README and package.json.
+#
+# 2.1.20 is re-pinned — a real defect fix in the shipped `osxphotos` sidecar
+# reachable through `list-albums`/`library-info`, both default_enabled.
+# 0.77.1 -> 0.77.2 fixes shared-album reading on macOS 26+ and system-library
+# detection on macOS 27. Declined along the way: 2.1.15 (`ip-address` floor,
+# dev/install-tree only), 2.1.16 (Dependabot rebuild), 2.1.17
+# (`brace-expansion` floor, dev-only), 2.1.18 (osxphotos 0.76.1 -> 0.77.1,
+# no default_enabled fix on its own), 2.1.19 (`@modelcontextprotocol/sdk`
+# OAuth-client CVE, unreachable from this stdio server; `source-map-js`
+# floor, dev-only). No tool surface change: still 21 tools, all 13
+# default_enabled entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-photos-mcp@2.1.14"
+    - "apple-photos-mcp@2.1.20"
 
 # Reads the Photos library via an osxphotos Python sidecar; no credentials.
 auth:

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 _EYES = "\U0001f440"
@@ -28,10 +28,10 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
-def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+def _capture_sidecar(adapter: PhotonAdapter) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123", "reactionId": "react-1"}
 
@@ -41,8 +41,8 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
 
 def _capture_handled(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch
-) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -73,7 +73,7 @@ def _reaction_event(
     target_direction: Any = "outbound",
     space_type: str = "dm",
     target_text: Any = "the bot's earlier reply",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "messageId": "reaction-evt-1",
         "platform": "iMessage",
@@ -131,7 +131,7 @@ async def test_remove_reaction_posts_unreact(monkeypatch: pytest.MonkeyPatch) ->
 async def test_reaction_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
 
-    async def _boom(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _boom(path: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("sidecar down")
 
     adapter._sidecar_call = _boom  # type: ignore[assignment]

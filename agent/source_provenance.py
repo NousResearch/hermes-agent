@@ -109,26 +109,8 @@ class SourceProvenanceRegistry:
         forced redaction, then compares the two byte strings.
         """
 
-        if not isinstance(path, Path):
-            path = Path(path)
-        original_path = Path(path).expanduser()
-        if _contains_symlink_component(original_path):
-            raise SourceProvenanceError("symlink_path")
-        if not isinstance(content, bytes):
-            raise SourceProvenanceError("invalid_content")
-        if (
-            not isinstance(line_start, int)
-            or not isinstance(line_end, int)
-            or line_start < 1
-            or line_end < line_start
-            or line_end - line_start + 1 > MAX_SOURCE_SLICE_LINES
-        ):
-            raise SourceProvenanceError("invalid_line_range")
-        if len(content) > MAX_SOURCE_SLICE_BYTES:
-            raise SourceProvenanceError("slice_too_large")
-        identities = (session_id, turn_id, request_id, policy_digest)
-        if not all(isinstance(value, str) and value for value in identities):
-            raise SourceProvenanceError("missing_identity")
+        original_path = _validated_slice_path(
+            path, content, line_start, line_end, (session_id, turn_id, request_id, policy_digest))
 
         try:
             descriptor = _open_verified_source(original_path)
@@ -314,12 +296,15 @@ def provenance_kwargs_for_agent(
     """Return authenticated context-reference kwargs for a live agent turn."""
 
     session_id = str(getattr(agent, "session_id", "") or "")
+    if agent is None or not session_id:
+        return {}
     registry = getattr(agent, "_source_provenance_registry", None)
     if not isinstance(registry, SourceProvenanceRegistry):
         registry = SourceProvenanceRegistry()
         agent._source_provenance_registry = registry
 
     if establish_turn:
+        clear_agent_source_provenance(agent)
         previous_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
         previous_request_id = str(getattr(agent, "_current_api_request_id", "") or "")
         if previous_request_id:
@@ -468,7 +453,7 @@ def _read_bounded_slice_fd(descriptor: int, line_start: int, line_end: int) -> b
     selected: list[bytes] = []
     total = 0
     try:
-        with os.fdopen(os.dup(descriptor), "rb") as handle:
+        with os.fdopen(os.dup(descriptor), "rb") as handle:  # windows-footgun: ok -- binary bytes, never text decoding
             for line_number, line in enumerate(handle, start=1):
                 if line_number < line_start:
                     continue
@@ -495,3 +480,28 @@ def _safe_display_path(path: Path) -> str:
         return absolute.relative_to(Path.cwd().resolve()).as_posix()
     except ValueError:
         return path.name
+
+
+def _validated_slice_path(path: Path, content: bytes, line_start: int, line_end: int, identities: tuple[str, ...]) -> Path:
+    if not isinstance(path, Path):
+        path = Path(path)
+    original_path = Path(path).expanduser()
+    if _contains_symlink_component(original_path):
+        raise SourceProvenanceError("symlink_path")
+    if not isinstance(content, bytes):
+        raise SourceProvenanceError("invalid_content")
+    if (
+        not isinstance(line_start, int)
+        or not isinstance(line_end, int)
+        or line_start < 1
+        or line_end < line_start
+        or line_end - line_start + 1 > MAX_SOURCE_SLICE_LINES
+    ):
+        raise SourceProvenanceError("invalid_line_range")
+    if len(content) > MAX_SOURCE_SLICE_BYTES:
+        raise SourceProvenanceError("slice_too_large")
+    identities = identities
+    if not all(isinstance(value, str) and value for value in identities):
+        raise SourceProvenanceError("missing_identity")
+
+    return original_path

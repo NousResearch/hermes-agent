@@ -7,11 +7,11 @@ programmatic callers use :func:`build_trace_jsonl` + :func:`_do_upload`."""
 
 from __future__ import annotations
 
+from pm import install_hint
 import json
 import logging
 import os
 import uuid
-from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,11 +58,11 @@ def _redact(text: Any, enabled: bool) -> Any:
         raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
 
 
-def _text_block(text: Any, redact: bool) -> Dict[str, Any]:
+def _text_block(text: Any, redact: bool) -> dict[str, Any]:
     return {"type": "text", "text": _redact(text, redact)}
 
 
-def _part_to_block(part: Any, redact: bool) -> Dict[str, Any]:
+def _part_to_block(part: Any, redact: bool) -> dict[str, Any]:
     if not isinstance(part, dict):
         return _text_block(str(part), redact)
     if part.get("type") == "text":
@@ -72,14 +72,14 @@ def _part_to_block(part: Any, redact: bool) -> Dict[str, Any]:
     return _text_block(json.dumps(part), redact)
 
 
-def _content_to_blocks(content: Any, redact: bool) -> List[Dict[str, Any]]:
+def _content_to_blocks(content: Any, redact: bool) -> list[dict[str, Any]]:
     """Normalize a message ``content`` field into Anthropic content blocks."""
     if isinstance(content, list):
         return [_part_to_block(part, redact) for part in content]
     return [] if content is None else [_text_block(content if isinstance(content, str) else json.dumps(content), redact)]
 
 
-def _parse_tool_args(raw_args: Any) -> Dict[str, Any]:
+def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
     if not isinstance(raw_args, str):
         return raw_args if isinstance(raw_args, dict) else {}
     try:
@@ -88,9 +88,9 @@ def _parse_tool_args(raw_args: Any) -> Dict[str, Any]:
         return {"_raw": raw_args}
 
 
-def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> List[Dict[str, Any]]:
+def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]:
     """Convert OpenAI tool_calls into Anthropic ``tool_use`` content blocks."""
-    blocks: List[Dict[str, Any]] = []
+    blocks: list[dict[str, Any]] = []
     for tc in tool_calls if isinstance(tool_calls, list) else ():
         if not isinstance(tc, dict):
             continue
@@ -120,12 +120,12 @@ def _git_branch(cwd: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def _assistant_message(msg: Dict[str, Any], model: str, redact: bool) -> Dict[str, Any]:
+def _assistant_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:
     blocks = _content_to_blocks(msg.get("content"), redact) + _tool_calls_to_blocks(msg.get("tool_calls"), redact)
     return {"role": "assistant", "model": model or "unknown", "content": blocks or [{"type": "text", "text": ""}]}
 
 
-def _tool_result_message(msg: Dict[str, Any], model: str, redact: bool) -> Dict[str, Any]:
+def _tool_result_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:
     content = msg.get("content")
     return {"role": "user", "content": [{
         "type": "tool_result", "tool_use_id": msg.get("tool_call_id") or msg.get("tool_name") or "tool",
@@ -133,19 +133,19 @@ def _tool_result_message(msg: Dict[str, Any], model: str, redact: bool) -> Dict[
     }]}
 
 
-def _user_message(msg: Dict[str, Any], model: str, redact: bool) -> Dict[str, Any]:
+def _user_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:
     content = msg.get("content")
     return {"role": "user", "content": _redact(content, redact) if isinstance(content, str) else _content_to_blocks(content, redact)}
 
 
 # role -> (Claude Code line type, message builder). Unknown roles render as user.
-_ROLE_RENDERERS: Dict[Any, Tuple[str, Any]] = {"assistant": ("assistant", _assistant_message), "tool": ("user", _tool_result_message)}
+_ROLE_RENDERERS: dict[Any, tuple[str, Any]] = {"assistant": ("assistant", _assistant_message), "tool": ("user", _tool_result_message)}
 
 
-def build_trace_jsonl(messages: List[Dict[str, Any]], *, session_id: str, model: str = "", cwd: str = "", redact: bool = True) -> str:
+def build_trace_jsonl(messages: list[dict[str, Any]], *, session_id: str, model: str = "", cwd: str = "", redact: bool = True) -> str:
     """One JSONL line per non-system message: ``user``/``tool`` -> type user (tool results ride on user turns as
     ``tool_result`` keyed by ``tool_call_id``), ``assistant`` -> text + ``tool_use`` blocks; turns link via ``parentUuid``."""
-    lines: List[str] = []
+    lines: list[str] = []
     parent: Optional[str] = None
     base_ts = _now_iso()
     git_branch = _git_branch(cwd)
@@ -172,15 +172,31 @@ def _resolve_hf_token() -> Optional[str]:
     return next((val for var in _TOKEN_ENV_VARS if (val := (os.getenv(var) or "").strip())), None)
 
 
-def _do_upload(jsonl: str, *, token: str, session_id: str, dataset_name: str = DEFAULT_DATASET_NAME, private: bool = True) -> str:
-    """Create the dataset (idempotent) and push the trace file; user-facing status string, never raises."""
-    with suppress(Exception):  # lazy-install unavailable/declined — the import below surfaces the hint
-        from tools import lazy_deps
-        lazy_deps.ensure("tool.trace_upload", prompt=False)
+
+def _do_upload(
+    jsonl: str,
+    *,
+    token: str,
+    session_id: str,
+    dataset_name: str = DEFAULT_DATASET_NAME,
+    private: bool = True,
+) -> str:
+    """Create (idempotently) the private dataset and push the trace file.
+
+    Returns a user-facing status string. Never raises.
+    """
+    try:
+        import pm
+        pm.ensure_import("trace-upload")
+    except Exception:
+        # lazy-install unavailable — fall through to the import, which
+        # surfaces the install hint below if the package is missing.
+        pass
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        return "Hugging Face upload needs the `huggingface_hub` package (`pip install huggingface_hub`)."
+        return ("Hugging Face upload needs the `huggingface_hub` package. Run: "
+                f"{install_hint('trace-upload')}")
     api = HfApi(token=token)
     try:
         who = api.whoami()
@@ -207,7 +223,7 @@ def _do_upload(jsonl: str, *, token: str, session_id: str, dataset_name: str = D
             f"View in the trace viewer: https://huggingface.co/datasets/{repo_id}")
 
 
-def load_session_messages(session_id: str, db_path=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def load_session_messages(session_id: str, db_path=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
     session may still have messages)."""
     from hermes_state_registry import acquire, release_or_close

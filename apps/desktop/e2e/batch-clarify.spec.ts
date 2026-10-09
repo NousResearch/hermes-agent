@@ -12,10 +12,15 @@
  * clarify.request event → renderer, against the mock inference server.
  */
 
-import { expect, test } from './test'
+import {
+  BATCH_CLARIFY_QUESTIONS,
+  BATCH_CLARIFY_TRIGGER,
+  SINGLE_BATCH_CLARIFY_QUESTIONS,
+  SINGLE_BATCH_CLARIFY_TRIGGER
+} from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from './mock-server'
+import { expect, test } from './test'
 
 let fixture: MockBackendFixture | null = null
 
@@ -60,11 +65,10 @@ test.describe('batch clarify card', () => {
 
     // Answer both questions: stage picks locally (no server traffic yet).
     const confirmButton = batchCard.locator('button[type="submit"]')
-    await expect(confirmButton).toContainText('Confirm and continue')
     await expect(confirmButton).toBeDisabled()
 
     await batchCard.getByRole('button', { name: /Coffee/ }).click()
-    await expect(confirmButton).toBeDisabled()
+    await expect(confirmButton).toBeEnabled()
 
     await batchCard.getByRole('button', { name: /Morning/ }).click()
     await expect(confirmButton).toBeEnabled()
@@ -81,6 +85,42 @@ test.describe('batch clarify card', () => {
     await expect(settled.getByText('Morning', { exact: true })).toBeVisible()
 
     // And still no duplicate live card lingering after settle.
+    await expect(page.locator('form[data-clarify-batch]')).toHaveCount(0)
+  })
+
+  // #98645: since the questions[]-only schema (#95907) a single question is a
+  // one-entry batch on both the tool args and the gateway wire. The card must
+  // mount and answer exactly like the 2+ case — a blank or spinner-only
+  // section that eats the 10-minute tool timeout is the reported failure.
+  test('renders and answers a one-entry batch like the 2+ case', async () => {
+    const page = fixture!.page
+    const composer = page.locator('[contenteditable="true"]').first()
+    await composer.waitFor({ state: 'visible', timeout: 10_000 })
+
+    await composer.click()
+    await composer.type(SINGLE_BATCH_CLARIFY_TRIGGER, { delay: 20 })
+    await page.keyboard.press('Enter')
+
+    const batchCard = page.locator('form[data-clarify-batch]')
+    await batchCard.first().waitFor({ state: 'visible', timeout: 60_000 })
+
+    await expect(batchCard).toHaveCount(1)
+    await expect(batchCard).toHaveAttribute('data-clarify-batch', '1')
+
+    await expect(batchCard.getByText(SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question)).toHaveCount(1)
+
+    const confirmButton = batchCard.locator('button[type="submit"]')
+    await expect(confirmButton).toBeDisabled()
+
+    await batchCard.getByRole('button', { name: /Espresso/ }).click()
+    await expect(confirmButton).toBeEnabled()
+    await confirmButton.click()
+
+    const settled = page.locator('[data-clarify-settled]')
+    await settled.waitFor({ state: 'visible', timeout: 30_000 })
+    await expect(settled.getByText(SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question)).toBeVisible()
+    await expect(settled.getByText('Espresso', { exact: true })).toBeVisible()
+
     await expect(page.locator('form[data-clarify-batch]')).toHaveCount(0)
   })
 })

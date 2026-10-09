@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import logging
 import math
@@ -39,6 +41,7 @@ from agent.llm_egress_firewall import (
 )
 from agent.message_sanitization import tool_result_id_variants
 from agent.redact import redact_sensitive_text
+from hermes_constants import get_hermes_home, get_default_hermes_root
 from agent.source_provenance import DEFAULT_POLICY_DIGEST, SourceProvenanceRegistry
 
 
@@ -165,8 +168,8 @@ def _sanitize_protected_kanban_body(value: Any) -> Any:
             (os.environ.get("HERMES_KANBAN_WORKSPACE"), "."),
             (os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT"), "$HERMES_KANBAN_WORKSPACES_ROOT"),
             (os.environ.get("HERMES_KANBAN_DB"), "$HERMES_KANBAN_DB"),
-            (os.environ.get("HERMES_CONTROL_HOME"), "$HERMES_CONTROL_HOME"),
-            (os.environ.get("HERMES_HOME"), "$HERMES_PROFILE_HOME"),
+            (str(get_default_hermes_root()), "<control-home>"),
+            (os.environ.get("HERMES_HOME"), "$HERMES_HOME"),
         )
         for raw, token in sorted(
             ((raw, token) for raw, token in replacements if raw),
@@ -198,22 +201,15 @@ def _exact_provider_secret_values() -> tuple[str, ...]:
     class tracked in #77165; shape-based redaction remains an independent scan.
     """
 
-    try:
-        from hermes_constants import get_hermes_home
-
-        home = get_hermes_home()
-    except Exception:
-        home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    try:
-        from hermes_cli.env_loader import get_secret_source_values
-
-        values = list(get_secret_source_values(home).values())
-    except Exception:
-        values = []
+    from agent.secret_scope import current_secret_scope, get_secret
+    from hermes_cli.env_loader import get_secret_source_values
+    scope = current_secret_scope()
+    values = list(get_secret_source_values(get_hermes_home()).values())
+    credential_names = scope if scope is not None else os.environ
     values.extend(
-        value
-        for name, value in os.environ.items()
-        if value and name.upper().endswith(_CREDENTIAL_ENV_SUFFIXES)
+        value for name in credential_names
+        if name.upper().endswith(_CREDENTIAL_ENV_SUFFIXES)
+        and (value := get_secret(name))
     )
     return tuple(
         dict.fromkeys(value for value in values if isinstance(value, str) and value)
@@ -536,7 +532,7 @@ def _segment_read_file_presentation(
         expected = "\n".join(
             f"{line_number}|{line}"
             for line_number, line in enumerate(
-                raw_text.split("\n"), start=grant.line_start
+                raw_text.removesuffix("\n").split("\n"), start=grant.line_start
             )
         )
         if parsed["content"] == expected:
@@ -561,7 +557,7 @@ def _segment_read_file_presentation(
                 expected = "\n".join(
                     f"{line_number}|{line}"
                     for line_number, line in enumerate(
-                        raw_text.split("\n"), start=rebound.line_start
+                        raw_text.removesuffix("\n").split("\n"), start=rebound.line_start
                     )
                 )
                 if parsed["content"] == expected:
@@ -628,6 +624,7 @@ def _typed_payload(
             and (
                 value.get("tool_name") == "read_file"
                 or value.get("name") == "read_file"
+                or isinstance(source_metadata, Mapping)
             )
         )
         output_call_id = value.get("tool_call_id") or value.get("call_id")
@@ -650,7 +647,10 @@ def _typed_payload(
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         for key, item in value.items():
-            if key == "_source_provenance":
+            if key in {"_source_provenance", "_source_provenance_invalid"}:
+                continue
+            if key == "content" and value.get("_source_provenance_invalid"):
+                typed[key] = UntrustedProvenanceSegment(sha256(str(item).encode("utf-8")).hexdigest())
                 continue
             if is_read_file_result and key == "content" and isinstance(item, str):
                 typed[key] = _segment_read_file_presentation(
@@ -806,11 +806,16 @@ def _restore_source_provenance_sidecar(
             message.get("role") != "tool"
             or not isinstance(content, str)
             or message.get("tool_call_id") != entry.get("tool_call_id")
-            or entry.get("content_sha256")
-            != sha256(content.encode("utf-8")).hexdigest()
         ):
             continue
         copied = dict(message)
+        if entry.get("content_sha256") != sha256(content.encode("utf-8")).hexdigest():
+            # Keep the integrity gate: mismatched claimed proof is denied,
+            # never downgraded to unproven bounded text.
+            copied["_source_provenance_invalid"] = True
+            copied_messages[index] = copied
+            changed = True
+            continue
         copied["_source_provenance"] = {
             key: entry[key]
             for key in (
@@ -839,15 +844,11 @@ def authorize_agent_sdk_kwargs(
     resolved_route = _route_for_agent(agent, route)
     route_provider = _route_field(resolved_route, "provider", "")
     protected_provider_route = provider_uses_egress_firewall(route_provider)
-    protected_remote_marker = (
-        os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
-    )
-    # The marker is deliberately process-local, but a fallback/reconstructed
-    # worker still carries its task identity. Re-derive the protected Kanban
-    # boundary from that durable identity plus the exact provider route so a
-    # fallback cannot turn private task context into a repeated egress block.
-    protected_kanban_remote = protected_remote_marker or (
-        bool(str(os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+    # Identity and the live route define this request; no process marker may
+    # carry a prior worker/provider into a later request.
+    from agent.delegation_context import owned_kanban_task
+    protected_kanban_remote = (
+        bool(owned_kanban_task())
         and protected_provider_route
     )
     sidecar = kwargs.get("_hermes_source_provenance")
@@ -888,7 +889,7 @@ def authorize_agent_sdk_kwargs(
     # flag.  Without this route-derived guard, a large protected request raises
     # ValueError while typing, bypassing the firewall's content-free receipt
     # and triggering a provider fallback loop.
-    protected_remote_context = protected_remote_marker or protected_provider_route
+    protected_remote_context = protected_provider_route
     # Generated framing (system/developer messages and tool schema) is
     # application-owned.  It can use the established non-secret path/base64
     # redaction on every protected cloud route, including ordinary chat and
@@ -928,7 +929,7 @@ def authorize_agent_sdk_kwargs(
     )
     state_dir = Path(
         getattr(agent, "_llm_egress_state_dir", "")
-        or Path.home() / ".hermes" / "egress"
+        or get_hermes_home() / "egress"
     )
     max_serialized_bytes = int(
         getattr(agent, "_llm_egress_max_serialized_bytes", 262_144)
@@ -997,7 +998,11 @@ def dispatch_authorized_agent_request(
         _route_field(resolved_route, "api_mode"),
     )
     if destination in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
-        return callback(dict(kwargs))
+        local_kwargs = {
+            key: value for key, value in kwargs.items()
+            if key not in _INTERNAL_EGRESS_KEYS
+        }
+        return callback(local_kwargs)
     authorized, receipt = authorize_agent_sdk_kwargs(
         agent,
         kwargs,
@@ -1019,3 +1024,73 @@ def dispatch_authorized_agent_request(
     ).encode("utf-8")
     receipt.verify_payload(wire_bytes)
     return callback(MappingProxyType(authorized))
+
+
+def dispatch_provider_request(agent, request, callback):
+    """Apply the exact provider-bound egress policy at a physical call site."""
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _PROTECTED_REMOTE_PROVIDERS:
+        return callback(request)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+    return dispatch_authorized_agent_request(agent, request, callback)
+
+
+
+def attach_source_provenance_sidecar(agent, kwargs: dict, messages: list) -> dict:
+    """Carry internal read proofs around strict wire-message conversion."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _PROTECTED_REMOTE_PROVIDERS:
+        return kwargs
+    from agent.source_provenance_tools import build_source_provenance_sidecar
+    sidecar = build_source_provenance_sidecar(messages)
+    return {**kwargs, "_hermes_source_provenance": sidecar} if sidecar else kwargs
+
+
+
+def fallback_destination_class(fb: dict):
+    """Pin the concrete local-only candidate before the main fallback resolves it."""
+    from agent.auxiliary_egress_recovery import local_fallback_entry
+    from agent.llm_egress_firewall import DestinationClass, classify_destination
+    screened = local_fallback_entry(fb)
+    if screened is None:
+        return DestinationClass.UNKNOWN
+    fb.update(screened)
+    return classify_destination(str(fb.get("provider") or ""), fb["base_url"],
+                                fb.get("api_mode") or "chat_completions")
+
+
+
+_PROTECTED_WORKER_CONTEXT: ContextVar[bool] = ContextVar("protected_worker", default=False)
+
+
+@contextmanager
+def protected_worker_scope(agent: Any):
+    """Bind the live tool request, resetting even if dispatch raises."""
+    from agent.kanban_stop import owned_kanban_task
+    token = _PROTECTED_WORKER_CONTEXT.set(
+        bool(owned_kanban_task()) and provider_uses_egress_firewall(getattr(agent, "provider", ""))
+    )
+    try:
+        yield
+    finally:
+        _PROTECTED_WORKER_CONTEXT.reset(token)
+
+
+def is_protected_worker() -> bool:
+    return _PROTECTED_WORKER_CONTEXT.get()
+
+
+def fallback_entry_unavailable_without_network(agent, fb: dict) -> str | None:
+    """Return a skip reason for fallback entries known to be unusable locally."""
+    if (fb.get("provider") or "").strip().lower() != "nous":
+        return None
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        state = get_provider_auth_state("nous") or {}
+    except Exception as exc:
+        logger.debug("Fallback authentication state unreadable", exc_info=True)
+        return f"nous_auth_unreadable:{type(exc).__name__}"
+    has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
+    return None if has_token else "nous_token_missing"

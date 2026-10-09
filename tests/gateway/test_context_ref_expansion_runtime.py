@@ -25,7 +25,7 @@ import pytest
 import gateway.run as gateway_run
 from agent.context_references import ContextReferenceResult
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -82,9 +82,10 @@ def _patch_runtime_resolution(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("binding", ["cold", "cached", "live", "pending"])
 @pytest.mark.asyncio
 async def test_at_reference_reaches_preprocessor_with_real_context_length(
-    monkeypatch, caplog
+    monkeypatch, caplog, binding
 ):
     """A message containing "@" must reach preprocess_context_references_async
     with a real (int > 0) context_length, and the except branch must not
@@ -94,14 +95,25 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
     runner = _make_runner()
     source = _source()
     _patch_runtime_resolution(monkeypatch)
+    from types import SimpleNamespace
+    from gateway.session_state import SessionState
+    foreign = SimpleNamespace(session_id="foreign-session", _current_turn_id="foreign-turn")
+    runner._agent_cache["context-scope"] = (foreign, "stale-route", 0, "foreign-session")
+    state = SessionState()
+    if binding == "live":
+        state.turn.agent = SimpleNamespace(session_id="live-session", _current_turn_id="live-turn")
+    elif binding == "pending":
+        state.turn.agent = object()
+    runner._sessions = {"context-scope": state}
 
     captured: dict = {}
 
-    async def _fake_preprocess(message, *, cwd, context_length, url_fetcher=None, allowed_root=None):
+    async def _fake_preprocess(message, *, cwd, context_length, url_fetcher=None, allowed_root=None, **proof_kwargs):
         captured["message"] = message
         captured["cwd"] = cwd
         captured["context_length"] = context_length
         captured["allowed_root"] = allowed_root
+        captured["proof"] = proof_kwargs
         return ContextReferenceResult(
             message="[expanded body]",
             original_message=message,
@@ -120,6 +132,7 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
         event=event,
         source=source,
         history=[],
+        session_key="context-scope",
     )
 
     # The except branch (AttributeError on self._model/self._base_url,
@@ -139,6 +152,13 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
     # The expanded result from the (stubbed) preprocessor must have been
     # adopted as the final message text.
     assert result == "[expanded body]"
+
+    # Inbound preparation cannot borrow a previous or unresolved turn's authority.
+    # The consuming-turn invariant covers binding after actual agent resolution.
+    assert captured["proof"] == {}
+    if binding == "live":
+        assert not hasattr(state.turn.agent, "_source_provenance_registry")
+    assert not hasattr(foreign, "_source_provenance_registry")
 
 
 @pytest.mark.asyncio

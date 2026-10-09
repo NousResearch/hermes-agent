@@ -6,6 +6,7 @@ after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await hand
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import concurrent.futures
 import json
 import logging
@@ -17,6 +18,7 @@ from typing import Any
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.transport import serialize_frame
 
 _log = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     try:
         from gateway.scale_to_zero import touch_dashboard_client_heartbeat
         touch_dashboard_client_heartbeat()
-    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+    except Exception:
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -58,7 +60,19 @@ def _sanitize_ws_text(text: str) -> str:
 # Max seconds a pool-dispatched handler blocks waiting for the loop to flush a WS frame before we
 # give up waiting (the transport is NOT marked dead).
 _WS_WRITE_TIMEOUT_S = 10.0
+# Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
+# socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
+# backpressure parks it, so a GIL/loop stall cannot start this clock. Deliberately 3x the worker wait
+# above and under the client's 45s heartbeat deadline (apps/shared json-rpc-gateway): a peer that
+# cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
+# later frame and RPC reply parked behind the writer lock (#106369).
+_WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
+# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
+# per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
+# by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
+# handler latency (#108325). A full queue parks the reader — the old serial behaviour.
+_WS_DISPATCH_QUEUE_MAX = 256
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -85,8 +99,9 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
@@ -97,15 +112,19 @@ class WSTransport:
         self._token_flush_armed = False
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
+        self._abort_requested = False
+
+    def _on_loop(self) -> bool:
+        try:
+            return asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            return False
 
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-        line = json.dumps(obj, ensure_ascii=False)
-        try:
-            on_loop = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            on_loop = False
+        line = serialize_frame(obj, self._peer, _log)
+        on_loop = self._on_loop()
         # Streamed token: buffer it and arm the flush timer; the worker returns immediately.
         # call_soon_threadsafe is safe from a worker or the loop.
         params = obj.get("params") if isinstance(obj, dict) else None
@@ -169,7 +188,7 @@ class WSTransport:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(serialize_frame(obj, self._peer, _log))
         await self._safe_send_many(batch)
         return not self._closed
 
@@ -183,7 +202,17 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await self._ws.send_text(payload)
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                except asyncio.TimeoutError:
+                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                    # (session detach/reap, client reconnect) runs. See #106369.
+                    self._closed = True
+                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                 self._peer, _WS_SEND_DEADLINE_S)
+                    self._loop.create_task(self._close_socket(1011, "send deadline"))
+                    return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
                     _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
@@ -199,6 +228,33 @@ class WSTransport:
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
+
+    def abort(self) -> None:
+        """Close from any thread and drop the socket with 1011 so the client reconnects and replays
+        (fanout overflow). One-shot: N mirrored sessions overflowing on this socket schedule one close."""
+        self._closed = True
+        with self._token_lock:
+            if self._abort_requested:
+                return
+            self._abort_requested = True
+        if self._on_loop():
+            self._finish_abort()
+            return
+        # A loop that already shut down has nothing left to cancel or close.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._finish_abort)
+
+    def _finish_abort(self) -> None:  # loop thread
+        self.close()
+        self._loop.create_task(self._close_socket(1011, "fanout overflow"))
+
+    async def _close_socket(self, code: int, reason: str) -> None:
+        """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
+        runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        try:
+            await self._ws.close(code=code)
+        except Exception as exc:
+            _log.debug("ws close after %s failed peer=%s error=%s", reason, self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -256,6 +312,43 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     def _error(code: int, message: str, req_id: Any) -> dict:
         return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
 
+    pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
+    dispatcher: asyncio.Task | None = None
+    stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
+
+    async def _dispatch_loop() -> None:
+        """Dispatch queued requests one at a time in arrival order until the ``stop`` sentinel."""
+        nonlocal dispatch_crashes
+        while (req := await pending.get()) is not stop:
+            req_id = req.get("id") if isinstance(req, dict) else None
+            req_method = req.get("method") if isinstance(req, dict) else None
+            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
+            # writes the response itself via transport.write (a separate thread, so that is the safe
+            # path). Inline handlers return the response dict, written here from the loop.
+            try:
+                resp = await asyncio.to_thread(server.dispatch, req, transport)
+            except Exception:
+                dispatch_crashes += 1
+                _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
+                await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
+                             "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+                continue
+            if resp is not None:
+                await _reply(resp, "send_failed_after_response",
+                             "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+
+    async def _unless_dispatch_failed(aw: Any) -> Any:
+        """Await *aw*, or raise _SendFailed once the dispatcher has ended on a reply it could not send."""
+        assert dispatcher is not None
+        step = asyncio.ensure_future(aw)
+        try:
+            await asyncio.wait({step, dispatcher}, return_when=asyncio.FIRST_COMPLETED)
+            if step.done():
+                return step.result()
+            raise _SendFailed
+        finally:
+            step.cancel()  # no-op once done
+
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
         disconnect_reason = "connected"
@@ -279,6 +372,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
+            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
@@ -297,10 +391,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             _log.error("ws ready frame send failed peer=%s", peer)
             return
 
+        dispatcher = asyncio.create_task(_dispatch_loop())
         while True:
             try:
-                raw = await ws.receive_text()
+                raw = await _unless_dispatch_failed(ws.receive_text())
                 _note_dashboard_client_activity()
+            except _SendFailed:
+                raise
             except _WebSocketDisconnect as exc:
                 disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
                 break
@@ -320,29 +417,29 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply(_error(-32700, "parse error", None), "send_failed_after_parse_error",
                              "ws parse-error reply send failed peer=%s", peer)
                 continue
-            req_id = req.get("id") if isinstance(req, dict) else None
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method == "gateway.ping":
+            if isinstance(req, dict) and req.get("method") == "gateway.ping":
+                req_id = req.get("id")
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
-            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
-            # writes the response itself via transport.write (a separate thread, so that is the safe
-            # path). Inline handlers return the response dict, written here from the loop.
-            try:
-                resp = await asyncio.to_thread(server.dispatch, req, transport)
-            except Exception:
-                dispatch_crashes += 1
-                _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
-                await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
-                             "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
-                continue
-            if resp is not None:
-                await _reply(resp, "send_failed_after_response",
-                             "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _unless_dispatch_failed(pending.put(req))
     except _SendFailed:
         pass
     finally:
+        if dispatcher is not None:
+            # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
+            # did) before the teardown below parks this transport's sessions. A cancelled connection (server
+            # shutdown) stops at once instead, as the read loop's cancelled await did.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                dispatcher.cancel()
+            else:
+                with contextlib.suppress(_SendFailed):
+                    await _unless_dispatch_failed(pending.put(stop))
+            await asyncio.wait({dispatcher})
+            failure = None if dispatcher.cancelled() else dispatcher.exception()
+            if failure is not None and not isinstance(failure, _SendFailed):
+                _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)

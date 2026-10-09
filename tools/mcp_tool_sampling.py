@@ -2,12 +2,16 @@
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
 import asyncio
+import functools
 import json
 import logging
 import time
-from typing import Callable, List, Optional
+from contextvars import Context
+from typing import TYPE_CHECKING, Callable, List, Optional
+from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -44,7 +48,7 @@ def _tool_call_dict(tu, index: int) -> dict:
         "name": tu.name, "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
 
 
-def _convert_sampling_message(msg) -> List[dict]:
+def _convert_sampling_message(msg) -> list[dict]:
     """One MCP SamplingMessage -> OpenAI messages: tool results first, then either an assistant
     tool_calls message or plain content."""
     blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
@@ -96,10 +100,13 @@ class SamplingHandler:
         self.timeout = _safe_numeric(config.get("timeout", 30), 30, float)
         self.max_tokens_cap = _safe_numeric(config.get("max_tokens_cap", 4096), 4096, int)
         self.max_tool_rounds = _safe_numeric(config.get("max_tool_rounds", 5), 5, int, minimum=0)
+        # Strict MCP servers reject the unknown sampling.tools sub-capability during
+        # initialization, so it is opt-in per server (default: plain sampling). (#5468)
+        self.expose_client_tools = is_truthy_value(config.get("expose_client_tools"), default=False)
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
         self.audit_level = self._LOG_LEVELS.get(str(config.get("log_level", "info")).lower(), logging.INFO)
-        self._rate_timestamps: List[float] = []
+        self._rate_timestamps: list[float] = []
         self._tool_loop_count = 0
         self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
 
@@ -119,7 +126,7 @@ class SamplingHandler:
         hints = getattr(preferences, "hints", None) or []
         return next((hint.name for hint in hints if getattr(hint, "name", None)), None)
 
-    def _convert_messages(self, params) -> List[dict]:
+    def _convert_messages(self, params) -> list[dict]:
         """MCP SamplingMessages -> OpenAI format (per-block duck-typed dispatch)."""
         return [m for msg in params.messages for m in _convert_sampling_message(msg)]
 
@@ -166,8 +173,13 @@ class SamplingHandler:
 
     def session_kwargs(self) -> dict:
         """Kwargs to pass to ClientSession for sampling support."""
+        sampling_capabilities = (
+            _core.SamplingCapability(tools=_core.SamplingToolsCapability())
+            if self.expose_client_tools
+            else _core.SamplingCapability()
+        )
         return {"sampling_callback": self,
-                "sampling_capabilities": _core.SamplingCapability(tools=_core.SamplingToolsCapability())}
+                "sampling_capabilities": sampling_capabilities}
 
     def _admit(self, params):
         """Rate-limit + allowed_models gate. Returns ``(resolved_model, None)`` or ``(None, ErrorData)``."""
@@ -250,12 +262,15 @@ class ElicitationHandler:
     # consent answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
-    def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
+    def __init__(self, server_name: str, config: dict,
+                 call_context: Callable[[], Optional[Context]] = lambda: None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
-        # Back-reference for the agent's contextvars snapshot; optional for isolated unit tests.
-        self.owner = owner
+        # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
+        # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
+        # MCPServerTask cannot be named here.
+        self._call_context = call_context
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -268,16 +283,15 @@ class ElicitationHandler:
         return _core.ElicitResult(action=action, **({"content": {}} if action == "accept" else {}))
 
     def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
-        """Sync consent call replaying the agent's contextvars snapshot when the owner captured one
+        """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
         (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
         ``Context.run`` runs a context once, so it is copied per elicitation."""
         from tools.approval_prompt import request_elicitation_consent
 
-        kwargs = {"timeout_seconds": int(self.timeout), "surface": f"mcp-elicitation/{self.server_name}"}
-        captured = getattr(self.owner, "_pending_call_context", None) if self.owner else None
-        if captured is None:
-            return lambda: request_elicitation_consent(message, description, **kwargs)
-        return lambda: captured.copy().run(request_elicitation_consent, message, description, **kwargs)
+        consent = functools.partial(request_elicitation_consent, message, description,
+                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
+        captured = self._call_context()
+        return consent if captured is None else (lambda: captured.copy().run(consent))
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

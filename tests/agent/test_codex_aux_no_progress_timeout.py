@@ -1,3 +1,4 @@
+from agent import auxiliary_egress_recovery
 """Progress-aware deadlines for the Codex auxiliary Responses stream.
 
 Regression tests for the masoria report (Aug 2026): each compression
@@ -181,7 +182,7 @@ class TestNoProgressFailFast:
                             messages=[{"role": "user", "content": "x"}],
                             timeout=300,
                         )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         owner_result["exc"] = exc
 
                 t = threading.Thread(target=_run, daemon=True)
@@ -228,7 +229,7 @@ class TestCompressionRetryGate:
                   return_value=(primary_client, "gpt-5.6-sol")),
             patch("agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("auto", "gpt-5.6-sol", None, None, None)),
-            patch("agent.auxiliary_client._try_configured_fallback_chain",
+            patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                   return_value=(None, None, "")),
             patch("agent.auxiliary_client._try_main_fallback_chain",
                   return_value=(None, None, "")),

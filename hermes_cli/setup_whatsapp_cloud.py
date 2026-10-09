@@ -208,7 +208,7 @@ _OPTIONAL_ID_STEPS = (
      "WhatsApp Business Account ID. Found in: App Dashboard →\n"
      "WhatsApp → API Setup, near the top — 'WhatsApp Business\n"
      "Account ID'. Numeric, ~15+ digits.\n"
-     "Not required for messaging — useful for analytics."))
+     "When set, inbound webhooks must match this business account."))
 
 
 def _credential_step(step) -> bool:
@@ -230,7 +230,7 @@ def _credential_step(step) -> bool:
 def _step_optional_ids() -> dict:
     """STEP 4: optional App ID / WABA ID. Returns {env var: effective value or None}."""
     from hermes_cli.config import get_env_value
-    _header("STEP 4 — App ID & WABA ID (optional, for analytics)")
+    _header("STEP 4 — App ID & WABA ID (optional; WABA ID binds inbound webhooks)")
     ids = {}
     for label, env_var, validator, help_text in _OPTIONAL_ID_STEPS:
         current = get_env_value(env_var) or None
@@ -293,7 +293,7 @@ def _step_allowlist() -> None:
 def run_whatsapp_cloud_setup() -> int:
     """Interactive wizard for the WhatsApp Cloud API adapter. Returns 0 on success, 1 on abort."""
     _lines(
-        "", "⚕ WhatsApp Business Cloud API Setup", "=" * 50, "",
+        "", "☤ WhatsApp Business Cloud API Setup", "=" * 50, "",
         "This wizard configures Hermes to talk to WhatsApp via Meta's",
         "official Cloud API. It's the production-grade path:", "",
         "  • No QR codes, no Node.js bridge subprocess",

@@ -8,6 +8,9 @@ an immutable block decision.
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 import base64
 import binascii
 import ipaddress
@@ -503,6 +506,7 @@ def _receipt_identifier(value: str) -> str:
             == value
         )
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         safe = False
     return value if safe else f"sha256:{sha256(value.encode('utf-8')).hexdigest()}"
 
@@ -629,64 +633,7 @@ def _looks_like_github_legacy_node_id(candidate: str) -> bool:
 
 def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> bool:
     if isinstance(value, str):
-        # Fixed Hermes/Nous attribution tags are protocol metadata, not an
-        # encoded source payload. They remain subject to secret/path scans.
-        if value.startswith(("product=hermes-agent", "client=hermes-client-")):
-            return False
-        for match in _BASE64_CANDIDATE.finditer(value):
-            candidate = match.group(1)
-            prefix = value[max(0, match.start() - 16) : match.start()].lower()
-            if re.fullmatch(
-                r"[0-9a-f]{7,12}|[0-9a-f]{40}|[0-9a-f]{64}",
-                candidate.lower(),
-            ):
-                continue
-            if candidate.isdigit():
-                before = value[: match.start(1)].rstrip()[-1:]
-                after = value[match.end(1) :].lstrip()[:1]
-                if before in {":", ",", "["} and after in {",", "]", "}"}:
-                    # JSON numeric values in tool results are serialized
-                    # protocol fields, not encoded text. A quoted numeric
-                    # string remains eligible for Base64 detection.
-                    continue
-            # The fixed Kanban task-id grammar carries only a 32-bit hex
-            # database key. It is application protocol metadata, not an
-            # encoded source payload.
-            if _HERMES_TASK_ID.fullmatch(candidate):
-                continue
-            # Provider-generated tool-call and response-item identifiers are
-            # opaque protocol routing metadata, not caller-supplied encoded
-            # content.  Match their complete, fixed grammar only.
-            if re.fullmatch(r"(?:call|fc)_[A-Za-z0-9_-]{8,128}", candidate):
-                continue
-            if candidate in {
-                "HERMES_CONTROL_HOME",
-                "HERMES_KANBAN_DB",
-                "HERMES_KANBAN_WORKSPACES_ROOT",
-                "HERMES_PROFILE_HOME",
-            }:
-                continue
-            # Content-addressed cache routing is a fixed application protocol
-            # value: the literal ``pck_`` prefix plus exactly 96 bits of hex.
-            if _PROMPT_CACHE_KEY.fullmatch(candidate):
-                continue
-            # GitHub's legacy global node id (see helper docstring above).
-            if _looks_like_github_legacy_node_id(candidate):
-                continue
-            if _canonical_base64_candidate(candidate):
-                return True
-        # Providers and source-control tools sometimes wrap an otherwise
-        # canonical encoding at a fixed column. Normalize only bounded chunks
-        # so ordinary prose words are not concatenated into a false candidate.
-        chunked = re.compile(
-            r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
-            r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
-        )
-        for match in chunked.finditer(value):
-            candidate = re.sub(r"\s+", "", match.group(0))
-            if _canonical_base64_candidate(candidate):
-                return True
-        return False
+        return _text_contains_canonical_base64(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return True
     if seen is None:
@@ -982,26 +929,9 @@ def _is_strict_sanitized_only_payload(
     an empty structural request from acquiring grantless status.
     """
 
-    if isinstance(value, SanitizedSegment):
-        return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
-    if isinstance(value, GeneratedContextSegment):
-        return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
-    if isinstance(value, GeneratedContextKey):
-        return isinstance(value.text, str), 0
-    if isinstance(value, UntrustedProvenanceSegment):
-        return False, 0
-    if isinstance(value, ValidatedToolSyntaxSegment):
-        try:
-            validate_tool_syntax(value.text, value.syntax_kind)
-        except (TypeError, ValueError):
-            return False, 0
-        return True, 1
-    if isinstance(value, LiteralSegment):
-        return isinstance(value.text, str), 0
-    if isinstance(value, SourceBoundSegment):
-        return False, 0
-    if isinstance(value, SourcePresentationSegment):
-        return False, 0
+    leaf = _strict_sanitized_leaf(value)
+    if leaf is not None:
+        return leaf
     if isinstance(value, OutboundText):
         if not value.segments:
             return False, 0
@@ -1173,14 +1103,8 @@ class LLMEgressFirewall:
             )
             sanitized_only = sanitized_shape and sanitized_count > 0
 
-        if destination == DestinationClass.UNKNOWN:
-            reasons.append("unknown_destination")
-        if destination in {DestinationClass.REMOTE, DestinationClass.UNKNOWN} and not all(
-            (session_id, turn_id, request_id, policy_digest)
-        ):
-            reasons.append("missing_request_identity")
-        if self._policy_digest and policy_digest != self._policy_digest:
-            reasons.append("policy_digest_mismatch")
+        reasons.extend(_identity_reasons(
+            destination, (session_id, turn_id, request_id, policy_digest), self._policy_digest))
         if destination in {DestinationClass.REMOTE, DestinationClass.UNKNOWN}:
             if typed_request is None:
                 reasons.append("typed_request_required")
@@ -1274,26 +1198,7 @@ class LLMEgressFirewall:
             reasons.append("token_cap_exceeded")
 
         if destination in {DestinationClass.REMOTE, DestinationClass.UNKNOWN}:
-            try:
-                if _contains_secret(scan_values):
-                    reasons.append("secret_detected")
-            except Exception:
-                reasons.append("redaction_failed")
-            try:
-                if _contains_exact_secret(scan_values, self._exact_secret_values):
-                    reasons.append("exact_secret_detected")
-            except Exception:
-                reasons.append("exact_secret_scan_failed")
-            try:
-                if _contains_canonical_base64(base64_scan_values):
-                    reasons.append("base64_payload")
-            except Exception:
-                reasons.append("base64_scan_failed")
-            try:
-                if _contains_private_absolute_path(scan_values):
-                    reasons.append("private_absolute_path")
-            except Exception:
-                reasons.append("private_path_scan_failed")
+            reasons.extend(self._scan_remote_payloads(scan_values, base64_scan_values))
 
         decision = EgressDecision(
             allowed=not reasons,
@@ -1324,6 +1229,34 @@ class LLMEgressFirewall:
                 replace(decision, allowed=False, reason_codes=("receipt_unavailable",))
             ) from None
         return AuthorizedEgress(decision=decision, payload_bytes=serialized)
+
+    def _scan_remote_payloads(self, scan_values: Any, base64_scan_values: Any) -> list[str]:
+        reasons: list[str] = []
+        try:
+            if _contains_secret(scan_values):
+                reasons.append("secret_detected")
+        except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
+            reasons.append("redaction_failed")
+        try:
+            if _contains_exact_secret(scan_values, self._exact_secret_values):
+                reasons.append("exact_secret_detected")
+        except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
+            reasons.append("exact_secret_scan_failed")
+        try:
+            if _contains_canonical_base64(base64_scan_values):
+                reasons.append("base64_payload")
+        except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
+            reasons.append("base64_scan_failed")
+        try:
+            if _contains_private_absolute_path(scan_values):
+                reasons.append("private_absolute_path")
+        except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
+            reasons.append("private_path_scan_failed")
+        return reasons
 
     def _validate_grants(
         self,
@@ -1377,6 +1310,7 @@ class LLMEgressFirewall:
             try:
                 blocked = get_read_block_error(str(resolved))
             except Exception:
+                logger.debug("Optional metadata or provenance operation failed", exc_info=True)
                 reasons.append("source_policy_unavailable")
                 continue
             if blocked is not None:
@@ -1432,6 +1366,28 @@ class LLMEgressFirewall:
             if static_literal_sha256(text) not in allowed_static_hashes:
                 reasons.append("static_literal_not_allowed")
 
+        def render_sanitized_segment(segment: SanitizedSegment) -> str:
+            nonlocal sanitized_bytes
+            if not allow_sanitized_segments:
+                reasons.append("sanitized_segment_forbidden")
+            if isinstance(segment.text, str):
+                encoded = segment.text.encode("utf-8")
+                if len(encoded) > self._max_sanitized_segment_bytes:
+                    reasons.append("sanitized_segment_bytes_exceeded")
+                sanitized_bytes += len(encoded)
+                if sanitized_bytes > self._max_sanitized_bytes:
+                    reasons.append("sanitized_bytes_exceeded")
+                if any(
+                    _contains_grant_substring(content, encoded)
+                    for _, content in grant_contents.values()
+                ):
+                    reasons.append("source_bytes_in_sanitized_segment")
+                scan_values.append(segment.text)
+                base64_scan_values.append(segment.text)
+                return segment.text
+            reasons.append("invalid_literal_segment")
+            return ""
+
         def render_text_segment(
             segment: (
                 LiteralSegment
@@ -1454,25 +1410,7 @@ class LLMEgressFirewall:
                     reasons.append("source_bytes_in_literal")
                 return segment.text
             if isinstance(segment, SanitizedSegment):
-                if not allow_sanitized_segments:
-                    reasons.append("sanitized_segment_forbidden")
-                if isinstance(segment.text, str):
-                    encoded = segment.text.encode("utf-8")
-                    if len(encoded) > self._max_sanitized_segment_bytes:
-                        reasons.append("sanitized_segment_bytes_exceeded")
-                    sanitized_bytes += len(encoded)
-                    if sanitized_bytes > self._max_sanitized_bytes:
-                        reasons.append("sanitized_bytes_exceeded")
-                    if any(
-                        _contains_grant_substring(content, encoded)
-                        for _, content in grant_contents.values()
-                    ):
-                        reasons.append("source_bytes_in_sanitized_segment")
-                    scan_values.append(segment.text)
-                    base64_scan_values.append(segment.text)
-                    return segment.text
-                reasons.append("invalid_literal_segment")
-                return ""
+                return render_sanitized_segment(segment)
             if isinstance(segment, GeneratedContextSegment):
                 if not isinstance(segment.text, str):
                     reasons.append("invalid_generated_context_segment")
@@ -1526,7 +1464,7 @@ class LLMEgressFirewall:
                     expected_content = "\n".join(
                         f"{line_number}|{line}"
                         for line_number, line in enumerate(
-                            raw_text.split("\n"),
+                            raw_text.removesuffix("\n").split("\n"),
                             start=grant_and_content[0].line_start,
                         )
                     )
@@ -1779,3 +1717,99 @@ __all__ = [
     "static_literal_sha256",
     "validate_tool_syntax",
 ]
+
+
+def _text_contains_canonical_base64(value: str) -> bool:
+    # Fixed Hermes/Nous attribution tags are protocol metadata, not an
+    # encoded source payload. They remain subject to secret/path scans.
+    if value.startswith(("product=hermes-agent", "client=hermes-client-")):
+        return False
+    for match in _BASE64_CANDIDATE.finditer(value):
+        candidate = match.group(1)
+        if re.fullmatch(
+            r"[0-9a-f]{7,12}|[0-9a-f]{40}|[0-9a-f]{64}",
+            candidate.lower(),
+        ):
+            continue
+        if candidate.isdigit():
+            before = value[: match.start(1)].rstrip()[-1:]
+            after = value[match.end(1) :].lstrip()[:1]
+            if before in {":", ",", "["} and after in {",", "]", "}"}:
+                # JSON numeric values in tool results are serialized
+                # protocol fields, not encoded text. A quoted numeric
+                # string remains eligible for Base64 detection.
+                continue
+        # The fixed Kanban task-id grammar carries only a 32-bit hex
+        # database key. It is application protocol metadata, not an
+        # encoded source payload.
+        if _HERMES_TASK_ID.fullmatch(candidate):
+            continue
+        # Provider-generated tool-call and response-item identifiers are
+        # opaque protocol routing metadata, not caller-supplied encoded
+        # content.  Match their complete, fixed grammar only.
+        if re.fullmatch(r"(?:call|fc)_[A-Za-z0-9_-]{8,128}", candidate):
+            continue
+        if candidate in {
+            "HERMES_CONTROL_HOME",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            "HERMES_PROFILE_HOME",
+        }:
+            continue
+        # Content-addressed cache routing is a fixed application protocol
+        # value: the literal ``pck_`` prefix plus exactly 96 bits of hex.
+        if _PROMPT_CACHE_KEY.fullmatch(candidate):
+            continue
+        # GitHub's legacy global node id (see helper docstring above).
+        if _looks_like_github_legacy_node_id(candidate):
+            continue
+        if _canonical_base64_candidate(candidate):
+            return True
+    # Providers and source-control tools sometimes wrap an otherwise
+    # canonical encoding at a fixed column. Normalize only bounded chunks
+    # so ordinary prose words are not concatenated into a false candidate.
+    chunked = re.compile(
+        r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
+        r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
+    )
+    for match in chunked.finditer(value):
+        candidate = re.sub(r"\s+", "", match.group(0))
+        if _canonical_base64_candidate(candidate):
+            return True
+    return False
+
+
+def _strict_sanitized_leaf(value: Any) -> tuple[bool, int] | None:
+    if isinstance(value, SanitizedSegment):
+        return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
+    if isinstance(value, GeneratedContextSegment):
+        return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
+    if isinstance(value, GeneratedContextKey):
+        return isinstance(value.text, str), 0
+    if isinstance(value, UntrustedProvenanceSegment):
+        return False, 0
+    if isinstance(value, ValidatedToolSyntaxSegment):
+        try:
+            validate_tool_syntax(value.text, value.syntax_kind)
+        except (TypeError, ValueError):
+            return False, 0
+        return True, 1
+    if isinstance(value, LiteralSegment):
+        return isinstance(value.text, str), 0
+    if isinstance(value, (SourceBoundSegment, SourcePresentationSegment)):
+        return False, 0
+    return None
+
+
+def _identity_reasons(destination: DestinationClass, identities: tuple[str, str, str, str], expected_policy_digest: str | None) -> list[str]:
+    session_id, turn_id, request_id, policy_digest = identities
+    reasons: list[str] = []
+    if destination == DestinationClass.UNKNOWN:
+        reasons.append("unknown_destination")
+    if destination in {DestinationClass.REMOTE, DestinationClass.UNKNOWN} and not all(
+        (session_id, turn_id, request_id, policy_digest)
+    ):
+        reasons.append("missing_request_identity")
+    if expected_policy_digest and policy_digest != expected_policy_digest:
+        reasons.append("policy_digest_mismatch")
+    return reasons

@@ -31,3 +31,24 @@ def test_text_payloads_and_tool_schemas_keep_the_legacy_estimate():
                "tools": [{"type": "function", "function": {"name": "vision", "parameters": {"type": "image"}}}]}
     legacy = (sum(len(str(m)) for m in payload["messages"]) + len(str(payload["tools"]))) // 4
     assert abs(estimate_request_context_tokens(payload) - legacy) < legacy * 0.02
+
+
+def test_schema_nodes_with_structured_type_values_keep_the_legacy_estimate():
+    """A JSON-Schema ``properties`` dict whose ``type`` KEY holds a sub-schema dict, or a multi-type
+    list like ``["string", "null"]``, is payload data — not an image part. The membership test must
+    not raise ``TypeError: unhashable type`` before the request reaches the provider (#104793)."""
+    def _tools(param_name):
+        return [{"type": "function", "function": {"name": "memory_search", "parameters": {"type": "object", "properties": {
+            param_name: {"type": "string", "enum": ["episode", "semantic"]},
+            "maybe": {"type": ["string", "null"]},
+        }}}}]
+    messages = [{"role": "user", "content": "hi"}]
+    payload = {"messages": messages, "tools": _tools("type")}
+    renamed = {"messages": messages, "tools": _tools("kind")}  # equal-length key: identical walk
+    assert estimate_request_context_tokens(payload) == estimate_request_context_tokens(renamed)
+    # A real image part in the same request is still priced at the learned cost.
+    chat = {"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": _B64}},
+    ]}], "tools": _tools("type")}
+    assert DEFAULT_IMAGE_TOKEN_COST <= estimate_request_context_tokens(chat) < DEFAULT_IMAGE_TOKEN_COST + 400

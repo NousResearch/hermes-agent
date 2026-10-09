@@ -43,8 +43,12 @@ Two orchestrator-level knobs make one shared vault safe across [profiles](../pro
 
 Both apply to every source — bundled and plugin — because they live in the orchestrator, not the backends.
 
+## Secrets in child processes
+
+Terminal commands, `execute_code` sandboxes and [`no_agent` cron scripts](../features/cron.md#giving-a-script-a-credential) run with a sanitized environment: Hermes-managed credentials are stripped, and only variables you declare in `terminal.env_passthrough` (or a loaded skill's `required_environment_variables`) are forwarded. A declared variable is forwarded with the **owning profile's** value — from that profile's `.env` or its secret sources — even when the profile is served by a multi-profile gateway or the Desktop/dashboard backend and its secrets never entered the process environment. A profile's declared value never reaches another profile's children, and the launch profile's `.env` credentials are dropped from children that run for a served profile. Provider credentials cannot be declared; see [Security → Credential scoping](../security.md).
+
 ## Adding your own backend
 
-Third-party secret managers ship as standalone plugins, not core PRs. A backend subclasses `agent.secret_sources.base.SecretSource` (one required method: `fetch(cfg, home_path) -> FetchResult`) and registers via `ctx.register_secret_source(MySource())` in the plugin's `register(ctx)`. The orchestrator owns precedence, conflict handling, timeouts, and provenance — your source only fetches. Full guide with the contract rules, subprocess-safety helper, and conformance kit: [Building a Secret Source Plugin](/developer-guide/secret-source-plugin).
+Third-party secret managers ship as standalone plugins, not core PRs. A backend subclasses `agent.secret_sources.base.SecretSource` (one required method: `fetch(cfg, home_path) -> FetchResult`) and registers via `ctx.register_secret_source(MySource())` in the plugin's `register(ctx)`. The orchestrator owns precedence, conflict handling, timeouts, and provenance — your source only fetches. Full guide with the contract rules, subprocess-safety helper, and conformance kit: [Building a Secret Source Plugin](../../developer-guide/secret-source-plugin.md).
 
 The bundled set is deliberately closed (same policy as memory providers): Bitwarden and 1Password ship in-tree. Everything else — Infisical, Proton Pass, HashiCorp Vault, AWS Secrets Manager, OS keystores — belongs in plugin repos; share them in the Nous Research Discord (`#plugins-skills-and-skins`).

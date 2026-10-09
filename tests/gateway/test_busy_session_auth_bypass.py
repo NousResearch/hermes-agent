@@ -26,11 +26,10 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +104,7 @@ class TestBusySessionAuthBypass:
         """An unauthorized user's message must be silently dropped, not queued."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -143,7 +142,7 @@ class TestBusySessionAuthBypass:
         """Even during drain mode, unauthorized users must be dropped."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._draining = True
         runner._queue_during_drain_enabled = lambda: True
         adapter = _make_adapter()
@@ -171,7 +170,7 @@ class TestBusySessionAuthBypass:
         """Steer mode must not allow unauthorized users to inject mid-run guidance."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 

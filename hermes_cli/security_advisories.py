@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+from hermes_constants import display_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +28,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Advisory:
     """``id`` is lowercase-hyphen, stable and never reused (it is what acks key on). ``remediation``
-    is ordered: uninstall command first, then credential audit/rotation guidance.
+    is ordered: uninstall command first, then credential audit/rotation guidance. Steps may use
+    ``{hermes_home}``; ``full_remediation_text`` fills it with ``display_hermes_home()`` at render
+    time so a profile / HERMES_HOME user is sent to their own .env.
     """
 
     id: str
@@ -59,7 +63,7 @@ ADVISORIES: tuple[Advisory, ...] = (
         compromised=(("mistralai", frozenset({"2.4.6"})),),
         remediation=(
             "Run: pip uninstall -y mistralai  (or: uv pip uninstall mistralai)",
-            "Rotate API keys in ~/.hermes/.env (OpenRouter, Anthropic, OpenAI, "
+            "Rotate API keys in {hermes_home}/.env (OpenRouter, Anthropic, OpenAI, "
             "Nous, GitHub, AWS, Google, Mistral, etc.).",
             "Audit ~/.npmrc, ~/.pypirc, ~/.aws/credentials, ~/.config/gh/hosts.yml, "
             "and any other credential files for tokens that may have been read.",
@@ -186,7 +190,7 @@ def full_remediation_text(hit: AdvisoryHit) -> list[str]:
         a.summary,
         "",
         "Remediation:",
-        *(f"  {i}. {step}" for i, step in enumerate(a.remediation, 1)),
+        *(f"  {i}. {step.format(hermes_home=display_hermes_home())}" for i, step in enumerate(a.remediation, 1)),
     ]
 
 
@@ -212,7 +216,7 @@ def _banner_cache_path() -> Optional[Path]:
 def _read_banner_cache() -> dict[str, float]:
     p = _banner_cache_path()
     try:
-        lines = p.read_text(encoding="utf-8").splitlines() if p is not None and p.exists() else []
+        lines = p.read_text(encoding="utf-8-sig").splitlines() if p is not None and p.exists() else []
     except Exception:
         return {}
     out: dict[str, float] = {}
@@ -273,27 +277,3 @@ def gateway_log_message(hits: list[AdvisoryHit]) -> Optional[str]:
                 f"matches {h.advisory.title}. See {h.advisory.url}")
     return (f"{len(fresh)} security advisories active (IDs: {', '.join(h.advisory.id for h in fresh)}). "
             "Run `hermes doctor` on the gateway host for details.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
-    """Render the security-advisory section for ``hermes doctor``.
-
-    Returns ``(has_problems, lines)``. Caller is responsible for printing
-    with whatever color scheme it uses.
-    """
-    fresh = filter_unacked(hits)
-    if not fresh:
-        return False, ["No active security advisories.  ✓"]
-
-    lines: list[str] = []
-    for i, hit in enumerate(fresh):
-        if i:
-            lines.append("")
-        lines.extend(full_remediation_text(hit))
-    return True, lines
-# ---- END PLUGIN-COMPAT ----

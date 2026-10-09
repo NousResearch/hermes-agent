@@ -37,19 +37,96 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
+    """Resolved hint-file target, or None when the file must not be loaded.
+
+    ``is_file()`` and ``read_text`` follow symlinks, so a checked-in
+    ``sub/AGENTS.md -> ~/.aws/credentials`` would inject an out-of-tree file
+    into the tool result. The resolved target must stay inside the resolved
+    working dir (same containment ``_within_working_dir`` applies to the
+    directory itself) and pass the canonical read deny-list
+    (``context_references`` applies it to explicit @-references), which also
+    catches in-tree targets like a symlink to the project ``.env``.
+    """
+    try:
+        resolved = hint_path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        inside = resolved.is_relative_to(working_dir)
+    except (OSError, ValueError, RuntimeError):
+        inside = False
+    if not inside:
+        return None
+    try:
+        from agent.file_safety import get_read_block_error
+        blocked = get_read_block_error(str(resolved)) is not None
+    except Exception:
+        # Mirror context_references: a deny-list lookup that fails re-opens the
+        # exact hole the check closes, so fail closed.
+        return None
+    return None if blocked else resolved
+
+
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
     in *directory* (priority order), or None. Unreadable files are skipped."""
     for filename in _HINT_FILENAMES:
         candidate = directory / filename
         try:
-            if not candidate.is_file():
+            if not candidate.is_file() or (target := _resolved_hint_target(candidate, directory)) is None:
                 continue
-            content = candidate.read_text(encoding="utf-8").strip()
+            # Read the resolved target (not the link path) so a symlink swapped
+            # between check and read still lands on the vetted file.
+            content = target.read_text(encoding="utf-8-sig").strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content
     return None
+
+
+_NAV_COMMANDS = frozenset({"cd", "pushd"})
+_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&", ";;", "|&", "(", ")"})
+
+
+def _nav_targets(cmd: str) -> list:
+    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing."""
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    targets, segment_start = [], True
+    for idx, token in enumerate(tokens):
+        if token in _SHELL_OPERATORS:
+            segment_start = True
+            continue
+        if segment_start and token in _NAV_COMMANDS:
+            operand = next((t for t in tokens[idx + 1:] if t in _SHELL_OPERATORS or not t.startswith("-")), None)
+            if operand and operand not in _SHELL_OPERATORS:
+                targets.append(operand)
+        segment_start = False
+    return targets
+
+
+# A container cwd is not a host path: a docker/local session whose working dir is the backend
+# container's default /home (or /root) home must not start hint discovery either — the same
+# vacuous-containment hazard as the desktop home pin, just container-shaped (#76902).
+_CONTAINER_HOMES = frozenset({Path("/home"), Path("/root"), Path("/workspace")})
+
+
+def _is_home_like_working_dir(working_dir: Path) -> bool:
+    """True when ``working_dir`` is a home the desktop/container fell back to — not a project."""
+    home = Path.home()
+    if working_dir == home or working_dir in _CONTAINER_HOMES or working_dir.parent in _CONTAINER_HOMES:
+        return True
+    # Also the local-sandbox home mount: a docker backend binds the host home under a
+    # container path whose basename stays the user name (e.g. /mnt/host-home/brooklyn).
+    for part in working_dir.parts:
+        if part in (".home", "host-home", "host_home"):
+            return True
+    return False
 
 
 class SubdirectoryHintTracker:
@@ -59,26 +136,62 @@ class SubdirectoryHintTracker:
     and append the returned text to the tool result.
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: Optional[str] = None, *, enabled: bool = True):
+        # ``enabled=False`` mirrors ``skip_context_files``: a session that opted out of
+        # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
+        # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
+        self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # $HOME is not a project (#76902): the packaged Desktop app with no default project
+        # dir configured resolves its cwd (and TERMINAL_CWD) to home, and the containment
+        # check is then vacuously true for the whole home subtree — every AGENTS.md /
+        # CLAUDE.md / .cursorrules under ~ would be injected on tool calls. Hint discovery
+        # runs only inside a real project workspace; a home cwd only resumes when the
+        # session adopts a real project (see ``rebind_working_dir``).
+        self._home_is_working_dir = _is_home_like_working_dir(self.working_dir)
         # The working dir is pre-marked loaded (startup context handles it).
-        self._loaded_dirs: Set[Path] = {self.working_dir}
+        self._loaded_dirs: set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
         # symlinks/hardlinks/copies is never re-sent. Seeded with the CWD hint
         # file prompt_builder already loaded.
-        self._loaded_digests: Set[str] = set()
+        self._loaded_digests: set[str] = set()
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    def rebind_working_dir(self, working_dir: str) -> None:
+        """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
+        try:
+            new_dir = Path(working_dir).expanduser().resolve()
+            if not new_dir.is_dir() or _is_home_like_working_dir(new_dir):
+                return
+        except (OSError, ValueError, RuntimeError):
+            return
+        if new_dir == self.working_dir:
+            self._home_is_working_dir = False
+            return
+        self.working_dir = new_dir
+        self._home_is_working_dir = False
+        # Fresh anchor, fresh bookkeeping: the new project's directories get their
+        # own first-visit hints (startup never loaded context files for it).
+        self._loaded_dirs = {self.working_dir}
+        self._loaded_digests = set()
+        found = _first_hint_file(self.working_dir)
+        if found and found[1]:
+            self._loaded_digests.add(_digest(found[1]))
+
+    def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
+        if not self.enabled:
+            return None
+        if self._home_is_working_dir:
+            return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
-    def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
+    def _extract_directories(self, tool_name: str, args: dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
-        candidates: Set[Path] = set()
+        candidates: set[Path] = set()
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
@@ -88,7 +201,7 @@ class SubdirectoryHintTracker:
             self._extract_paths_from_command(cmd, candidates)
         return list(candidates)
 
-    def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
+    def _add_path_candidate(self, raw_path: str, candidates: set[Path]):
         """Add a raw path's directory and its ancestors (up to ``_MAX_ANCESTOR_WALK``
         levels, stopping at the first already-loaded dir) so reading
         ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
@@ -110,12 +223,18 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError, RuntimeError):
             pass
 
-    def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
+    def _extract_paths_from_command(self, cmd: str, candidates: set[Path]):
         """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
             tokens = shlex.split(cmd)
         except ValueError:
             tokens = cmd.split()
+        # `cd backend && ls`: a bare directory name has no `/` or `.`, so the generic filter below drops
+        # it; the operand of a navigation command is a path by construction (#11032). Only a `cd` at the
+        # START of a shell segment counts (`echo cd backend` is prose); punctuation-aware tokenizing keeps
+        # a quoted `'backend;'` literal while splitting bare `backend;ls` at the operator.
+        for target in _nav_targets(cmd):
+            self._add_path_candidate(target, candidates)
         for token in tokens:
             if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue
@@ -155,7 +274,7 @@ class SubdirectoryHintTracker:
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
-        if not self._within_working_dir(directory):
+        if self._home_is_working_dir or not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None
         for filename in _HINT_FILENAMES:
@@ -165,8 +284,10 @@ class SubdirectoryHintTracker:
                     continue
             except OSError:
                 continue
+            if (target := _resolved_hint_target(hint_path, self.working_dir)) is None:
+                continue
             try:
-                content = (_read_text_with_timeout(hint_path) or "").strip()
+                content = (_read_text_with_timeout(target) or "").strip()
                 if not content:
                     continue
                 digest = _digest(content)
@@ -177,7 +298,9 @@ class SubdirectoryHintTracker:
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)
-                content = _truncate_content(content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path)
+                content = _truncate_content(
+                    content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,
+                )
                 logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
                 return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
             except Exception as exc:

@@ -15,11 +15,16 @@ def _append_warning(result: ModelSwitchResult, text: str) -> None:
         result.warning_message = text
 
 
-def _threshold_tokens(context_length: int, threshold_percent: float) -> int:
-    return max(int(context_length * threshold_percent), MINIMUM_CONTEXT_LENGTH)
+def _threshold_tokens(compressor: Any, model: str, context_length: int, provider: str = "") -> int:
+    """The trigger the compressor WILL use after the switch (cap, model_thresholds and small-window
+    floor included), so the warning quotes the real number; duck-typed engines keep the plain ratio."""
+    preview = getattr(compressor, "preview_threshold_tokens", None)
+    if callable(preview):
+        return int(preview(model, context_length, provider))
+    return max(int(context_length * float(getattr(compressor, "threshold_percent", 0.5))), MINIMUM_CONTEXT_LENGTH)
 
 
-def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int]:
+def _estimate_tokens(agent: Any, messages: Optional[list[dict]]) -> Optional[int]:
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
         return None
@@ -40,18 +45,16 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
         except Exception:
             pass
 
+    # session_prompt_tokens is a lifetime sum, not occupancy (#126343): never a fallback here.
     last = int(getattr(cc, "last_prompt_tokens", 0) or 0)
-    if last > 0:
-        return last
-    session_prompt = int(getattr(agent, "session_prompt_tokens", 0) or 0)
-    return session_prompt if session_prompt > 0 else None
+    return last if last > 0 else None
 
 
 def merge_preflight_compression_warning(
     result: ModelSwitchResult,
     *,
     agent: Any = None,
-    messages: Optional[List[dict]] = None,
+    messages: Optional[list[dict]] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
     configured_model: str | None = None,
@@ -94,7 +97,7 @@ def merge_preflight_compression_warning(
     if estimate is None:
         return
 
-    new_threshold = _threshold_tokens(new_ctx, float(getattr(cc, "threshold_percent", 0.5)))
+    new_threshold = _threshold_tokens(cc, result.new_model, new_ctx, result.target_provider)
     if estimate < new_threshold:
         return
 

@@ -12,13 +12,11 @@ runs when the main provider has no working client.
 """
 
 from __future__ import annotations
+from agent import auxiliary_egress_recovery
 
 from unittest.mock import MagicMock, patch
 
-
-
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
-
 
 class TestResolveAutoMainFirst:
     """_resolve_auto_route() must prefer main provider + main model for every user."""
@@ -84,7 +82,6 @@ class TestResolveAutoMainFirst:
         assert client is mock_client
         assert model == fast_model
 
-
     def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
         """MoA main user → aux runs on the aggregator slot, NOT the preset name.
 
@@ -94,7 +91,7 @@ class TestResolveAutoMainFirst:
         acting model). The virtual moa://local base_url + placeholder key must
         be dropped so the aggregator resolves via its own provider credentials.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -126,7 +123,7 @@ class TestResolveAutoMainFirst:
 
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route(
+            client, _model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "moa",
                     "model": "opus-gpt",
@@ -145,9 +142,6 @@ class TestResolveAutoMainFirst:
         # aggregator's base_url.
         assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
 
-
-
-
     def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
         """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
         task_client = MagicMock()
@@ -159,7 +153,7 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(None, None),  # main provider has no client
         ), patch(
-            "agent.auxiliary_client._try_configured_fallback_chain",
+            "agent.auxiliary_egress_recovery.try_configured_fallback_chain",
             return_value=(task_client, "task-free-model", "fallback_chain[0](openrouter)"),
         ) as mock_task_chain, patch(
             "agent.auxiliary_client._try_main_fallback_chain",
@@ -176,9 +170,6 @@ class TestResolveAutoMainFirst:
             "title_generation", "nvidia", reason="main provider unavailable")
         mock_main_chain.assert_not_called()
         mock_openrouter.assert_not_called()
-
-
-
 
     def test_resolve_provider_auto_returns_runtime_model_not_stale_config_default(self):
         """Blank auto aux requests must not pair a stale config model with live fallback provider."""
@@ -237,9 +228,7 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tp-test-key"
         assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
-
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
-
 
 class TestResolveVisionMainFirst:
     """Vision auto-detection prefers the main provider first."""
@@ -275,9 +264,6 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
-
-
-
 
     @staticmethod
     def _stub_nous_portal(seen: dict):
@@ -482,11 +468,7 @@ class TestResolveVisionMainFirst:
         assert captured == {"is_agent_turn": True, "is_vision": False}
         assert "default_headers" not in mock_openai.call_args.kwargs
 
-
-
-
 # ── Vision — custom provider endpoint credential passthrough ────────────────
-
 
 class TestResolveVisionCustomProvider:
     """Custom-endpoint mains must forward base_url/api_key to Step 1.
@@ -560,7 +542,7 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            provider, client, _model = resolve_vision_provider_client()
 
         assert provider == "custom:copilot-gateway"
         assert client is mock_client
@@ -595,26 +577,11 @@ class TestResolveVisionCustomProvider:
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
-            provider, client, model = resolve_vision_provider_client()
+            _provider, client, _model = resolve_vision_provider_client()
 
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
         assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
         assert kwargs.get("explicit_api_key") == "sk-configured"
 
-
 # ── Constant cleanup ────────────────────────────────────────────────────────
-
-
-def test_aggregator_providers_constant_removed():
-    """The dead _AGGREGATOR_PROVIDERS constant should no longer live in the module.
-
-    Removed when the main-first policy made the aggregator-skip guard obsolete.
-    """
-    import agent.auxiliary_client as aux_mod
-
-    assert not hasattr(aux_mod, "_AGGREGATOR_PROVIDERS"), (
-        "_AGGREGATOR_PROVIDERS was removed when _resolve_auto_route stopped "
-        "treating aggregators specially. If you re-added it, the main-first "
-        "policy may have regressed."
-    )

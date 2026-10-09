@@ -321,7 +321,7 @@ def test_codex_user_content_private_path_is_not_silently_redacted(tmp_path):
 def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
     """Board data remains local instead of causing a remote fallback loop."""
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
@@ -369,7 +369,7 @@ def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
 def test_protected_codex_elides_responses_kanban_show_output(tmp_path, monkeypatch):
     """Responses API function output follows the same no-egress boundary."""
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
@@ -615,7 +615,7 @@ def test_protected_codex_does_not_elide_unbound_kanban_show_result(
 ):
     """Only an actual prior Kanban tool call may discard its output."""
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
@@ -645,7 +645,7 @@ def test_protected_codex_does_not_elide_unbound_responses_kanban_output(
 ):
     """Responses output without the actual prior call remains fail-closed."""
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
@@ -686,7 +686,7 @@ def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
 def test_protected_kanban_splits_large_line_bounded_context_without_changing_wire_text(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent._llm_egress_max_sanitized_bytes = 128_000
     text = "\n".join(
@@ -707,7 +707,7 @@ def test_protected_kanban_splits_large_line_bounded_context_without_changing_wir
 def test_protected_kanban_splits_single_oversized_line_without_relaxing_cap(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     agent._llm_egress_max_sanitized_bytes = 128_000
     text = "ordinary bounded repair context " * 2_000
@@ -727,7 +727,7 @@ def test_protected_provider_route_splits_without_dispatcher_marker(
     tmp_path, monkeypatch
 ):
     """Route protection must survive provider/fallback agent reconstruction."""
-    monkeypatch.delenv("HERMES_KANBAN_PROTECTED_REMOTE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     agent = _agent(tmp_path)
     agent.provider = "nous"
     agent.model = "tencent/hy3:free"
@@ -750,7 +750,7 @@ def test_reconstructed_kanban_worker_redacts_paths_without_marker(
     tmp_path, monkeypatch
 ):
     """Task identity must restore protected redaction after fallback rebuild."""
-    monkeypatch.delenv("HERMES_KANBAN_PROTECTED_REMOTE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_01234567")
     agent = _agent(tmp_path)
     agent.provider = "nous"
@@ -786,7 +786,7 @@ def test_reconstructed_kanban_worker_redacts_paths_without_marker(
 def test_protected_kanban_admits_validated_application_identifiers(
     tmp_path, monkeypatch, identifier
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
 
     authorized, _ = authorize_agent_sdk_kwargs(
@@ -805,7 +805,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
 ):
     from hermes_cli.kanban_decompose import _SYSTEM_PROMPT, _USER_TEMPLATE
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     monkeypatch.setenv("HERMES_CONTROL_HOME", "/Users/operator/.hermes")
     agent = _agent(tmp_path)
     lower_sha = "8ea9309f1c38ac8da8064e16acae05da86ba2df4"
@@ -850,7 +850,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
     }
     authorized_user = authorized["messages"][1]["content"]
     assert "/Users/operator" not in authorized_user
-    assert "$HERMES_CONTROL_HOME/hermes-agent/venv/bin/python" in authorized_user
+    assert "<private-path>" in authorized_user
     assert lower_sha in authorized_user
     assert upper_sha in authorized_user
     assert receipt_sha in authorized_user
@@ -872,7 +872,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
 def test_protected_kanban_pr_receipt_lexical_exceptions_remain_fail_closed(
     tmp_path, monkeypatch, unsafe_text, reason
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
 
     with pytest.raises(EgressBlocked) as exc_info:
@@ -929,7 +929,7 @@ def test_protected_kanban_runtime_sanitizes_tool_paths_before_egress(
 ):
     workspace = tmp_path / "managed" / "t_12345678"
     profile_home = tmp_path / "profiles" / "worker"
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     agent = _agent(tmp_path / "egress")
@@ -953,12 +953,12 @@ def test_protected_kanban_runtime_sanitizes_tool_paths_before_egress(
     content = authorized["messages"][0]["content"]
     assert str(tmp_path) not in content
     assert "pwd=." in content
-    assert "$HERMES_PROFILE_HOME" in content
+    assert "$HERMES_HOME" in content
     assert "<private-path>" in content
 
 
 def test_protected_kanban_runtime_does_not_hide_encoded_payload(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
 
     with pytest.raises((EgressBlocked, SanitizedTextRejected)):
@@ -989,7 +989,7 @@ def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     to a source grant merely because its shape resembles a URL, ref, or hash.
     """
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     kwargs = {
         "model": "test-model",
@@ -1028,7 +1028,7 @@ def test_protected_terminal_file_bytes_are_bounded_non_source_context(
     silently acquire source authority during serialization.
     """
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     innocent_source = "def calculate_total(items):\n    return sum(items)\n"
 
@@ -1120,7 +1120,7 @@ def test_exact_applied_secret_is_denied_at_final_provider_boundary(
 def test_tool_syntax_without_recognized_terminal_call_remains_blocked(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
 
     with pytest.raises((EgressBlocked, SanitizedTextRejected)):
@@ -1142,7 +1142,7 @@ def test_tool_syntax_without_recognized_terminal_call_remains_blocked(
 def test_recognized_terminal_syntax_does_not_exempt_adjacent_base64(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
 
     with pytest.raises((EgressBlocked, SanitizedTextRejected)):
@@ -1176,7 +1176,7 @@ def test_protected_kanban_admits_bounded_codex_function_output(
 ):
     """Responses API tool output follows the same usable cloud path."""
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     agent = _agent(tmp_path)
     kwargs = {
         "model": "test-model",
@@ -1212,7 +1212,7 @@ def test_real_read_file_wire_result_keeps_exact_source_provenance(
     from agent.tool_dispatch_helpers import make_tool_result_message
     from tools.file_tools import read_file_tool
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     source = tmp_path / "source.py"
     source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
     agent = _agent(tmp_path / "egress")
@@ -1253,7 +1253,7 @@ def test_read_file_wire_result_fails_closed_without_exact_metadata(
     from agent.tool_dispatch_helpers import make_tool_result_message
     from tools.file_tools import read_file_tool
 
-    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1234abcd")
     source = tmp_path / "source.py"
     source.write_text("safe = True\n", encoding="utf-8")
     agent = _agent(tmp_path / "egress")

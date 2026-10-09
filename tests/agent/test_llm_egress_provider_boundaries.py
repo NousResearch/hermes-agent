@@ -1,4 +1,5 @@
 from __future__ import annotations
+from agent.llm_egress_runtime import dispatch_provider_request as _dispatch_provider_request
 
 from hashlib import sha256
 from types import SimpleNamespace
@@ -8,7 +9,6 @@ import pytest
 
 from agent.chat_completion_helpers import (
     _dispatch_nonstreaming_api_request,
-    _dispatch_provider_request,
 )
 from agent.llm_egress_firewall import EgressBlocked
 
@@ -96,3 +96,37 @@ def test_nous_anthropic_entrypoint_uses_firewall(tmp_path):
         )
 
     agent._anthropic_messages_create.assert_not_called()
+
+from agent.error_classifier import classify_api_error, FailoverReason
+
+def test_egress_policy_denial_falls_back_without_retry():
+    from agent.llm_egress_firewall import (
+        DestinationClass,
+        EgressBlocked,
+        EgressDecision,
+    )
+
+    error = EgressBlocked(
+        EgressDecision(
+            allowed=False,
+            destination_class=DestinationClass.REMOTE,
+            provider="nous",
+            model="test-model",
+            payload_sha256="",
+            serialized_bytes=0,
+            estimated_tokens=0,
+            source_grant_count=0,
+            source_segment_count=0,
+            session_id="session",
+            turn_id="turn",
+            request_id="request",
+            policy_digest="policy",
+            reason_codes=("secret_detected",),
+        )
+    )
+
+    result = classify_api_error(error, provider="nous", model="test-model")
+
+    assert result.reason is FailoverReason.egress_policy_blocked
+    assert result.retryable is False
+    assert result.should_fallback is True

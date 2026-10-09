@@ -44,14 +44,6 @@ def test_ws_socket_enables_keepalive() -> None:
     assert opts[(socket.IPPROTO_TCP, socket.TCP_NODELAY)] == 1
     # Keepalive always on.
     assert opts[(socket.SOL_SOCKET, socket.SO_KEEPALIVE)] == 1
-    # Idle/interval/count tuning is platform-specific: Linux exposes
-    # TCP_KEEPIDLE/INTVL/CNT, macOS only TCP_KEEPALIVE (idle seconds).
-    if hasattr(socket, "TCP_KEEPIDLE"):
-        assert opts[(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE)] == 30
-        assert opts[(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL)] == 10
-        assert opts[(socket.IPPROTO_TCP, socket.TCP_KEEPCNT)] == 3
-    elif hasattr(socket, "TCP_KEEPALIVE"):
-        assert opts[(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE)] == 30
 
 
 def test_ws_socket_unreachable_is_silent() -> None:

@@ -6,6 +6,9 @@ do not own the security policy or grant-construction responsibilities.
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -53,6 +56,7 @@ def source_provenance_activation(agent: Any, function_name: str):
             policy_digest=policy_digest,
         )
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         return nullcontext()
 
 
@@ -105,6 +109,7 @@ def attach_trusted_source_provenance_metadata(
         metadata[request_id] = envelope
         return envelope
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         return None
 
 
@@ -187,6 +192,7 @@ def issue_active_read_provenance(
             policy_digest=context.policy_digest,
         )
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         return
 
 
@@ -196,3 +202,16 @@ __all__ = [
     "issue_active_read_provenance",
     "source_provenance_activation",
 ]
+
+
+def issue_unredacted_read_provenance(*, resolved: Any, redacted: bool, **kwargs: Any) -> None:
+    """Only physical, unredacted reads may enter the trusted grant producer."""
+    if isinstance(resolved, Path) and not redacted:
+        issue_active_read_provenance(resolved=resolved, **kwargs)
+
+
+def original_source_path(path: str, task_id: str | None) -> Path:
+    """Retain the original path for symlink-safe proof after task resolution."""
+    from tools.file_tools import _expand_tilde, _resolve_base_dir
+    source_path = Path(_expand_tilde(path))
+    return source_path if source_path.is_absolute() else Path(_resolve_base_dir(task_id)) / source_path

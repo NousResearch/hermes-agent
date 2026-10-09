@@ -29,10 +29,10 @@ class CatalogEntry:
 
     name: str
     description: str
-    schema: Dict[str, Any]  # the full {"type":"function", "function": {...}} entry
+    schema: dict[str, Any]  # the full {"type":"function", "function": {...}} entry
     source: str  # "mcp" | "plugin" | "other"
     source_name: str  # toolset name, e.g. "mcp-github" or "kanban"
-    _tokens: List[str] = field(default_factory=list)  # pre-tokenized for BM25
+    _tokens: list[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -49,13 +49,13 @@ def _stem(token: str) -> str:
     return _thread_local.stemmer.stemWord(token)
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens, Snowball-stemmed (English); shared by the index and
     query paths so "issues" matches ``create_issue``."""
     return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)] if text else []
 
 
-def _fn(td: Dict[str, Any]) -> Dict[str, Any]:
+def _fn(td: dict[str, Any]) -> dict[str, Any]:
     """The ``function`` block of a tool-def (``{}`` when absent/None)."""
     return td.get("function") or {}
 
@@ -76,7 +76,7 @@ def _registry_toolset(name: str) -> Optional[str]:
     return toolset if isinstance(toolset, str) else None
 
 
-def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
+def _entry_search_text(td: dict[str, Any], source_label: str = "") -> str:
     """Search-text blob: split name words + source label + description + top-level parameter
     names (schema bodies are noise with no recall gain). The ``mcp__`` prefix is dropped — it
     is in every MCP document, so its IDF is ~0. The source label lets a service-name query
@@ -91,7 +91,7 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
 
 
-def _classify_source(name: str) -> Tuple[str, str]:
+def _classify_source(name: str) -> tuple[str, str]:
     """Return (source_kind, source_name) for a registered tool name."""
     toolset = _registry_toolset(name)
     if toolset is None:
@@ -99,9 +99,9 @@ def _classify_source(name: str) -> Tuple[str, str]:
     return ("mcp" if toolset.startswith("mcp-") else "plugin", toolset)
 
 
-def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
+def build_catalog(tool_defs: list[dict[str, Any]]) -> list[CatalogEntry]:
     """Build the deferred-tool catalog from the deferrable subset of tool-defs."""
-    catalog: List[CatalogEntry] = []
+    catalog: list[CatalogEntry] = []
     for td in tool_defs:
         fn = _fn(td)
         name = fn.get("name", "")
@@ -116,8 +116,8 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
     return catalog
 
 
-def _bm25_score(query_tokens: List[str], doc_tokens: List[str], doc_lengths: List[int],
-                avg_dl: float, doc_freq: Dict[str, int], n_docs: int, k1: float = 1.5,
+def _bm25_score(query_tokens: list[str], doc_tokens: list[str], doc_lengths: list[int],
+                avg_dl: float, doc_freq: dict[str, int], n_docs: int, k1: float = 1.5,
                 b: float = 0.75) -> float:
     """Standard BM25 for one query against one document (inlined; the catalog is bounded —
     typically < 500 tools — so a dependency is not worth it)."""
@@ -132,10 +132,10 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str], doc_lengths: Lis
     return score
 
 
-_CorpusStats = Tuple[List[int], float, Dict[str, int], int]  # doc_lengths, avg_dl, df, n_docs
+_CorpusStats = tuple[list[int], float, dict[str, int], int]  # doc_lengths, avg_dl, df, n_docs
 
 
-def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
+def _corpus_stats(catalog: list[CatalogEntry]) -> _CorpusStats:
     """Compute the BM25 statistics shared by every query over a catalog."""
     doc_lengths = [len(entry._tokens) for entry in catalog]
     avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
@@ -143,25 +143,68 @@ def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
     return doc_lengths, avg_dl, dict(doc_freq), len(catalog)
 
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5, *,
-                   corpus_stats: Optional[_CorpusStats] = None) -> List[CatalogEntry]:
+def _gate_token(query_tokens: list[str], doc_freq: dict[str, int], n_docs: int) -> str:
+    """The query token with the highest IDF: the word that names the intent. ``send``,
+    ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
+    ``github``, ``incident`` sit in a few and separate everything. A document without this
+    token answered a different question, however many common tokens it shares."""
+    def _idf(token: str) -> float:
+        df = doc_freq.get(token, 0)
+        return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+    return max(query_tokens, key=_idf)
+
+
+# Relevance floor. The rarest-token gate stops queries whose intent word no tool carries; it
+# does not stop a long hunt whose every word exists SOMEWHERE in the catalog while no single
+# tool carries more than one of them (observed: "run shell command execute code python" -> a
+# workflow-rerun tool sharing only "run"; the model read "results exist" as "it is in here"
+# and re-searched 216 times). A document must also match MIN_QUERY_TERM_COVERAGE of the
+# query's ANSWERABLE terms (present in at least one document) before it is offered. Coverage
+# only engages from MIN_ANSWERABLE_TERMS_FOR_COVERAGE terms up: short queries ("list issues")
+# legitimately differ from a tool by a word, and are where a coverage rule costs real recall.
+MIN_QUERY_TERM_COVERAGE = 0.5
+MIN_ANSWERABLE_TERMS_FOR_COVERAGE = 4
+
+
+def _required_term_coverage(answerable_term_count: int) -> int:
+    """How many of a query's ANSWERABLE unique terms a document must match to be offered:
+    one below the engagement floor, else at least half, rounded up."""
+    if answerable_term_count < MIN_ANSWERABLE_TERMS_FOR_COVERAGE:
+        return 1
+    return math.ceil(answerable_term_count * MIN_QUERY_TERM_COVERAGE)
+
+
+def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
+                   corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
     """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
-    Falls back to a name-substring match only when NO query token appears in any document
-    (e.g. "hub" vs ``github_*``); the IDF variant is strictly positive, so a hit anywhere
-    suppresses the fallback."""
+
+    Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
+    BM25 is additive over the tokens a document shares with the query, so on a large catalog
+    ``score > 0`` admits one-token matches and fills every slot with them (measured: "send
+    gmail email" returned 5 incident tools that only shared ``email``). A token no document
+    carries admits nothing; the caller's empty-group hint tells the model to retry without it.
+    Long queries additionally need :func:`_required_term_coverage` of their answerable terms."""
     query_tokens = _tokenize(query) if catalog and limit > 0 else []
     if not query_tokens:
         return []
     corpus_stats = corpus_stats or _corpus_stats(catalog)
-    scored: List[Tuple[float, CatalogEntry]] = []
+    doc_freq = corpus_stats[2]
+    gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
+    answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
+    required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()
-    for entry in catalog:
-        s = (float("inf") if entry.name.lower() == exact_name
-             else _bm25_score(query_tokens, entry._tokens, *corpus_stats))
-        if s > 0:
-            scored.append((s, entry))
-    if not scored:
-        scored = [(0.1, entry) for entry in catalog if query.lower() in entry.name.lower()]
+
+    def _admitted(entry: CatalogEntry) -> bool:
+        """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
+        if entry.name.lower() == exact_name:
+            return True
+        tokens = set(entry._tokens)
+        return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
+
+    scored = [
+        (float("inf") if entry.name.lower() == exact_name
+         else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
+        for entry in catalog if _admitted(entry)]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
 
@@ -190,15 +233,40 @@ def _listing_group_label(source_name: str) -> str:
     return label[4:] if label.startswith("mcp-") else label
 
 
+def hidden_declared_sources() -> list[dict[str, Any]]:
+    """Return deterministic summaries for declared MCP servers hidden by their check."""
+    from hermes_platform import declaration
+    from tools.mcp_liveness import unavailable_details
+    from tools.registry import registry
+
+    grouped: dict[str, list[Any]] = {}
+    for entry in registry.get_all_entries():
+        if entry.toolset.startswith("mcp-"):
+            grouped.setdefault(entry.toolset[4:], []).append(entry)
+    rows: list[dict[str, Any]] = []
+    for server_name in sorted(grouped):
+        if declaration.lookup(server_name) is None:
+            continue
+        entries = grouped[server_name]
+        if any(entry.check_fn is None or bool(entry.check_fn()) for entry in entries):
+            continue
+        details = unavailable_details(server_name)
+        if details is None:
+            continue
+        _decl, _current, sentence = details
+        rows.append({"name": server_name, "tool_count": len(entries), "unavailable": sentence})
+    return rows
+
+
 def build_catalog_listing_with_form(
-    deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000) -> Tuple[Optional[str], str]:
+    deferrable: list[dict[str, Any]], *, max_tokens: int = 4000) -> tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
     Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (oversized servers
     collapsed to a name + count line), ``"groups"`` (every server summarized) or ``"none"``
     (over budget even summarized -> text is None). Ordering is deterministic (sorted groups
     and tools) so the block is byte-stable — the request prefix stays cacheable. Degradation
     is PER SERVER, largest first: one huge server must not cost a small one its listing."""
-    groups: Dict[str, List[Tuple[str, str]]] = {}
+    groups: dict[str, list[tuple[str, str]]] = {}
     for td in deferrable:
         fn = _fn(td)
         name = fn.get("name", "")
@@ -206,7 +274,8 @@ def build_catalog_listing_with_form(
             # _classify_source gives ("other", "") when unregistered; the label of "" is "other".
             label = _listing_group_label(_classify_source(name)[1])
             groups.setdefault(label, []).append((name, _short_desc(fn.get("description", ""))))
-    if not groups:
+    unavailable = hidden_declared_sources()
+    if not groups and not unavailable:
         return None, "none"
 
     def render_group(label: str, mode: str) -> str:
@@ -225,8 +294,21 @@ def build_catalog_listing_with_form(
     header = ("Deferred tool catalog (call schemas via "
               f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
 
-    def assemble_if_fits(modes: Dict[str, str]) -> Optional[str]:
-        text = "\n".join([header] + [render_group(lbl, modes[lbl]) for lbl in sorted(groups)])
+    def assemble_if_fits(modes: dict[str, str]) -> Optional[str]:
+        available_blocks = {label: render_group(label, modes[label]) for label in groups}
+        unavailable_blocks = {
+            row["name"]: (
+                f"{row['name']} ({row['tool_count']} tools unavailable: {row['unavailable']})"
+                if row.get("tool_count") is not None
+                else f"{row['name']} (tools unavailable: {row['unavailable']})"
+            )
+            for row in unavailable
+        }
+        blocks = [
+            available_blocks[label] if label in available_blocks else unavailable_blocks[label]
+            for label in sorted(available_blocks | unavailable_blocks)
+        ]
+        text = "\n".join([header] + blocks)
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
     for mode in ("full", "names"):  # 1. everything full; 2. everything names-only

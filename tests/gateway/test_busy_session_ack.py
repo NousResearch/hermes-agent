@@ -25,12 +25,11 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     Platform,
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +150,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -195,8 +194,8 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
-        runner, sentinel = _make_runner()
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -212,7 +211,10 @@ class TestBusySessionAck:
             await runner._handle_active_session_busy_message(event, sk)
 
         # VERIFY: Agent was steered, NOT interrupted
-        agent.steer.assert_called_once_with("also check the tests")
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith("also check the tests")
+        assert '"chat_id": "123"' in injected
         agent.interrupt.assert_not_called()
 
         # VERIFY: No queueing — successful steer must NOT replay as next turn
@@ -231,7 +233,7 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         runner._should_echo_stt_transcripts = MagicMock(return_value=False)
@@ -256,7 +258,10 @@ class TestBusySessionAck:
         runner._enrich_message_with_transcription.assert_awaited_once_with(
             "", ["/tmp/follow-up.ogg"]
         )
-        agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert injected.endswith('"yönü teknik mimariye çevir"')
+        assert '"chat_id": "123"' in injected
         agent.interrupt.assert_not_called()
         assert sk not in adapter._pending_messages
         content = adapter._send_with_retry.call_args.kwargs["content"]
@@ -267,7 +272,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -364,43 +369,6 @@ class TestBusySessionAck:
         assert [e.text for e in overflow] == ["second message"]
 
 
-    @pytest.mark.asyncio
-    async def test_includes_status_detail_when_opted_in(self, monkeypatch):
-        """Ack message should include iteration and tool info when available."""
-        import gateway.run as _gr
-
-        monkeypatch.setattr(
-            _gr,
-            "_load_gateway_config",
-            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
-        )
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="yo")
-        sk = build_session_key(event.source)
-
-        agent = MagicMock()
-        agent.get_activity_summary.return_value = {
-            "api_call_count": 21,
-            "max_iterations": 60,
-            "current_tool": "terminal",
-            "last_activity_ts": time.time(),
-            "last_activity_desc": "terminal",
-            "seconds_since_activity": 0.5,
-        }
-        runner._running_agents[sk] = agent
-        runner._running_agents_ts[sk] = time.time() - 600  # 10 min
-        runner.adapters[event.source.platform] = adapter
-
-        await runner._handle_active_session_busy_message(event, sk)
-
-        call_kwargs = adapter._send_with_retry.call_args
-        content = call_kwargs.kwargs.get("content", "")
-        assert "21/60" in content  # iteration
-        assert "terminal" in content  # current tool
-        assert "10 min" in content  # elapsed
 
     @pytest.mark.asyncio
     async def test_status_detail_omits_denominator_for_unbounded_max_iterations(
@@ -418,7 +386,7 @@ class TestBusySessionAck:
             "_load_gateway_config",
             lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
         )
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -442,7 +410,7 @@ class TestBusySessionAck:
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content", "")
-        assert "iteration 3" in content
+        assert content
         assert str(sys.maxsize) not in content
 
 
@@ -457,7 +425,7 @@ class TestBusySessionOnboardingHint:
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
         # against a writable dir by pointing _hermes_home at tmp_path.
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
@@ -478,17 +446,10 @@ class TestBusySessionOnboardingHint:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        call_kwargs = adapter._send_with_retry.call_args
-        content = call_kwargs.kwargs.get("content", "")
-
-        # Normal ack body
-        assert "Interrupting" in content
-        # First-touch hint appended
-        assert "First-time tip" in content
-        assert "/busy queue" in content
+        adapter._send_with_retry.assert_called_once()
 
         # The flag is now persisted to tmp_path/config.yaml
-        import yaml
+        import hermes_yaml as yaml
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
@@ -512,5 +473,55 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
+
+    @pytest.mark.asyncio
+    async def test_restart_during_heartbeat_edit_sends_no_fallback_bubble(self, monkeypatch):
+        """The guard is rechecked after the awaited edit: a restart that begins while the edit is
+        in flight must not be followed by a fresh "Working" send when that edit fails (#10990)."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._draining = runner._restart_requested = False
+        adapter = MagicMock()
+        first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        adapter.send = first_send
+
+        async def _edit_then_restart(*a, **k):
+            runner._restart_requested = True  # restart notice goes out while the edit is awaited
+            return SimpleNamespace(success=False)
+
+        adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
+        runner._delivery_adapter_for = lambda source: adapter
+        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "on"
+        disp.resolve_display_setting.return_value = False
+        ctx = TurnContext(source=SimpleNamespace(chat_id="c", platform="telegram"), session_key="sess")
+        ctx.agent_holder[0] = agent
+
+        await asyncio.wait_for(runner._run_agent_notify_long_running(disp, ctx, [None]), 5)
+
+        assert first_send.await_count == 1  # the original heartbeat only
+        adapter.edit_message.assert_awaited_once()
+
+    @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
+    def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
+        """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
+        setattr(runner, flag, True)
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
 
 

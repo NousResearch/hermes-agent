@@ -12,6 +12,7 @@ import pytest
 
 import cron.scheduler as sched
 from cron import unreachable_retry as ur
+from cron.scheduler_bookkeeping import finish_completed_run
 from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
 
 
@@ -182,7 +183,7 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
             return
         run["_model_unreachable"] = True
         held.append(ur.will_retry(run))
-        assert sched._finish_completed_run(
+        assert finish_completed_run(
             sched._RunDelivery(job=run, success=False, error="ConnectError: dns"),
             run["fire_claim"]["by"], execution_id)
         assert get_job(job_id)["repeat"]["completed"] == 1, "only the occurrence itself counts"

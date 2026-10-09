@@ -3165,81 +3165,6 @@ def _save_compose_deliver(
         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
 
-def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str, *, recovered=False) -> bool:
-    """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
-    job = d.job
-    if not d.should_deliver and job.get("last_delivery_queued"):
-        from cron.jobs import update_job
-        update_job(job["id"], {"last_delivery_queued": None})
-        job["last_delivery_queued"] = None
-    mark_kwargs: dict = {"delivery_error": d.delivery_error}
-    from cron.scheduler_authority import journal_path
-    journal = journal_path(job['id'], execution_id)
-    if not job.get('no_agent'):
-        mark_kwargs['execution_id'] = execution_id
-    if not d.success and job.pop("_model_unreachable", False):
-        # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
-        # (cron/unreachable_retry.py) inside the same fenced store write.
-        mark_kwargs["model_unreachable"] = True
-    from cron.unreachable_retry import is_retry_run
-    if is_retry_run(job):
-        # A re-run of an occurrence that already counted: must not spend another repeat slot.
-        mark_kwargs["ladder_rung"] = True
-    _hold_s = job.pop("_quota_hold_seconds", None)
-    if not d.success and _hold_s:
-        # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
-        mark_kwargs["quota_hold_seconds"] = _hold_s
-        mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
-    if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
-        mark_kwargs["status"] = "delivery_queued"
-    if fire_owner is not None:
-        mark_kwargs["expected_fire_owner"] = fire_owner
-    if d.blocked_config:
-        mark_kwargs["status"] = "blocked_config"
-    # A run that removed its own record has nothing left to mark; the delivery above is its result.
-    marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
-        job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost before terminal completion.")
-        return True
-    delivery_outcome = _classify_delivery_outcome(
-        delivery_error=d.delivery_error,
-        delivery_queued=job.get("last_delivery_queued"),
-        notification_suppressed=bool(job.get("_notification_all_targets_suppressed")),
-        should_deliver=d.should_deliver,
-        unresolved_origin=d.unresolved_origin,
-        # Read the lane the notice was actually routed through (failure_deliver on failure).
-        normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)),
-        incident_acked=d.incident_acked,
-        success=d.success,
-    )
-    from cron.delivery_outcome import settle_quietly, settled_outcome
-    if delivery_outcome == "queued":
-        # A drain that already finished this send (cron/delivery_outcome.py) is the real outcome.
-        delivery_outcome = settled_outcome(execution_id) or "queued"
-    if delivery_outcome in ("delivered", "not_configured") and not d.success:
-        # Failure ping left the process (or had a configured target): mark the incident alerted.
-        _mark_incident_alerted(d.failure_incident_id)
-    from functools import partial
-    from cron.executions import get_execution, recover_receipted_execution
-    finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else finish_execution
-    finished = finish(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
-    if recovered and finished is None:
-        current = get_execution(execution_id)
-        # A live foreign firer still owns this row. Keep its only recovery link until settlement.
-        # Legacy direct calls may have no execution row; an already-finished row is also safe.
-        if current is not None and current['status'] not in {'completed', 'failed'}:
-            return False
-    if job.get("last_delivery_queued"):
-        # A drain that settled before this run's own bookkeeping landed found nothing to fence on.
-        settle_quietly(job["id"], execution_id)
-    journal.unlink(missing_ok=True)
-    return True
-
-
 def _deliver_crash_failure(
     job: dict, err_text: str, *, adapters, loop,
 ) -> tuple[Optional[str], str]:
@@ -3468,7 +3393,7 @@ def _run_one_job_body(
         if _fire_claim_ownership_lost():
             # #105861: the claim check is one sample; a miss AFTER a completed delivery must not
             # overwrite the delivered run's terminal status — ok, or a failure whose notice already
-            # left with its real error — so fall through to _finish_completed_run, whose owner-fenced
+            # left with its real error — so fall through to finish_completed_run, whose owner-fenced
             # mark_job_run is authoritative either way. An explicit transport cancel stays fail-closed.
             transport_cancelled = fence.transport_cancelled()
             if d.delivery_attempted and not d.delivery_error and not transport_cancelled:
@@ -3490,7 +3415,8 @@ def _run_one_job_body(
             finish_interrupted_run(job, execution_id, delivery_error)
             return True
 
-        return _finish_completed_run(d, fire_owner, execution_id)
+        from cron.scheduler_bookkeeping import finish_completed_run
+        return finish_completed_run(d, fire_owner, execution_id)
 
     except BaseException as e:
         from cron.scheduler_authority import CronExecutionUnknown

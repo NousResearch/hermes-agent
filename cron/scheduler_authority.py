@@ -109,8 +109,8 @@ def reconcile_pending(*, allow_connect=True):
     from cron.executions import execution_owner_live
     from cron.jobs import pause_job
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
-                                _save_compose_deliver, _finish_completed_run)
-    from cron.scheduler_bookkeeping import fail_empty_response
+                                _save_compose_deliver)
+    from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
     from utils import atomic_json_write
     import logging
 
@@ -159,6 +159,6 @@ def reconcile_pending(*, allow_connect=True):
             _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
                                  verbose=False, execution_token=None)
             fail_empty_response(delivery, answer)
-            _finish_completed_run(delivery, None, params['request_id'], recovered=True)
+            finish_completed_run(delivery, None, params['request_id'], recovered=True)
         except Exception:
             logging.getLogger(__name__).warning('Cron receipt recovery deferred: %s', journal, exc_info=True)

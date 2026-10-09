@@ -3,7 +3,7 @@ terminal status — an ok, or a failure notice carrying its real error.
 
 `_FireOwnership.lost()` samples the claim from the store once. When that sample misses after
 the notice already reached the channel, the run must fall through to the owner-fenced terminal
-write in `_finish_completed_run` (the authoritative claim check) instead of recording an error.
+write in `scheduler_bookkeeping.py::finish_completed_run` (the authoritative claim check) instead of recording an error.
 
 These drive the real store (``jobs.json`` under a temp HERMES_HOME) so the assertion is the
 actual on-disk ``last_status`` the health watchdog reads, not a mock's call list.

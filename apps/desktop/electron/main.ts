@@ -14,6 +14,7 @@ import {
   clipboard,
   crashReporter,
   dialog,
+  nativeImage as electronNativeImage,
   net as electronNet,
   webContents as electronWebContents,
   globalShortcut,
@@ -22,7 +23,6 @@ import {
   type IpcMainInvokeEvent,
   Menu,
   type MenuItemConstructorOptions,
-  nativeImage,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -129,6 +129,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
+import { registerClipboardImageIpc } from './clipboard-image-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
@@ -18011,43 +18012,13 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
   return writeComposerPaste(HERMES_HOME, text)
 })
 
-ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const items = await clipboard.read()
-
-  for (const item of items) {
-    const imageType = item.types.find(type => type.startsWith('image/'))
-
-    if (!imageType) {
-      continue
-    }
-
-    try {
-      // Electron's typings include a bookmark union for the special bookmark
-      // MIME type; this branch only asks for an image MIME type, which is Blob.
-      const imageBlob = (await item.getType(imageType)) as Blob
-      const image = nativeImage.createFromBuffer(Buffer.from(await imageBlob.arrayBuffer()))
-
-      if (!image.isEmpty()) {
-        return writeComposerImage(image.toPNG(), '.png')
-      }
-    } catch {
-      // Keep checking other clipboard entries; one unsupported image format
-      // should not prevent a later PNG entry from being attached.
-    }
-  }
-
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
-
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
-  }
-
-  return ''
+registerClipboardImageIpc({
+  ipcMain,
+  clipboard,
+  nativeImage: electronNativeImage,
+  isWsl: IS_WSL,
+  readWslWindowsClipboardImage,
+  writeComposerImage
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>

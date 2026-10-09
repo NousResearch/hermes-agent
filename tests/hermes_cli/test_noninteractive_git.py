@@ -147,6 +147,40 @@ class TestNoninteractiveGitEnv:
         assert injected == expected
 
     @pytest.mark.real_safe_directory
+    def test_preserves_only_configured_http_proxy(self, tmp_path):
+        """Keep the user's network route while internal Git config stays isolated."""
+        system_config = tmp_path / "system-gitconfig"
+        system_config.write_text("[http]\n\tproxy = http://system-proxy:8080\n", encoding="utf-8")
+        global_config = tmp_path / "gitconfig"
+        global_config.write_text(
+            "[http]\n\tproxy = http://global-proxy:7892\n"
+            "[core]\n\tpager = user-pager\n",
+            encoding="utf-8",
+        )
+        env = noninteractive_git_env({
+            **os.environ,
+            "GIT_CONFIG_SYSTEM": str(system_config),
+            "GIT_CONFIG_GLOBAL": str(global_config),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.proxy",
+            "GIT_CONFIG_VALUE_0": "http://injected-proxy:9999",
+        })
+
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+        assert values["http.proxy"] == "http://global-proxy:7892"
+        assert values["core.pager"] == "cat"
+        effective = subprocess.run(
+            ["git", "config", "--get", "http.proxy"],
+            capture_output=True, text=True, check=True, env=env,
+        )
+        assert effective.stdout.strip() == "http://global-proxy:7892"
+
+    @pytest.mark.real_safe_directory
     def test_safe_directory_reset_still_revokes_wildcard_for_real_git(self, tmp_path):
         """End-to-end: a revoked wildcard stays revoked, and the named repo stays usable.
 
@@ -176,7 +210,7 @@ class TestNoninteractiveGitEnv:
         system_config.write_text("[safe]\n\tdirectory = *\n", encoding="utf-8")
         global_config = tmp_path / "gitconfig"
         global_config.write_text(
-            f"[safe]\n\tdirectory = \n\tdirectory = {trusted}\n", encoding="utf-8"
+            f"[safe]\n\tdirectory = \n\tdirectory = {trusted.as_posix()}\n", encoding="utf-8"
         )
 
         env = noninteractive_git_env(

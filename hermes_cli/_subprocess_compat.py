@@ -326,6 +326,7 @@ def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
 
 
 _safe_directory_cache: dict[tuple, list[str]] = {}
+_http_proxy_cache: dict[tuple, str | None] = {}
 
 
 def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
@@ -379,6 +380,48 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
         values.extend(records)
     _safe_directory_cache[cache_key] = list(values)
     return values
+
+
+def _user_http_proxy(base_env: "Mapping[str, str]") -> str | None:
+    """The effective system/global ``http.proxy`` value, without forwarding other Git config.
+
+    Internal Git calls disable user config so hooks, pagers, credential helpers and other programs
+    cannot run in Hermes. A configured HTTP proxy is transport, though: dropping it can turn a
+    working GitHub route into a direct Schannel connection that cannot reach certificate revocation
+    endpoints. Re-inject only this scalar setting; all other system/global config stays isolated.
+    """
+    cache_key = _safe_directory_cache_key(base_env)
+    if cache_key in _http_proxy_cache:
+        return _http_proxy_cache[cache_key]
+
+    env = dict(base_env)
+    for key in list(env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    proxy = None
+    for scope in ("--system", "--global"):
+        try:
+            proc = subprocess.run(
+                ["git", "config", scope, "-z", "--get-all", "http.proxy"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        records = proc.stdout.split("\0")
+        if records and records[-1] == "":
+            records.pop()
+        if records:
+            proxy = records[-1]
+
+    _http_proxy_cache[cache_key] = proxy
+    return proxy
 
 
 def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -454,7 +497,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env = dict(base if base is not None else os.environ)
     # Captured before the isolation below rewrites GIT_CONFIG_GLOBAL/SYSTEM to /dev/null --
     # reading after that point would resolve the user's config to an empty file.
-    safe_directories = _user_safe_directories(base if base is not None else os.environ)
+    base_env = base if base is not None else os.environ
+    safe_directories = _user_safe_directories(base_env)
+    http_proxy = _user_http_proxy(base_env)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
@@ -482,6 +527,10 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     # does for the user's interactive git. Appended last, but the hardening overrides above are
     # distinct keys, so they are unaffected by ordering within safe.directory.
     overrides.extend(("safe.directory", value) for value in safe_directories)
+    # Preserve the user's chosen network route while keeping every other global/system setting
+    # disabled. This is a Git transport setting, not a command or credential helper.
+    if http_proxy is not None:
+        overrides.append(("http.proxy", http_proxy))
     env["GIT_CONFIG_COUNT"] = str(len(overrides))
     for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key

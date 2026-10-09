@@ -452,7 +452,7 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _neutralize_git_safe_directory_read(request, monkeypatch):
-    """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
+    """Skip the user Git safe-directory and proxy pre-reads in ``noninteractive_git_env()``.
 
     Many tests fake ``subprocess.run``/``Popen`` with a fixed sequence of expected git calls;
     the pre-read is an extra spawn that would trip them. Tests of the carve-out itself opt in
@@ -465,6 +465,7 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+    monkeypatch.setattr(_subprocess_compat, "_user_http_proxy", lambda base_env: None, raising=False)
 
 
 @pytest.fixture(autouse=True)

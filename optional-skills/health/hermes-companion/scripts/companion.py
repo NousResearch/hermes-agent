@@ -27,11 +27,13 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1286,35 +1288,87 @@ def get_threads_dir(override: Optional[str] = None) -> Optional[Path]:
     return None
 
 
+def safe_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def safe_read_json(path: Path, retries: int = 4) -> Optional[Dict[str, Any]]:
+    for attempt in range(retries):
+        try:
+            if not path.is_file():
+                return None
+            content = path.read_text(encoding="utf-8")
+            if not content.strip():
+                if attempt < retries - 1:
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                return None
+            return json.loads(content)
+        except OSError:
+            # Handles Darwin EDEADLK (Resource deadlock avoided), EAGAIN, etc. during iCloud sync
+            if attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            return None
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(0.1 * (attempt + 1))
+                continue
+            return None
+    return None
+
+
+def safe_write_text(path: Path, content: str, retries: int = 4) -> bool:
+    for attempt in range(retries):
+        try:
+            path.write_text(content, encoding="utf-8")
+            return True
+        except OSError:
+            if attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            return False
+        except Exception:
+            return False
+    return False
+
+
 def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
-    if not threads_dir.is_dir():
+    if not safe_is_dir(threads_dir):
         return []
     results: List[DispatchThreadMeta] = []
-    for entry in threads_dir.iterdir():
-        if not entry.is_dir():
+    try:
+        entries = list(threads_dir.iterdir())
+    except (OSError, Exception):
+        return []
+
+    for entry in entries:
+        if not safe_is_dir(entry):
             continue
         meta_file = entry / "meta.json"
-        if meta_file.is_file():
-            try:
-                data = json.loads(meta_file.read_text(encoding="utf-8"))
-                results.append(cast(DispatchThreadMeta, data))
-            except Exception:
-                continue
+        data = safe_read_json(meta_file)
+        if data:
+            results.append(cast(DispatchThreadMeta, data))
     return sorted(results, key=lambda t: str(t.get("updated_at", "")), reverse=True)
 
 
 def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMessageRecord]:
     thread_folder = threads_dir / thread_id
     msgs_dir = thread_folder / "messages"
-    if not msgs_dir.is_dir():
+    if not safe_is_dir(msgs_dir):
+        return []
+    try:
+        files = sorted(msgs_dir.glob("*.json"))
+    except (OSError, Exception):
         return []
     messages: List[DispatchMessageRecord] = []
-    for file in sorted(msgs_dir.glob("*.json")):
-        try:
-            data = json.loads(file.read_text(encoding="utf-8"))
+    for file in files:
+        data = safe_read_json(file)
+        if data:
             messages.append(cast(DispatchMessageRecord, data))
-        except Exception:
-            continue
     return sorted(messages, key=lambda m: str(m.get("timestamp", "")))
 
 
@@ -1486,11 +1540,8 @@ def reply_to_thread(
 ) -> Optional[DispatchMessageRecord]:
     thread_folder = threads_dir / thread_id
     meta_file = thread_folder / "meta.json"
-    if not meta_file.is_file():
-        return None
-    try:
-        meta = cast(DispatchThreadMeta, json.loads(meta_file.read_text(encoding="utf-8")))
-    except Exception:
+    meta = cast(Optional[DispatchThreadMeta], safe_read_json(meta_file))
+    if not meta:
         return None
 
     moment = now or utcnow()
@@ -1509,15 +1560,18 @@ def reply_to_thread(
     }
 
     msgs_dir = thread_folder / "messages"
-    msgs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        msgs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     msg_file = msgs_dir / filename
-    msg_file.write_text(json.dumps(message, indent=2, ensure_ascii=False), encoding="utf-8")
+    safe_write_text(msg_file, json.dumps(message, indent=2, ensure_ascii=False))
 
     meta["message_count"] = seq
     meta["status"] = "replied" if sender == "agent" else "pending_agent"
     meta["updated_at"] = timestamp_str
     meta["last_snippet"] = body[:120]
-    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    safe_write_text(meta_file, json.dumps(meta, indent=2, ensure_ascii=False))
 
     return message
 
@@ -1773,8 +1827,21 @@ def ensure_launch_agent_installed(icloud_dir: Optional[str] = None) -> None:
 
 
 def clean_hermes_chat_output(raw: str) -> str:
-    """Filter out CLI banners and session markers to extract pure LLM response."""
-    lines = raw.strip().splitlines()
+    """Filter out CLI banners, session markers, and reasoning blocks to extract pure LLM response."""
+    # 1. Strip closed reasoning blocks like <think>...</think> or <|thought...|>
+    text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    text = re.sub(r"<\|thought.*?\|>", "", text, flags=re.DOTALL)
+
+    # 2. If unclosed <|thought... remains, strip the thought preamble
+    if "<|thought" in text:
+        # Check if thought block ends before a response
+        match = re.search(r"\n\n([A-Z¿¡\"'].*)", text, flags=re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        else:
+            text = re.sub(r"<\|thought.*", "", text, flags=re.DOTALL).strip()
+
+    lines = text.strip().splitlines()
     cleaned: List[str] = []
     in_banner = False
     for line in lines:

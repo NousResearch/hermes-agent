@@ -419,6 +419,7 @@ def test_clean_hermes_chat_output() -> None:
         "⚠️ Normalized model to gpt-4o\n"
         "↻ Resumed session post_th_123 (6 messages)\n"
         "session_id: 9a8b-123\n"
+        "<think>pondering the memo...</think>\n"
         "Hola mi amor, te extraño mucho.\n"
         "Espero que tengas un buen dia."
     )

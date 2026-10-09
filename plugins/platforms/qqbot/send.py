@@ -4,6 +4,7 @@ Media uploads through C2C then group; guild channels have no native media path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -31,9 +32,16 @@ def _qqbot_media_file_type(media_path: str, is_voice: bool) -> int:
     return MEDIA_TYPE_FILE
 
 
+def _is_sdk_client(client) -> bool:
+    return type(client).__name__ == "QQApiClient"
+
+
 async def _qqbot_api_json(client, headers: dict, method: str, path: str,
                           body: dict | None = None, *, timeout: float = 30.0) -> dict:
     """POST/GET JSON against ``api.sgroup.qq.com``; raise RuntimeError on failure."""
+    if _is_sdk_client(client):
+        data = await client.request(method, path, body, timeout=timeout)
+        return data if isinstance(data, dict) else {}
     from .constants import API_BASE
 
     resp = await client.request(method, f"{API_BASE}{path}", json=body, headers=headers, timeout=timeout)
@@ -59,6 +67,14 @@ async def _qqbot_upload_local_file(client, headers, chat_type, chat_id, media_pa
         local_path = (_Path.cwd() / local_path).resolve()
     if not local_path.exists() or not local_path.is_file():
         raise FileNotFoundError(f"Media file not found: {local_path}")
+
+    if _is_sdk_client(client):
+        from qqbot_agent_sdk import MediaUploader
+
+        file_info = await MediaUploader(
+            client, getattr(client, "_http_client", None), log_tag="send_message.qqbot",
+        ).upload(chat_type, chat_id, str(local_path), file_type, local_path.name)
+        return {"file_info": file_info}
 
     async def _api_request(method, path, body=None, timeout=FILE_UPLOAD_TIMEOUT):
         return await _qqbot_api_json(client, headers, method, path, body, timeout=timeout)
@@ -103,6 +119,17 @@ async def _qqbot_send_media_message(client, headers, chat_type, chat_id, file_in
 
 async def _qqbot_send_text_message(client, headers, chat_id, message: str) -> dict:
     """Try channel → C2C → group text endpoints (pre-media standalone behavior)."""
+    if _is_sdk_client(client):
+        statuses = []
+        for kind in ("guild", "c2c", "group"):
+            try:
+                data = await client.send_text(
+                    kind, chat_id, message or "", markdown=False, retries=1)
+                return _success("qqbot", chat_id, message_id=(data or {}).get("id"))
+            except Exception as exc:
+                logger.debug("QQ text send via %s failed", kind, exc_info=True)
+                statuses.append(f"{kind}={exc}")
+        return _error(f"QQBot send failed: {' '.join(statuses)}")
     payload = {"content": (message or "")[:4000], "msg_type": 0}
     endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages"),
                  ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"),
@@ -164,8 +191,10 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
     """
     try:
         import httpx
+        from qqbot_agent_sdk import QQApiClient
     except ImportError:
-        return _error("QQBot direct send requires httpx. Run: hermes pm repair")
+        from pm.extras import install_hint
+        return _error(f"QQBot direct send requires qqbot-agent-sdk. Run: {install_hint('qqbot')}")
 
     # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
     from gateway.platforms._shared import get_scoped_secret
@@ -181,16 +210,10 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
     client_timeout = FILE_UPLOAD_TIMEOUT if media_files else 15.0
 
     try:
-        async with httpx.AsyncClient(timeout=client_timeout) as client:
-            token_resp = await client.post("https://bots.qq.com/app/getAppAccessToken",
-                                           json={"appId": str(appid), "clientSecret": str(secret)})
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            access_token = token_resp.json().get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            headers = {"Authorization": f"QQBot {access_token}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=client_timeout) as http:
+            client = QQApiClient(str(appid), str(secret), log_tag="send_message.qqbot")
+            client.setup(http)
+            headers = {}
 
             # --- Media path (#37315) ---
             if media_files:
@@ -209,7 +232,7 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
                     # Caption applies to the first bubble only (single-file
                     # caption split already enforced by the caller).
                     media_caption = caption if index == 0 else None
-                    if not os.path.exists(media_path):
+                    if not await asyncio.to_thread(os.path.exists, media_path):
                         from urllib.parse import urlparse as _urlparse
                         if _urlparse(str(media_path)).scheme not in {"http", "https"}:
                             warnings.append(f"QQBot media file not found, skipping: {media_path}")
@@ -243,8 +266,9 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
 
             # --- Text-only path: first 2xx wins (pre-media behavior) ---
             return await _qqbot_send_text_message(client, headers, chat_id, message or "")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
+    except Exception as exc:
+        logger.warning("QQBot send failed", exc_info=True)
+        return _error(f"QQBot send failed: {exc}")
 
 
 

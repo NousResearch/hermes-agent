@@ -458,6 +458,9 @@ dingtalk = [
   "qrcode==7.4.2",
 ]
 feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
+# QQ Bot protocol client. Pure Python on aiohttp/httpx/cryptography, which
+# are already core deps, so [all] includes this extra.
+qqbot = ["qqbot-agent-sdk==1.2.2", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs). Declared here so PM environments and independent
@@ -523,6 +526,7 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
+  "hermes-agent[qqbot]",
 ]
 
 [dependency-groups]

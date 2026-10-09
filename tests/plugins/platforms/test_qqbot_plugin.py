@@ -102,3 +102,51 @@ async def test_standalone_sender_reports_missing_credentials(monkeypatch):
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
     assert "QQ_APP_ID" in result["error"]
+
+
+def test_sdk_ws_thread_keeps_caller_context():
+    """The SDK thread must see the profile context captured at connect()."""
+    import contextvars
+    import threading
+
+    from qqbot_agent_sdk import WSCallbacks
+
+    from plugins.platforms.qqbot.sdk_bridge import scoped_websocket_class
+
+    profile = contextvars.ContextVar("qq_profile_scope")
+    profile.set("profile-a")
+    seen = {}
+    started = threading.Event()
+    cls = scoped_websocket_class()
+
+    class Probe(cls):
+        def _run_ws_thread(self, gateway_url):
+            seen["profile"] = profile.get(None)
+            seen["url"] = gateway_url
+            started.set()
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    async def _async_noop(*_args, **_kwargs):
+        return None
+
+    ws = Probe(
+        callbacks=WSCallbacks(
+            on_message_event=_async_noop,
+            on_connected=_noop,
+            on_disconnected=_noop,
+            on_fatal_error=_noop,
+            get_token=lambda: "t",
+            get_session=lambda: (None, None),
+            set_session=_noop,
+            set_heartbeat_interval=_noop,
+            clear_token=_noop,
+            fail_pending=_noop,
+            get_gateway_url=lambda: "wss://example",
+        ),
+        log_tag="t",
+    )
+    ws.start("wss://example", object())
+    assert started.wait(2)
+    assert seen == {"profile": "profile-a", "url": "wss://example"}

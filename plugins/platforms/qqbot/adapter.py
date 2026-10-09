@@ -78,7 +78,14 @@ from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 
 def check_qq_requirements() -> bool:
-    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+    """aiohttp, httpx, and qqbot-agent-sdk. The SDK ships with the ``all`` extra."""
+    if not (AIOHTTP_AVAILABLE and HTTPX_AVAILABLE):
+        return False
+    try:
+        import qqbot_agent_sdk  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
@@ -140,6 +147,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     @property
     def is_connected(self) -> bool:
         """Return True only when the QQ WebSocket transport is usable."""
+        if getattr(self, "_qq_ws", None) is not None:
+            return bool(self._running and getattr(self, "_sdk_connected", False))
         return bool(self._running and self._ws and not self._ws.closed)
 
     def __init__(self, config: PlatformConfig):
@@ -157,6 +166,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._qq_api: Any = None
+        self._qq_ws: Any = None
+        self._sdk_connected = False
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
@@ -205,16 +217,23 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         try:
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain faster behind proxies.
-            # See #18451.
+            # See #18451. Injected into the SDK so attachment downloads keep the SSRF guard.
             from gateway.platforms._http_client_limits import platform_httpx_limits
+            from qqbot_agent_sdk import QQApiClient
             from tools.url_safety import create_ssrf_safe_async_client
+
+            from .sdk_bridge import scoped_websocket_class
+
             self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0, follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
-
-            await self._open_gateway_ws(log_url=True)
-            self._listen_task = asyncio.create_task(self._listen_loop())
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._qq_api = QQApiClient(self._app_id, self._client_secret, log_tag=self._log_tag)
+            self._qq_api.setup(self._http_client)
+            self._qq_ws = scoped_websocket_class()(callbacks=self._sdk_callbacks(), log_tag=self._log_tag)
+            gateway_url = await self._qq_api.get_gateway_url()
+            logger.info("[%s] Connecting to QQ gateway", self._log_tag)
+            self._qq_ws.start(gateway_url, asyncio.get_running_loop())
+            self._sdk_connected = True
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
             self._wire_plugin_handlers(None)
@@ -227,9 +246,52 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
+    def _sdk_callbacks(self):
+        """Sync token/session hooks run on the SDK thread; inbound events hop back here."""
+        from qqbot_agent_sdk import WSCallbacks
+
+        def _set_session(session_id, seq):
+            self._session_id = session_id
+            self._last_seq = seq
+
+        def _on_connected():
+            self._sdk_connected = True
+
+        def _on_disconnected():
+            self._sdk_connected = False
+            self._mark_transport_disconnected()
+
+        def _on_fatal(code, message):
+            self._sdk_connected = False
+            self._set_fatal_error(str(code), str(message), retryable=True)
+
+        async def _on_interaction_event(_event_type, data):
+            await self._on_interaction(data)
+
+        return WSCallbacks(
+            on_message_event=self._on_message,
+            on_connected=_on_connected,
+            on_disconnected=_on_disconnected,
+            on_fatal_error=_on_fatal,
+            get_token=self._qq_api.ensure_token_sync,
+            get_session=lambda: (self._session_id, self._last_seq),
+            set_session=_set_session,
+            set_heartbeat_interval=lambda seconds: setattr(self, "_heartbeat_interval", float(seconds)),
+            clear_token=self._qq_api.clear_token,
+            fail_pending=self._fail_pending,
+            get_gateway_url=self._qq_api.get_gateway_url_sync,
+            on_interaction_event=_on_interaction_event,
+        )
+
     async def disconnect(self) -> None:
+        self._sdk_connected = False
         self._running = False
         self._mark_disconnected()
+        ws = self._qq_ws
+        self._qq_ws = None
+        if ws is not None:
+            await ws.async_stop()
+        self._qq_api = None
         await cancel_task(self._listen_task)
         await cancel_task(self._heartbeat_task)
         self._listen_task = self._heartbeat_task = None
@@ -630,6 +692,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _acknowledge_interaction(self, interaction_id: str, code: int = 0) -> None:
         """ACK a button interaction via ``PUT /interactions/{id}`` (code 0 = success)."""
+        if self._qq_api is not None:
+            await self._qq_api.acknowledge_interaction(interaction_id, code=code)
+            return
         resp = await self._require_http_client().put(
             f"{API_BASE}/interactions/{interaction_id}",
             headers=await self._auth_headers(), json={"code": code}, timeout=DEFAULT_API_TIMEOUT)
@@ -1293,6 +1358,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _api_request(
         self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = DEFAULT_API_TIMEOUT,
     ) -> dict[str, Any]:
+        if self._qq_api is not None:
+            data = await self._qq_api.request(method, path, body, timeout=timeout)
+            return data if isinstance(data, dict) else {}
         client = self._require_http_client()
         headers = await self._auth_headers()
         try:
@@ -1601,7 +1669,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Chunked-upload a local file; returns the complete response whose ``file_info`` goes
         into the RichMedia body. Raises UploadDailyLimitExceededError / UploadFileTooLargeError
         from the uploader, ValueError for placeholder paths like ``<path>``, FileNotFoundError."""
-        client = self._require_http_client()
         local_path = Path(media_source).expanduser()
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
@@ -1610,6 +1677,15 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 raise ValueError(f"Invalid media source (looks like a placeholder): {media_source!r}")
             raise FileNotFoundError(f"Media file not found: {local_path}")
 
+        if self._qq_api is not None:
+            from qqbot_agent_sdk import MediaUploader
+
+            file_info = await MediaUploader(
+                self._qq_api, self._http_client, log_tag=self._log_tag,
+            ).upload(chat_type, chat_id, str(local_path), file_type, file_name or local_path.name)
+            return {"file_info": file_info}
+
+        client = self._require_http_client()
         uploader = ChunkedUploader(api_request=self._api_request, http_put=client.put, log_tag=self._log_tag)
         return await uploader.upload(
             chat_type=chat_type, target_id=chat_id, file_path=str(local_path), file_type=file_type,

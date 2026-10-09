@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -66,6 +67,7 @@ class CompressorRouteTicket:
         self._session_id = session_id
         self._require_atomic = require_atomic
         self._durable_snapshot: _DurableRouteSnapshot | None = None
+        self._committed_durable_snapshot: _DurableRouteSnapshot | None = None
         self._committed_generation: int | None = None
         self._commit_started = False
         self.state = CompressorRouteTicketState.PREPARED
@@ -160,18 +162,48 @@ class ContextCompressorRouteMixin:
         )
 
     @staticmethod
-    def _restore_durable_route_snapshot(snapshot: _DurableRouteSnapshot | None) -> None:
+    def _derive_committed_durable_snapshot(
+        snapshot: _DurableRouteSnapshot | None, *, runtime_changed: bool,
+    ) -> _DurableRouteSnapshot | None:
         if snapshot is None:
-            return
+            return None
+        try:
+            model_config = json.loads(snapshot.model_config) if snapshot.model_config else {}
+        except (TypeError, json.JSONDecodeError):
+            model_config = {}
+        if not isinstance(model_config, dict):
+            model_config = {}
+        model_config.pop("_proactive_prune_rearm_tokens", None)
+        return _DurableRouteSnapshot(
+            store=snapshot.store,
+            session_id=snapshot.session_id,
+            ineffective_count=0,
+            fallback_streak=0 if runtime_changed else snapshot.fallback_streak,
+            cooldown_until=None if runtime_changed else snapshot.cooldown_until,
+            cooldown_error=None if runtime_changed else snapshot.cooldown_error,
+            model_config=json.dumps(model_config) if model_config else None,
+        )
+
+    @staticmethod
+    def _restore_durable_route_snapshot(
+        snapshot: _DurableRouteSnapshot | None,
+        committed: _DurableRouteSnapshot | None,
+    ) -> bool:
+        if snapshot is None or committed is None:
+            return False
         writer = getattr(snapshot.store, "_execute_write", None)
         if not callable(writer):
             raise RuntimeError("cannot compensate compressor route without atomic durable restore")
 
         def _restore(conn):
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE sessions SET compression_ineffective_count = ?, "
                 "compression_fallback_streak = ?, compression_failure_cooldown_until = ?, "
-                "compression_failure_error = ?, model_config = ? WHERE id = ?",
+                "compression_failure_error = ?, model_config = ? WHERE id = ? "
+                "AND compression_ineffective_count IS ? "
+                "AND compression_fallback_streak IS ? "
+                "AND compression_failure_cooldown_until IS ? "
+                "AND compression_failure_error IS ? AND model_config IS ?",
                 (
                     snapshot.ineffective_count,
                     snapshot.fallback_streak,
@@ -179,10 +211,16 @@ class ContextCompressorRouteMixin:
                     snapshot.cooldown_error,
                     snapshot.model_config,
                     snapshot.session_id,
+                    committed.ineffective_count,
+                    committed.fallback_streak,
+                    committed.cooldown_until,
+                    committed.cooldown_error,
+                    committed.model_config,
                 ),
             )
+            return cursor.rowcount == 1
 
-        writer(_restore)
+        return bool(writer(_restore))
 
     def _restore_live_route_snapshot(self, snapshot: _LiveRouteSnapshot) -> None:
         for name, present, value in snapshot.values:
@@ -228,6 +266,10 @@ class ContextCompressorRouteMixin:
         ticket._durable_snapshot = self._capture_durable_route_snapshot(
             ticket._store, ticket._session_id
         )
+        committed_durable_snapshot = self._derive_committed_durable_snapshot(
+            ticket._durable_snapshot,
+            runtime_changed=ticket.target.runtime_changed,
+        )
         try:
             for name, value in ticket.target.live_values:
                 setattr(self, name, value)
@@ -239,6 +281,7 @@ class ContextCompressorRouteMixin:
                     clear_failure_cooldown=ticket.target.runtime_changed,
                     clear_proactive_prune_rearm=True,
                 )
+                ticket._committed_durable_snapshot = committed_durable_snapshot
             elif bound:
                 self._apply_legacy_route_reset(ticket)
         except Exception:
@@ -257,6 +300,8 @@ class ContextCompressorRouteMixin:
             return
         if int(getattr(self, "_route_generation", 0)) != ticket._committed_generation:
             return
-        self._restore_durable_route_snapshot(ticket._durable_snapshot)
+        self._restore_durable_route_snapshot(
+            ticket._durable_snapshot, ticket._committed_durable_snapshot
+        )
         self._restore_live_route_snapshot(ticket._live_snapshot)
         self._route_generation = ticket._committed_generation + 1

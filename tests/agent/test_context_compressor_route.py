@@ -178,6 +178,52 @@ def test_abort_after_commit_restores_exact_live_and_durable_snapshot(tmp_path):
         db.close()
 
 
+def test_abort_does_not_overwrite_newer_commit_from_another_instance(tmp_path):
+    """Compensation must use durable CAS, not only the owner's local generation."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        older = _new_compressor()
+        session_id = "CROSS_INSTANCE_CAS"
+        _seed_bound_route_state(db, older, session_id)
+
+        older_ticket = older.prepare_route_update(
+            "older/replacement", 64_000, provider="older-route", max_tokens=8_000
+        )
+        older_ticket.commit()
+
+        # A newer compressor instance owns a same-route recalibration that
+        # intentionally preserves the guards written after the older commit.
+        db.set_compression_ineffective_count(session_id, 4)
+        db.set_compression_fallback_streak(session_id, 7)
+        db.record_compression_failure_cooldown(
+            session_id, time.time() + 600, "newer route cooldown"
+        )
+        db.patch_session_model_config(
+            session_id,
+            {"_proactive_prune_rearm_tokens": 8192, "newer": "must-survive"},
+        )
+        newer = _new_compressor()
+        newer.bind_session_state(db, session_id)
+        newer_ticket = newer.prepare_route_update(
+            "primary/model",
+            120_000,
+            "https://primary.invalid/v1",
+            "newer-key",
+            "primary",
+            "",
+            6_000,
+        )
+        newer_ticket.commit()
+        durable_after_newer_commit = _durable_snapshot(db, session_id)
+
+        older_ticket.abort()
+
+        assert _durable_snapshot(db, session_id) == durable_after_newer_commit
+        assert older.model == "primary/model"
+    finally:
+        db.close()
+
+
 def test_same_route_ticket_preserves_route_scoped_guards(tmp_path):
     """A window/output recalibration is not a route change and keeps route guards."""
     db = SessionDB(db_path=tmp_path / "state.db")

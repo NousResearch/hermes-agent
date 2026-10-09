@@ -27,6 +27,44 @@ class _Compressor:
         self.max_tokens = max_tokens if max_tokens is not None else self.max_tokens
 
 
+class _SlottedTicketCompressor:
+    __slots__ = ("context_length", "threshold_tokens", "slot_state", "events")
+
+    def __init__(self):
+        self.context_length = 872_000
+        self.threshold_tokens = 697_600
+        self.slot_state = {"origin": ["primary"]}
+        self.events = []
+
+    def prepare_route_update(self, *_args, **_kwargs):
+        owner = self
+        context_length_snapshot = self.context_length
+        threshold_tokens_snapshot = self.threshold_tokens
+        slot_snapshot = copy.deepcopy(self.slot_state)
+        self.events.append("prepare")
+
+        class Ticket:
+            state = "prepared"
+
+            def commit(self):
+                if self.state == "committed":
+                    return
+                owner.events.append("commit")
+                self.state = "committed"
+
+            def abort(self):
+                if self.state == "aborted":
+                    return
+                owner.events.append("abort")
+                owner.context_length = context_length_snapshot
+                owner.threshold_tokens = threshold_tokens_snapshot
+                owner.slot_state.clear()
+                owner.slot_state.update(copy.deepcopy(slot_snapshot))
+                self.state = "aborted"
+
+        return Ticket()
+
+
 def _policy_config():
     models = {}
     for model, canonical in token_budget_policy._CANONICAL_MODEL_BUDGETS.items():
@@ -682,30 +720,8 @@ def test_exception_rollback_restores_slotted_compressor_state(monkeypatch, opera
     """Slot-only compressors receive the same in-place rollback guarantee."""
     _patch_policy(monkeypatch)
 
-    class SlottedCompressor:
-        __slots__ = ("context_length", "threshold_tokens", "slot_state")
-
-        def __init__(self):
-            self.context_length = 872_000
-            self.threshold_tokens = 697_600
-            self.slot_state = {"origin": ["primary"]}
-
-        def prepare_route_update(self, *_args, **_kwargs):
-            owner = self
-            slot_snapshot = copy.deepcopy(self.slot_state)
-
-            class Ticket:
-                def commit(self):
-                    return None
-
-                def abort(self):
-                    owner.slot_state.clear()
-                    owner.slot_state.update(copy.deepcopy(slot_snapshot))
-
-            return Ticket()
-
     agent = object.__new__(AIAgent)
-    compressor = SlottedCompressor()
+    compressor = _SlottedTicketCompressor()
     _install_runtime(agent, compressor)
 
     def mutate_then_raise(runtime, *_args):
@@ -734,6 +750,23 @@ def test_exception_rollback_restores_slotted_compressor_state(monkeypatch, opera
     assert compressor.context_length == 872_000
     assert compressor.threshold_tokens == 697_600
     assert compressor.slot_state == {"origin": ["primary"]}
+    assert compressor.events == ["prepare", "abort"]
+
+
+def test_slotted_ticket_double_owns_every_mutated_compressor_field():
+    """The coordinator regression cannot pass through host-owned field restore."""
+    compressor = _SlottedTicketCompressor()
+    ticket = compressor.prepare_route_update()
+    compressor.context_length = 42
+    compressor.threshold_tokens = 1
+    compressor.slot_state["origin"].append("mutated")
+
+    ticket.abort()
+
+    assert compressor.context_length == 872_000
+    assert compressor.threshold_tokens == 697_600
+    assert compressor.slot_state == {"origin": ["primary"]}
+    assert compressor.events == ["prepare", "abort"]
 
 
 def test_rollback_keeps_slotted_client_atomic_and_survives_replacement_close_failure(

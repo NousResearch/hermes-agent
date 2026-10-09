@@ -315,13 +315,93 @@ class TestPytestTempTreesExcluded:
         root = tmp_path / ".hermes"
         root.mkdir()
         _make_hermes_tree(root)
-        base = root / "work/basetemp"
+        base = root / "kanban/workspaces/t_9/basetemp"
         base.mkdir(parents=True)
         (base / "test_y0").mkdir()
         (base / "test_y0/corrupt.db").write_bytes(b"not sqlite")
         (base / "test_ycurrent").symlink_to("/elsewhere/basetemp/test_y0")
         selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
         assert not any("test_y0" in s for s in selected)
+
+
+    @pytest.mark.parametrize("alias", [None, "coder0", "/unrelated/coder0"])
+    @pytest.mark.parametrize("corrupt", [True, False])
+    def test_alias_outside_task_workspace_never_hides_real_data(
+            self, tmp_path, monkeypatch, capsys, alias, corrupt):
+        """Gurney r1: a ``<stem>current -> <stem><N>`` alias is not pytest ownership. Outside a
+        kanban task workspace, a profile like ``profiles/coder0`` stays archived (healthy) or
+        fails closed (corrupt), whatever alias sits beside it, local or same-basename external."""
+        import sqlite3
+        from hermes_cli.backup import run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        rel = "profiles/coder0/state.db"
+        db = hermes_home / rel
+        if corrupt:
+            self._corrupt(db)
+        else:
+            db.parent.mkdir(parents=True)
+            with sqlite3.connect(db) as conn:
+                conn.execute("create table retained(value text)")
+                conn.execute("insert into retained values ('must survive')")
+            conn.close()
+        if alias:
+            (hermes_home / "profiles/codercurrent").symlink_to(alias)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "out.zip"
+
+        ok = run_backup(Namespace(output=str(out_zip)))
+        out = capsys.readouterr().out
+        if corrupt:
+            assert ok is False
+            assert f"{rel}: SQLite safe copy failed" in out
+        else:
+            assert ok is True
+            with zipfile.ZipFile(out_zip) as zf:
+                assert rel in zf.namelist()
+                restored = tmp_path / "restored.db"
+                restored.write_bytes(zf.read(rel))
+            with sqlite3.connect(restored) as conn:
+                assert conn.execute("select value from retained").fetchall() == [("must survive",)]
+            conn.close()
+
+    @pytest.mark.parametrize("parent", [
+        "work/basetemp",                          # arbitrary user dir at the root
+        "profiles/coder/skills/x/basetemp",       # inside a profile
+        "kanban/boards/estate/basetemp",           # board dir, not a task workspace
+        "kanban/workspaces",                       # the workspaces dir itself (task ids)
+    ])
+    def test_pytest_signature_outside_task_workspace_is_archived(self, tmp_path, parent):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        d = _make_pytest_numbered_dir(root / parent, "test_z")
+        (d / "data.txt").write_text("x")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert f"{parent}/test_z0/data.txt" in selected
+
+    @pytest.mark.parametrize("ws", [
+        "kanban/workspaces/t_1",
+        "kanban/boards/estate/workspaces/t_1",
+        "profiles/cody/kanban/boards/sophia/workspaces/t_1",
+    ])
+    def test_pytest_tree_in_any_task_workspace_is_pruned(self, tmp_path, ws):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        d = _make_pytest_numbered_dir(root / ws / "review-tmp", "test_case")
+        self._corrupt(d / "corrupt.db")
+        (root / ws / "notes.md").write_text("kept")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert f"{ws}/notes.md" in selected
+        assert not any("test_case0" in s for s in selected)
 
 
 class TestIterBackupFiles:

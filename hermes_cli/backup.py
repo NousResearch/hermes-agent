@@ -322,6 +322,25 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
+def _in_kanban_task_workspace(rel_dir: Path) -> bool:
+    """True when *rel_dir* is a kanban task workspace or inside one.
+
+    Task workspaces (``kanban/workspaces/<task>`` and ``kanban/boards/<board>/workspaces/<task>``,
+    at the Hermes root or a profile root) are per-run scratch where test and review runs leave
+    ``--basetemp`` trees. They are the only scope where pytest temp trees are pruned: everywhere
+    else a ``<stem>current`` alias proves nothing and must never hide user data.
+    """
+    parts = rel_dir.parts
+    if len(parts) >= 2 and parts[0] == "profiles":
+        parts = parts[2:]
+    if not parts or parts[0] != "kanban":
+        return False
+    tail = parts[1:]
+    if len(tail) >= 2 and tail[0] == "workspaces":
+        return True
+    return len(tail) >= 4 and tail[0] == "boards" and tail[2] == "workspaces"
+
+
 def _pytest_temp_dirs(dirpath: Path, dirnames: List[str], filenames: List[str]) -> set:
     """Subdirs of *dirpath* that are pytest numbered temp dirs (``tmp_path``/basetemp trees).
 
@@ -332,6 +351,8 @@ def _pytest_temp_dirs(dirpath: Path, dirnames: List[str], filenames: List[str]) 
     Test fixtures are throwaway and include deliberately corrupt SQLite files that would
     otherwise fail the whole backup (9 Oct producer); a look-alike name with no pytest symlink
     is user data and stays archived.
+    Callers apply this only inside a kanban task workspace (``_in_kanban_task_workspace``):
+    the alias is a heuristic, not proof of pytest ownership.
     """
     candidates = {d for d in dirnames if d[-1:].isdigit()}
     if not candidates:
@@ -356,13 +377,14 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, pytest temp
-    trees, per-file rules), shared by ``hermes backup`` and the pre-update path so they can
-    never drift.
+    trees in kanban task workspaces, per-file rules), shared by ``hermes backup`` and the
+    pre-update path so they can never drift.
     """
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
-        pytest_dirs = _pytest_temp_dirs(Path(dirpath), dirnames, filenames)
+        pytest_dirs = (_pytest_temp_dirs(Path(dirpath), dirnames, filenames)
+                       if _in_kanban_task_workspace(rel_dir) else set())
         kept = [
             d for d in dirnames
             if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))

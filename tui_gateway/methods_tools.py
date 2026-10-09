@@ -229,6 +229,26 @@ def _session_toolsets(session) -> tuple:
         return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
 
 
+def _redacted_exec_output(output: str, limit: int = 48_000) -> str:
+    """Clamp + secret-redact captured command output before it crosses the RPC
+    boundary. Shared by every exec-shaped reply so no caller can forget the
+    redact step (`cli.exec` skipped it while `command.exec` had it — a headless
+    `hermes` run can reach credential-bearing output and the reply lands in a
+    renderer). Fails closed: if the redactor is unavailable the output is
+    withheld rather than sent raw."""
+    from agent.redact import redact_sensitive_text
+
+    text = output[:limit]
+
+    if not text:
+        return text
+
+    try:
+        return redact_sensitive_text(text)
+    except Exception:
+        return "(output withheld: redaction unavailable)"
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
@@ -549,10 +569,16 @@ def _(rid, params: dict) -> dict:
     # Same-interpreter re-exec: ambient PYTHONPATH must survive the env factory's
     # Hermes-owned strip (no-boot-through-venv).
     _compat = _tools_mod("hermes_cli._subprocess_compat")
+
+    # Can drive the agent → needs provider credentials; tier-1 secrets still stripped.
+    # Output is REDACTED before crossing the RPC boundary (same redact the
+    # quick-command path applies): a headless `hermes` invocation can reach
+    # credential-bearing output and the reply lands in the desktop renderer.
     return _captured_exec(
         rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
-            "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
+            "blocked": False, "code": r.returncode,
+            "output": _redacted_exec_output(_joined_output(r) or "(no output)")}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
         env=_compat.restore_ambient_pythonpath(hermes_subprocess_env(inherit_credentials=True)))
 
@@ -577,8 +603,7 @@ def _dispatch_quick(rid, params, session, name, arg):
         # Sanitized env: the TUI server process holds every API key in os.environ.
         env = _tools_mod("tools.environments.local").build_subprocess_env()
         r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
-        output = _joined_output(r)[:4000]
-        output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
+        output = _redacted_exec_output(_joined_output(r), limit=4000)
         if r.returncode != 0:
             return _err(rid, 4018, output or f"quick command failed with exit code {r.returncode}")
         return _exec_out(rid, output)

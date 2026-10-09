@@ -69,7 +69,7 @@ def test_create_failure_preserves_job_and_hides_provider_details(
     temp_home, monkeypatch, make_cron_provider
 ):
     """Registration failure is explicit without losing the durable local job."""
-    import cron.jobs as jobs
+    from cron import jobs
     import cron.scheduler_provider as sp
     import cron.scheduler as sched
 

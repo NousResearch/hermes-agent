@@ -102,7 +102,7 @@ def publisher(url, **kwargs):
 
 def test_unknown_channel_created_over_http_retains_identity_and_immutable_requests():
     from hermes_cli.release_channels import ChannelReader, ChannelNotFound
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, _objects, headers, _requests, _faults):
         pub = publisher(url)
         reader = ChannelReader(url + "/bucket", repository="example/hermes-agent")
         with pytest.raises(ChannelNotFound):
@@ -131,7 +131,7 @@ def test_stable_branded_channel_reuses_the_published_stable_identity(monkeypatch
                "artifactNamePascal": "HermesBundled", "cliName": "hermes",
                "windowsExecutableName": "Hermes Agent", "msixAppIdWithOrg": "NousResearch.HermesBundled"}
     monkeypatch.setattr(channel_releases, "product_identity", lambda tag: dict(product))
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         assert pub.create("before-stable", "stable")["identity"] == product
         assert not [key for key in objects if key.startswith("releases/channel-identities/")]
@@ -172,7 +172,7 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
     from concurrent.futures import ThreadPoolExecutor
     from hermes_cli.release_channels import ChannelError, canonical_json
     from scripts.releases.channels import PublicVisibilityError
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, faults):
         with ThreadPoolExecutor(max_workers=2) as pool:
             pub = publisher(url, verify_build=lambda request, manifest: True)
             created = list(pool.map(pub.create, ["race-preview"] * 2))
@@ -225,7 +225,7 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
 
 def test_list_bootstrap_protected_roles_and_qualification_gate():
     from hermes_cli.release_channels import ChannelError
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, requests, faults):
         pub = publisher(url)
         main = {"schema": 1, "name": "main", "repository": "example/hermes-agent", "policy": "source-branch", "state": "active", "revision": 1, "nextSequence": 1, "identity": None, "head": None, "delivery": {"kind": "source-branch", "branch": "main"}}
         assert pub.bootstrap(main) == main and not objects
@@ -251,7 +251,7 @@ def test_list_bootstrap_protected_roles_and_qualification_gate():
 def test_retirement_race_requires_a_new_explicit_attempt():
     from hermes_cli.release_channels import ChannelError, canonical_json
     from scripts.releases.channels import ChannelConflict
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         pub.create("preview")
         first = pub.allocate("preview", "a" * 40, "1.0.0")
@@ -284,7 +284,7 @@ def test_retirement_race_requires_a_new_explicit_attempt():
 def test_retire_derives_receiver_kind_from_channel_identity_match():
     """The pinned kind is derived from identity comparison, never caller-asserted."""
     from hermes_cli.release_channels import canonical_json
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         for name in ("mainline-preview", "suffixed-preview", "stable"):
             pub.create(name)
@@ -315,7 +315,7 @@ def test_retire_derives_receiver_kind_from_channel_identity_match():
 def test_mutable_read_loss_recovery_never_clones_another_allocation():
     from scripts.releases.channels import ChannelConflict
     from hermes_cli.release_channels import canonical_json
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, _objects, _headers, _requests, faults):
         pub = publisher(url)
         pub.create("nonce-check")
         initial = pub._read("nonce-check")[0]
@@ -335,7 +335,7 @@ def test_mutable_read_loss_recovery_never_clones_another_allocation():
 def test_protected_releases_bootstrap_retry_and_refuse_late_or_ungated_promotion():
     from hermes_cli.release_channels import ChannelError, canonical_json
     from scripts.releases.channels import preview_identity
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         accepted = True
         gate = lambda request: accepted
@@ -404,7 +404,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
     import zipfile
     identity = preview_identity("released", "2" * 16)
     tag, commit = "v2.0.0", "d" * 40
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         base = pub.public_base
         prefix = f"releases/tag/{tag}/"
@@ -572,7 +572,7 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
     from hermes_cli.release_channels import ChannelError, canonical_json
     tag, commit = "v2.0.0", "c" * 40
     attempt = "rc.1-v2.0.0"
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, faults):
         pub = publisher(url)
         # Exercise HTTPS authority validation through the loopback transport.
         pub.public_base = "https://releases.example"
@@ -606,7 +606,7 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
 
 def test_request_inputs_are_rejected_before_allocating():
     from hermes_cli.release_channels import ChannelError
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
         pub.create("validation")
         before = dict(objects)
@@ -627,7 +627,7 @@ def test_canary_native_version_is_derived_from_the_current_tag():
 def test_stable_requests_name_the_attempt_archive_only_when_given():
     from hermes_cli.release_channels import ChannelError
     from scripts.releases.channels import preview_identity
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, _objects, _headers, _requests, _faults):
         pub = publisher(url)
         identity = preview_identity("archived", "3" * 16)
         gate = lambda request: True

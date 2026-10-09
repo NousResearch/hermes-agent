@@ -133,9 +133,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // breakdown so the statusbar gauge refetches instead of serving the
     // pre-compression figure (#94001). The breakdown cache keys on the
     // STORED id; the reclaim payload carries it alongside the runtime id.
-    const reclaimedStoredId = String(
-      (payload as { stored_session_id?: string } | undefined)?.stored_session_id ?? ''
-    )
+    const reclaimedStoredId = String((payload as { stored_session_id?: string } | undefined)?.stored_session_id ?? '')
 
     if (reclaimedRuntimeId) {
       // Heal while the cached stored-id mapping is still intact, then drop.

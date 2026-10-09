@@ -16,7 +16,7 @@ from tests.ci.desktop_release_roles import (
     commit_summary, native_builds, needs_of, selection_gates, stage_step, termux_builder, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,7 +70,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     summary = tmp_path / 'summary.md'
     jobs = _workflow()['jobs']
     summary_job = commit_summary(jobs)
-    bundle_env = {'HERMES_HOME': None, 'HERMES_SKIP_INTRO': '',
+    bundle_env = {'HERMES_HOME': None, 'HERMES_DESKTOP_USER_DATA_DIR': '',
                   'HERMES_SHARED_AUTH_DIR': '<script>\n"café" & value</script>'}
     env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
                GITHUB_REPOSITORY='fixture-owner/fixture-repo',
@@ -97,7 +97,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         page = response.read().decode()
     assert f'href="https://github.com/fixture-owner/fixture-repo/commit/{sha}"' in page
     assert 'Bundle environment' in page and 'HERMES_HOME' in page and 'Unset' in page
-    assert '<code>HERMES_SKIP_INTRO</code></td><td><code>&quot;&quot;</code>' in page
+    assert '<code>HERMES_DESKTOP_USER_DATA_DIR</code></td><td><code>&quot;&quot;</code>' in page
     assert html.escape(json.dumps(bundle_env['HERMES_SHARED_AUTH_DIR'], ensure_ascii=False)) in page
     assert '<script>' not in page and 'must-not-appear' not in page and 'CI_SECRET' not in page
     links = re.findall(r'\]\((https?://[^)]+)\)', text)

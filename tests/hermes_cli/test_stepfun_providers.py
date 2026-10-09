@@ -82,7 +82,9 @@ class TestStepfunCatalogs:
 
     def test_every_id_discovers_models_from_its_own_live_catalog(self):
         """The picker shows what the endpoint serves; a missing registration silently
-        falls back to the static list, which no longer matches the live catalog."""
+        falls back to the static list, which no longer matches the live catalog. Live rows
+        lead and curated-only models are merged in behind them (#41147): a live response
+        from the Step Plan API must not shadow curated Standard-API models."""
         from unittest.mock import patch
 
         import hermes_cli.auth  # noqa: F401  (patch target must be imported)
@@ -96,7 +98,9 @@ class TestStepfunCatalogs:
                 "hermes_cli.models.fetch_api_models",
                 return_value=["from-live-catalog"],
             ):
-                assert provider_model_ids(pid) == ["from-live-catalog"], pid
+                ids = provider_model_ids(pid)
+            assert ids[0] == "from-live-catalog", pid
+            assert "step-5-preview" in ids, pid  # curated floor survives a live response
 
     def test_default_model_is_step_5_preview_everywhere(self):
         """First entry of _PROVIDER_MODELS is the non-interactive default, so order is contract."""
@@ -164,7 +168,7 @@ class TestStepfunBuiltinMetadata:
 
 
 class TestStepfunMigration:
-    """v49 → v50: the single `stepfun` id becomes four, and a China key moves var."""
+    """v50 → v51: the single `stepfun` id becomes four, and a China key moves var."""
 
     def _run(self, tmp_path, monkeypatch, model_cfg, env_seed=None):
         """Run migrate_config against an isolated temp hermes home.

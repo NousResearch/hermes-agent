@@ -51,15 +51,15 @@ def _persist_migration(config):
     _cfg()._persist_migration(config)
 
 
-def _dict_at(config: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _dict_at(config: dict[str, Any], key: str) -> dict[str, Any]:
     """``config[key]`` when it is a mapping (same object, so writes alias), else a fresh ``{}``."""
     value = config.get(key)
     return value if isinstance(value, dict) else {}
 
 
 def _commit(
-    config: Dict[str, Any],
-    results: Dict[str, Any],
+    config: dict[str, Any],
+    results: dict[str, Any],
     quiet: bool,
     added: Optional[str],
     message: Optional[str]) -> None:
@@ -72,7 +72,7 @@ def _commit(
 
 
 def _rewrite_key(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     quiet: bool,
     *,
     section: str,
@@ -81,7 +81,7 @@ def _rewrite_key(
     new: Any,
     added: str,
     message: str,
-    extra_guard: Callable[[Dict[str, Any]], bool] = lambda _m: True,
+    extra_guard: Callable[[dict[str, Any]], bool] = lambda _m: True,
     create_section: bool = False) -> None:
     """Rewrite ``<section>.<key>`` to *new* (None = delete) when ``match(current)`` holds; a
     missing section is skipped unless *create_section*."""
@@ -100,7 +100,7 @@ def _rewrite_key(
         _commit(config, results, quiet, added, message)
 
 
-def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[Dict[str, Any], bool], None]:
+def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[dict[str, Any], bool], None]:
     """Step rewriting a key only while it still equals the OLD default — never clobbers a value
     the user customized; unset keys inherit the new default at read time."""
     return functools.partial(_rewrite_key, match=lambda cur: cur == old, **kw)
@@ -110,7 +110,7 @@ def _lower_is(word: str) -> Callable[[Any], bool]:
     return lambda cur: isinstance(cur, str) and cur.strip().lower() == word
 
 
-def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_12(results: dict[str, Any], quiet: bool) -> None:
     # 11 → 12: custom_providers list → providers dict.
     _custom_provider_entry_to_provider_config = _cfg()._custom_provider_entry_to_provider_config
 
@@ -168,7 +168,7 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
                 print(f"    → {key}: {providers_dict[key].get('api', '')}")
 
 
-def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_13(results: dict[str, Any], quiet: bool) -> None:
     # 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env (written by the old setup wizard;
     # nothing reads them — config.yaml is the sole source of truth).
     _c = _cfg()
@@ -190,7 +190,7 @@ _LOCAL_WHISPER_MODELS = frozenset({
     "large-v3-turbo", "turbo"})
 
 
-def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_14(results: dict[str, Any], quiet: bool) -> None:
     # 13 → 14: legacy flat stt.model → provider section. A provider-agnostic `stt.model` fed
     # OpenAI names to faster-whisper ("Invalid model size"). Only the raw (user-written) config
     # decides; a nested model the user already set is never overwritten.
@@ -224,7 +224,7 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
 
 
-def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_16(results: dict[str, Any], quiet: bool) -> None:
     # 15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress.
     config = read_raw_config()
     display = _dict_at(config, "display")
@@ -247,7 +247,7 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
 
 
-def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_17(results: dict[str, Any], quiet: bool) -> None:
     # 16 → 17: remove legacy compression.summary_* keys; non-empty, non-default values move to
     # auxiliary.compression without overriding an explicit (non-"auto") aux value.
     config = read_raw_config()
@@ -279,10 +279,10 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         _commit(config, results, quiet, None, message)
 
 
-def _installed_user_plugins(disabled: set) -> List[str]:
+def _installed_user_plugins(disabled: set) -> list[str]:
     """Names of plugins under ``$HERMES_HOME/plugins/`` with a manifest, minus *disabled*."""
     _c = _cfg()
-    found: List[str] = []
+    found: list[str] = []
     try:
         user_plugins_dir = _c.get_hermes_home() / "plugins"
         if user_plugins_dir.is_dir():
@@ -307,7 +307,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
     return found
 
 
-def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_21(results: dict[str, Any], quiet: bool) -> None:
     # 20 → 21: plugins are now opt-in (loader requires ``plugins.enabled``). Grandfather installed
     # user plugins not already disabled; bundled plugins ship off and need explicit opt-in.
     config = read_raw_config()
@@ -329,7 +329,7 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
         f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)", message)
 
 
-def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_23(results: dict[str, Any], quiet: bool) -> None:
     # 22 → 23: seed curator defaults + create logs/curator/. Older configs never wrote the curator
     # section; deep-merge made it work but users could not see/edit it and `hermes curator status`
     # had no stable logs dir. Only keys the user hasn't set are written.
@@ -344,7 +344,7 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
 
     config = read_raw_config()
 
-    def _seed_missing(section: Dict[str, Any], defaults: Dict[str, Any]) -> List[str]:
+    def _seed_missing(section: dict[str, Any], defaults: dict[str, Any]) -> list[str]:
         added = [k for k in defaults if k not in section]
         for k in added:
             section[k] = copy.deepcopy(defaults[k])
@@ -375,7 +375,7 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
                     f"({', '.join(added)}) — edit via `hermes config set`")
 
 
-def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_29(results: dict[str, Any], quiet: bool) -> None:
     # 28 → 29: memory/skills tri-state write_mode (on|off|approve) → boolean write_approval.
     # Only "approve" carried gating intent → true; the old "off = block writes" mode is dropped
     # (memory_enabled: false disables memory). Only a persisted key is rewritten.
@@ -401,7 +401,7 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
 # at read time and persisting a default would only bloat a lean config. No registry entry.
 
 
-def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_33(results: dict[str, Any], quiet: bool) -> None:
     # 32 → 33: max_async_children is deprecated; fold a raised value into max_concurrent_children
     # (take the max so nobody loses headroom), then drop it.
     config = read_raw_config()
@@ -431,7 +431,7 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
         "delegations too.")
 
 
-def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_34(results: dict[str, Any], quiet: bool) -> None:
     # 33 → 34: one-time personality reset. Persistence used to be split (TUI/desktop wrote the
     # NAME to display.personality, CLI/gateway wrote rendered TEXT to agent.system_prompt), so
     # once display.personality became authoritative, stale names resurrected personalities users
@@ -484,7 +484,7 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
             "manual system prompts; personalities live in display.personality.")
 
 
-def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_38(results: dict[str, Any], quiet: bool) -> None:
     # 37 → 38: the bundled observability/nemo_relay plugin was removed (Relay lifecycle moved
     # into the agent core); drop it from plugins.enabled.
     from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
@@ -510,7 +510,7 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
         print(f"  ⚠ {message}")
 
 
-def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_39(results: dict[str, Any], quiet: bool) -> None:
     # 38 → 39: strip the retired `bfl` toolset wherever a backfill/picker save wrote it, so stale
     # config can't resurrect an unknown toolset.
     config = read_raw_config()
@@ -534,14 +534,14 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "Video Generation (Nous Subscription or FAL).")
 
 
-def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
     from hermes_constants import get_hermes_home
     from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
         soul = profile_dir / "SOUL.md"
         try:
@@ -558,7 +558,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
                   f"({', '.join(cleaned)}) — Bot Chat sessions now get the live roster instead.")
 
 
-def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
     # 44 → 45: append `connections` to every saved `platform_toolsets` list that predates it
     # (an explicit list treats absence as unchecked). Skipped when `known_builtin_toolsets`
     # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
@@ -576,7 +576,7 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
     known = _dict_at(config, "known_builtin_toolsets")
     # Same predicate the resolver uses to pick its explicit branch: any configurable or plugin key.
     explicit_keys = _configurable_keys() | _get_plugin_toolset_keys()
-    enabled_for: List[str] = []
+    enabled_for: list[str] = []
     for platform, toolsets in saved.items():
         if not isinstance(toolsets, list) or "connections" in toolsets:
             continue
@@ -605,7 +605,7 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
-def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
     # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
@@ -631,59 +631,7 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
-def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
-    # 49 → 50: the single `stepfun` id became four, one per (region x endpoint family). The id is
-    # chosen by the endpoint the config ACTUALLY reached — model.base_url, else STEPFUN_BASE_URL,
-    # else the pre-split default of international Step Plan. A China config's key also moves to
-    # STEPFUN_CN_API_KEY (accounts are regional), or every request after the upgrade 401s.
-    _c = _cfg()
-    config = read_raw_config()
-    model_cfg = config.get("model")
-    if not isinstance(model_cfg, dict) or model_cfg.get("provider") != "stepfun":
-        return
-
-    base_url = str(model_cfg.get("base_url") or "").strip()
-    env_override = str(_c.get_env_value("STEPFUN_BASE_URL") or "").strip()
-    # The pre-split default was international Step Plan, so an unset endpoint means exactly that.
-    effective = (base_url or env_override or "https://api.stepfun.ai/step_plan/v1").lower()
-    is_plan = "/step_plan/" in effective
-    is_cn = "api.stepfun.com" in effective
-    new_provider = ("stepfun-plan-cn" if is_cn else "stepfun-plan") if is_plan else (
-        "stepfun-cn" if is_cn else "stepfun")
-
-    model_cfg["provider"] = new_provider
-    config["model"] = model_cfg
-    notes: List[str] = []
-
-    # Re-home the base-url override onto the new id's own variable, but only when it carried a
-    # value (the default endpoint needs no override) and the target is still unset.
-    target_env = {
-        "stepfun": "STEPFUN_BASE_URL", "stepfun-cn": "STEPFUN_CN_BASE_URL",
-        "stepfun-plan": "STEPFUN_STEP_PLAN_BASE_URL",
-        "stepfun-plan-cn": "STEPFUN_CN_STEP_PLAN_BASE_URL"}[new_provider]
-    try:
-        if env_override and target_env != "STEPFUN_BASE_URL" and not _c.get_env_value(target_env):
-            _c.save_env_value(target_env, env_override)
-            _c.save_env_value("STEPFUN_BASE_URL", "")
-            notes.append(f"env STEPFUN_BASE_URL → {target_env}")
-        # A China config's key is a China account key; the new id reads STEPFUN_CN_API_KEY.
-        if is_cn:
-            existing_key = str(_c.get_env_value("STEPFUN_API_KEY") or "").strip()
-            if existing_key and not _c.get_env_value("STEPFUN_CN_API_KEY"):
-                _c.save_env_value("STEPFUN_CN_API_KEY", existing_key)
-                _c.save_env_value("STEPFUN_API_KEY", "")
-                notes.append("env STEPFUN_API_KEY → STEPFUN_CN_API_KEY (China account key)")
-    except Exception:
-        # Best effort: a failed .env write must not abort the provider rename.
-        pass
-
-    suffix = f" ({'; '.join(notes)})" if notes else ""
-    _commit(
-        config, results, quiet,
-        f"model.provider stepfun → {new_provider}{suffix}",
-        f"  ✓ StepFun config migrated to provider '{new_provider}' — same endpoint, explicit region"
-        + (f"\n    ✓ {chr(10) + '    ✓ '.join(notes)}" if notes else ""))
-def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
     # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
     # still equal to the OLD default is the template copied, not a choice: the key is DROPPED so
@@ -714,7 +662,7 @@ def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
 #: only added a schema default that runtime merging supplies without a write. When adding a step,
 #: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
 
-def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
     # 48 → 49: Vercel deprecated sandbox runtimes in favour of images; the default moves from the
     # `node24` runtime to `vercel/sandbox/universal:latest`. A saved runtime still equal to the old
     # seeded default (config.yaml AND the .env mirror the setup wizard wrote) is the template copied,
@@ -735,7 +683,80 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
 
 
-MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
+_RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
+
+
+def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
+    # 49 → 50: the bundled tirith scanner left Hermes. Nothing reads its keys now, so they are
+    # dropped; nothing replaces them.
+    config = read_raw_config()
+    security = config.get("security")
+    if not isinstance(security, dict):
+        return
+    present = [key for key in _RETIRED_TIRITH_KEYS if key in security]
+    if not present:
+        return
+    for key in present:
+        del security[key]
+    _commit(config, results, quiet, "removed security.tirith_* (scanner no longer bundled)",
+            "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
+
+
+def _migrate_to_51(results: dict[str, Any], quiet: bool) -> None:
+    # 50 → 51: the single `stepfun` id became four, one per (region x endpoint family). The id is
+    # chosen by the endpoint the config ACTUALLY reached — model.base_url, else STEPFUN_BASE_URL,
+    # else the pre-split default of international Step Plan. A China config's key also moves to
+    # STEPFUN_CN_API_KEY (accounts are regional), or every request after the upgrade 401s.
+    _c = _cfg()
+    config = read_raw_config()
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict) or model_cfg.get("provider") != "stepfun":
+        return
+
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    env_override = str(_c.get_env_value("STEPFUN_BASE_URL") or "").strip()
+    # The pre-split default was international Step Plan, so an unset endpoint means exactly that.
+    effective = (base_url or env_override or "https://api.stepfun.ai/step_plan/v1").lower()
+    is_plan = "/step_plan/" in effective
+    is_cn = "api.stepfun.com" in effective
+    new_provider = ("stepfun-plan-cn" if is_cn else "stepfun-plan") if is_plan else (
+        "stepfun-cn" if is_cn else "stepfun")
+
+    model_cfg["provider"] = new_provider
+    config["model"] = model_cfg
+    notes: list[str] = []
+
+    # Re-home the base-url override onto the new id's own variable, but only when it carried a
+    # value (the default endpoint needs no override) and the target is still unset.
+    target_env = {
+        "stepfun": "STEPFUN_BASE_URL", "stepfun-cn": "STEPFUN_CN_BASE_URL",
+        "stepfun-plan": "STEPFUN_STEP_PLAN_BASE_URL",
+        "stepfun-plan-cn": "STEPFUN_CN_STEP_PLAN_BASE_URL"}[new_provider]
+    try:
+        if env_override and target_env != "STEPFUN_BASE_URL" and not _c.get_env_value(target_env):
+            _c.save_env_value(target_env, env_override)
+            _c.save_env_value("STEPFUN_BASE_URL", "")
+            notes.append(f"env STEPFUN_BASE_URL → {target_env}")
+        # A China config's key is a China account key; the new id reads STEPFUN_CN_API_KEY.
+        if is_cn:
+            existing_key = str(_c.get_env_value("STEPFUN_API_KEY") or "").strip()
+            if existing_key and not _c.get_env_value("STEPFUN_CN_API_KEY"):
+                _c.save_env_value("STEPFUN_CN_API_KEY", existing_key)
+                _c.save_env_value("STEPFUN_API_KEY", "")
+                notes.append("env STEPFUN_API_KEY → STEPFUN_CN_API_KEY (China account key)")
+    except Exception:
+        # Best effort: a failed .env write must not abort the provider rename.
+        pass
+
+    suffix = f" ({'; '.join(notes)})" if notes else ""
+    _commit(
+        config, results, quiet,
+        f"model.provider stepfun → {new_provider}{suffix}",
+        f"  ✓ StepFun config migrated to provider '{new_provider}' — same endpoint, explicit region"
+        + (f"\n    ✓ {chr(10) + '    ✓ '.join(notes)}" if notes else ""))
+
+
+MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
@@ -866,8 +887,10 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (48, _migrate_to_48),
     # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
     (49, _migrate_to_49),
-    # 49 → 50: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn (see _migrate_to_50).
+    # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn (see _migrate_to_51).
+    (51, _migrate_to_51),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -879,11 +902,11 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
 
 
 def run_migrations(
-    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
     """Apply every registered migration whose target version exceeds *current_ver*; a config
     with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 

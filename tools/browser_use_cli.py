@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -205,6 +206,17 @@ def get_browser_backend() -> str:
     return (BACKEND_DISABLED if raw is False else "") if isinstance(raw, bool) else str(raw or "").strip().lower()
 
 
+def set_browser_use_mode(enabled: bool) -> None:
+    """``/browser use [off]`` on every surface: persist ``browser.backend`` for the current profile and drop
+    cached tool availability. A live agent keeps its tools (prompt cache); the next one built gets the swap."""
+    from hermes_cli.config import load_config, save_config
+    from tools.registry import invalidate_check_fn_cache
+    config = load_config()
+    config.setdefault("browser", {})["backend"] = _BACKEND_KEY if enabled else BACKEND_DISABLED
+    save_config(config)
+    invalidate_check_fn_cache()
+
+
 def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     """True for pre-CLI direct-API Browser Use cloud configs. An explicit backend or
     a non-Browser-Use cloud_provider wins; Camofox is selected via env var, not
@@ -260,7 +272,7 @@ def _harness_site_dir() -> Optional[str]:
     return str(Path(spec.origin).resolve().parent.parent)
 
 
-def _find_cli() -> Optional[List[str]]:
+def _find_cli() -> Optional[list[str]]:
     """The Browser Use CLI's engine (browser-harness) is a core dependency of Hermes's own venv,
     so every install, the Desktop bundle included, runs it on the current interpreter."""
     if _harness_site_dir() is None:
@@ -294,7 +306,7 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
     return None
 
 
-def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
+def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
         from tools.vision_tools import (_EMBED_MAX_DIMENSION,
@@ -590,6 +602,28 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
+# outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
+# endpoint leaves later browser_exec calls in the old browser until these are stopped.
+_driven_daemons: set = set()
+_driven_daemons_lock = threading.Lock()
+
+
+def stop_harness_daemons() -> None:
+    """Stop every harness daemon this process drove, through the harness's own identity-checked
+    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
+    with _driven_daemons_lock:
+        names = sorted(_driven_daemons)
+        _driven_daemons.clear()
+    cmd = _find_cli() if names else None
+    if not cmd:
+        return
+    env = _base_subprocess_env()
+    for name in names:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -636,8 +670,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
 
-    def dispatch() -> Dict[str, Any]:
+    def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
+        with _driven_daemons_lock:
+            _driven_daemons.add(env.get("BU_NAME", "default"))
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:

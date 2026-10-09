@@ -179,7 +179,7 @@ gateway:
     label_normal: "일반"
     status_fast: "빠름"
     status_normal: "일반"
-    picker_title: "⚡ **Priority Processing**\\n\\n현재 모드: `{mode}`\\n\\n옵션을 선택하세요:"
+    picker_title: "⚡ **Priority Processing**\n\n현재 모드: `{mode}`\n\n옵션을 선택하세요:"
     choice_fast: "fast — Priority Processing 켜기"
     choice_normal: "normal — 표준 처리"
     choice_auto: "auto — 매 턴의 처음 몇 초 동안 빠름"
@@ -282,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global`은 지원되지 않습니다. 전역 기본값을 변경하려면 `/reasoning <level> --global`을 사용하세요."
     reset_done: "🧠 ✓ 세션 추론 재정의가 해제되었습니다. 전역 설정으로 돌아갑니다."
     unknown_arg: "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 수준:** none, minimal, low, medium, high, xhigh, max, ultra\n**표시:** show, hide\n**영구화:** 이 세션을 넘어 저장하려면 `--global`을 추가하세요"
-    picker_title: "🧠 **추론 설정**\\n\\n**노력:** `{level}`\\n**범위:** {scope}\\n**표시:** {display}\\n\\n옵션을 선택하세요:"
+    picker_title: "🧠 **추론 설정**\n\n**노력:** `{level}`\n**범위:** {scope}\n**표시:** {display}\n\n옵션을 선택하세요:"
     choice_none: "none — 추론 비활성화"
     choice_reset: "reset — 세션 재정의 초기화"
     choice_show: "응답에 추론 표시"
@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "계획 중: {task}"
     ack_conversation: "이 대화의 컨텍스트로 계획을 세우고 있어요…"
+  initiate_setup:
+    ack: "설정을 시작하는 중…"
   init:
     start_failed: "/init을 시작할 수 없었어요 — 다시 시도해 주세요."
     ack_update: "프로젝트 스캔 결과로 AGENTS.md를 업데이트하고 있어요…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ 세션 데이터베이스가 검색 인덱스(FTS5)에 한정된 손상 오류를 보고했어요. 메시지 테이블은 손상되지 않았어요. 수리될 때까지 메시지가 저장되지 않을 수 있어요: `hermes {profile_arg}doctor --fix`를 실행한 뒤 게이트웨이를 재시작하세요. `hermes {profile_arg}doctor`가 손상을 확인하지 않는 한 복구 도구를 실행하거나 백업을 복원하지 마세요."
     db_then_restart: "{action} 그런 다음 `hermes {profile_arg}gateway restart`를 실행하세요."
     db_unavailable: "⚠️ 세션 데이터베이스를 사용할 수 없어요 — 메시지가 저장되지 않을 수 있고 /resume이 비어 있을 거예요. 원인: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ cron 저장소 {store}에 {since}부터 쓸 수 없습니다 ({error}). 다시 쓸 수 있을 때까지 예약된 작업을 건너뜁니다. 해결: {fix}."
+    recovered: "✅ cron 저장소 {store}에 다시 쓸 수 있습니다. 건너뛴 실행 {skipped}건, 작업마다 한 번씩 따라잡습니다."
   whoami:
     scope_dm: "DM"
     scope_group: "그룹/채널"
@@ -1448,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent를 종료하는 중"
     standalone_quit: "전송됨"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "한 번 승인"
     confirm_always_approve: "항상 승인"
@@ -1555,6 +1558,8 @@ slash:
     description: "이 세션에서 프롬프트를 일정 간격으로 반복 실행"
   plan:
     description: "실행 없이 마크다운 구현 계획을 .hermes/plans/에 작성"
+  initiate-setup:
+    description: "첫 설정 실행: 사용자에 대해 알아보고 Hermes를 사용자에게 맞게 설정합니다"
   moa:
     description: "기본 Mixture of Agents 프리셋으로 프롬프트 하나를 실행한 뒤 원래 모델 복원"
   subgoal:
@@ -2355,6 +2360,7 @@ cli:
     removed: "대기열 항목 {index}을(를) 제거했어요: {preview}"
     item_not_found: "대기열 항목 {index}을(를) 찾을 수 없어요. 현재 크기: {size}"
     usage_edit: "사용법: /queue edit <number> <new prompt>"
+    usage_remove: "사용법: /queue rm <number>"
     updated: "대기열 항목 {index}을(를) 수정했어요: {preview}"
     usage_move: "사용법: /queue move <from> <to>"
     move_out_of_range: "대기열 이동 범위를 벗어났어요. 현재 크기: {size}"
@@ -2393,6 +2399,7 @@ cli:
     session_not_found: "세션을 찾을 수 없어요: {session_id}"
     compressed_into: "세션 {session_id}은(는) {descendant}(으)로 압축됐어요. 기록과 함께 후속 세션을 재개해요."
     cannot_resume: "세션을 재개할 수 없어요: {error}"
+    kanban_owned: "⛔ 세션 {session_id}은(는) Kanban 워커의 기록입니다. 여기서 재개하면 Kanban 보드가 관찰하거나 감독할 수 없는 작성자가 생깁니다 — 대신 보드에서 카드를 재시도하거나 차단을 해제하여 디스패처가 다음 실행을 소유하도록 하세요."
     cannot_resume_prefix: "세션을 재개할 수 없어요:"
     resumed_session: "↻ 세션 재개됨"
     counts_one: "(사용자 메시지 {count}개, 전체 메시지 {total}개)"
@@ -2427,7 +2434,6 @@ cli:
     run_model_to_retry: "다시 시도하려면 'hermes model'을 실행해 주세요."
     provider_configured: "✓ 제공자 설정 완료 — 이제 채팅을 시작할 수 있어요."
     provider_setup_incomplete: "제공자 설정이 완료되지 않았어요. 다시 시도하려면 'hermes model'을 실행해 주세요."
-    tirith_unavailable: "⚠ tirith 보안 스캐너가 활성화됐지만 사용할 수 없어요 — 명령 검사는 패턴 매칭만 사용해요"
     unknown_toolsets: "경고: 알 수 없는 도구 세트: {names}"
     stdin_unusable: "\n오류: stdin을 사용할 수 없어요 ({error}).\n특정 Python 설치(예: macOS의 uv 관리 cPython)에서 kqueue가 fd 0을\n등록할 수 없을 때 발생할 수 있어요.\npyenv나 Homebrew로 Python을 다시 설치한 뒤 다시 실행해 주세요: hermes setup"
     warning: "경고: {warning}"
@@ -2720,6 +2726,7 @@ cli:
       restored: "상태를 복원했어요: {snapshot_id}"
       restart_recommended: "게이트웨이/대시보드 프로세스가 state.db 변경을 반영하려면 재시작을 권장해요."
       not_found: "스냅샷을 찾을 수 없어요: {snapshot_id}"
+      restore_incomplete: "스냅샷 {snapshot_id}을(를) 완전히 복원하지 못했어요: 일부 파일이 거부되었어요 (로그 확인)"
       usage_prune: "사용법: /snapshot prune [keep-count]"
       pruned: "오래된 스냅샷 {deleted}개를 정리했어요 ({keep}개 유지)."
     export:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 계획 수립 중: {task}"
       from_conversation: "📋 이 대화의 컨텍스트로 계획을 세우는 중..."
+    initiate_setup:
+      starting: "🧭 설정을 시작하는 중..."
     init:
       updating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 업데이트하는 중..."
       generating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 생성하는 중..."
@@ -3287,6 +3296,7 @@ cli:
     shallow_clone_keeping: "⚠ 얕은 클론 — 푸시 상태를 확인할 수 없어 유지해요: {path}"
     next_session_deepens: "다음 `hermes -w` 세션에서 클론을 깊게 만들고 병합된 워크트리를 자동으로 정리해요."
     unpushed_keeping: "⚠ 워크트리에 푸시되지 않은 커밋이 있어 유지해요: {path}"
+    uncommitted_keeping: "⚠ 워크트리에 커밋되지 않은 변경 사항이 있어 유지해요: {path}"
     clean_up_manually: "직접 정리하려면: git worktree remove --force {path}"
     cleaned_up: "✓ 워크트리를 정리했어요: {path}"
 display:
@@ -3643,7 +3653,7 @@ tips:
   t167: "위험 명령 승인에는 4단계가 있어요: once, session, always (영구 허용 목록), deny."
   t168: "스마트 승인 모드는 LLM으로 안전한 명령은 자동 승인하고 위험한 명령은 표시해요."
   t169: "SSRF 보호는 사설 네트워크, 루프백, 링크 로컬, 클라우드 메타데이터 주소를 차단해요."
-  t170: "Tirith 사전 실행 검사는 동형 문자 URL 위장과 파이프-인터프리터 패턴을 감지해요."
+  t170: "세션 ID는 타임스탬프로 시작해요 (20250305_091523_abcd). 그래서 ls와 jq에서 자연스럽게 정렬돼요."
   t171: "MCP 하위 프로세스에는 필터링된 환경 변수만 전달돼요 — 안전한 시스템 변수만 통과해요."
   t172: "컨텍스트 파일(.hermes.md, AGENTS.md)은 불러오기 전에 프롬프트 인젝션 보안 검사를 거쳐요."
   t173: "config.yaml의 command_allowlist는 특정 셸 명령 패턴을 영구적으로 승인해요."
@@ -3673,7 +3683,7 @@ tips:
   t197: "궤적 저장(--save-trajectories)은 모델 학습용으로 도구 사용 전체 기록을 남겨요."
   t198: "플러그인은 세 종류예요: 일반(도구/훅), 메모리 제공자, 컨텍스트 엔진."
   t199: "hermes plugins install owner/repo로 GitHub에서 직접 플러그인을 설치할 수 있어요."
-  t200: "외부 메모리 제공자: Honcho, OpenViking, Mem0은 기본 포함이고, Hindsight 등은 hermes plugins install로 설치해요."
+  t200: "외부 메모리 제공자: Honcho, Hindsight, Mem0, OpenViking 등은 hermes plugins install로 설치해요."
   t201: "플러그인 훅에는 pre/post_tool_call, pre/post_llm_call, 그리고 출력 정규화용 transform_terminal_output이 있어요."
   t202: "프롬프트 캐싱(Anthropic)은 캐시된 시스템 프롬프트 접두부를 재사용해 비용을 줄여요."
   t203: "에이전트는 백그라운드 스레드에서 세션 제목을 자동 생성해요 — 지연 시간에 영향이 없어요."
@@ -3848,12 +3858,9 @@ tips:
   t372: "config.yaml의 image_gen.model은 FAL 모델을 골라요: flux-2/klein, gpt-image-2, nano-banana-pro 등이 있어요."
   t373: "image_gen.provider는 이미지 생성을 기본값 대신 플러그인(OpenAI Images, Codex, FAL)으로 라우팅해요."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY는 비전 분석을 어떤 OpenAI 호환 엔드포인트로든 연결해요."
-  t375: "security.tirith_fail_open: false는 tirith 스캐너 자체가 오류를 내면 Hermes가 명령을 차단하게 해요."
-  t376: "TIRITH_FAIL_OPEN 환경 변수는 tirith_fail_open 설정을 덮어써요 — config.yaml을 편집하지 않고 빠르게 전환할 수 있어요."
+  t375: "API_SERVER_MODEL_NAME은 /v1/models에 표시되는 모델 이름을 바꿔요 — 다중 프로필 Open WebUI 구성에 꼭 필요해요."
+  t376: "대시보드 플러그인은 /dashboard-plugins/<name>/에서 제공돼요 — 파일을 ~/.hermes/dashboard-plugins/에 넣으세요."
   t377: "--source tool 채팅은 기본적으로 hermes sessions list에서 제외돼요 — 보려면 --source를 명시적으로 지정하세요."
-  t378: "세션 ID는 타임스탬프로 시작해요 (20250305_091523_abcd). 그래서 ls와 jq에서 자연스럽게 정렬돼요."
-  t379: "API_SERVER_MODEL_NAME은 /v1/models에 표시되는 모델 이름을 바꿔요 — 다중 프로필 Open WebUI 구성에 꼭 필요해요."
-  t380: "대시보드 플러그인은 /dashboard-plugins/<name>/에서 제공돼요 — 파일을 ~/.hermes/dashboard-plugins/에 넣으세요."
   placeholder:
     p01: "무엇이든 물어보세요. 명령은 / 를 입력하세요…"
     p02: "이 폴더에 무엇이 있는지 요약해 줘"

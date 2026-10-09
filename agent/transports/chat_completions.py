@@ -8,11 +8,11 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
+from agent.message_metadata import MESSAGE_UID
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -35,7 +35,7 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
+    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks", MESSAGE_UID,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -257,7 +257,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
 
 def _route_replays_reasoning_details(base_url: Any) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array, also consumed by the Nous Portal).
+    reasoning array).
 
     Every other chat-completions endpoint either ignores the field or, when its schema is
     strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
@@ -265,10 +265,16 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
     later turn once the model is switched (#70233). The stored history keeps the field; only the
     wire copy drops it.
+
+    The Nous Portal read the field too (multi-turn reasoning continuity), but it enforces a
+    cumulative replayed-reasoning budget: replaying stored reasoning_details wedges long
+    sessions with a non-retryable 400 (#118182), so the Portal now strips like every other
+    route. Stored history keeps the field, so a route that genuinely replays it (OpenRouter,
+    #129037) still receives it.
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+    return base_url_host_matches(base_url, "openrouter.ai")
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -372,7 +378,10 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
-def _sanitize_message(msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False) -> dict | None:
+def _sanitize_message(
+    msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False,
+    native_reasoning_details_type: str | None = None,
+) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
@@ -381,18 +390,32 @@ def _sanitize_message(msg: Any, strip_extra_content: bool, strip_reasoning_detai
     on tool results (schema-valid only on user/assistant messages; strict
     providers reject it with ``contains item with unknown key name``), and
     ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
+    On a replaying route, private ``<provider>.native_assistant`` carriers still go only to the
+    profile that declared that exact type: another provider's signed replay is meaningless (or
+    rejected) elsewhere, and stored history keeps it for a return to the original provider.
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    kept_details = None
     if strip_reasoning_details and "reasoning_details" in msg:
         strip_keys.append("reasoning_details")
+    elif isinstance(msg.get("reasoning_details"), list):
+        details = msg["reasoning_details"]
+        kept = [d for d in details if not (
+            isinstance(d, dict) and isinstance(d.get("type"), str)
+            and d["type"].endswith(".native_assistant") and d["type"] != native_reasoning_details_type)]
+        if len(kept) != len(details):
+            strip_keys.append("reasoning_details")
+            kept_details = kept
     # ``name`` is schema-valid on user/assistant messages, so the removal is
     # role-qualified: only tool results carry it illegally (strict providers
     # reject with "contains item with unknown key name").
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    if kept_details:
+        out_msg["reasoning_details"] = kept_details
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None
     if msg.get("role") == "assistant" and "tool_calls" in msg and (tool_calls is None or (isinstance(tool_calls, list) and not tool_calls)):
@@ -433,8 +456,11 @@ class ChatCompletionsTransport(ProviderTransport):
         Returns the input list unchanged when nothing needs sanitizing.
         """
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        strip_reasoning_details = not _route_replays_reasoning_details(kwargs.get("base_url"))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details)) for m in messages]
+        # A profile declaring a native carrier type consumes replayed details by contract.
+        native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
+        strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
+                           for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]
@@ -451,8 +477,8 @@ class ChatCompletionsTransport(ProviderTransport):
         With ``provider_profile`` every quirk comes from the profile; the legacy flag
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"))
         _profile = params.get("provider_profile")
+        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
@@ -460,12 +486,11 @@ class ChatCompletionsTransport(ProviderTransport):
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
 
         is_kimi = params.get("is_kimi", False)
-        is_lmstudio = params.get("is_lmstudio", False)
         supports_reasoning = params.get("supports_reasoning", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
-        # Kimi / TokenHub / LM Studio: top-level reasoning_effort (unless thinking disabled).
+        # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)
         if is_kimi and not thinking_off:
@@ -477,11 +502,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)
             )
         if params.get("is_tokenhub", False) and not thinking_off:
-            api_kwargs["reasoning_effort"] = "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
-        if is_lmstudio and supports_reasoning:
-            _lm_effort = resolve_lmstudio_effort(reasoning_config, params.get("lmstudio_reasoning_options"))
-            if _lm_effort is not None:
-                api_kwargs["reasoning_effort"] = _lm_effort
+            api_kwargs["reasoning_effort"] = tokenhub_effort(_e)
 
         extra_body: dict[str, Any] = {}
         is_openrouter = params.get("is_openrouter", False)
@@ -496,8 +517,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if is_kimi:
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
-        # LM Studio is handled above via top-level reasoning_effort.
-        if supports_reasoning and not is_lmstudio:
+        if supports_reasoning:
             if params.get("is_github_models", False):
                 if params.get("github_reasoning_extra") is not None:
                     extra_body["reasoning"] = params["github_reasoning_extra"]
@@ -538,11 +558,15 @@ class ChatCompletionsTransport(ProviderTransport):
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
+        # LM Studio's probed allowed_options ride only when present, so plugin hooks written
+        # against the older keyword set (no ``**context``) keep working.
+        _lm_options = params.get("lmstudio_reasoning_options")
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
-            session_id=params.get("session_id"),
+            session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+            **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
 
@@ -636,10 +660,13 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        return ToolCall(
+        call = ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
             provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
         )
+        if getattr(tc_function, "args_repaired", False) is True:
+            call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics
+        return call
 
     def validate_response(self, response: Any) -> bool:
         """Check that response has valid choices and is not a router failure shim."""
@@ -659,14 +686,6 @@ class ChatCompletionsTransport(ProviderTransport):
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
 
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("chat_completions", ChatCompletionsTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

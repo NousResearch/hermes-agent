@@ -246,12 +246,16 @@ _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     r"hermes\s+"
-    # Any global flags before the profile selector (each may carry a value).
-    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    # Each flag has one parse: '-' plus its remainder, never two ways to split
+    # '--'. A following flag cannot also be an optional value (#129281).
+    # Possessive token/space runs avoid repartitioning whitespace on failure;
+    # whole flag groups can still backtrack to expose the profile selector.
+    # Do not cap the number of flags: that would silently allow long self-stops.
+    r"(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
     # Any global flags between the selector and the subcommand.
-    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    r"(?:\s++-\S++(?:\s++(?!-\S)\S++)?)*"
     r"\s+gateway\s+(?:restart|stop)"
 )
 
@@ -366,18 +370,10 @@ _BINARY_MAGICS = (
 # --- profile identity -------------------------------------------------------------------------
 
 def _current_profile_name() -> Optional[str]:
-    """Profile running the guard: ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` env first, then
-    ``hermes_cli.profiles.get_active_profile_name`` (from ``HERMES_HOME``); ``None`` if neither."""
-    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        value = os.environ.get(env_name)
-        if value and value.strip():
-            return value.strip()
-    try:
-        from hermes_cli.profiles import get_active_profile_name
+    """Profile running the guard (``hermes_cli.profiles.current_profile_name``); ``None`` if none."""
+    from hermes_cli.profiles import current_profile_name
 
-        return get_active_profile_name() or None
-    except Exception:
-        return None
+    return current_profile_name()
 
 
 def _named_profile_is_current(named: str) -> bool:
@@ -482,8 +478,13 @@ class _LifecycleScanBudget:
     failed closed for a reason other than a lifecycle command (budget, size, device, live SQLite,
     cloud placeholder) so the caller can tell the model the real reason (#113944)."""
 
-    __slots__ = ("bytes_remaining", "lines_remaining", "paths_remaining", "remote_reads_remaining",
-                 "refusal")
+    __slots__ = (
+        "bytes_remaining",
+        "lines_remaining",
+        "paths_remaining",
+        "refusal",
+        "remote_reads_remaining",
+    )
 
     def __init__(self) -> None:
         # Read the module constants at construction so tests/operators can lower them at runtime.

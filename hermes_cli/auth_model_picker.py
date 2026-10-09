@@ -20,7 +20,7 @@ _CURRENT_SUFFIX = "  ← currently in use"
 
 def _confirm_selection_guards(
     model_id: str, *, provider: str = "", base_url: str = "", api_key: str = "",
-    include_kinds: Optional[List[str]] = None,
+    include_kinds: Optional[list[str]] = None,
 ) -> bool:
     """Prompt before saving a model that trips any selection guard (cost, data-policy, ...).
 
@@ -56,11 +56,13 @@ class _ModelPickerRows:
     """
 
     def __init__(
-        self, all_models: List[str], pricing: Optional[Dict[str, Dict[str, str]]], *,
-        current_model: str, sale_chrome: bool,
+        self, all_models: list[str], pricing: Optional[dict[str, dict[str, str]]], *,
+        current_model: str, sale_chrome: bool, notes: Optional[dict[str, str]] = None,
     ) -> None:
         from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
         self.current_model = current_model
+        # Per-model dim annotation (e.g. "usage credits"); the row stays selectable.
+        self.notes = notes or {}
         self.has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
         # Leave room for a leading "★ " on sale rows (Nous only).
         name_pad = 3 if sale_chrome else 2
@@ -106,8 +108,9 @@ class _ModelPickerRows:
     def segments(self, mid: str) -> list[tuple[str, str | None]]:
         """Build a rich radiolist row: yellow ★/% , dim was, plain prices."""
         current = [(_CURRENT_SUFFIX, None)] if mid == self.current_model else []
+        note = [(f"  · {self.notes[mid]}", "dim")] if self.notes.get(mid) else []
         if not self.has_pricing:
-            return [(mid, None), *current]
+            return [(mid, None), *note, *current]
 
         inp, out, cache, pct, was_inp, was_out = self._price_cache.get(mid, ("", "", "", None, "", ""))
         on_sale = pct is not None
@@ -125,7 +128,7 @@ class _ModelPickerRows:
             segs.append((f"  -{pct}%", "yellow"))
             if was_inp or was_out:
                 segs.append((f"  was {was_inp}/{was_out}", "dim"))
-        return segs + current
+        return segs + note + current
 
     def label(self, mid: str) -> str:
         return "".join(text for text, _style in self.segments(mid))
@@ -148,11 +151,11 @@ class _ModelPickerRows:
 
 
 def _prompt_model_selection(
-    model_ids: List[str], current_model: str = "",
-    pricing: Optional[Dict[str, Dict[str, str]]] = None,
-    unavailable_models: Optional[List[str]] = None, portal_url: str = "",
+    model_ids: list[str], current_model: str = "",
+    pricing: Optional[dict[str, dict[str, str]]] = None,
+    unavailable_models: Optional[list[str]] = None, portal_url: str = "",
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
-    confirm_api_key: str = "",
+    confirm_api_key: str = "", notes: Optional[dict[str, str]] = None,
 ) -> Optional[str]:
     """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
 
@@ -187,7 +190,7 @@ def _prompt_model_selection(
     ))
 
     # All models for column-width computation (selectable + unavailable)
-    rows = _ModelPickerRows(ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome)
+    rows = _ModelPickerRows(ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome, notes=notes)
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
@@ -279,9 +282,18 @@ def _prompt_model_selection(
             return None
 
 
+_model_choice_saves = 0  # bumped per saved pick; `hermes model` reads it to know a pick landed
+
+
+def model_choice_save_count() -> int:
+    return _model_choice_saves
+
+
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
+    global _model_choice_saves
     from hermes_cli.config import save_config, load_config
+    _model_choice_saves += 1
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
@@ -289,3 +301,6 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
+    from hermes_cli.observability.shared_metrics_setup import note_provider_setup_saved
+
+    note_provider_setup_saved()

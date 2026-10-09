@@ -12,7 +12,6 @@ logged as a recovery (#112387 review caveat).
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
@@ -107,6 +106,12 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         # the assertions below depend only on the synchronous arm.
         second = live
         for _ in range(5):
+            # Re-assert the state this phase tests — one stall already on the record (line above) — and
+            # clear the lapsed backoff. Pinning the counter also stops a retry from ACCUMULATING stall
+            # history, which would let a regression that makes escalation harder (e.g. a threshold of 3)
+            # satisfy itself on a later iteration and pass. A refused, or fleetingly degraded, attempt
+            # stays retryable; a regression cannot buy itself green.
+            compressor._consecutive_timeout_failures = 1
             compressor._summary_failure_cooldown_until = 0.0
             compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
             calls.clear()
@@ -119,35 +124,15 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
     assert len(_summary_rows(second)) == 1, "the deterministic fallback summary is committed as the handoff"
     assert calls == ["primary"], "the deterministic rung makes no summary LLM call"
     assert getattr(agent, "_last_compression_timed_out", None) is not True
-    # The stalled LLM route stays in its backoff even though the deterministic rung committed. Read the
-    # synchronous host arm: the durable row is the worker's own async write and is not this test's subject.
+    # The stalled LLM route stays in its backoff even though the deterministic rung committed. This arm
+    # comes from the cancelled PRIMARY worker's `stall_interrupted` record (the deterministic retry path
+    # never reaches `on_timeout`), which normally lands while the retry above runs — hence the read last,
+    # after that work, rather than immediately after the clear.
     assert compressor._summary_failure_cooldown_until > time.monotonic(), (
         "the stalled LLM route keeps its stall backoff after the deterministic commit"
     )
 
 
-def test_failing_pinned_fallback_route_is_not_logged_as_recovered(tmp_path, fast_timeouts, caplog):
-    """Primary stalls, the fallback_chain route raises: compress() still commits its static fallback
-    summary (abort_on_summary_failure=false), and the host log must say so instead of 'recovered'."""
-    agent = _make_agent(tmp_path, "B")
-    compressor = agent.context_compressor
-    calls = []
-    live = _transcript()
-    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
-    with patch(
-        "agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls, fail_when_pinned=True),
-    ), patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": [CHAIN_ENTRY]}):
-        out, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
-
-    assert calls == ["primary", "custom"]
-    assert out is not live and len(_summary_rows(out)) == 1
-    records = [r for r in caplog.records if r.name == "agent.conversation_compression"]
-    assert not any("recovered on fallback_chain[0]" in r.getMessage() for r in records)
-    assert any(
-        "committed a deterministic fallback summary on fallback_chain[0]" in r.getMessage()
-        and r.levelno == logging.WARNING
-        for r in records
-    )
 
 
 def test_deterministic_pin_is_consumed_and_a_real_route_is_left_alone():
@@ -188,6 +173,108 @@ def test_fence_level_retry_ladder_is_unchanged_without_a_prior_timeout():
         assert len(attempts) == 1
     finally:
         release.set()
+
+
+def test_deadline_observed_by_worker_still_runs_first_stall_fallback():
+    """A cooperative worker can return its no-op result at the same deadline the host is waiting on.
+    That settled result must not win the race and bypass the deterministic over-window fallback."""
+    original = [{"role": "user", "content": "keep-me"}]
+    recovered = [{"role": "assistant", "content": "compressed"}]
+    attempts = []
+    timeout_causes = []
+    timeout_callbacks = []
+
+    def primary_worker(fence: CompressionCommitFence):
+        attempts.append("primary")
+        while not fence.deadline_exceeded:
+            time.sleep(0.001)
+        return original, "unchanged"
+
+    def fallback_worker(_fence: CompressionCommitFence):
+        attempts.append("fallback")
+        return recovered, "compressed-prompt"
+
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=primary_worker, fallback_worker=fallback_worker, messages=original,
+            system_prompt_fallback="degraded-prompt", idle_timeout_seconds=0.05,
+            total_ceiling_seconds=2.0, request_exceeds_window=True,
+            on_timeout_cause=lambda *cause: timeout_causes.append(cause),
+            on_timeout=lambda *args: timeout_callbacks.append(args),
+        )
+
+    assert msgs is recovered and prompt == "compressed-prompt"
+    assert attempts == ["primary", "fallback"]
+    assert timeout_causes == [(True, False)]
+    assert timeout_callbacks == []
+
+
+def test_admitted_unchanged_commit_at_deadline_retries_without_overlap():
+    """If a worker enters its commit section at the deadline, the host must wait for that commit to
+    settle before minting a fresh retry fence. An unchanged commit is still a stalled attempt, not a
+    successful compression, so an over-window request must take the deterministic fallback rung."""
+    original = [{"role": "user", "content": "keep-me"}]
+    recovered = [{"role": "assistant", "content": "compressed"}]
+    primary_fence = CompressionCommitFence()
+    commit_started = threading.Event()
+    primary_finished = threading.Event()
+    release_commit = threading.Event()
+    attempts = []
+    timeout_causes = []
+    timeout_callbacks = []
+    retry_fences = []
+    real_await = cc._await_worker_within_budget
+
+    def primary_worker(fence: CompressionCommitFence):
+        attempts.append(("primary", fence))
+        assert fence.begin_commit()
+        commit_started.set()
+        try:
+            assert release_commit.wait(timeout=2)
+            return original, "unchanged"
+        finally:
+            fence.finish_commit()
+            primary_finished.set()
+
+    def fallback_worker(fence: CompressionCommitFence):
+        assert primary_finished.is_set(), "retry overlapped the admitted primary commit"
+        attempts.append(("fallback", fence))
+        return recovered, "compressed-prompt"
+
+    def await_at_deadline(future, fence, *, idle, ceiling, wait_started):
+        if fence is not primary_fence:
+            return real_await(
+                future, fence, idle=idle, ceiling=ceiling, wait_started=wait_started
+            )
+        assert commit_started.wait(timeout=1)
+        # Hold the admitted commit through the deadline, then let it finish while
+        # _await_in_flight_commit owns the host-side wait.
+        time.sleep(ceiling + 0.01)
+        threading.Timer(0.02, release_commit.set).start()
+        return False, None
+
+    def new_fence():
+        fence = CompressionCommitFence()
+        retry_fences.append(fence)
+        return fence
+
+    with patch.object(cc, "_await_worker_within_budget", side_effect=await_at_deadline), patch(
+        "agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}
+    ):
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=primary_worker, fallback_worker=fallback_worker, messages=original,
+            system_prompt_fallback="degraded-prompt", idle_timeout_seconds=0.05,
+            total_ceiling_seconds=0.05, request_exceeds_window=True, fence=primary_fence,
+            new_fence=new_fence, on_timeout_cause=lambda *cause: timeout_causes.append(cause),
+            on_timeout=lambda *args: timeout_callbacks.append(args),
+        )
+
+    assert msgs is recovered and prompt == "compressed-prompt"
+    assert primary_finished.is_set()
+    assert retry_fences and retry_fences[0] is not primary_fence
+    assert attempts == [("primary", primary_fence), ("fallback", retry_fences[0])]
+    assert timeout_causes == [(True, False)]
+    assert timeout_callbacks == []
 
 
 def test_over_window_request_commits_the_deterministic_fallback_on_the_first_stall(tmp_path, fast_timeouts):

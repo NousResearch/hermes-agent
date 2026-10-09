@@ -35,7 +35,7 @@ def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     monkeypatch.setattr(flows, "_env_base_url", lambda *_: "")
     monkeypatch.setattr(flows, "_prompt_base_url_override", lambda value, *_args, **_kwargs: value)
     monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
-    monkeypatch.setattr(config, "load_config", lambda: {})
+    monkeypatch.setattr(config, "load_config", dict)
     monkeypatch.setattr(models, "fetch_api_models", lambda *_args, **_kwargs: [])
     from hermes_cli import models_pricing
     monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda *_: {})
@@ -144,3 +144,29 @@ def test_switch_validation_trusts_profile_owned_catalog(monkeypatch):
     kw = dict(provider=profile.name, api_key="synthetic-test-key", base_url=profile.base_url)
     assert models_validate.validate_requested_model("plan/model-1", **kw)["accepted"] is True
     assert models_validate.validate_requested_model("plan/model-9", **kw)["accepted"] is False
+
+
+def test_setup_keeps_curated_list_when_profile_catalog_is_down_and_declares_no_fallback(monkeypatch):
+    """A built-in API-key provider whose profile has no ``fallback_models`` and whose live catalog is
+    unreachable still offers its curated ``_PROVIDER_MODELS`` row at first-time setup instead of an
+    empty picker."""
+    from types import SimpleNamespace
+
+    import providers
+    from providers.base import ProviderProfile
+    from hermes_cli import model_setup_flows as flows, models
+
+    class DownProfile(ProviderProfile):
+        def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):
+            raise ConnectionError("catalog down")
+
+    profile = DownProfile(name="scout-curated-only", auth_type="api_key", env_vars=("SCOUT_CURATED_KEY",),
+                          base_url="https://down.example.invalid/v1")
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setitem(models._PROVIDER_MODELS, profile.name, ["curated-a", "curated-b"])
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+
+    setup_rows = flows._api_key_provider_model_list(
+        profile.name, SimpleNamespace(name="Down"), "synthetic-test-key", "", profile.base_url)
+
+    assert setup_rows == ["curated-a", "curated-b"]

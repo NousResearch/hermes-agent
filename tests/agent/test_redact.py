@@ -375,6 +375,21 @@ class TestJsonFields:
         result = redact_sensitive_text(text)
         assert result == text
 
+    @pytest.mark.parametrize("depth", [1, 2])
+    def test_json_field_inside_json_encoded_string_is_masked_and_stays_valid(self, depth):
+        # A tool result wrapping a config dump escapes its quotes; the plain JSON rule never saw the value.
+        import json
+        key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+        text = json.dumps({"api_key": key, "token": "CPU", "model": "gemini"})
+        for _ in range(depth):
+            text = json.dumps({"output": text})
+        result = redact_sensitive_text(text)
+        assert key not in result and '\\"token\\": \\"CPU\\"'.replace("\\", "\\" * (2 ** depth - 1)) in result
+        inner = result
+        for _ in range(depth):
+            inner = json.loads(inner)["output"]
+        assert json.loads(inner)["model"] == "gemini"
+
 
 class TestPythonReprFields:
     @pytest.mark.parametrize(
@@ -528,6 +543,31 @@ class TestTelegramTokens:
         text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
+
+    def test_long_digit_run_completes_fast(self):
+        """A long digit run with no ``:<token>`` after it must stay linear.
+
+        Without the run-start lookbehind, ``\\d{8,}`` retried from every digit
+        of the run (quadratic while holding the GIL): a 2 MB Unity asset diff
+        with a ``_typelessdata: 000...`` line pinned a core for hours inside
+        terminal-output redaction. The colon is what routes the text through
+        the Telegram pass.
+        """
+        import time
+
+        text = "_typelessdata: " + "0" * 100_000 + "\n"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_token_after_long_digit_run_still_redacted(self):
+        # The lookbehind must not change matching: a real token whose id
+        # starts its own digit run is still masked, digits embedded in a
+        # longer run are not an id.
+        text = "0" * 1000 + " bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
+        result = redact_sensitive_text(text, force=True)
+        assert "ABCDEfghij" not in result
+        assert "123456789:***" in result
 
 
 class TestPassthrough:
@@ -722,7 +762,12 @@ class TestStrictUrlCredentialRedaction:
             (
                 "//user:NET_SECRET@x.test/path",
                 "NET_SECRET",
-                "//user:***@x.test/path",
+                "//***:***@x.test/path",
+            ),
+            (
+                "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
+                "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
+                "https://***:***@llm-proxy.example/v1",
             ),
         ],
     )
@@ -1379,7 +1424,7 @@ class TestHermesHomePathClassification:
     ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
 
     def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
-        import agent.file_safety as file_safety
+        from agent import file_safety
         from agent.redact import _is_secret_file_arg
 
         home = tmp_path / "hermes"  # no ".hermes" segment

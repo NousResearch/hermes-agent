@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from urllib.parse import unquote, urlsplit
 
 import httpx
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger("tools.skills_hub")
 
@@ -33,32 +33,32 @@ class SkillMeta:
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
     path: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class SkillBundle:
     """A downloaded skill ready for quarantine/scanning/installation."""
     name: str
-    files: Dict[str, Union[str, bytes]]   # relative_path -> file content
+    files: dict[str, Union[str, bytes]]   # relative_path -> file content
     source: str
     identifier: str
     trust_level: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _skill_meta_to_dict(meta: SkillMeta) -> dict:
     return dict(vars(meta))
 
 
-def _cached_metas(key: str) -> Optional[List[SkillMeta]]:
+def _cached_metas(key: str) -> Optional[list[SkillMeta]]:
     """SkillMeta list from the shared index cache, or None on miss/expiry."""
     cached = hub()._read_index_cache(key)
     return None if cached is None else [SkillMeta(**item) for item in cached]
 
 
-def _cache_metas(key: str, metas: List[SkillMeta]) -> None:
+def _cache_metas(key: str, metas: list[SkillMeta]) -> None:
     hub()._write_index_cache(key, [_skill_meta_to_dict(m) for m in metas])
 
 
@@ -77,7 +77,7 @@ def _memo_json(key: str, compute: Callable[[], Any], valid: Callable[[Any], bool
 def _get_json(url: str, *, timeout: int = 20, **kwargs) -> Optional[Any]:
     """Plain (unguarded) GET + JSON decode; None on non-200 or transport/decode error."""
     try:
-        resp = httpx.get(url, timeout=timeout, **kwargs)
+        resp = hub()._skills_hub_http_get(url, timeout=timeout, **kwargs)
         return resp.json() if resp.status_code == 200 else None
     except (httpx.HTTPError, json.JSONDecodeError):
         return None
@@ -86,7 +86,7 @@ def _get_json(url: str, *, timeout: int = 20, **kwargs) -> Optional[Any]:
 def _get_text(url: str, *, timeout: int = 20, **kwargs) -> Optional[str]:
     """Plain (unguarded) GET; body text on 200, None on any other status or transport error."""
     try:
-        resp = httpx.get(url, timeout=timeout, **kwargs)
+        resp = hub()._skills_hub_http_get(url, timeout=timeout, **kwargs)
     except httpx.HTTPError:
         return None
     return resp.text if resp.status_code == 200 else None
@@ -99,9 +99,9 @@ def _matches_query(query_lower: str, *fields: Any) -> bool:
 
 
 def _first_matching(query_lower: str, items: Iterable[Any], fields_of: Callable[[Any], tuple],
-                    to_meta: Callable[[Any], Optional[SkillMeta]], limit: int) -> List[SkillMeta]:
+                    to_meta: Callable[[Any], Optional[SkillMeta]], limit: int) -> list[SkillMeta]:
     """Substring-search ``items`` in order, converting hits with ``to_meta`` until ``limit``."""
-    results: List[SkillMeta] = []
+    results: list[SkillMeta] = []
     for item in items:
         if _matches_query(query_lower, *fields_of(item)) and (meta := to_meta(item)):
             results.append(meta)
@@ -113,10 +113,10 @@ def _first_matching(query_lower: str, items: Iterable[Any], fields_of: Callable[
 TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
 
 
-def _dedupe_by_trust(results: Iterable[SkillMeta]) -> List[SkillMeta]:
+def _dedupe_by_trust(results: Iterable[SkillMeta]) -> list[SkillMeta]:
     """Dedupe by identifier, keeping the higher-trust copy (first wins on ties). identifier is unique per
     skill; name is not — two taps can publish same-named skills, and browse-sh reuses task names across sites."""
-    seen: Dict[str, SkillMeta] = {}
+    seen: dict[str, SkillMeta] = {}
     for r in results:
         kept = seen.get(r.identifier)
         if kept is None or TRUST_RANK.get(r.trust_level, 0) > TRUST_RANK.get(kept.trust_level, 0):
@@ -134,7 +134,7 @@ class SkillSource(ABC):
     CATALOG_PAGE_RETRIES = 5
 
     @abstractmethod
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         """Search for skills matching a query string."""
 
     @abstractmethod
@@ -150,6 +150,11 @@ class SkillSource(ABC):
 
     def trust_level_for(self, identifier: str) -> str:
         return self.TRUST_LEVEL
+
+    def current_revision(self, identifier: str) -> str:
+        """Upstream revision the skill would be fetched at; "" when the registry has no cheap
+        revision probe, which keeps update checks on the full-fetch path."""
+        return ""
 
 
 class GuardedFetchMixin:
@@ -307,7 +312,13 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         if not name or "://" in raw or raw.startswith(("mailto:", "#", "/")):
             continue
         if name.startswith(".."):
-            return None
+            # A repo-relative link to a doc outside the skill directory (``../../tools/REGISTRY.md``
+            # in a multi-skill repo) is prose, never a bundle path: nothing is fetched or written for
+            # it, so refusing the whole bundle protected nothing and made every skill that links a
+            # sibling doc uninstallable with a misleading "files no longer exist upstream" (#115171).
+            # The link is left dangling in the installed copy, like an absent support file.
+            logger.warning("SKILL.md links outside the skill directory; installing without it: %s", raw)
+            continue
         # Only unambiguous file links: an extension, no internal slash, never SKILL.md itself (casefolded —
         # a ``skill.md`` entry would collide with the bundle root on macOS/Windows; skipped, not merged).
         if ("/" in name or name.casefold() == "skill.md" or "." not in name.lstrip(".")

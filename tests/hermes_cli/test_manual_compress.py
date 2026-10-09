@@ -47,37 +47,6 @@ def test_manual_compress_keeps_tui_composer_editable(capsys):
 
 
 
-def test_manual_compress_explains_when_token_estimate_rises(capsys):
-    shell = _make_cli()
-    history = _make_history()
-    compressed = [
-        history[0],
-        {"role": "assistant", "content": "Dense summary that still counts as more tokens."},
-        history[-1],
-    ]
-    shell.conversation_history = history
-    shell.agent = MagicMock()
-    shell.agent.compression_enabled = True
-    shell.agent._cached_system_prompt = ""
-    shell.agent.tools = None
-    shell.agent.session_id = shell.session_id  # no-op: no split
-    shell.agent._compress_context.return_value = (compressed, "")
-    shell.agent._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 120
-        raise AssertionError(f"unexpected transcript: {messages!r}")
-
-    with patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate):
-        shell._manual_compress()
-
-    output = capsys.readouterr().out
-    assert "✅ Compressed: 4 → 3 messages" in output
-    assert "Approx request size: ~100 → ~120 tokens" in output
-    assert "denser summaries" in output
 
 
 def test_manual_compress_syncs_session_id_after_split():

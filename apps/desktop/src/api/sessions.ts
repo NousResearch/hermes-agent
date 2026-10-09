@@ -139,7 +139,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  offset = 0
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -150,7 +151,7 @@ export async function listAllProfileSessions(
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
-      `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
@@ -158,7 +159,7 @@ export async function listAllProfileSessions(
   return {
     ...result,
     sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 
@@ -425,9 +426,17 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+// Full-text search over one profile's sessions. Pass the profile the caller is
+// showing: an unscoped request lands on the primary backend, which searches
+// its launch profile's state.db whatever profile the sidebar is on. `null`
+// asks the primary on purpose; omitted follows the ambient request profile.
+export function searchSessions(query: string, profile?: null | string): Promise<SessionSearchResponse> {
+  const scope = profileScoped(profile)
+  const suffix = scope.profile ? `&profile=${encodeURIComponent(scope.profile)}` : ''
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    ...scope,
+    path: `/api/sessions/search?q=${encodeURIComponent(query)}${suffix}`
   })
 }
 

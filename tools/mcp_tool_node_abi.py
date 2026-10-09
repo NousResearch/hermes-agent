@@ -15,7 +15,7 @@ from typing import Optional
 
 _ABI_MARKERS = ("NODE_MODULE_VERSION", "ERR_DLOPEN_FAILED")
 _MODULE_PATH = re.compile(r"'([^'\n]+?\.node)'|(\S+?\.node):")
-_ABI_VERSIONS = re.compile(r"using\s+NODE_MODULE_VERSION (\d+)\..*?requires\s+NODE_MODULE_VERSION (\d+)", re.S)
+_ABI_VERSIONS = re.compile(r"using\s+NODE_MODULE_VERSION (\d+)\..*?requires\s+NODE_MODULE_VERSION (\d+)", re.DOTALL)
 
 
 class NodeAbiMismatchError(RuntimeError):

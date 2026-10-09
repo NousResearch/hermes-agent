@@ -173,6 +173,29 @@ class TestRuntimeProvider:
             assert result["api_key"] == "aws-sdk"
             assert result["bedrock_openai"] is True, model_id
 
+    def test_bedrock_openai_profile_ids_route_to_runtime_converse(self, monkeypatch):
+        """``us.``/``global.`` OpenAI IDs are bedrock-runtime cross-Region profiles; Mantle rejects
+        them ("Geo/Global inference ID: Not supported" on every OpenAI card). They ride the
+        Converse wire on bedrock-runtime, never the Mantle Responses base URL."""
+        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            for profile_id in (f"us.{model_id}", f"global.{model_id}"):
+                with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                     patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                         "provider": "bedrock", "default": profile_id,
+                     }):
+                    result = resolve_runtime_provider(requested="bedrock")
+
+                assert result["api_mode"] == "bedrock_converse", profile_id
+                assert result["base_url"] == "https://bedrock-runtime.us-east-2.amazonaws.com", profile_id
+                assert not result.get("bedrock_openai"), profile_id
+
     def test_bedrock_openai_models_do_not_fall_back_to_default_context(self):
         """The Mantle OpenAI models have a larger window than the generic
         default; make sure they never fall back to it."""
@@ -529,3 +552,21 @@ class TestAuxiliaryClientBedrockResolution:
         assert kwargs["api_key"] == "aws-sdk"
         assert kwargs["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
         assert "http_client" in kwargs
+
+    @pytest.mark.parametrize("profile_id", ["us.openai.gpt-6.1-sol", "global.openai.gpt-6-astra",
+                                            "us.openai.gpt-5.6-terra"])
+    def test_bedrock_openai_profile_aux_uses_runtime_converse(self, monkeypatch, profile_id):
+        """Auxiliary calls (compression) on a cross-Region OpenAI profile take the same wire as the
+        primary turn: Converse on bedrock-runtime, model ID unchanged, no Mantle client built."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            from agent.auxiliary_client import resolve_provider_client, BedrockAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", profile_id)
+
+        assert model == profile_id
+        assert isinstance(client, BedrockAuxiliaryClient)
+        assert client.base_url == "https://bedrock-runtime.us-east-2.amazonaws.com"
+        mock_openai.assert_not_called()

@@ -36,7 +36,7 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { transcribeAudio } from '@/hermes'
+import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
@@ -206,6 +206,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $busy: computed($state, state => Boolean(state?.busy)),
     $cwd: computed($state, state => state?.cwd ?? ''),
     $fast: computed($state, state => Boolean(state?.fast)),
+    $serviceTier: computed($state, state => state?.serviceTier ?? ''),
     $lastVisibleIsUser: computed($messages, lastVisibleMessageIsUser),
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
@@ -226,17 +227,18 @@ function buildTileView(storedSessionId: string): SessionView {
 // tiles have no pin/delete affordance, and transcription needs no per-tile state.
 const noop = () => undefined
 
-const tileTranscribeAudio = async (audio: Blob) => {
+const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
   // Client-direct first (profile's own STT provider, no gateway audio hop);
   // relay when the provider is not client-callable. Same ladder as the main
-  // composer's transcribeVoiceAudio.
-  const direct = await transcribeAudioClientDirect(audio)
+  // composer's transcribeVoiceAudio. `owner` is the recording's owner — the
+  // tile's (connection, profile), resolved when its mic opened.
+  const direct = await transcribeAudioClientDirect(audio, owner)
 
   if (direct !== null) {
     return direct
   }
 
-  return (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
+  return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner)).transcript
 }
 
 function TileChat({
@@ -406,6 +408,7 @@ function TileChat({
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
           onAttachPastedText={composer.attachPastedText}
+          onBranchInNewChat={actions.branchInNewChat}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}

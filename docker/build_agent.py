@@ -17,6 +17,7 @@ def assemble_image(root: Path) -> None:
         target=current_target(), python=(environment / "bin/python").absolute(),
         site_packages=site, environment=environment, tools=root / "tools",
         pm_runtime=root / "pm-runtime", bin_dir="libexec",
+        features=root / "enabled-features.json",
         resources={name: root / name for name in RESOURCE_ENV},
         frontends={"tui": root / "ui-tui", "web": root / "hermes_cli/web_dist"},
     ), root)

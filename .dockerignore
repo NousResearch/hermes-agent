@@ -37,6 +37,7 @@ node_modules
 # that now depends on the full ui-tui/packages/hermes-ink/ tree being present.
 ui-tui/dist/
 ui-tui/packages/hermes-ink/dist/
+/enabled-features.json
 
 # CI/CD
 .github

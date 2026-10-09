@@ -23,6 +23,7 @@ import {
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { isSessionGone } from '@/store/session-gone-latch'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import {
   profileScopeForSessionOwner,
@@ -322,9 +323,7 @@ export function useSessionTileDelegate({
       resumeTile: async (storedSessionId, options) => {
         // A retained tile can still own its runtime after the primary view drops
         // its reverse lookup. Reconnect invalidates both bindings.
-        const existing =
-          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+        const existing = liveCachedRuntimeId(runtimeIdByStoredSessionIdRef.current, storedSessionId)
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const refreshTranscript = options?.refreshTranscript === true
@@ -548,4 +547,27 @@ export function useSessionTileDelegate({
     sessionStateByRuntimeIdRef,
     updateSessionState
   ])
+}
+
+/** The runtime a tile for `storedSessionId` is already bound to, unless the
+ *  gateway has declared it gone.
+ *
+ *  That verdict is final for a runtime id. markRuntimeGone unbinds the tile so
+ *  it re-resumes, but the wiring cache's reverse entry still names the dead
+ *  id; handing it back to the warm path re-bound it, and a heal is one-shot
+ *  per runtime id, so the tile then sat on the phantom runtime for good:
+ *  frozen transcript, every poll latched off. */
+function liveCachedRuntimeId(runtimeIdByStoredSessionId: Map<string, string>, storedSessionId: string) {
+  const cached = runtimeIdByStoredSessionId.get(storedSessionId)
+  const runtimeId = cached ?? $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+  if (!runtimeId || !isSessionGone(runtimeId)) {
+    return runtimeId
+  }
+
+  if (cached === runtimeId) {
+    runtimeIdByStoredSessionId.delete(storedSessionId)
+  }
+
+  return undefined
 }

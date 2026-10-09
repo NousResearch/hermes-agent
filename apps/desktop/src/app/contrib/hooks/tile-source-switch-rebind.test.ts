@@ -7,6 +7,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { $activeGatewayProfile } from '@/store/profile'
+import { markSessionGone, resetBackgroundPollingGuard, resetRuntimeGoneHealing } from '@/store/runtime-gone'
 import { $connection, setSessions } from '@/store/session'
 import {
   $sessionTiles,
@@ -150,6 +151,8 @@ describe('session tile after a source round-trip', () => {
     $activeGatewayProfile.set('default')
     closeSessionTile(STORED_ID)
     setSessions([])
+    resetRuntimeGoneHealing()
+    resetBackgroundPollingGuard()
     localStorage.clear()
   })
 
@@ -203,6 +206,22 @@ describe('session tile after a source round-trip', () => {
     $activeGatewayProfile.set('default')
 
     const runtimeId = await resumeSwappedInTile()
+
+    expect(runtimeId).toBe('fresh-runtime')
+    expect(transcriptText(sessionStateByRuntimeIdRef.current.get(runtimeId))).toContain(FINAL)
+  })
+
+  it('never re-binds a runtime the gateway declared gone', async () => {
+    openStreamingTile()
+    const { sessionStateByRuntimeIdRef } = mountDelegate()
+
+    // A status poll for the tile's runtime came back 4001 "not in memory".
+    markSessionGone(STALE_RUNTIME)
+    expect($sessionTiles.get().find(tile => tile.storedSessionId === STORED_ID)?.runtimeId).toBeUndefined()
+
+    // The unbound tile re-resumes; the cache's reverse entry must not hand the
+    // dead id straight back.
+    const runtimeId = await sessionTileDelegate()!.resumeTile(STORED_ID)
 
     expect(runtimeId).toBe('fresh-runtime')
     expect(transcriptText(sessionStateByRuntimeIdRef.current.get(runtimeId))).toContain(FINAL)

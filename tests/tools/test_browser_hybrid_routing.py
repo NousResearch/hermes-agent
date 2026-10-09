@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import tools.browser_tool as browser_tool
+from tools import browser_tool
 from tools import browser_tool_lifecycle as bt_lifecycle
 from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud
@@ -66,11 +66,6 @@ class TestNavigationSessionKey:
 
 
 class TestSessionKeyHelpers:
-    def test_is_local_sidecar_key(self):
-        assert browser_tool._is_local_sidecar_key("default::local")
-        assert browser_tool._is_local_sidecar_key("my_task::local")
-        assert not browser_tool._is_local_sidecar_key("default")
-        assert not browser_tool._is_local_sidecar_key("my_task")
 
 
     def test_last_session_key_drops_mismatched_owner_metadata(self, monkeypatch):

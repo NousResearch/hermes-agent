@@ -14,13 +14,8 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from hermes_cli.gitlock import prune_stale_shallow_grafts
-
-SHA_A = "a" * 40
-SHA_B = "b" * 40
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -35,6 +30,35 @@ def _shallow_lines(repo: Path) -> list:
     return [
         line for line in (repo / ".git" / "shallow").read_text().splitlines() if line
     ]
+
+
+def _mk_sparse_shallow_scenario(tmp_path: Path) -> Path:
+    """Depth-1 clone whose origin advances two commits per fetch (#124645).
+
+    Unlike :func:`_mk_shallow_scenario` the dropped graft's parent is never
+    fetched, so the only thing pinning it is the remote-tracking reflog the
+    fetch writes — the shape real installs hit when upstream moves several
+    commits between checks.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "t@example.com")
+    _git(origin, "config", "user.name", "t")
+    for i in range(3):
+        _git(origin, "commit", "--allow-empty", "-q", "-m", f"c{i}")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(clone)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for i in (3, 5):
+        _git(origin, "commit", "--allow-empty", "-q", "-m", f"c{i}")
+        _git(origin, "commit", "--allow-empty", "-q", "-m", f"c{i + 1}")
+        _git(clone, "fetch", "-q", "--depth", "1", "origin", "main")
+    return clone
 
 
 def _mk_shallow_scenario(tmp_path: Path) -> Path:
@@ -92,36 +116,81 @@ def test_prune_is_idempotent_and_noop_without_grafts(tmp_path):
 
 def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
     """`hermes update --check` prunes grafts after its depth-1 fetch and reports the prune."""
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
 
-    fake_root = SimpleNamespace(PROJECT_ROOT=tmp_path)
-    monkeypatch.setattr(update_cmd, "_m", lambda: fake_root)
-    (tmp_path / ".git").mkdir()
+    clone = _mk_shallow_scenario(tmp_path)
+    assert len(_shallow_lines(clone)) == 3
+    head_sha = _git(clone, "rev-parse", "HEAD")
+    previous_tip = _git(clone, "rev-parse", "origin/main")
+    origin = tmp_path / "origin"
+    _git(origin, "commit", "--allow-empty", "-q", "-m", "c5")
+    tip_sha = _git(origin, "rev-parse", "HEAD")
+
+    # The check runs git directly, reading main.PROJECT_ROOT through _m().
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", clone)
     monkeypatch.setattr(
         "hermes_cli.update_contract.evaluate_update_admission", lambda root: None
     )
-    monkeypatch.setattr(update_cmd, "_is_shallow_checkout", lambda git_cmd: True)
-    monkeypatch.setattr(update_cmd, "_tip_shas", lambda git_cmd, branch: (SHA_A, SHA_B))
-
-    def fake_git_run(git_cmd, args, **kwargs):
-        joined = " ".join(args)
-        if "get-url" in joined and "upstream" in joined:
-            return MagicMock(returncode=1, stdout="", stderr="")  # no upstream remote
-        if "fetch" in joined:
-            return MagicMock(returncode=0, stdout="", stderr="")  # depth-1 fetch lands
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(update_cmd, "_git_run", fake_git_run)
-    monkeypatch.setattr(update_cmd, "_base_git_cmd", lambda: ["git"])
-    monkeypatch.setattr("hermes_cli.banner._github_compare_behind", lambda *a, **k: 0)
-    prune_calls = []
+    # Local fixture commits have no GitHub compare result; keep the check offline.
     monkeypatch.setattr(
-        "hermes_cli.gitlock.prune_stale_shallow_grafts",
-        lambda repo: prune_calls.append(repo) or 2,
+        "hermes_cli.source_check._github_compare_behind", lambda *a, **k: None
     )
 
     update_cmd._cmd_update_check("main")
 
     out = capsys.readouterr().out
-    assert prune_calls == [tmp_path]
+    assert _git(clone, "rev-parse", "HEAD") == head_sha
+    assert _git(clone, "rev-parse", "origin/main") == tip_sha != previous_tip
+    assert _git(clone, "rev-parse", "FETCH_HEAD") == tip_sha
+    assert set(_shallow_lines(clone)) == {head_sha, tip_sha}
+    assert _git(clone, "rev-list", "--count", "HEAD") == "1"
+    assert _git(clone, "rev-list", "--count", "origin/main") == "1"
     assert "pruned 2 stale shallow graft(s)" in out
+    assert "Update available (behind origin/main)." in out
+
+
+def test_prune_expires_fetch_reflogs_that_pin_dropped_grafts(tmp_path):
+    """The fetch reflog must not pin a dropped graft forever (#124645).
+
+    The dropped graft's parent was never fetched, so the ``--reflog`` fail-safe
+    walk starts at the reflog's old fetch tips and fails, rolling the prune back
+    on every run — grafts keep accumulating and the next update falls into
+    orphan divergence. Expiring the pinning fetch reflog lets the prune stick.
+    """
+    clone = _mk_sparse_shallow_scenario(tmp_path)
+    assert len(_shallow_lines(clone)) == 3  # HEAD graft + two fetch tips
+
+    head_sha = _git(clone, "rev-parse", "HEAD")
+    tip_sha = _git(clone, "rev-parse", "origin/main")
+    middle_sha = (set(_shallow_lines(clone)) - {head_sha, tip_sha}).pop()
+    assert middle_sha in _git(clone, "reflog", "show", "--format=%H", "origin/main").split()
+
+    removed = prune_stale_shallow_grafts(clone)
+
+    assert removed == 1
+    assert set(_shallow_lines(clone)) == {head_sha, tip_sha}
+    # The fetch reflog no longer pins the dropped graft, while HEAD's own
+    # reflog survives untouched and every walk the fail-safe runs stays healthy.
+    assert middle_sha not in _git(clone, "reflog", "show", "--format=%H", "origin/main").split()
+    assert _git(clone, "reflog", "show", "--format=%H", "HEAD").split()
+    assert _git(clone, "rev-list", "--count", "HEAD") == "1"
+    assert _git(clone, "rev-list", "--count", "origin/main") == "1"
+    assert _git(clone, "rev-list", "--count", "--all", "--reflog") == "2"
+
+
+def test_prune_still_rolls_back_when_user_reflogs_pin_the_graft(tmp_path):
+    """A graft pinned by HEAD's reflog stays: user reflogs are never expired."""
+    clone = _mk_sparse_shallow_scenario(tmp_path)
+    head_sha = _git(clone, "rev-parse", "HEAD")
+    tip_sha = _git(clone, "rev-parse", "origin/main")
+    middle_sha = (set(_shallow_lines(clone)) - {head_sha, tip_sha}).pop()
+    _git(clone, "checkout", "-q", middle_sha)  # a user checkout records it in HEAD's reflog
+    _git(clone, "checkout", "-q", "main")
+    head_reflog = _git(clone, "reflog", "show", "--format=%H", "HEAD").split()
+    assert middle_sha in head_reflog
+
+    removed = prune_stale_shallow_grafts(clone)
+
+    assert removed == 0  # the fail-safe still rolls the prune back
+    assert len(_shallow_lines(clone)) == 3
+    assert _git(clone, "reflog", "show", "--format=%H", "HEAD").split() == head_reflog

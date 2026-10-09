@@ -92,12 +92,17 @@ def _session_mutation_context(request, profile):
 
     native = getattr(request.state, 'native_http_principal', None)
     session = getattr(request.state, 'session', None)
+    token = getattr(request.state, 'token_principal', None)
     if native is not None:
         subject = native['subject']
     elif session is not None:
         from gateway.session_identity import authenticated_subject
         subject = authenticated_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
+    elif token is not None and 'dashboard:admin' in (getattr(token, 'scopes', ()) or ()):
+        # A verified admin-tier dashboard token (e.g. the Telegram Mini App); other tokens never mutate.
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({"user_id": token.principal, "provider": token.provider})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
         from gateway.session_identity import authenticated_subject
         subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})

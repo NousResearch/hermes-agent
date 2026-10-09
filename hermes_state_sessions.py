@@ -15,6 +15,7 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_session_scope import apply_requester_scope
 from hermes_state_session_clauses import _cwd_prefix_clause, _where_sql, _workspace_key_clause
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
@@ -1324,13 +1325,16 @@ class SessionSessionsMixin:
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+        requester_user_id: str | None = None, scope: str | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
         archived must still return. ``local_created_sources`` restricts ``source='local'``
-        rows to those surfaces before LIMIT/OFFSET."""
+        rows to those surfaces before LIMIT/OFFSET. ``scope="own"`` with ``requester_user_id`` limits
+        rows to that user's own Telegram DM sessions (the Mini App's non-admin tier); ``None``/``"admin"``
+        is unfiltered."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
@@ -1338,6 +1342,7 @@ class SessionSessionsMixin:
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
             local_created_sources=local_created_sources,
         )
+        apply_requester_scope(where_clauses, params, scope, requester_user_id, "list_sessions_rich")
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
         # hidden) must still be reachable there, or nothing but direct DB access can bring
@@ -1422,6 +1427,8 @@ class SessionSessionsMixin:
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
             )
+            # The back-fill builds its own WHERE: re-apply the own-DM scope, or a non-admin sees every pin.
+            apply_requester_scope(pinned_clauses, pinned_params, scope, requester_user_id, "list_sessions_rich")
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
             if heads:
@@ -1564,8 +1571,10 @@ class SessionSessionsMixin:
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
         local_created_sources: Sequence[str] | None = None,
+        requester_user_id: str | None = None, scope: str | None = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters (``scope`` included) so a paired "load more"
+        total matches."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
@@ -1575,6 +1584,7 @@ class SessionSessionsMixin:
         if exclude_children:
             from hermes_state_local import exclude_superseded_segments
             exclude_superseded_segments(self, where_clauses, params)
+        apply_requester_scope(where_clauses, params, scope, requester_user_id, "session_count")
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

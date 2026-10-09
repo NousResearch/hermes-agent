@@ -233,6 +233,7 @@ class DispatchThreadMeta(TypedDict, total=False):
     updated_at: str
     message_count: int
     last_snippet: Optional[str]
+    last_error: Optional[str]
 
 
 class DispatchMessageRecord(TypedDict):
@@ -1295,7 +1296,7 @@ def safe_is_dir(path: Path) -> bool:
         return False
 
 
-def safe_read_json(path: Path, retries: int = 4) -> Optional[Dict[str, Any]]:
+def safe_read_json(path: Path, retries: int = 4) -> Optional[dict[str, object]]:
     for attempt in range(retries):
         try:
             if not path.is_file():
@@ -1527,8 +1528,48 @@ def create_dispatch_thread(
         "body": initial_body,
     }
     (msgs_dir / msg_filename).write_text(json.dumps(message, indent=2, ensure_ascii=False), encoding="utf-8")
+    touch_sync_marker(threads_dir, thread_id, now=moment)
 
     return meta
+
+
+def touch_sync_marker(
+    threads_dir: Path,
+    thread_id: str,
+    now: Optional[datetime] = None,
+) -> None:
+    """Touch the root .sync_marker.json file to trigger macOS launchd WatchPaths immediately."""
+    try:
+        marker_file = threads_dir / ".sync_marker.json"
+        moment = now or utcnow()
+        data = {
+            "updated_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "thread_id": thread_id,
+        }
+        safe_write_text(marker_file, json.dumps(data, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def mark_thread_failed(
+    threads_dir: Path,
+    thread_id: str,
+    error_message: str,
+    now: Optional[datetime] = None,
+) -> None:
+    """Mark a thread as failed with an error message to prevent infinite retry loops."""
+    thread_folder = threads_dir / thread_id
+    meta_file = thread_folder / "meta.json"
+    meta = cast(Optional[DispatchThreadMeta], safe_read_json(meta_file))
+    if not meta:
+        return
+    moment = now or utcnow()
+    timestamp_str = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    meta["status"] = "failed"
+    meta["last_error"] = error_message
+    meta["updated_at"] = timestamp_str
+    safe_write_text(meta_file, json.dumps(meta, indent=2, ensure_ascii=False))
+    touch_sync_marker(threads_dir, thread_id, now=moment)
 
 
 def reply_to_thread(
@@ -1571,7 +1612,9 @@ def reply_to_thread(
     meta["status"] = "replied" if sender == "agent" else "pending_agent"
     meta["updated_at"] = timestamp_str
     meta["last_snippet"] = body[:120]
+    meta.pop("last_error", None)
     safe_write_text(meta_file, json.dumps(meta, indent=2, ensure_ascii=False))
+    touch_sync_marker(threads_dir, thread_id, now=moment)
 
     return message
 
@@ -1715,6 +1758,54 @@ def command_new_thread(args: argparse.Namespace, now: datetime) -> int:
 LAUNCH_AGENT_LABEL = "ai.hermes.companion-inbox"
 
 
+def get_dispatch_lock_path() -> Path:
+    lock_dir = Path.home() / ".hermes"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        lock_dir = Path(tempfile.gettempdir())
+    return lock_dir / "companion_dispatch.lock"
+
+
+def acquire_dispatch_lock(lock_file: Path, stale_seconds: int = 180) -> bool:
+    """Acquire local exclusion lock with stale process and age detection."""
+    try:
+        if lock_file.exists():
+            try:
+                mtime = lock_file.stat().st_mtime
+                age = time.time() - mtime
+                pid_str = lock_file.read_text(encoding="utf-8").strip()
+                pid = int(pid_str) if pid_str.isdigit() else None
+                is_alive = False
+                if pid and pid > 0:
+                    try:
+                        os.kill(pid, 0)
+                        is_alive = True
+                    except OSError:
+                        is_alive = False
+                if not is_alive or age > stale_seconds:
+                    lock_file.unlink(missing_ok=True)
+                else:
+                    return False
+            except Exception:
+                lock_file.unlink(missing_ok=True)
+
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+        return True
+    except (FileExistsError, OSError):
+        return False
+
+
+def release_dispatch_lock(lock_file: Path) -> None:
+    try:
+        if lock_file.exists():
+            lock_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def find_hermes_executable() -> Optional[str]:
     """Locate the hermes CLI executable."""
     candidates = [
@@ -1774,7 +1865,7 @@ def install_launch_agent(icloud_dir: Optional[str] = None) -> bool:
         <string>--dispatch-pending</string>
     </array>
     <key>StartInterval</key>
-    <integer>60</integer>{watch_xml}
+    <integer>15</integer>{watch_xml}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -1877,15 +1968,9 @@ def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
         log("WARN", "hermes executable not found, cannot auto-dispatch pending letters")
         return 1
 
-    lock_file = threads_dir / ".dispatch_lock"
-    try:
-        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode("utf-8"))
-        os.close(fd)
-    except FileExistsError:
+    lock_file = get_dispatch_lock_path()
+    if not acquire_dispatch_lock(lock_file):
         return 0
-    except Exception:
-        pass
 
     try:
         dispatched_count = 0
@@ -1942,16 +2027,17 @@ def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
                 else:
                     err = proc.stderr.strip() or f"exit code {proc.returncode}"
                     log("WARN", f"hermes execution failed for thread '{thread_id}': {err}")
+                    mark_thread_failed(threads_dir, thread_id, f"Agent error: {err[:140]}", now=now)
+            except subprocess.TimeoutExpired:
+                log("WARN", f"hermes execution timed out for thread '{thread_id}' after 120s")
+                mark_thread_failed(threads_dir, thread_id, "Hermes execution timed out after 120s", now=now)
             except Exception as exc:
                 log("WARN", f"hermes execution error for thread '{thread_id}': {exc}")
+                mark_thread_failed(threads_dir, thread_id, f"Execution error: {str(exc)[:140]}", now=now)
 
         return 0
     finally:
-        try:
-            if lock_file.exists():
-                lock_file.unlink()
-        except Exception:
-            pass
+        release_dispatch_lock(lock_file)
 
 
 def build_parser() -> argparse.ArgumentParser:

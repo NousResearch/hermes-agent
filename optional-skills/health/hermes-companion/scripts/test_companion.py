@@ -428,6 +428,46 @@ def test_clean_hermes_chat_output() -> None:
     check("cleaned chat output matches", cleaned == expected)
 
 
+def test_error_handling_and_sync_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        threads_dir = tmp_path / "threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+
+        moment = datetime(2026, 10, 9, 14, 0, 0, tzinfo=timezone.utc)
+        thread = companion.create_dispatch_thread(
+            threads_dir,
+            "Test Error",
+            "Initial prompt",
+            target_profile="default",
+            sender="user",
+            now=moment,
+        )
+        tid = thread["thread_id"]
+
+        marker_file = threads_dir / ".sync_marker.json"
+        check("sync marker created on thread create", marker_file.is_file())
+
+        companion.mark_thread_failed(threads_dir, tid, "Hermes timeout 120s", now=moment)
+        meta_after = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("thread marked failed", meta_after is not None and meta_after.get("status") == "failed")
+        check("thread error recorded", meta_after is not None and meta_after.get("last_error") == "Hermes timeout 120s")
+
+        # Now reply to it and ensure error is cleared and status is replied
+        companion.reply_to_thread(threads_dir, tid, "Agent finally replied", sender="agent", now=moment)
+        meta_replied = companion.safe_read_json(threads_dir / tid / "meta.json")
+        check("thread status transitioned to replied", meta_replied is not None and meta_replied.get("status") == "replied")
+        check("last_error cleared", meta_replied is not None and "last_error" not in meta_replied)
+
+        # Test local exclusion lock acquisition and release
+        lock_file = tmp_path / "test.lock"
+        check("acquire lock succeeds", companion.acquire_dispatch_lock(lock_file))
+        check("acquire lock again fails", not companion.acquire_dispatch_lock(lock_file))
+        companion.release_dispatch_lock(lock_file)
+        check("acquire lock after release succeeds", companion.acquire_dispatch_lock(lock_file))
+        companion.release_dispatch_lock(lock_file)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -446,6 +486,7 @@ def main() -> int:
     test_profiles_registration_and_filtering()
     test_discover_installed_hermes_profiles()
     test_clean_hermes_chat_output()
+    test_error_handling_and_sync_marker()
     print("ok")
     return 0
 

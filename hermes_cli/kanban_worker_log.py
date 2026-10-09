@@ -124,7 +124,7 @@ def _kill_proc_group(proc: subprocess.Popen, signum: int) -> None:
     """Signal the child's whole process group, falling back to the child."""
     if hasattr(os, "killpg") and hasattr(os, "getpgid"):
         with contextlib.suppress(ProcessLookupError, OSError):
-            os.killpg(os.getpgid(proc.pid), signum)
+            os.killpg(os.getpgid(proc.pid), signum)  # windows-footgun: ok -- guarded POSIX capability
             return
     with contextlib.suppress(Exception):
         proc.send_signal(signum)
@@ -165,6 +165,12 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
     _lead_process_group()
     try:
         with open_worker_log_file(log_path) as log_f:
+            from tools.kanban_tools import register_current_worker_from_env
+
+            # Recovery must track the group-owning wrapper before its child can self-register.
+            if not register_current_worker_from_env():
+                log_f.write(b"Worker claim was reclaimed before wrapper startup\n")
+                return 1
             try:
                 proc = subprocess.Popen(
                     command,
@@ -181,6 +187,7 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
             try:
                 if proc.stdout is not None:
                     copy_redacted_worker_log_stream(proc.stdout, log_f)
+                # health: allow HX006 -- supervise the worker's lifetime; dispatcher owns runtime limits
                 return int(proc.wait())
             finally:
                 _restore_signal_handlers(previous_handlers)
@@ -189,7 +196,7 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
                 if proc.stdout is not None:
                     with contextlib.suppress(Exception):
                         proc.stdout.close()
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         with contextlib.suppress(Exception):
             sys.stderr.write(f"kanban worker log wrapper failed: {exc}\n")
         return 1

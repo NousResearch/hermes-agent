@@ -23,7 +23,9 @@ def _restore_stdout():
 
 
 @pytest.fixture()
-def server():
+def server(tmp_path):
+    launch_home = tmp_path / "hermes"
+    launch_home.mkdir()
     # The sys.modules mocks only need to cover the *initial* import — once
     # tui_gateway.server is cached, they are inert. Keeping them active for
     # the whole test poisons any module first imported inside a test body:
@@ -40,13 +42,18 @@ def server():
     import tui_gateway.server_requests
     import tui_gateway.transport
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
+        "hermes_constants": MagicMock(
+            get_hermes_home=MagicMock(return_value=str(launch_home)),
+            named_profile_home_is_unavailable=MagicMock(return_value=False),
+            profile_deletion_marker_path=MagicMock(return_value=None),
+        ),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
         "hermes_state": MagicMock(),
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+    setattr(mod, "_hermes_home", launch_home)
 
     # Snapshot the RPC registry: several tests below stub handlers
     # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
@@ -70,8 +77,6 @@ def server():
     mod._live_transports.clear()
 
 
-
-
 @pytest.fixture()
 def capture(server):
     """Redirect server's real stdout to a StringIO and return (server, buf)."""
@@ -86,10 +91,6 @@ def capture(server):
 def test_unknown_method(server):
     resp = server.handle_request({"id": "1", "method": "bogus"})
     assert resp["error"]["code"] == -32601
-
-
-
-
 
 
 @pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
@@ -139,9 +140,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
 
 
-# ── write_json ────────────────────────────────────────────────
-
-
+# ── live-session payload replay ───────────────────────────────
 
 
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
@@ -206,8 +205,6 @@ def test_live_session_payload_replays_open_requests(server):
                                          "params": {"session_id": "runtime-session", "question": "Which?", "choices": ["a", "b"]}}]
     assert payload["open_requests"][0]["params"] is not req.params
     assert "open_requests" not in other
-
-
 
 
 # ── _emit ────────────────────────────────────────────────────────────
@@ -727,11 +724,6 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     assert response["error"]["code"] == 4001
 
 
-# ── Session lookup ───────────────────────────────────────────────────
-
-
-
-
 # ── session.resume payload ────────────────────────────────────────────
 
 
@@ -783,7 +775,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert "error" not in resp
     assert resp["result"]["message_count"] == 3
     assert resp["result"]["messages"] == [
-        {"role": "user", "text": "hello"},
+        {"role": "user", "text": "hello", "user_originated": True},
         {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
@@ -918,7 +910,8 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_a, **_k: None)
 
     session = server._deferred_session_record(
-        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None
+        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None,
+        profile_incarnation=server._capture_profile_incarnation(None),
     )
     session["resume_history_ready"] = threading.Event()
     session["resume_hydrating"] = True
@@ -1769,8 +1762,6 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
-
-
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 
@@ -2006,7 +1997,7 @@ def _stub_session_create_dependencies(server, monkeypatch):
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
-    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_resolve_profile_home", lambda p: (None, None))
     monkeypatch.setattr(server, "_profile_build_scope", _null_scope)
     monkeypatch.setattr(server, "_seed_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_seed_branch_row", lambda *a, **kw: None)
@@ -2115,7 +2106,7 @@ def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
                 {"role": "assistant", "content": "first answer", "timestamp": 2},
             ]
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, **_kw: _Scope(_FakeDB()))
 
     params = {
         "cols": 96,

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
@@ -54,6 +55,9 @@ afterEach(() => {
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
   requestModelMenuToggle.mockReset().mockReturnValue(true)
+  $displayTimestamps.set(true)
+  $touchPointer.set(false)
+  vi.unstubAllGlobals()
 })
 
 function userMessage(): ThreadMessage {
@@ -176,27 +180,113 @@ function LocationProbe() {
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat,
-  onReload
+  onCancel,
+  onRestoreToMessage,
+  onReload,
+  isRunning = false,
+  isDisabled = false
 }: {
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
+  onCancel?: () => void
+  onRestoreToMessage?: (messageId: string) => void
   onReload?: () => Promise<void>
+  isRunning?: boolean
+  isDisabled?: boolean
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [userMessage(), assistant],
-    isRunning: false,
+    isRunning,
+    isDisabled,
     onNew: async () => {},
     ...(onReload ? { onReload } : {})
   })
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} />
+      <Thread onBranchInNewChat={onBranchInNewChat} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     </AssistantRuntimeProvider>
   )
 }
 
+describe('merged hover timestamps and touch actions', () => {
+  it('shows both hover times without Stop or Restore and suppresses them with timeline timestamps', async () => {
+    $displayTimestamps.set(false)
+    const { container } = render(<Harness />)
+    await screen.findByText('done')
+
+    const hoverTimes = Array.from(container.querySelectorAll('time'))
+
+    expect(hoverTimes.map(time => time.dateTime)).toEqual([
+      createdAt.toISOString(),
+      new Date(completedAt * 1000).toISOString()
+    ])
+    expect(container.querySelector('.aui-message-actions-desktop time')).toBeTruthy()
+
+    act(() => $displayTimestamps.set(true))
+    expect(hoverTimes.every(time => !time.isConnected)).toBe(true)
+    expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+  })
+
+  it('mounts the touch More menu only while the pointer is coarse', async () => {
+    render(<Harness />)
+    await screen.findByText('done')
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull()
+
+    act(() => $touchPointer.set(true))
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
+  })
+
+  it.each([true, false])('keeps the touch Stop/Restore action correct while running=%s', async isRunning => {
+    $touchPointer.set(true)
+    $displayTimestamps.set(false)
+    const onCancel = vi.fn()
+    const onRestoreToMessage = vi.fn()
+    render(<Harness isRunning={isRunning} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />)
+
+    const action = await screen.findByRole('button', {
+      name: isRunning ? en.assistant.thread.stop : en.assistant.thread.restoreCheckpoint
+    })
+
+    expect(action.parentElement?.querySelector('time')).toBeNull()
+    fireEvent.click(action)
+
+    if (isRunning) {
+      expect(onCancel).toHaveBeenCalledTimes(1)
+      expect(onRestoreToMessage).not.toHaveBeenCalled()
+    } else {
+      expect(await screen.findByRole('dialog')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: en.assistant.thread.restoreConfirm }))
+      expect(onRestoreToMessage).toHaveBeenCalledWith('user-1', expect.objectContaining({ text: 'question one' }))
+      expect(onCancel).not.toHaveBeenCalled()
+    }
+  })
+})
+
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
+  it('reloads once from either desktop or touch Refresh', async () => {
+    $touchPointer.set(true)
+    const onReload = vi.fn(async () => {})
+    render(<Harness onReload={onReload} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1))
+    onReload.mockClear()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, pointerType: 'touch' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Refresh' }))
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1))
+  })
+
+  it.each([{ isRunning: true }, { isDisabled: true }])('guards both Refresh surfaces with %j', async state => {
+    $touchPointer.set(true)
+    const onReload = vi.fn(async () => {})
+    render(<Harness onReload={onReload} {...state} />)
+    expect((await screen.findByRole('button', { name: 'Refresh' })).hasAttribute('disabled')).toBe(true)
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, pointerType: 'touch' })
+    const refresh = await screen.findByRole('menuitem', { name: 'Refresh' })
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(refresh)
+    expect(onReload).not.toHaveBeenCalled()
+  })
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {
     render(<Harness onBranchInNewChat={() => undefined} />)
 
@@ -212,6 +302,20 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     await screen.findByText('done')
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
+  })
+
+  it('reaches Branch in new chat from the touch More menu', async () => {
+    $touchPointer.set(true)
+    render(<Harness onBranchInNewChat={() => undefined} />)
+
+    await screen.findByText('done')
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+      button: 0,
+      pointerType: 'touch'
+    })
+
+    expect(await screen.findByRole('menuitem', { name: 'Branch in new chat' })).toBeTruthy()
   })
 })
 

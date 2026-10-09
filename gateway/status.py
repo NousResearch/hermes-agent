@@ -26,6 +26,7 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
+from gateway.status_home_evidence import _bare_argv_record_serves_home, _host_gateway_serves_home
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
@@ -727,23 +728,6 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
-def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
-    """Does the ONE host gateway — PID ``pid`` — serve ``profile_home``'s profile?
-
-    Argv cannot answer this: the host singleton runs ONE home's (usually bare/default) command line
-    while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
-    secondary and the profile reads as "not running" while its messages are being served. The live
-    served set is the only proof; the argv rule stays as the fallback when no record exists.
-    """
-    try:
-        from gateway.host_attach import host_gateway, profile_name_for_home
-
-        owner = host_gateway()
-    except Exception:
-        return False
-    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
-
-
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
@@ -758,7 +742,9 @@ def _record_matches_live_gateway_pid(
         return False
     if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
         return True
-    return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
+    if expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home):
+        return True
+    return _bare_argv_record_serves_home(record, pid, live_cmdline, expected_home)
 
 
 def _record_argv() -> list[str]:

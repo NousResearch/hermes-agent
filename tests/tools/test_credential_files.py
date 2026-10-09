@@ -108,6 +108,7 @@ class TestSkillsDirectoryMount:
         # The mount path should be a sanitized copy, not the original
         safe_path = Path(mount["host_path"])
         assert safe_path != skills_dir
+        assert mount["reuse_source"] == str(skills_dir)
         # Legitimate file should be present
         assert (safe_path / "legit.md").exists()
         assert (safe_path / "legit.md").read_text() == "# real skill"
@@ -154,6 +155,7 @@ class TestSkillsDirectoryMount:
             mounts = get_skills_directory_mount()
 
         assert mounts[0]["host_path"] == str(skills_dir)
+        assert "reuse_source" not in mounts[0]
 
 
 class TestIterSkillsFiles:

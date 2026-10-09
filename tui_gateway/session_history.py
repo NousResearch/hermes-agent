@@ -282,6 +282,18 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
+def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
+    """Index an assistant row's calls by id so the later tool rows can show their name and args."""
+    for tc in tool_calls:
+        fn, tc_id = tc.get("function", {}), tc.get("id", "")
+        if tc_id and fn.get("name"):
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tool_call_args[tc_id] = (fn["name"], args)
+
+
 def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
@@ -309,14 +321,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             from agent.first_task_prompt import visible_text
             content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
         if role == "assistant" and m.get("tool_calls"):
-            for tc in m["tool_calls"]:
-                fn, tc_id = tc.get("function", {}), tc.get("id", "")
-                if tc_id and fn.get("name"):
-                    try:
-                        args = json.loads(fn.get("arguments", "{}"))
-                    except (json.JSONDecodeError, TypeError):
-                        args = {}
-                    tool_call_args[tc_id] = (fn["name"], args)
+            _remember_tool_call_args(m["tool_calls"], tool_call_args)
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message
@@ -340,6 +345,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
+        if "user_originated" in m:
+            msg["user_originated"] = m["user_originated"]
         # Authoring time (Unix seconds) for display.timestamps; display-only.
         # Display-only: never fed back into model context. See #41531.
         ts = m.get("timestamp")
@@ -390,12 +397,17 @@ def _start_inflight_turn(
     display_metadata: dict | None = None,
 ) -> None:
     now = time.time()
+    display = project_compaction_message_for_display({
+        "role": "user", "content": text, "display_kind": display_kind,
+        "display_metadata": display_metadata,
+    })
     turn = {
         "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
         "user": _inflight_text(text),
+        "user_originated": display is not None and display["user_originated"],
+        **({"display_kind": display_kind} if display_kind else {}),
+        **({"display_kind": "hidden"} if display is None else {}),
     }
-    if display_kind:
-        turn["display_kind"] = display_kind
     if isinstance(display_metadata, dict):
         turn["display_metadata"] = dict(display_metadata)
     session["inflight_turn"] = turn

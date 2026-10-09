@@ -14,6 +14,8 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Callable, Optional
 
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES as _SERVE_KINDS
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +99,6 @@ _MECHANISM_DESCRIPTIONS = {
     "desktop-ssh": "the remote Desktop that spawned it over SSH respawns it when it reconnects",
 }
 
-_SERVE_KINDS = ("serve", "dashboard")
 # Serve backends a Desktop client owns and recycles: this app's own pool child (``desktop``) or one
 # another machine's Desktop spawned here over SSH (``desktop-ssh``). The updater never restarts
 # either; stopping one out from under its client only makes the client respawn it.

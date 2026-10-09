@@ -16,6 +16,7 @@ from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
 from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_server_mcp import _normalize_mcp_server_create
+from hermes_constants import named_profile_is_deleted
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -177,6 +178,8 @@ def _fallback_profile_dicts(profiles_mod) -> list[dict[str, Any]]:
         for entry in entries:
             home = Path(entry.path)
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+                continue
+            if named_profile_is_deleted(home):
                 continue
             profiles.append(_fallback_profile_entry(
                 profiles_mod, entry.name, home, is_default=False,

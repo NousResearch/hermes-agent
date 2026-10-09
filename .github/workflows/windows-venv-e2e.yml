@@ -81,6 +81,12 @@ jobs:
           set -uo pipefail
           bash scripts/run_tests.sh tests/tools/test_process_registry_windows_live.py
 
+      - name: Run profile-deletion holder census live E2E (#93508)
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/run_tests.sh tests/hermes_cli/test_profile_holder_census_windows_live.py
+
       - name: Turn Windows long paths off for later steps (#130242)
         # The runner image turns LongPathsEnabled on; 0 is the Windows default
         # most users have. A process reads the value when it starts, so only

@@ -107,13 +107,17 @@ def test_late_ack_handlers_are_bounded_by_ttl_and_cap(monkeypatch):
     assert set(sup._late_control_handlers) == {"fresh"}
 
 
-def test_host_crash_fails_outstanding_late_ack_handlers():
+def test_host_crash_fails_outstanding_late_ack_handlers(monkeypatch):
     sup, sent = _supervisor()
+    child = types.SimpleNamespace(wait=lambda: 1, poll=lambda: 1)
+    sup._proc = child
+    monkeypatch.setattr(sup, "_remove_registry", lambda: None)
+    monkeypatch.setattr(sup, "_maybe_respawn_after_crash", lambda: None)
     fired: list = []
     with pytest.raises(queue.Empty):
         sup.control("sid", route_name="session.compress", wait=True, timeout=0.01,
                     on_late_ack=fired.append)
-    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    sup._wait_for_exit(child)
     assert len(fired) == 1
     assert fired[0]["type"] == "control.error"
     assert fired[0]["request_id"] == sent[0]["request_id"]

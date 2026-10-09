@@ -2,13 +2,12 @@
 
 import type { SetupChooseKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { Puzzle } from 'lucide-react'
 import { type ComponentType, type FormEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { LayoutDashboard, MessageQuestion, Moon, Palette, Plug } from '@/lib/icons'
+import { LayoutDashboard, MessageQuestion, Moon, Palette, Plug, Puzzle } from '@/lib/icons'
 import {
   $setupChooseStages,
   type ClarifyQuestion,

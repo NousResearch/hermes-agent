@@ -51,11 +51,14 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
             return None
         # Clustered short options (``-uc``, ``-IsB``). An operand-taking letter consumes the rest of
         # the cluster as its attached value, or the following token when the cluster ends there --
-        # so ``-Xc`` is ``-X c``, NOT an inline-source ``-c``.
+        # so ``-Xc`` is ``-X c``, NOT an inline-source ``-c``. ``-m`` ends the option block with the
+        # module name, so the ``c`` in ``-mhermes_cli.main`` is not an inline-source flag either.
         cluster = token[1:]
         for position, letter in enumerate(cluster):
             if letter == "c":
                 return index
+            if letter == "m":
+                return None
             if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                 index += 1 if cluster[position + 1 :] else 2
                 break

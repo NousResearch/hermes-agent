@@ -209,7 +209,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     import hermes_cli.plugins
     import hermes_cli.web_server
 
-    # cmd_dashboard(headless_backend=True) exports HERMES_SERVE_HEADLESS=1 into
+    # cmd_dashboard(ui_surface="serve") exports HERMES_SERVE_HEADLESS=1 into
     # this process's environment (main.py serve path). Touch the key through
     # monkeypatch FIRST so teardown restores the pre-test state — otherwise the
     # leaked flag flips later web-server tests (mount_spa) into the headless
@@ -240,7 +240,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     args = SimpleNamespace(
         status=False,
         stop=False,
-        headless_backend=True,
+        ui_surface="serve",
         ssh_owner_nonce="0123456789abcdef",
         ssh_session_token_file=str(token_dir / "0123456789abcdef.token"),
         host="127.0.0.1",
@@ -304,7 +304,7 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
     args = SimpleNamespace(
         status=False,
         stop=False,
-        headless_backend=True,
+        ui_surface="serve",
         ssh_owner_nonce=None,
         ssh_session_token_file=None,
         host="127.0.0.1",
@@ -343,7 +343,7 @@ def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_
     args = SimpleNamespace(
         status=lifecycle_flag == "status",
         stop=lifecycle_flag == "stop",
-        headless_backend=False,
+        ui_surface="dashboard",
         ssh_owner_nonce=None,
         ssh_session_token_file=None,
         host="127.0.0.1",

@@ -19,11 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import (
-    mark_named_profile_deleted,
-    named_profile_home,
-    set_hermes_home_override,
-)
+from hermes_cli.profile_lifecycle import mark_profile_deleting
+from hermes_constants import named_profile_home, set_hermes_home_override
 from utils import atomic_json_write, atomic_write_text
 
 
@@ -32,7 +29,7 @@ def _tombstoned_profile(tmp_path: Path) -> Path:
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
     profile = tmp_path / "profiles" / "p1"
     profile.mkdir(parents=True)
-    mark_named_profile_deleted(profile)
+    mark_profile_deleting(profile)
     import shutil
 
     shutil.rmtree(profile)
@@ -113,6 +110,31 @@ class TestAtomicWritersRefuseDeletedProfileHome:
             FileNotFoundError, match="Named profile home does not exist"
         ):
             atomic_roundtrip_yaml_update(profile / "config.yaml", "model", "glm-5.3")
+        assert not profile.exists()
+
+
+class TestConcurrentDeleteDuringWrite:
+    def test_writer_does_not_rebuild_home_deleted_after_its_liveness_check(
+        self, tmp_path, monkeypatch
+    ):
+        import shutil
+
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+        profile = tmp_path / "profiles" / "p1"
+        profile.mkdir(parents=True)
+        real_mkdir = Path.mkdir
+
+        def delete_then_mkdir(self, *args, **kwargs):
+            monkeypatch.setattr(Path, "mkdir", real_mkdir)
+            mark_profile_deleting(profile)
+            shutil.rmtree(profile)
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", delete_then_mkdir)
+        with pytest.raises(FileNotFoundError):
+            atomic_json_write(profile / "cache" / "reasoning_caps.json", {"m": {}})
+
+        assert Path.mkdir is real_mkdir, "the delete must land inside the writer"
         assert not profile.exists()
 
 

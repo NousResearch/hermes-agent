@@ -55,7 +55,8 @@ import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
   isImagePath,
-  partitionDroppedFiles
+  partitionDroppedFiles,
+  stageDroppedFilePath
 } from '@/app/chat/hooks/use-composer-actions'
 import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
@@ -468,16 +469,17 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       const refs: InlineRefInput[] = []
 
       for (const candidate of osDrops) {
-        const path = candidate.path || ''
-
-        if (!path) {
-          continue
-        }
-
-        const kind: ComposerAttachment['kind'] =
-          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
-
         try {
+          // A rejected stage carries the server's or a proxy's reason (an nginx 413).
+          const path = await stageDroppedFilePath(candidate)
+
+          if (!path) {
+            continue
+          }
+
+          const kind: ComposerAttachment['kind'] =
+            candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
             { backendCwd: cwd, remote, requestGateway, sessionId, terminalBackend: $terminalBackend.get() }

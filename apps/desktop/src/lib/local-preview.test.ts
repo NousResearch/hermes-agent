@@ -13,9 +13,11 @@ import {
   localPreviewTarget,
   normalizeOrLocalPreviewTarget,
   openPreviewTargetInBrowser,
+  pathToFileUrl,
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+import { previewArtifactKey } from './preview-targets'
 
 describe('isLoopbackPreviewUrl', () => {
   it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
@@ -133,6 +135,17 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report%20%231%3F.html')
   })
 
+  it('passes browser blob staging URLs through unchanged', async () => {
+    const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
+    const saveImageBuffer = vi.fn(async () => 'blob:http://127.0.0.1:9119/preview')
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser, saveImageBuffer } as never
+
+    await openPreviewTargetInBrowser({ ...remoteTarget, dataUrl })
+
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('blob:http://127.0.0.1:9119/preview')
+  })
+
   it('serializes UNC staging paths as file URLs', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     const saveImageBuffer = vi.fn(async () => '\\\\server\\share\\report #1.html')
@@ -198,6 +211,63 @@ describe('remote HTML previews', () => {
       openPreviewTargetInBrowser({ ...remoteTarget, renderMode: 'source', transient: true })
     ).rejects.toThrow('Remote HTML preview could not be loaded')
     expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+})
+
+describe('preview path resolution', () => {
+  // Drive and UNC URLs read back as native Windows paths, so a UNC target
+  // keeps its host when re-serialized instead of becoming `file:////server/...`.
+  it.each([
+    'C:\\work tree\\résumé #1.py',
+    '\\\\server\\share\\source.py',
+    '/srv/source.py',
+    '/srv/name\\with%20spaces.py',
+    '//srv/share/source.py'
+  ])('resolves the file URL of %s back to the same filesystem target', path => {
+    const target = localPreviewTarget(pathToFileUrl(path), '/unrelated/cwd')
+
+    expect(target?.path).toBe(path)
+    expect(target?.url).toBe(pathToFileUrl(path))
+  })
+
+  it.each([
+    ['file:///C:/work%20tree/source.py', 'C:\\work tree\\source.py', 'file:///C%3A/work%20tree/source.py'],
+    ['file://server/share/source.py', '\\\\server\\share\\source.py', 'file://server/share/source.py']
+  ])('reads %s as the Windows path %s', (url, path, fileUrl) => {
+    expect(localPreviewTarget(url)).toMatchObject({ label: 'source.py', path, url: fileUrl })
+  })
+
+  // Decoding `..%2f` would add a segment the URL parser never normalized. Such
+  // a URL keeps its text undecoded, as an unparseable one does, and the preview
+  // artifact key leaves it raw too.
+  it.each(['file:///srv/project/..%2f..%2fetc/passwd', 'file:///C:/work/..%5c..%5cWindows/win.ini'])(
+    'does not decode the encoded separators in %s into path segments',
+    url => {
+      expect(localPreviewTarget(url, '/unrelated/cwd')?.path).toBe(url.slice('file://'.length))
+      expect(previewArtifactKey(url, '/unrelated/cwd')).toBe(url)
+    }
+  )
+
+  it('keeps absolute filesystem targets independent of the working directory', async () => {
+    window.hermesDesktop = { normalizePreviewTarget: vi.fn(async () => null) } as never
+    const cwd = 'C:\\work tree'
+
+    const absolutePaths = [
+      'C:\\work tree\\source.py',
+      'D:/other project/source.py',
+      '\\\\server\\share\\source.py',
+      '/srv/source.py',
+      '//srv/share/source.py'
+    ]
+
+    for (const path of absolutePaths) {
+      await expect(normalizeOrLocalPreviewTarget(path, cwd)).resolves.toMatchObject({ path })
+    }
+
+    // Relative targets join through the separator-normalizing resolver.
+    await expect(normalizeOrLocalPreviewTarget('source.py', cwd)).resolves.toMatchObject({
+      path: 'C:/work tree/source.py'
+    })
   })
 })
 

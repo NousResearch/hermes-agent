@@ -77,11 +77,11 @@ const remoteGit: GitBridge = {
       (await gitGet<{ diff: string }>('review/diff', { base: baseRef, file: filePath, path: repoPath, scope, staged }))
         .diff,
 
-    stage: (repoPath, filePath) => gitPost('review/stage', { file: filePath ?? null, path: repoPath }),
+    stage: (repoPath, filePath) => gitPost('review/stage', { file: filePath || null, path: repoPath }),
 
-    unstage: (repoPath, filePath) => gitPost('review/unstage', { file: filePath ?? null, path: repoPath }),
+    unstage: (repoPath, filePath) => gitPost('review/unstage', { file: filePath || null, path: repoPath }),
 
-    revert: (repoPath, filePath) => gitPost('review/revert', { file: filePath ?? null, path: repoPath }),
+    revert: (repoPath, filePath) => gitPost('review/revert', { file: filePath || null, path: repoPath }),
 
     revParse: async (repoPath, ref) =>
       (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,

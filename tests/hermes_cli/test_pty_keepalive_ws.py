@@ -56,6 +56,9 @@ def pty_keepalive_harness(monkeypatch):
         return (["x", resume or "fresh"], "/tmp", env)
 
     monkeypatch.setattr(_web_server_chat, "_resolve_chat_argv_async", fake_argv)
+    # TestClient without ``with`` skips the lifespan, which reopens the registry
+    # on startup; a test that ran close_all() must not shut it for the next one.
+    monkeypatch.setattr(_web_server_chat.PTY_REGISTRY, "_closed", False)
 
     try:
         yield spawned

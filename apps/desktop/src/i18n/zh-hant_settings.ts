@@ -865,6 +865,9 @@ export const zhHantSettings = {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
+      webappHostTitle: 'Hermes 主機',
+      webappHostDesc:
+        'Webapp 一律使用提供它的 Hermes 主機。如需切換閘道、登入 Hermes Cloud 或管理已儲存的連線，請使用 Hermes Desktop 應用程式。',
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:

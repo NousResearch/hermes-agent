@@ -562,9 +562,9 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Home path -> identity (``config_home._hermes_home_identity``) of its last successful skeleton pass.
+# A raised managed-mode/missing-profile error records nothing, so later loads keep re-checking.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
@@ -574,17 +574,8 @@ def ensure_hermes_home():
     """Ensure the ~/.hermes directory skeleton exists with secure permissions.
     Memoized per home path: this runs on EVERY ``load_config()`` and the ~14 mkdir/chmod syscalls
     made repeated loads the dominant cost of hot read paths."""
-    home = get_hermes_home()
-    key = str(home)
-
-    # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
-    # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
-        return
-    from hermes_cli.config_home import initialize_home
-    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
+    from hermes_cli.config_home import ensure_home
+    ensure_home(get_hermes_home(), _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
@@ -2318,6 +2309,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
+                # YAML freshness cannot prove the named home's generation is live.
+                # Keep the lifecycle check without waiting on the config writer lock.
+                ensure_hermes_home()
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the

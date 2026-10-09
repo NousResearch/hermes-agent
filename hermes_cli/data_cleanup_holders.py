@@ -52,14 +52,14 @@ def _drain_manual_gateway(home: Path) -> None:
 
 def _refuse_backend_writers(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.process_identity import LEDGER_FILENAME, _pid_alive_matches, _read_ledger
+    from hermes_cli.process_identity import LEDGER_FILENAME, WEB_SERVER_PURPOSES, _pid_alive_matches, _read_ledger
 
     root = get_default_hermes_root(home=home).resolve()
     rows = _read_ledger(root / LEDGER_FILENAME)
     if rows is None:
         raise RuntimeError(f"cannot read backend ownership: {root / LEDGER_FILENAME}")
     for row in rows:
-        if row.get("purpose") not in {"serve", "dashboard"}:
+        if row.get("purpose") not in WEB_SERVER_PURPOSES:
             continue
         # The recorded profile is the initial UI selection, not the backend's
         # write scope: it can serve any profile under this machine root.
@@ -67,7 +67,7 @@ def _refuse_backend_writers(home: Path) -> None:
         if type(pid) is not int or pid <= 0:
             raise RuntimeError("backend ownership contains an invalid PID")
         if _pid_alive_matches(pid, row.get("create_time")) is not False:
-            raise RuntimeError(f"backend PID {pid} still owns {home}; close its desktop/dashboard before retrying")
+            raise RuntimeError(f"backend PID {pid} still owns {home}; close its desktop/dashboard/webapp before retrying")
 
 
 def _refuse_cron_writers(home: Path) -> None:

@@ -87,4 +87,19 @@ describe('floating composer focus-follow vs transcript selection', () => {
 
     expect(document.activeElement).toBe(editor)
   })
+
+  it.each(['touch', 'pen'])('keeps %s transcript gestures from focusing the composer', pointerType => {
+    const { button, editor } = mount()
+    unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
+
+    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType, clientX: 12, clientY: 20 }))
+    button.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType, buttons: 0, clientX: 13, clientY: 21 }))
+    button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType }))
+    expect(document.activeElement).not.toBe(editor)
+
+    // Native focus from an intentional input tap must still be accepted.
+    editor.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType }))
+    editor.focus()
+    expect(document.activeElement).toBe(editor)
+  })
 })

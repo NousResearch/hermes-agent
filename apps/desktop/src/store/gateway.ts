@@ -20,12 +20,8 @@ import {
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
-import {
-  isTimeoutError,
-  RECONNECT_ATTEMPT_TIMEOUT_MS,
-  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-  withTimeout
-} from '@/lib/with-timeout'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { isMissingConnectionError, isMissingProfileError, isStalledDialError } from '@/store/gateway-dial-errors'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -182,6 +178,8 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /** Explicit teardown is separate from parking, which also clears wantOpen. */
+  disposed: boolean
   /**
    * Main retired this scope's pooled backend for a foreground open elsewhere
    * (electron/pool-retire.ts). A parked-by-stall entry re-arms on the
@@ -906,16 +904,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 // ensureActiveGatewayOpen) re-arms it with a fresh budget.
 const SECONDARY_STALLED_DIAL_BUDGET = 3
 
-function isStalledDialError(error: unknown): boolean {
-  if (isTimeoutError(error)) {
-    return true
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('timed out while waiting for a free slot')
-}
-
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error
 
@@ -1068,25 +1056,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   }
 }
 
-// Electron's getConnectionFor rejects with `No connection with id "…"` when
-// the registry entry is gone. That is a permanent condition for the scoped
-// socket, unlike transient transport errors.
-function isMissingConnectionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('No connection with id')
-}
-
-// Electron's spawn guard (assertLocalProfileCanStart) rejects with these when
-// the profile's directory is gone or its DELETE is still in flight. For a
-// renderer socket that condition is permanent: the backend it reconnects to
-// can never come back, and every retry hammers the guard (#88769).
-function isMissingProfileError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('no longer exists') || message.includes('is being deleted')
-}
-
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
   const gateway = new HermesGateway()
   const scope = registryBackendScopeKey(connectionId, profile)
@@ -1114,6 +1083,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
+    disposed: false,
     retiredByPool: false,
     activationLeaseUntil: 0
   }
@@ -2334,10 +2304,11 @@ export function parkSecondariesForRetiredBackend(poolKey: string): string[] {
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the
 // socket. Caller handles removal from the map.
 function disposeSecondary(entry: Secondary): void {
-  if (!entry.wantOpen) {
+  if (entry.disposed) {
     return
   }
 
+  entry.disposed = true
   entry.wantOpen = false
   entry.pendingConnectionRedial = false
   clearTimer(entry)
@@ -2346,8 +2317,8 @@ function disposeSecondary(entry: Secondary): void {
   entry.offRequest()
   entry.offState()
   entry.gateway.close()
-  // Release can re-enter disposal at refcount zero. wantOpen is already false,
-  // and listeners are detached, so explicit teardown never rearms reconnect.
+  // Release can re-enter disposal at refcount zero. The disposal guard is already
+  // set and listeners are detached, so teardown closes once and never rearms reconnect.
   releaseTurnLeasesForScope(entry.scope)
 }
 

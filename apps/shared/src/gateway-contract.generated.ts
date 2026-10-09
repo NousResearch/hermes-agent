@@ -2769,6 +2769,14 @@ export interface FileAttachParams {
   path?: string | null
   data_url?: string | null
   name?: string | null
+  staged_upload?: StagedFileUpload | null
+}
+/** Source identity returned by the browser upload route, checked against the live profile. */
+export interface StagedFileUpload {
+  install_id: string
+  path: string
+  profile_home: string
+  profile_incarnation?: string | null
 }
 export interface FileAttachResult {
   attached: boolean
@@ -3045,6 +3053,7 @@ export interface TranscriptMessage {
   row_id?: number | null
   display_kind?: string | null
   display_metadata?: unknown | null
+  user_originated?: boolean | null
   name?: string | null
   context?: string | null
   args?: Record<string, unknown> | null
@@ -3119,6 +3128,7 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  user_originated?: boolean | null
   display_kind?: string | null
   display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
@@ -4635,6 +4645,21 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+/** ``tui_gateway/change_watcher.py::_skin_changed_payload`` — the resolved skin plus the profile whose config it came from. The event reaches every transport of a process that may serve several profiles, so a client ignores a change tagged for another. Older backends send no ``profile``. */
+export interface SkinChangedPayload {
+  name?: string
+  description?: string
+  colors?: Record<string, string>
+  light_colors?: Record<string, string>
+  dark_colors?: Record<string, string>
+  branding?: Record<string, string>
+  banner_logo?: string
+  banner_hero?: string
+  tool_prefix?: string
+  help_header?: string
+  profile?: string
+  [key: string]: unknown
+}
 /** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
 export interface SetupReadyPayload {
   provider_configured: boolean
@@ -5935,7 +5960,7 @@ export interface BackendGatewayEventMap {
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
-  'skin.changed': SkinPayload
+  'skin.changed': SkinChangedPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
   'status.update': StatusUpdatePayload
   /** A child finished (status + observability rollup). */

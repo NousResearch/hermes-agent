@@ -94,6 +94,9 @@ INTERPRETER_OPTION_ACCEPT = [
     "python -q -m hermes_cli.main gateway run",
     "python -I -S -B -X utf8 -m hermes_cli.main gateway run",
     "python --check-hash-based-pycs always -m hermes_cli.main gateway run",
+    # Attached ``-m``: the ``c`` in ``hermes_cli`` belongs to the module name, not a ``-c`` flag.
+    "python -mhermes_cli.main gateway run",
+    "python -u -mhermes_cli.main gateway run",
 ]
 
 

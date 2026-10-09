@@ -496,7 +496,7 @@ Returns the 20 most recent sessions with metadata (model, token counts, timestam
 
 ### GET /api/config
 
-Returns the current `config.yaml` contents as JSON.
+Returns the current `config.yaml` contents as JSON. With `?with_revision=true` the body is `{"config": {...}, "revision": N}` instead, where `revision` orders saves of that profile's config (it only grows, including across processes and restarts); clients use it to tell which of two racing answers is newer.
 
 ### GET /api/config/defaults
 
@@ -508,7 +508,7 @@ Returns a schema describing every config field — type, description, category, 
 
 ### PUT /api/config
 
-Saves a new configuration. Body: `{"config": {...}}`.
+Saves a new configuration. Body: `{"config": {...}}`. Returns `{"ok": true, "revision": N}`, the revision a following `GET /api/config?with_revision=true` reports for this save.
 
 ### GET /api/env
 
@@ -983,6 +983,16 @@ browser-facing hostname while forwarding to a dashboard bound to
 `127.0.0.1`. Wildcards and suffix matches are not allowed, so an attacker host
 such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
 guard.
+
+Cookie-authenticated writes (`POST`, `PUT`, `PATCH`, `DELETE`) must come from
+the dashboard's own origin. Current browsers prove that with the
+`Sec-Fetch-Site: same-origin` header, which works behind any proxy. For a
+browser that does not send it, the dashboard compares `Origin` with
+`public_url` (or, when unset, the scheme and Host it received), so set
+`public_url` when the proxy terminates TLS or rewrites `Host`. Hermes
+Desktop's own requests carry no `Origin` and either `Sec-Fetch-Site: none` or,
+over plain HTTP, no `Sec-Fetch-Site` at all; that shape passes after the same
+Host check, because a web page's writes always carry `Origin`.
 
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider

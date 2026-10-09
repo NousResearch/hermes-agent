@@ -83,7 +83,10 @@ def test_close_while_first_prompt_waits_for_build_leaves_no_lease(turn_env):
     assert submitted["result"]["status"] == "streaming", submitted
     assert _registry_session_ids() == ["closing-session-key"]
 
-    assert _rpc("session.close")["result"]["closed"] is True
+    # The record is detached immediately, but a turn still awaiting its build
+    # exceeds the zero-second grace and truthfully reports incomplete settlement.
+    assert _rpc("session.close")["result"]["closed"] is False
+    assert SID not in server._sessions
     assert _registry_session_ids() == []
 
     session["agent"] = _built_agent(turns_run)

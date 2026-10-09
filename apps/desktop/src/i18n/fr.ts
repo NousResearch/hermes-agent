@@ -3,10 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
+import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
@@ -1765,8 +1767,7 @@ export const frOverrides = {
     },
     gateway: {
       loading: 'Chargement des paramètres du gateway...',
-      unavailableTitle: 'Paramètres du gateway indisponibles',
-      unavailableDesc: "Le pont IPC du desktop n'expose pas les paramètres du gateway.",
+      ...frGatewayHost,
       title: 'Connexion au gateway',
       envOverride: "remplacement par variable d'environnement",
       intro:
@@ -4884,61 +4885,7 @@ export const frOverrides = {
       sentTitle: 'Envoyé à la conversation',
       sentMessage: count => `Ajout au compositeur : ${count} message${count === 1 ? '' : 's'} de console`
     },
-    web: {
-      appFailedToBoot: "Échec du démarrage de l'application d'aperçu",
-      serverNotFound: 'Serveur non trouvé',
-      remoteLoopback:
-        "Cette adresse pointe vers la machine qui exécute votre agent, pas vers celle-ci. Le panneau du navigateur charge les pages localement ; un serveur de développement distant nécessite donc une redirection de port ou un nom d'hôte accessible.",
-      failedToLoad: "Échec du chargement de l'aperçu",
-      tryAgain: 'Réessayer',
-      restarting: 'Hermes redémarre...',
-      askRestart: 'Demander à Hermes de redémarrer le serveur',
-      lookingRestart: taskId => `Hermes recherche un serveur d'aperçu à redémarrer (${taskId})`,
-      restartingTitle: "Redémarrage du serveur d'aperçu",
-      restartingMessage: "Hermes travaille en arrière-plan. Surveillez la console d'aperçu pour suivre la progression.",
-      startRestartFailed: message => `Impossible de démarrer le redémarrage du serveur : ${message}`,
-      restartFailed: 'Échec du redémarrage du serveur',
-      hideConsole: "Masquer la console d'aperçu",
-      showConsole: "Afficher la console d'aperçu",
-      hideDevTools: "Masquer les outils de développement d'aperçu",
-      openDevTools: "Ouvrir les outils de développement d'aperçu",
-      goBack: 'Retour',
-      goForward: 'Suivant',
-      reload: 'Recharger la page',
-      address: 'Adresse',
-      addressPlaceholder: 'Saisir une adresse',
-      blankPageBody: "Saisissez une adresse ci-dessus pour naviguer, ou demandez à Hermes d'ouvrir une page.",
-      finishedRestarting: message =>
-        `Hermes a terminé le redémarrage du serveur d'aperçu${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Échec du redémarrage du serveur : ${message}`,
-      unknownError: 'erreur inconnue',
-      restartedTitle: "Serveur d'aperçu redémarré",
-      reloadingNow: "Rechargement de l'aperçu maintenant.",
-      restartFailedTitle: "Échec du redémarrage de l'aperçu",
-      restartFailedMessage: "Hermes n'a pas pu redémarrer le serveur.",
-      stillWorking:
-        "Hermes travaille toujours, mais aucun résultat de redémarrage n'est arrivé. La commande du serveur peut être en cours d'exécution au premier plan.",
-      workspaceReloading: "Espace de travail modifié, rechargement de l'aperçu",
-      fileChanged: url => `Fichier modifié, rechargement de l'aperçu : ${url}`,
-      filesChanged: (count, url) => `${count} modifications de fichier, rechargement de l'aperçu : ${url}`,
-      watchFailed: message => `Impossible de surveiller le fichier d'aperçu : ${message}`,
-      moduleMimeDescription:
-        "Les scripts de module sont servis avec le mauvais type MIME. Cela signifie généralement qu'un serveur de fichiers statiques sert une application Vite/React au lieu du serveur de développement du projet.",
-      loadFailedConsole: (code, message) => `Échec du chargement${code ? ` (${code})` : ''} : ${message}`,
-      unreachableDescription: "La page d'aperçu n'a pas pu être atteinte.",
-      openTarget: url => `Ouvrir ${url}`,
-      fallbackTitle: 'Aperçu',
-      annotate: 'Annoter',
-      annotateOn: "Arrêter l'annotation",
-      annotateNeedPage: "Ouvrez d'abord une page dans le navigateur intégré.",
-      annotateFailed: "Impossible de démarrer le mode d'annotation",
-      commenting: 'Ajout de commentaires',
-      addComments: count => (count === 1 ? 'Ajouter 1 commentaire' : `Ajouter ${count} commentaires`),
-      commentPlaceholder: 'Ajouter un commentaire...',
-      commentTitle: n => `Commentaire ${n}`,
-      saveComment: 'Enregistrer',
-      cancelComment: 'Annuler le commentaire'
-    }
+    web: frPreviewWeb
   },
   interfaceMode: {
     title: 'Mode d’interface',

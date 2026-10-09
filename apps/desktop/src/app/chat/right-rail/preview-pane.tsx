@@ -9,13 +9,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
-import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   addAnnotatePin,
   beginAnnotateMode,
@@ -60,6 +60,8 @@ import {
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
+import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
+import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -69,38 +71,37 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
+import { usePreviewDriveChannels } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
-import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
+import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
-import { registerPreviewScriptRunner } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
-type PreviewWebview = HTMLElement & {
-  canGoBack?: () => boolean
-  canGoForward?: () => boolean
-  closeDevTools?: () => void
-  copy?: () => void
-  cut?: () => void
-  executeJavaScript?: (code: string) => Promise<unknown>
-  getTitle?: () => string
-  getURL?: () => string
-  getWebContentsId?: () => number
-  goBack?: () => void
-  goForward?: () => void
-  inspectElement?: (x: number, y: number) => void
-  isDevToolsOpened?: () => boolean
-  loadURL?: (url: string) => Promise<void>
-  openDevTools?: () => void
-  paste?: () => void
-  reload?: () => void
-  reloadIgnoringCache?: () => void
-  replaceMisspelling?: (word: string) => void
-  selectAll?: () => void
-  sendInputEvent?: (event: PreviewInputEvent) => void
-  getZoomFactor?: () => number
-}
+type PreviewWebview = HTMLElement &
+  PreviewNavigationSurface & {
+    canGoBack?: () => boolean
+    canGoForward?: () => boolean
+    closeDevTools?: () => void
+    copy?: () => void
+    cut?: () => void
+    executeJavaScript?: (code: string) => Promise<unknown>
+    getTitle?: () => string
+    getURL?: () => string
+    getWebContentsId?: () => number
+    goBack?: () => void
+    goForward?: () => void
+    inspectElement?: (x: number, y: number) => void
+    isDevToolsOpened?: () => boolean
+    openDevTools?: () => void
+    paste?: () => void
+    reloadIgnoringCache?: () => void
+    replaceMisspelling?: (word: string) => void
+    selectAll?: () => void
+    sendInputEvent?: (event: PreviewInputEvent) => void
+    getZoomFactor?: () => number
+  }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
  *  the guest has been removed. Optional chaining does not help — the method
@@ -114,6 +115,17 @@ function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = '')
   } catch {
     return { title: '', url: fallbackUrl }
   }
+}
+
+/** The live surface a web preview mounts: Electron's `<webview>`, or a plain
+ *  iframe when Desktop is served to a browser, which has no webview tag.
+ *  Remote HTML renders from its data URL instead, so it gets neither. */
+function webPreviewSurface(isWebPreview: boolean, isRemoteHtml: boolean): 'iframe' | 'webview' | null {
+  if (!isWebPreview || isRemoteHtml) {
+    return null
+  }
+
+  return isBrowserHostedDesktop() ? 'iframe' : 'webview'
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -274,6 +286,7 @@ export function PreviewPane({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const lastReloadRequestRef = useRef(reloadRequest)
   const lastRestartEventRef = useRef('')
+  const navigationRef = useRef<PreviewNavigationSurface | null>(null)
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
@@ -348,6 +361,10 @@ export function PreviewPane({
   }, [tabId, target.kind])
 
   const isRemoteHtml = isRemoteHtmlTarget && renderMode !== 'source' && Boolean(target.dataUrl)
+
+  const webSurface = webPreviewSurface(isWebPreview, isRemoteHtml)
+  const usesBrowserIframe = webSurface === 'iframe'
+  const usesWebview = webSurface === 'webview'
 
   const remoteHtmlDocument = useMemo(
     () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
@@ -438,7 +455,7 @@ export function PreviewPane({
     if (webviewRef.current?.reloadIgnoringCache) {
       webviewRef.current.reloadIgnoringCache()
     } else {
-      webviewRef.current?.reload?.()
+      navigationRef.current?.reload?.()
     }
   }, [isWebPreview])
 
@@ -763,7 +780,7 @@ export function PreviewPane({
           // rejected load is a real navigation failure the user has to see —
           // `did-fail-load` doesn't fire for every rejection (a bad scheme
           // rejects outright).
-          webviewRef.current?.loadURL?.(reached)
+          navigationRef.current?.loadURL?.(reached)
         )
         .catch((error: unknown) => {
           setLoadError({
@@ -826,19 +843,19 @@ export function PreviewPane({
   // button over the frame). A gesture made INSIDE the page is answered by main
   // against the focused guest — this renderer can't see into a webview.
   useEffect(() => {
-    if (!isWebPreview || isRemoteHtml || !tabId) {
+    if (!usesWebview || !tabId) {
       return
     }
 
     return registerPreviewNav(tabId, { back: goBack, forward: goForward, reload: reloadPreview })
-  }, [goBack, goForward, isRemoteHtml, isWebPreview, reloadPreview, tabId])
+  }, [goBack, goForward, reloadPreview, tabId, usesWebview])
 
   // Publish the PAGE reader for this tab (the read_preview tool): extract the
   // rendered page's title + visible text from the webview. innerText (not
   // textContent) so hidden nodes and script/style bodies stay out, matching
   // what the user actually sees.
   useEffect(() => {
-    if (!isWebPreview || !tabId) {
+    if (!usesWebview || !tabId) {
       return
     }
 
@@ -856,62 +873,9 @@ export function PreviewPane({
         ...guestPage(webview)
       }
     })
-  }, [isWebPreview, tabId])
+  }, [tabId, usesWebview])
 
-  // Publish the SCRIPT runner for this tab: the one channel into the guest
-  // page, shared by the tour tool (injected driver.js walkthroughs) and the
-  // drive_preview tool (clicking, typing, scrolling the page the user sees).
-  useEffect(() => {
-    if (!isWebPreview || !tabId) {
-      return
-    }
-
-    return registerPreviewScriptRunner(tabId, async code => {
-      const webview = webviewRef.current
-
-      if (!webview?.executeJavaScript) {
-        throw new Error('preview webview is not ready')
-      }
-
-      return webview.executeJavaScript(code)
-    })
-  }, [isWebPreview, tabId])
-
-  // Publish the INPUT channel for this tab. Same idea as the script runner, but
-  // it carries real Chromium input rather than script — the agent's clicks and
-  // keystrokes arrive as trusted events, so the page hovers, focuses and reacts
-  // exactly as it would under a human hand.
-  useEffect(() => {
-    if (!isWebPreview || isRemoteHtml || !tabId) {
-      return
-    }
-
-    return registerPreviewInput(tabId, {
-      focus: () => {
-        const webview = webviewRef.current
-
-        // Trusted input still reaches the guest while hidden. Focusing the
-        // webview element would steal the host's composer focus even when inert.
-        if (webview && !isElementInHiddenPane(webview)) {
-          webview.focus?.()
-        }
-      },
-      send: event => {
-        const webview = webviewRef.current
-
-        // Never optional-chain this call away: a missing method would make every
-        // agent click a silent no-op that still reports success, because the
-        // overlay and the read-back both run on the separate script channel.
-        if (typeof webview?.sendInputEvent !== 'function') {
-          throw new Error('preview webview cannot take input events')
-        }
-
-        // The guest keeps its own (per-host) zoom, which the act engine's CSS
-        // measurements do not include — ask the webview, not the window.
-        webview.sendInputEvent(toWebviewInputSpace(event, webview.getZoomFactor?.()))
-      }
-    })
-  }, [isRemoteHtml, isWebPreview, tabId])
+  usePreviewDriveChannels(webviewRef, tabId, usesWebview)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -1119,6 +1083,7 @@ export function PreviewPane({
 
     const initialUrl = targetUrlRef.current
     host.replaceChildren()
+    navigationRef.current = null
     webviewRef.current = null
     setCurrentUrl(initialUrl)
     setDevtoolsOpen(false)
@@ -1131,6 +1096,19 @@ export function PreviewPane({
       setLoading(false)
 
       return
+    }
+
+    // A browser host has no `<webview>` tag: past the guard above, this is
+    // exactly `usesBrowserIframe`, so the iframe mounts instead.
+    if (isBrowserHostedDesktop()) {
+      return mountBrowserPreviewFrame({
+        host,
+        navigationRef,
+        onError: url => setLoadError({ description: copy.unreachableDescription, url }),
+        setCurrentUrl,
+        setLoading,
+        url: initialUrl
+      })
     }
 
     const webview = document.createElement('webview') as PreviewWebview
@@ -1366,10 +1344,20 @@ export function PreviewPane({
     webview.addEventListener('dom-ready', armPrintGuard)
     webview.addEventListener('dom-ready', noteGuestReady)
     host.appendChild(webview)
+    navigationRef.current = webview
     webviewRef.current = webview
 
     return () => {
       annotateLoopRef.current += 1
+
+      if (navigationRef.current === webview) {
+        navigationRef.current = null
+      }
+
+      if (webviewRef.current === webview) {
+        webviewRef.current = null
+      }
+
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
@@ -1400,9 +1388,9 @@ export function PreviewPane({
       return
     }
 
-    const webview = webviewRef.current
+    const navigation = navigationRef.current
 
-    if (!webview?.loadURL) {
+    if (!navigation?.loadURL) {
       return
     }
 
@@ -1426,7 +1414,7 @@ export function PreviewPane({
     setHistory({ back: false, forward: false })
     setLoading(true)
     setCurrentUrl(nextUrl)
-    void webview.loadURL?.(nextUrl)?.catch((error: unknown) => {
+    void navigation.loadURL?.(nextUrl)?.catch((error: unknown) => {
       setLoadError({
         description: error instanceof Error ? error.message : copy.unreachableDescription,
         url: nextUrl
@@ -1444,7 +1432,7 @@ export function PreviewPane({
       // guest page gets its own via `app-command` in main), and unhandled they
       // walk the HOST document's history.
       onMouseDown={event => {
-        if (event.button !== 3 && event.button !== 4) {
+        if (!usesWebview || (event.button !== 3 && event.button !== 4)) {
           return
         }
 
@@ -1456,7 +1444,7 @@ export function PreviewPane({
           goForward()
         }
       }}
-      {...(isWebPreview && !isRemoteHtml && tabId ? { [PREVIEW_BROWSER_ATTR]: tabId } : {})}
+      {...(usesWebview && tabId ? { [PREVIEW_BROWSER_ATTR]: tabId } : {})}
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {!embedded && (
@@ -1490,7 +1478,9 @@ export function PreviewPane({
           />
         )}
 
-        {isWebPreview && !isRemoteHtml && (
+        {usesBrowserIframe && !isBlankPage && <PreviewBrowserFrameHint target={target} />}
+
+        {usesWebview && (
           <PreviewBrowserBar
             annotateMode={annotate.mode}
             canGoBack={history.back}
@@ -1591,7 +1581,7 @@ export function PreviewPane({
             />
           ) : null}
 
-          {isWebPreview && !isRemoteHtml && consoleOpen && (
+          {usesWebview && consoleOpen && (
             <PreviewConsolePanel
               consoleBodyRef={consoleBodyRef}
               consoleShouldStickRef={consoleShouldStickRef}

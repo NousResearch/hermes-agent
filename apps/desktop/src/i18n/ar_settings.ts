@@ -606,6 +606,9 @@ export const arSettings = {
       loading: 'جار تحميل إعدادات البوابة...',
       unavailableTitle: 'إعدادات البوابة غير متاحة',
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
+      webappHostTitle: 'مضيف Hermes',
+      webappHostDesc:
+        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:

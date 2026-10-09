@@ -2,11 +2,13 @@ import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $notifications } from '@/store/notifications'
+import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
+import { $notifications, notifyError } from '@/store/notifications'
 import { deferred } from '@/test/deferred'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 const { registry, activeId, selectConnection } = vi.hoisted(() => ({
   registry: { value: null as any },
@@ -26,6 +28,12 @@ vi.mock('./connections-registry', async importOriginal => ({
   ...(await importOriginal<any>()),
   ConnectionsRegistrySection: () => null
 }))
+// A call-through spy: call assertions and the real notification store both hold.
+vi.mock('@/store/notifications', async importOriginal => {
+  const actual = await importOriginal<any>()
+
+  return { ...actual, notifyError: vi.fn(actual.notifyError) }
+})
 
 // Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
 beforeAll(() => {
@@ -57,6 +65,8 @@ const localConnection = {
 }
 
 beforeEach(() => {
+  registry.value = null
+  selectConnection.mockReset().mockResolvedValue(undefined)
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
   cloudStatus.mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
@@ -76,6 +86,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
+  Reflect.deleteProperty(window, 'hermesDesktop')
+  window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -413,6 +428,52 @@ describe('GatewaySettings', () => {
     })
   })
 
+  // The Webapp is served by one Hermes host and can only reach that host, so no
+  // mode switch, Cloud sign-in or saved connection can act there. What applies
+  // is which host this is and, behind the sign-in gate, signing out of it.
+  describe('in the Webapp', () => {
+    const installWebapp = (credential: { __HERMES_AUTH_REQUIRED__: true } | { __HERMES_SESSION_TOKEN__: string }) => {
+      Reflect.deleteProperty(window, 'hermesDesktop')
+      Object.assign(window, credential)
+      const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+      expect(installBrowserDesktopBridge()).toBe(true)
+
+      return fetchMock
+    }
+
+    afterEach(() => Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__'))
+
+    it.each([false, true])('offers the serving host and its sign-out only (embedded: %s)', async embedded => {
+      const fetchMock = installWebapp({ __HERMES_AUTH_REQUIRED__: true })
+      const toLogin = vi.fn((event: Event) => event.preventDefault())
+      window.addEventListener('hermes:browser-reauth-required', toLogin, { once: true })
+
+      render(<GatewaySettings embedded={embedded} />)
+
+      const signOut = await screen.findByRole('button', { name: 'Sign out' })
+      expect(screen.getByText(window.location.origin)).toBeTruthy()
+      expect(screen.getAllByRole('button')).toEqual([signOut])
+      expect(fetchMock).not.toHaveBeenCalled()
+
+      fireEvent.click(signOut)
+
+      await waitFor(() => expect(toLogin).toHaveBeenCalledTimes(1))
+      const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(requestUrl.pathname).toBe('/auth/logout')
+      expect(init.method).toBe('POST')
+    })
+
+    it('has nothing to sign out of on a token-launched host', async () => {
+      installWebapp({ __HERMES_SESSION_TOKEN__: 'served-token' })
+
+      render(<GatewaySettings />)
+
+      expect(await screen.findByText(window.location.origin)).toBeTruthy()
+      expect(screen.queryAllByRole('button')).toEqual([])
+    })
+  })
+
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
@@ -426,6 +487,26 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('Applies to')).toBeNull()
     expect(screen.queryByText('All profiles')).toBeNull()
     expect(screen.queryByText('Use default gateway')).toBeNull()
+
+    // Browser-host mode has no native secret store, so a bridge without that
+    // capability must not advertise a keychain toggle that cannot work.
+    expect(screen.queryByText('Encrypt saved secrets with the OS keychain')).toBeNull()
+  }, 30_000)
+
+  it('keeps native keychain encryption writable at its settings deep-link target', async () => {
+    const setSecretStorageEncryption = vi.fn().mockResolvedValue({ on: true })
+    Object.assign(window.hermesDesktop, {
+      getSecretStorageEncryption: vi.fn().mockResolvedValue({ on: false }),
+      setSecretStorageEncryption
+    })
+
+    render(<GatewaySettings />)
+    const toggle = await screen.findByRole('switch', { name: 'Encrypt saved secrets with the OS keychain' })
+    const target = window.document.getElementById(settingElementId(SETTING_IDS.gateway.keychainEncryption))
+    expect(target?.contains(toggle)).toBe(true)
+    fireEvent.click(toggle)
+    await waitFor(() => expect(setSecretStorageEncryption).toHaveBeenCalledExactlyOnceWith(true))
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
   })
 
   // A saved cloud connection on a local-primary device has exactly one
@@ -449,64 +530,82 @@ describe('GatewaySettings', () => {
     const mountCloudPanelWith = (cloud: Record<string, unknown>) => {
       getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: saved.url })
       registry.value = { connections: [saved] }
-      Object.assign(window.hermesDesktop, { cloud })
+      Object.assign(window.hermesDesktop, {
+        connections: { list: vi.fn().mockResolvedValue(registry.value) },
+        cloud: { discover: vi.fn().mockResolvedValue({ agents: [] }), ...cloud }
+      })
     }
 
-    it('re-signs a lapsed saved gateway session via the portal cascade and retries the switch', async () => {
-      mountCloudPanelWith({
-        status: vi.fn().mockResolvedValue({ signedIn: true }),
-        login: vi.fn(),
-        agentSignIn: vi.fn().mockResolvedValue({ connected: true })
-      })
-      const oauthLogoutConnectionConfig = vi.fn().mockResolvedValue({ ok: true })
-      Object.assign(window.hermesDesktop, { oauthLogoutConnectionConfig })
-      selectConnection.mockRejectedValueOnce(reauthError).mockResolvedValueOnce(undefined)
-
-      render(<GatewaySettings embedded />)
-      const row = (await screen.findByText('Research')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
-
-      await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(2))
-      expect(selectConnection).toHaveBeenNthCalledWith(1, saved.id)
-      expect(selectConnection).toHaveBeenNthCalledWith(2, saved.id)
-      expect(oauthLogoutConnectionConfig).toHaveBeenCalledWith(saved.url)
-      expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
-      // The portal session was already live: no interactive portal login.
-      expect(window.hermesDesktop!.cloud!.login).not.toHaveBeenCalled()
-      registry.value = null
-    })
-
-    it('fails closed instead of cascading against an empty saved dashboard URL', async () => {
-      const savedWithoutUrl = {
-        id: 'saved-without-url',
-        kind: 'cloud',
-        label: 'Incomplete',
-        authMode: 'oauth'
-      }
-
-      getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: '' })
-      registry.value = { connections: [savedWithoutUrl] }
-      const agentSignIn = vi.fn()
-      const oauthLogoutConnectionConfig = vi.fn()
-      Object.assign(window.hermesDesktop, {
-        oauthLogoutConnectionConfig,
-        cloud: {
+    it.each(['saved', 'discovered'] as const)(
+      're-signs a lapsed %s gateway session via the portal cascade and retries the switch',
+      async entryPoint => {
+        mountCloudPanelWith({
           status: vi.fn().mockResolvedValue({ signedIn: true }),
           login: vi.fn(),
-          agentSignIn
+          agentSignIn: vi.fn().mockResolvedValue({ connected: true }),
+          discover: vi.fn().mockResolvedValue({
+            agents: [{ id: 'discovered-a', name: 'Research', dashboardUrl: saved.url }]
+          })
+        })
+        const oauthLogoutConnectionConfig = vi.fn().mockResolvedValue({ ok: true })
+        Object.assign(window.hermesDesktop, { oauthLogoutConnectionConfig })
+        selectConnection.mockRejectedValueOnce(reauthError).mockResolvedValueOnce(undefined)
+
+        render(<GatewaySettings embedded />)
+        await waitFor(() => expect(screen.getAllByRole('button', { name: 'Use gateway' })).toHaveLength(2))
+        const buttons = screen.getAllByRole('button', { name: 'Use gateway' })
+        fireEvent.click(buttons[entryPoint === 'saved' ? 0 : 1])
+
+        await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(2))
+        expect(selectConnection).toHaveBeenNthCalledWith(1, saved.id)
+        expect(selectConnection).toHaveBeenNthCalledWith(2, saved.id)
+        expect(oauthLogoutConnectionConfig).toHaveBeenCalledWith(saved.url)
+        expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
+        // The portal session was already live: no interactive portal login.
+        expect(window.hermesDesktop!.cloud!.login).not.toHaveBeenCalled()
+        registry.value = null
+      }
+    )
+
+    it.each([undefined, ''])(
+      'fails closed instead of cascading against a missing saved dashboard URL (%s)',
+      async url => {
+        const savedWithoutUrl = {
+          id: 'saved-without-url',
+          kind: 'cloud',
+          label: 'Incomplete',
+          url,
+          authMode: 'oauth'
         }
-      })
-      selectConnection.mockRejectedValueOnce(reauthError)
 
-      render(<GatewaySettings embedded />)
-      const row = (await screen.findByText('Incomplete')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+        getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: '' })
+        registry.value = { connections: [savedWithoutUrl] }
+        const agentSignIn = vi.fn()
+        const oauthLogoutConnectionConfig = vi.fn()
+        Object.assign(window.hermesDesktop, {
+          connections: { list: vi.fn().mockResolvedValue(registry.value) },
+          oauthLogoutConnectionConfig,
+          cloud: {
+            status: vi.fn().mockResolvedValue({ signedIn: true }),
+            login: vi.fn(),
+            discover: vi.fn().mockResolvedValue({ agents: [] }),
+            agentSignIn
+          }
+        })
+        selectConnection.mockRejectedValueOnce(reauthError)
 
-      await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(1))
-      expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
-      expect(agentSignIn).not.toHaveBeenCalled()
-      registry.value = null
-    })
+        render(<GatewaySettings embedded />)
+        const row = (await screen.findByText('Incomplete')).closest('[data-slot]') as HTMLElement
+        fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+
+        await waitFor(() => expect(notifyError).toHaveBeenCalledWith(reauthError, expect.any(String)))
+        expect(selectConnection).toHaveBeenCalledTimes(1)
+        expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
+        expect(agentSignIn).not.toHaveBeenCalled()
+        expect(window.hermesDesktop!.cloud!.login).not.toHaveBeenCalled()
+        registry.value = null
+      }
+    )
 
     it('does not cascade for a non-reauth switch failure', async () => {
       mountCloudPanelWith({
@@ -516,13 +615,15 @@ describe('GatewaySettings', () => {
       })
       const oauthLogoutConnectionConfig = vi.fn()
       Object.assign(window.hermesDesktop, { oauthLogoutConnectionConfig })
-      selectConnection.mockRejectedValueOnce(new Error('Timed out connecting to "Research".'))
+      const error = new Error('Timed out connecting to "Research".')
+      selectConnection.mockRejectedValueOnce(error)
 
       render(<GatewaySettings embedded />)
       const row = (await screen.findByText('Research')).closest('[data-slot]') as HTMLElement
       fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
 
-      await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(notifyError).toHaveBeenCalledWith(error, expect.any(String)))
+      expect(selectConnection).toHaveBeenCalledTimes(1)
       expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
       expect(window.hermesDesktop!.cloud!.agentSignIn).not.toHaveBeenCalled()
       registry.value = null

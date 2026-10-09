@@ -441,7 +441,7 @@ def _profile_rename(args):
         if normalize_profile_name(args.old_name) != "default":
             print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
             print(f"Path: {new_dir}\n")
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
+    except (ValueError, FileExistsError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
 

@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import subprocess
 import threading
 import time
@@ -135,12 +134,14 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
 
 def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bool = False) -> str:
     """Run one statement against a profile's state.db; first column of the first row or ""."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     home = _profile_home(profile)
     db = os.path.join(home, "state.db") if home else ""
     if not db or not os.path.exists(db):
         return ""
     try:
-        with contextlib.closing(sqlite3.connect(db, timeout=5)) as con:
+        with contextlib.closing(connect_tracked(db, timeout=5)) as con:
             cur = con.execute(sql, params)
             row = None if commit else cur.fetchone()
             if commit:

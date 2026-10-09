@@ -52,7 +52,10 @@ def _patch_sessiondb(monkeypatch, cls=_RecordingDB):
     # construction seam, and keep every acquired fake out of the registry so tests don't share.
     import hermes_state_registry
 
-    monkeypatch.setattr(hermes_state_registry, "_open_session_db", lambda path: cls(db_path=path))
+    monkeypatch.setattr(
+        hermes_state_registry, "_open_session_db",
+        lambda path, expected_profile_incarnation: cls(db_path=path),
+    )
 
 
 def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):

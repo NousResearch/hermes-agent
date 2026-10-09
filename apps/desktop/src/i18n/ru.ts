@@ -2,33 +2,15 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruGatewayHost } from './ru_gateway_host'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
+import { RU_NOUN, RU_PLURAL } from './ru_plural'
+import { ruPreviewWeb } from './ru_preview_web'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
-
-// RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
-// RU_NOUN: (count, one, few, many) — формы род. множественного
-// count может быть number или string (часть подписей en.ts передаёт строки)
-const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
-
-const RU_PLURAL = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
-
-const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
 
 export const ruOverrides = {
   sharedMetrics: ruSharedMetrics,
@@ -1178,8 +1160,7 @@ export const ruOverrides = {
     },
     gateway: {
       loading: 'Загрузка настроек шлюза…',
-      unavailableTitle: 'Настройки шлюза недоступны',
-      unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+      ...ruGatewayHost,
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:
@@ -3592,51 +3573,7 @@ export const ruOverrides = {
       sentMessage: count =>
         `${count} ${RU_NOUN(count, 'запись лога', 'записи лога', 'записей лога')} добавлено в композер`
     },
-    web: {
-      appFailedToBoot: 'Приложение предпросмотра не запустилось',
-      serverNotFound: 'Сервер не найден',
-      remoteLoopback:
-        'Этот адрес указывает на машину, на которой работает ваш агент, а не на эту. Панель браузера загружает страницы локально, поэтому для удалённого dev-сервера нужен порт-форвардинг или доступный hostname.',
-      failedToLoad: 'Не удалось загрузить предпросмотр',
-      tryAgain: 'Попробовать снова',
-      restarting: 'Hermes перезапускается...',
-      askRestart: 'Попросить Hermes перезапустить сервер',
-      lookingRestart: taskId => `Hermes ищет сервер предпросмотра для перезапуска (${taskId})`,
-      restartingTitle: 'Перезапуск сервера предпросмотра',
-      restartingMessage: 'Hermes работает в фоне. Следите за прогрессом в консоли предпросмотра.',
-      startRestartFailed: message => `Не удалось запустить перезапуск сервера: ${message}`,
-      restartFailed: 'Перезапуск сервера не удался',
-      hideConsole: 'Скрыть консоль предпросмотра',
-      showConsole: 'Показать консоль предпросмотра',
-      hideDevTools: 'Скрыть DevTools предпросмотра',
-      openDevTools: 'Открыть DevTools предпросмотра',
-      goBack: 'Назад',
-      goForward: 'Вперёд',
-      reload: 'Перезагрузить страницу',
-      address: 'Адрес',
-      addressPlaceholder: 'Введите адрес',
-      blankPageBody: 'Введите адрес выше, чтобы просматривать, или попросите Hermes открыть страницу.',
-      finishedRestarting: message => `Hermes завершил перезапуск сервера предпросмотра${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Перезапуск сервера не удался: ${message}`,
-      unknownError: 'неизвестная ошибка',
-      restartedTitle: 'Сервер предпросмотра перезапущен',
-      reloadingNow: 'Перезагружаем предпросмотр.',
-      restartFailedTitle: 'Перезапуск предпросмотра не удался',
-      restartFailedMessage: 'Hermes не смог перезапустить сервер.',
-      stillWorking:
-        'Hermes всё ещё работает, но результата перезапуска пока нет. Команда сервера может выполняться в foreground.',
-      workspaceReloading: 'Рабочее пространство изменилось, перезагружаем предпросмотр',
-      fileChanged: url => `Файл изменился, перезагружаем предпросмотр: ${url}`,
-      filesChanged: (count, url) =>
-        `${count} ${RU_NOUN(count, 'изменение файла', 'изменения файла', 'изменений файла')}, перезагружаем предпросмотр: ${url}`,
-      watchFailed: message => `Не удалось отслеживать файл предпросмотра: ${message}`,
-      moduleMimeDescription:
-        'Модульные скрипты раздаются с неверным MIME-типом. Обычно это значит, что статический файл-сервер раздаёт Vite/React-приложение вместо dev-сервера проекта.',
-      loadFailedConsole: (code, message) => `Не удалось загрузить${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'Страница предпросмотра недоступна.',
-      openTarget: url => `Открыть ${url}`,
-      fallbackTitle: 'Предпросмотр'
-    }
+    web: ruPreviewWeb
   },
   interfaceMode: {
     title: 'Режим интерфейса',

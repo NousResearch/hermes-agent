@@ -25,7 +25,7 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
     original = log.read_bytes()
     db = SessionDB(tmp_path / ".hermes" / "state.db")
     monkeypatch.setattr(server, "_get_db", lambda: db)
-    monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+    monkeypatch.setattr(server, "_resolve_profile_home", lambda profile: (None, None))
 
     def rpc(method, **params):
         result = server._methods[f"session.foreign.{method}"](1, params)

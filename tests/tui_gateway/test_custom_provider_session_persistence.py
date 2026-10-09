@@ -590,7 +590,8 @@ class TestRoomPlumbingRuntimeOverrides:
 
 
 class TestFollowProfileConfigRuntimeOverrides:
-    def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path):
+    def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path,
+                                                                                   route_profiles):
         """Production path, A->B->A shape: a composer /model pick on a follow_profile_config Bot Chat under
         profile B persists its provenance marker into B's real SessionDB row via ``_apply_model_switch``;
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
@@ -619,7 +620,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setattr(server, "_hermes_home", str(launch))
-        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        route_profiles(server, lambda p: secondary if p == "b" else None)
         monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
         monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
         monkeypatch.setattr(server, "_schedule_resume_hydration", lambda *a, **k: None)
@@ -666,7 +667,8 @@ class TestFollowProfileConfigRuntimeOverrides:
                 for sid in [s for s in server._sessions if s not in known]:
                     server._sessions.pop(sid, None)
 
-    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path):
+    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path,
+                                                                                 route_profiles):
         """A composer pick handed to ``session.create`` on a follow_profile_config chat is the same
         chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
         divergence marker (not the launch profile's), the first row write persists it, and the resume read
@@ -680,7 +682,7 @@ class TestFollowProfileConfigRuntimeOverrides:
             (home / ".env").write_text("")
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setattr(server, "_hermes_home", str(launch))
-        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        route_profiles(server, lambda p: secondary if p == "b" else None)
         monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
         monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
         monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)

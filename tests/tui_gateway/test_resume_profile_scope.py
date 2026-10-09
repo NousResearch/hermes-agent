@@ -43,7 +43,7 @@ def _store(home, provider: str) -> None:
 
 
 @pytest.fixture()
-def homes(monkeypatch, tmp_path):
+def homes(monkeypatch, tmp_path, route_profiles):
     """Launch home A owns ``custom_providers: Local-Code``; secondary B owns ``providers.local-vllm`` — the
     same endpoint under a different name, so a cross-profile heal is observable."""
     launch, secondary = tmp_path / "a", tmp_path / "b"
@@ -53,7 +53,7 @@ def homes(monkeypatch, tmp_path):
                            f"providers:\n  local-vllm:\n    api: {_BASE_URL}\n    api_key: k-b\n")
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", str(launch))
-    monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+    route_profiles(server, lambda p: secondary if p == "b" else None)
     monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_resume_hydration", _NoopHydration())

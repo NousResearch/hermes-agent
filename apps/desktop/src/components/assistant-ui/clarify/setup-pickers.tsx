@@ -2,7 +2,6 @@
 
 import type { SetupChooseKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { Puzzle } from 'lucide-react'
 import { type CSSProperties, type FC, type ReactNode, useId, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -13,6 +12,7 @@ import { FadeScroll } from '@/components/ui/fade-scroll'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
 import { connectorIconUrl } from '@/lib/connector-tools'
+import { Puzzle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { ClarifyQuestion } from '@/store/clarify'
 import { pluginNeedsApp, useOnboardingPluginList } from '@/store/onboarding-plugins'

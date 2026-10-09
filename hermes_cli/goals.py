@@ -525,6 +525,15 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
+    if db is not None:
+        from hermes_constants import named_profile_home_is_unavailable
+
+        try:
+            if named_profile_home_is_unavailable(home):
+                _release_session_db(db)
+                db = None
+        except OSError:
+            logger.debug("GoalManager: could not check whether %s is deleted", home, exc_info=True)
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
             _DB_CACHE[home] = db
@@ -597,6 +606,26 @@ def _get_session_db() -> Optional[Any]:
             return existing
         _DB_CACHE[home] = db
     return db
+
+
+def release_session_db_for_home(home: Path | str) -> bool:
+    """Release and evict the goals/loops/heartbeat DB cached for ``home``."""
+    key = str(Path(home))
+    with _DB_BOOTSTRAP_LOCK:
+        inflight = _DB_BOOTSTRAP_INFLIGHT.get(key)
+        db = _DB_CACHE.pop(key, None)
+    if inflight is not None:
+        inflight.wait(_DB_BOOTSTRAP_INIT_WAIT_S)
+        with _DB_BOOTSTRAP_LOCK:
+            late_db = _DB_CACHE.pop(key, None)
+        if db is None:
+            db = late_db
+        elif late_db is not None:
+            _release_session_db(late_db)
+    if db is None:
+        return False
+    _release_session_db(db)
+    return True
 
 
 def _acquire_session_db(home: str):

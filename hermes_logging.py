@@ -597,10 +597,11 @@ def _new_file_handler(
 
 
 # A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at
-# most this often. WHY: the check is two stats per record per router on the listener thread,
-# nearly doubling the syscalls of every live-profile emit; a deleted home only needs catching
-# within a couple of seconds. Inside that window a tombstoned (not yet removed) home still gets
-# its records; an rmtree is caught at once by the write that finds the directory gone.
+# most this often. WHY: the check (a dir stat plus the alias-resolved tombstone lookup) per record
+# per router on the listener thread would multiply the syscalls of every live-profile emit; a
+# deleted home only needs catching within a couple of seconds. Inside that window a tombstoned
+# (not yet removed) home still gets its records; an rmtree is caught at once by the write that
+# finds the directory gone.
 _PROFILE_LIVENESS_RECHECK_S = 2.0
 
 

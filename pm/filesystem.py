@@ -5,6 +5,7 @@ may import a dependency or another PM module.
 """
 from __future__ import annotations
 
+from contextlib import suppress
 import errno
 import hashlib
 import ntpath
@@ -84,6 +85,18 @@ def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
             time.sleep(_LOCK_POLL_SECONDS)
 
 
+def unlock_fd(fd: int) -> None:
+    """Release :func:`lock_fd`'s byte lock; best effort, since closing the descriptor releases it too."""
+    with suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 def read_bytes_or_none(path: Path) -> bytes | None:
     try:
         return path.read_bytes()
@@ -94,6 +107,18 @@ def read_bytes_or_none(path: Path) -> bytes | None:
 def file_digest(path: Path) -> str | None:
     data = read_bytes_or_none(path)
     return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+# link() failures meaning "this filesystem cannot hard-link", never "the target exists": EPERM
+# (FAT/exFAT), EACCES (SELinux on Android app data), ENOTSUP/EOPNOTSUPP/ENOSYS (SMB, FUSE). Windows
+# reports FAT and unsupported shares as ERROR_INVALID_FUNCTION (1) / ERROR_NOT_SUPPORTED (50).
+_HARD_LINK_REFUSED_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS})
+_HARD_LINK_REFUSED_WINERRORS = frozenset({1, 50})
+
+
+def hard_link_refused(exc: OSError) -> bool:
+    return (exc.errno in _HARD_LINK_REFUSED_ERRNOS
+            or getattr(exc, "winerror", None) in _HARD_LINK_REFUSED_WINERRORS)
 
 
 def durable_write_bytes(path: Path, data: bytes) -> None:

@@ -193,6 +193,59 @@ class TestWinPtyBridgeUnavailable:
         proc.release_write.set()
         assert any("thread leaked" in r.getMessage() for r in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_idle_terminals_leave_the_default_executor_free(self):
+        """Every terminal's drain reads in the default executor, which also runs
+        keystrokes, admission and cleanup. An idle shell's read must return on its
+        timeout, or a few quiet terminals hold every worker until one prints."""
+        from concurrent.futures import ThreadPoolExecutor
+        import socket
+
+        from hermes_cli.pty_session import PtySession
+
+        class _IdleShell:
+            """pywinpty 3.0.5's PtyProcess: a reader thread copies ConPTY output to a
+            loopback socket, ``read`` is a blocking recv on it, ``fileno`` exposes it."""
+            pid = 1
+
+            def __init__(self):
+                self.output, self.console = socket.socketpair()
+
+            def fileno(self):
+                return self.output.fileno()
+
+            def read(self, size):
+                data = self.output.recv(size)
+                if not data:
+                    raise EOFError("Pty is closed")
+                return data.decode("utf-8")
+
+            def isalive(self):
+                return True
+
+            def terminate(self, force=False):
+                self.console.close()
+
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+        shells = [_IdleShell() for _ in range(4)]
+        sessions = [PtySession(f"terminal-{n}", WinPtyBridge(shell), buffer_cap=64, read_timeout=0.05)
+                    for n, shell in enumerate(shells)]
+        try:
+            for session in sessions:
+                await session.start()
+            await asyncio.sleep(0.2)
+            assert await asyncio.wait_for(asyncio.to_thread(lambda: "ran"), 3) == "ran"
+            shells[1].console.sendall("héllo".encode())
+            async with asyncio.timeout(3):
+                while sessions[1].buffer.snapshot() != "héllo".encode():
+                    await asyncio.sleep(0.01)
+        finally:
+            for shell in shells:
+                shell.terminate()
+            for session in sessions:
+                await session.close()
+
     @pytest.mark.platforms("posix")  # non-Windows only
     def test_spawn_raises_unavailable_off_windows(self):
         with pytest.raises(PtyUnavailableError):
@@ -243,6 +296,39 @@ class TestWinPtyBridgeIO:
             bridge.close()
 
 
+    @pytest.mark.asyncio
+    async def test_paste_to_a_program_that_is_not_reading_lands_at_once(self):
+        """ConPTY buffers input whether or not the child reads it, so a host shell's
+        paste lands at once and the job keeps running; only a wedged ConPTY can miss
+        the write deadline, which is why Windows writes keep one."""
+        script = "import time; time.sleep(1.5); print('SURVI' + 'VED', flush=True)"
+        bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
+        try:
+            paste = b"".join(b"%05d %s\r" % (n, b"x" * 57) for n in range(16384))  # 1 MiB
+            assert await asyncio.wait_for(bridge.write(paste, timeout=None), timeout=2.0) is True
+            output = await asyncio.to_thread(_read_until, bridge, b"SURVIVED", 15.0)
+            assert b"SURVIVED" in output
+        finally:
+            bridge.close()
+
+    def test_idle_read_returns_within_its_timeout(self):
+        """A shell that prints nothing must not hold the reading thread until it
+        next prints: every terminal's drain shares the default executor."""
+        script = "import time; print('REA' + 'DY', flush=True); time.sleep(30)"
+        bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
+        try:
+            assert b"READY" in _read_until(bridge, b"READY")
+            idle, slowest = False, 0.0
+            deadline = time.monotonic() + 5.0
+            while not idle and time.monotonic() < deadline:
+                started = time.monotonic()
+                idle = bridge.read(timeout=0.5) == b""
+                slowest = max(slowest, time.monotonic() - started)
+            assert idle
+            assert slowest < 2.5
+        finally:
+            bridge.close()
+
     def test_read_returns_none_after_child_exits(self):
         bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "echo done"])
         try:
@@ -251,8 +337,11 @@ class TestWinPtyBridgeIO:
             deadline = time.monotonic() + 5.0
             while bridge.is_alive() and time.monotonic() < deadline:
                 bridge.read(timeout=0.1)
+            # ConPTY reports EOF seconds after the child exits, and read() returns b""
+            # at its timeout until then, so poll to a deadline rather than a count.
             got_none = False
-            for _ in range(20):
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
                 if bridge.read(timeout=0.1) is None:
                     got_none = True
                     break

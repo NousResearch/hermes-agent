@@ -46,7 +46,7 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
 
 
 def test_only_live_profiles_join_the_dependency_union(homes):
-    from hermes_constants import mark_named_profile_deleted
+    from tests.profile_tombstone_fixtures import write_legacy_profile_tombstone
 
     default_home, profile_home = homes
     profiles = profile_home.parent
@@ -56,7 +56,8 @@ def test_only_live_profiles_join_the_dependency_union(homes):
         (profiles / name).mkdir()
     for name in (".work.staging-123", "Bad Name", "retired"):
         _write_config(profiles / name, [f"{name}-plug"])
-    mark_named_profile_deleted(profiles / "retired")
+    # This profiles root is not under the default root, so mark_profile_deleting would refuse it.
+    write_legacy_profile_tombstone(profiles / "retired")
     (profiles / "ghost" / "plugins").mkdir()  # runtime side-effect dir, no identity marker
 
     assert pstate.dependency_homes() == [default_home, profile_home]

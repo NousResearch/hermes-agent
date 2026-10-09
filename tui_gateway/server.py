@@ -26,7 +26,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
-    reset_hermes_home_override, set_hermes_home_override)
+    named_profile_is_deleted, reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
@@ -91,9 +91,11 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
+from tui_gateway.profile_lifecycle import ProfileLifecycleFence
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+_profile_lifecycle = ProfileLifecycleFence()
 _methods: dict[str, callable] = {}
 _db = None
 _db_error: str | None = None
@@ -482,22 +484,25 @@ def _transfer_db_to_agent(agent, db) -> bool:
     return False
 
 
-def _open_profile_session_db(profile_home):
+def _open_profile_session_db(profile_home, expected_profile_incarnation=None):
     """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED: a silent fallback to the
     launch ``state.db`` would bleed rows into the wrong profile's store exactly when the profile store is
     briefly unopenable (locked, mid-restore); callers let the error abort the build (→ ``agent_error``)."""
     from hermes_state_registry import acquire
     db_path = Path(profile_home) / "state.db"
     try:
-        return acquire(db_path)
+        return acquire(db_path, expected_profile_incarnation=expected_profile_incarnation)
+    except FileNotFoundError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
+def _profile_db(params: dict | None = None, *, writer: bool = False, resolved: tuple | None = None):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open.
+    profile handles, leaves the launch-profile shared handle open. ``resolved``: the ``(home,
+    incarnation)`` the RPC already resolved that profile to, so the handle binds that generation.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
@@ -505,16 +510,19 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
-    if (profile_home := _profile_home(profile)) is None:
+    profile_home, profile_incarnation = resolved or _resolve_profile_home(profile)
+    if profile_home is None:
         db, owns = _get_db(), False
     else:
         try:
             if writer:
                 from hermes_state_registry import acquire
-                db = acquire(Path(profile_home) / "state.db")
+                db = acquire(Path(profile_home) / "state.db",
+                             expected_profile_incarnation=profile_incarnation)
             else:
                 from hermes_cli.web_server_sessions import _open_session_db_at_path
-                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+                with _profile_home_lease(profile_home, profile_incarnation):
+                    db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
             owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
@@ -536,22 +544,35 @@ def _canonical_profile_request(name: str) -> str:
     """
     if name.casefold() in {".hermes", "hermes"}:
         from hermes_cli import profiles as profiles_mod
-        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
-        # reserved name, but a pre-reserved-list install may still carry that dir.
-        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
+        # The legacy '.hermes' alias is not a valid named-profile id.
+        home = profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)
+        if not home.is_dir():
+            # A deleted named profile keeps its tombstone until a successor is
+            # published, so it is never a legacy alias for the default home.
+            if named_profile_is_deleted(home):
+                return name
             return "default"
     return name
 
 
 def _response_profile_name(profile: str | None = None) -> str:
-    """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
+    """:func:`_resolved_profile_name` for a ``profile`` this call resolves itself."""
     name = _canonical_profile_request((profile or "").strip())
-    if not name:
-        return _current_profile_name()
     try:
-        return name if _profile_home(name) is not None else _current_profile_name()
+        return _resolved_profile_name(name, _profile_home(name) if name else None)
     except ProfileUnavailableError:
+        # A retired profile must not turn response decoration into a second failure.
         return _current_profile_name()
+
+
+def _resolved_profile_name(profile: str | None, home: Path | None) -> str:
+    """Profile name to report on session.* payloads, for a ``profile`` the RPC resolved to ``home``.
+
+    Prefer the RPC's requested profile when it is a real non-launch profile;
+    otherwise the process launch profile.
+    """
+    name = _canonical_profile_request((profile or "").strip())
+    return name if name and home is not None else _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -574,17 +595,40 @@ class ProfileUnavailableError(FileNotFoundError):
 
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
-    if not (name := _canonical_profile_request((profile or "").strip())):
-        return None
-    from hermes_cli import profiles as profiles_mod
+    return _resolve_profile_home(profile)[0]
+
+
+def _resolve_profile_home(profile: str | None) -> tuple[Path | None, str | None]:
+    """``(home, incarnation)``: :func:`_profile_home` plus the generation it captured and validated, ``(None,
+    None)`` for the launch profile. A caller binding state to the home reuses this token: a capture takes the
+    profile's cross-process lease, and a second one could bind a successor generation mid-RPC."""
+    name = _canonical_profile_request((profile or "").strip())
+    if not name:
+        return None, None
     try:
-        home = Path(profiles_mod.get_profile_dir(name))
-    except ValueError:
-        home = None
-    if home is None or not home.is_dir():
-        raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
+        from hermes_cli import profiles as profiles_mod
+
+        canon = profiles_mod.normalize_profile_name(name)
+        # Resolve existing safe basenames; reserved names only restrict creation.
+        home = Path(profiles_mod.get_profile_dir(canon))
+    except (TypeError, ValueError) as exc:
+        raise ProfileUnavailableError(f"Profile '{name}' is invalid.") from exc
+    missing = f"Profile '{canon}' is missing or being deleted."
+    if not home.is_dir():
+        raise ProfileUnavailableError(missing)
+    # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
-        return None  # already the launch profile (no override needed)
+        if _profile_home_rejected(home):
+            raise ProfileUnavailableError(missing)
+        return None, None
+    if named_profile_is_deleted(home) or not profiles_mod.profile_exists(canon):
+        raise ProfileUnavailableError(missing)
+    try:
+        profile_incarnation = _capture_profile_incarnation(home)
+    except FileNotFoundError as exc:
+        raise ProfileUnavailableError(missing) from exc
+    if _profile_home_rejected(home, profile_incarnation, require_incarnation=True):
+        raise ProfileUnavailableError(missing)
     if home not in _served_profile_homes:
         # This process now hosts a second profile home: freeze the launch env as the launch
         # profile's own and flip get_secret() to fail closed, so an unscoped read for a
@@ -593,7 +637,7 @@ def _profile_home(profile: str | None) -> Path | None:
         from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
         activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
-    return home
+    return home, profile_incarnation
 
 
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
@@ -1085,17 +1129,17 @@ def _await_resume_history(sid: str, current: dict) -> bool:
 
 
 def _attach_built_agent(sid: str, current: dict, agent) -> bool:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
-    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
-    nothing, so the caller owns closing the orphan (#49852)."""
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation())."""
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
-    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
     with _sessions_lock:
-        if _sessions.get(sid) is not current:
-            return False
-        current["agent"] = agent
+        publish = _session_slot_current(sid, current) and not _session_profile_rejected(current)
+        if publish:
+            current["agent"] = agent
+    if not publish:
+        _discard_agent(agent)
+        return False
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
@@ -1148,7 +1192,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     # A lazy watch session spectating an in-flight child must stay lazy so the subagent live-mirror keeps
     # flowing (it bails once agent is set); incidental RPCs via _sess() would upgrade it mid-stream.
     if session.get("lazy") and _child_run_active(
-            str(session.get("session_key") or ""), session.get("profile_home") or None):
+            str(session.get("session_key") or ""), session.get("profile_home") or None,
+            session.get("profile_incarnation") or None):
         return
     with session.setdefault("agent_build_lock", threading.Lock()):
         if ready.is_set() or session.get("agent_build_started"):
@@ -1168,7 +1213,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
+        profile_incarnation = current.get("profile_incarnation")
         try:
+            if _profile_home_rejected(
+                    profile_home, profile_incarnation, require_incarnation="profile_incarnation" in current):
+                raise FileNotFoundError(
+                    f"Profile incarnation is stale or home is unavailable: {profile_home or _hermes_home}")
             if not _await_resume_history(sid, current):
                 # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
                 # why — a turn admitted against this record refuses with the real reason (#111531).
@@ -1180,7 +1230,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # binding the launch DB and bleeding rows into the wrong state.db.
             scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
-                session_db = _open_profile_session_db(profile_home)
+                session_db = _open_profile_session_db(
+                    profile_home, expected_profile_incarnation=profile_incarnation)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
@@ -1190,17 +1241,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
-            # Attach atomically against session teardown: ``session.close`` may have popped this
-            # session while the expensive build was in flight, in which case teardown could not close
-            # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
-            # workers/callbacks for a dead session (#49852).
             if not _attach_built_agent(sid, current, agent):
-                # Same contract as the replaced-before-attach exit above: a turn admitted against
-                # this record must refuse with the real reason rather than a generic missing agent.
+                # The attach helper owns orphan cleanup; retain the specific refusal reason.
                 current["agent_error"] = AGENT_BUILD_ABANDONED
-                with contextlib.suppress(Exception):
-                    if hasattr(agent, "close"):
-                        agent.close()
                 return
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
@@ -1230,6 +1273,11 @@ def _sess_nowait(params, rid):
     sid = params.get("session_id") or ""
     s = _sessions.get(sid)
     if s:
+        if _session_profile_rejected(s):
+            return (
+                None,
+                _err(rid, 4041, "profile incarnation is stale or home is unavailable"),
+            )
         return (s, None)
     # Stale runtime id (reaped/evicted/TTL): the client should session.resume the STORED id. Logged so
     # "message vanished" reads as "arrived and was rejected".
@@ -2718,15 +2766,17 @@ def _make_agent(
     return agent
 
 
-def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
+def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None, profile_incarnation: str | None = None) -> None:
     """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
     elif db is None:
         try:
-            db = _open_profile_session_db(profile_home)
+            db = _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation)
             owns_db = True
+        except FileNotFoundError:
+            raise
         except Exception:
             # FAIL CLOSED (as the deferred-build bind): a named-profile session must never touch the launch
             # state.db — skip hydration (the row lands on the agent's own lazy-create once the store recovers).
@@ -2771,9 +2821,19 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False):
+    explicit_cwd: bool = False, profile_incarnation: str | None = None):
     now = time.time()
+    if profile_incarnation is None:
+        try:
+            profile_incarnation = _capture_profile_incarnation(profile_home)
+        except Exception:
+            _discard_agent(agent)
+            raise
     with _sessions_lock:
+        if _profile_home_rejected(profile_home, profile_incarnation, require_incarnation=True):
+            _discard_agent(agent)
+            raise FileNotFoundError(
+                f"Profile home is missing or being deleted: {profile_home or _hermes_home}")
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
@@ -2782,7 +2842,7 @@ def _init_session(
             "show_reasoning": _load_show_reasoning(), "source": _resolve_session_source(source),
             "tool_progress_mode": _load_tool_progress_mode(), "edit_snapshots": {}, "tool_started_at": {},
             # Profile-scoped HERMES_HOME (None = launch); SessionBranch copies the parent's (same state.db).
-            "profile_home": profile_home,
+            "profile_home": profile_home, "profile_incarnation": profile_incarnation,
             # In-session /model switch, honored on rebuild (/new, resume) — never leaks to siblings via env vars.
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
@@ -2790,7 +2850,15 @@ def _init_session(
             "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
-    _hydrate_session_cwd(sid, key, session_db, profile_home)
+    try:
+        _hydrate_session_cwd(sid, key, session_db, profile_home, profile_incarnation)
+    except FileNotFoundError:
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if current is not None and current.get("agent") is agent:
+                _sessions.pop(sid, None)
+        _discard_agent(agent)
+        raise
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
@@ -2837,45 +2905,6 @@ def _with_checkpoints(session, fn):
 # ── Methods: session ─────────────────────────────────────────────────
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
-    """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
-    if not model:
-        model, default_provider = _session_default_route({"profile_home": _profile_home(profile)})
-        provider = provider or default_provider
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        **_lazy_info_route({"profile_home": _profile_home(profile)}, {"model": model, "provider": provider} if model else {}),
-        "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-    }
-
-
-def _deferred_session_record(
-    session_key: str, *, cols: int, cwd: str, history: list, lease, source: str = "tui",
-    close_on_disconnect: bool = False, display_history_prefix: list | None = None,
-    profile_home: Path | None = None, lazy: bool = False, model_override=None,
-    resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
-    """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
-    now = time.time()
-    return {
-        "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
-        "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
-        "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
-        "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
-        "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
-        "pending_title": None,
-        "profile_home": str(profile_home) if profile_home is not None else None,
-        "resume_runtime_overrides": resume_runtime_overrides, "resume_session_id": session_key,
-        "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
-        "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
-        "tool_started_at": {}, "todo_state": todo_state,
-        "transport": current_transport() or _stdio_transport,
-        "auth_user_id": _transport_auth_user_id(current_transport()),
-    }
-
-
 _ANY_PROFILE = object()  # default: match a live session regardless of profile
 
 
@@ -2894,7 +2923,11 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
     # See #100029.
     profile_home = record.get("profile_home")
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key, profile_home)
+        live = _find_live_session_by_key(
+            session_key,
+            profile_home,
+            record.get("profile_incarnation"),
+        )
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -2902,6 +2935,13 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
             # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
+            if _session_profile_rejected(record):
+                if lease is not None:
+                    lease.release()
+                raise FileNotFoundError(
+                    f"Profile home is missing or being deleted: "
+                    f"{record.get('profile_home') or _hermes_home}"
+                )
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
         # A PRIOR runtime for this stored id may still be sentinel-parked with a reap Timer armed; cancel +
@@ -3087,15 +3127,26 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     return str(getattr(session.get("agent"), "session_id", None) or session.get("session_key") or fallback or "")
 
 
-def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tuple[str, dict] | None:
-    # Timestamp-based stored ids can exist in several profiles' stores; a bare-id match would hand
-    # profile B's resume profile A's runtime, so profile-aware callers match on (profile_home, key).
-    # Profile-aware callers pass the home they resolved; the match must then be on (profile_home,
-    # session_key). See #100029.
+def _find_live_session_by_key(
+    session_key: str,
+    profile_home=_ANY_PROFILE,
+    profile_incarnation: str | None = None,
+) -> tuple[str, dict] | None:
+    # Stored session ids are timestamp-based and can legitimately exist in more
+    # than one profile's store, so a bare-id match can hand profile B's resume
+    # profile A's live runtime (#100029). Profile-aware callers pass the home
+    # AND incarnation they resolved, so a stale runtime cannot hide a later
+    # winner for a recreated profile.
     for sid, session in list(_sessions.items()):
-        if (not session.get("_finalized") and _session_lookup_key(session, fallback=sid) == session_key
-                and _live_profile_matches(session, profile_home)):
-            return sid, session
+        if session.get("_finalized"):
+            continue
+        if _session_lookup_key(session, fallback=sid) != session_key:
+            continue
+        if not _live_profile_matches(session, profile_home):
+            continue
+        if profile_home is not _ANY_PROFILE and (session.get("profile_incarnation") or None) != profile_incarnation:
+            continue
+        return sid, session
     return None
 
 

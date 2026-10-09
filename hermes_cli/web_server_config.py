@@ -12,6 +12,7 @@ from hermes_cli.config import (
     cfg_get,
     clear_model_endpoint_credentials,
     find_provider_entry,
+    get_config_path,
     read_raw_config,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
@@ -92,6 +93,10 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
         "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "desktop.theme_mode": _select(
+        "Desktop / Webapp light-dark mode for this profile. Blank = not set (each client keeps its own).",
+        "", "light", "dark", "system",
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (
@@ -539,6 +544,45 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     else:
         config["model_context_length"] = 0
     return config
+
+
+def _config_revision() -> int:
+    """The scoped profile's ``config.yaml`` revision for ``GET``/``PUT /api/config``: the file's
+    mtime in whole microseconds, ``0`` while it does not exist.
+
+    The file is the one thing every writer shares (this server, another backend on the same
+    profile, the CLI, a hand edit), so its mtime orders their writes across processes and restarts
+    with no counter of its own to keep. Microseconds keep it an exact JavaScript number (the
+    nanosecond value overflows 2**53). Take it BEFORE reading the config: a write landing in
+    between leaves the body newer than its revision, never older, so a client can only under-trust
+    an answer, never let a stale one win.
+    """
+    try:
+        return get_config_path().stat().st_mtime_ns // 1000
+    except FileNotFoundError:
+        return 0
+
+
+def _advance_config_revision(before: int) -> int:
+    """After a save, under the config mutation lock: the new revision, after ``before``.
+
+    Two saves inside one filesystem timestamp tick (milliseconds to seconds, by filesystem), or a
+    save while the clock is behind the file's mtime (an NTP step, a copy stamped ahead), would tie
+    or go backwards and a client could not order them, so the mtime is nudged 1 µs past ``before``.
+    A filesystem too coarse to keep that, or another process saving within the same tick, can
+    still tie; clients then keep the last answer.
+    """
+    revision = _config_revision()
+    if revision > before or not revision:
+        return revision
+    path = get_config_path()
+    try:
+        os.utime(path, ns=(path.stat().st_atime_ns, (before + 1) * 1000))
+    except OSError:
+        # A file this process may write but not re-stamp (another owner, some network mounts):
+        # the save stands, its revision just ties the previous one.
+        return revision
+    return _config_revision()
 
 
 # ---------------------------------------------------------------------------

@@ -80,11 +80,11 @@ class _RecordingDB:
 
 
 @pytest.fixture()
-def profile_dbs(monkeypatch, tmp_path):
+def profile_dbs(monkeypatch, tmp_path, route_profiles):
     """Route profile-scoped opens to _RecordingDB; yield the list of opens.
 
     ``params['profile']`` selects the profile scope; omitting it resolves to
-    the launch profile (``_profile_home`` -> None) and the shared handle.
+    the launch profile (``_resolve_profile_home`` -> no home) and the shared handle.
     """
     opened: list[_RecordingDB] = []
     profile_home = tmp_path / "work"
@@ -96,9 +96,7 @@ def profile_dbs(monkeypatch, tmp_path):
         return db
 
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
-    monkeypatch.setattr(
-        server, "_profile_home", lambda profile: profile_home if profile else None
-    )
+    route_profiles(server, lambda profile: profile_home if profile else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
     # The handler builds nothing on the paths under test; keep it hermetic and
     # off the real agent/secret/HERMES_HOME machinery.

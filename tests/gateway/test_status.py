@@ -98,6 +98,32 @@ class TestGatewayPidState:
         assert status.get_running_pid_cached(ttl_seconds=60) == 2222
         assert calls["lock_active"] == 2
 
+    def test_explicit_pid_path_uses_its_profile_home(self, tmp_path, monkeypatch):
+        process_home = tmp_path / "default"
+        profile_home = tmp_path / "profiles" / "ops"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        record = {
+            "pid": 111,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+            "hermes_home": str(profile_home),
+        }
+        pid_path = profile_home / "gateway.pid"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        (profile_home / "gateway.lock").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: None)
+
+        assert status.get_running_pid(pid_path, cleanup_stale=False) == 111
+
 
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -220,6 +246,23 @@ class TestGatewayPidState:
         assert lock_path.exists()
 
 
+# Each case removes or contradicts one piece of the identity evidence the bare-argv fallback needs:
+# case -> (edit of the written record, drift of the live start from the recorded one, live command line).
+_IDENTITY_EVIDENCE_BREAKS = {
+    "missing_start": (lambda record, root: record.pop("start_time"), 0, "hermes gateway run"),
+    "changed_start": (None, 1, "hermes gateway run"),
+    "invalid_start": (lambda record, root: record.update(start_time=0), 0, "hermes gateway run"),
+    "wrong_home": (
+        lambda record, root: record.update(hermes_home=str(root / "profiles" / "other")), 0, "hermes gateway run",
+    ),
+    "missing_home": (lambda record, root: record.pop("hermes_home"), 0, "hermes gateway run"),
+    "explicit_other": (None, 0, "hermes --profile other gateway run"),
+    "explicit_other_equals": (None, 0, "hermes --profile=other gateway run"),
+    "explicit_home_other": (None, 0, "env HERMES_HOME=/other/home hermes gateway run"),
+    "not_gateway": (None, 0, "python unrelated.py"),
+}
+
+
 class TestScopedGatewayPidQuery:
     """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):
     records are validated against the probed home (not the serve process's) and a live record is
@@ -255,6 +298,41 @@ class TestScopedGatewayPidQuery:
         assert status.get_running_pid(pid_path) == 4242
         assert pid_path.exists()
         assert (profile_dir / "gateway.lock").exists()
+
+    def test_scoped_query_accepts_fingerprinted_bare_argv_owner(self, tmp_path, monkeypatch):
+        # Environment and sticky-profile launches need not carry a selector in OS argv.
+        profile_dir, pid_path, record = self._write_scoped_profile(tmp_path)
+        record["argv"] = ["hermes", "gateway", "run"]
+        record["gateway_state"] = "running"
+        pid_path.write_text(json.dumps(record))
+        (profile_dir / "gateway.lock").write_text(json.dumps(record))
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: record["start_time"])
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+
+        assert status.get_running_pid(pid_path) == record["pid"]
+        assert status.get_runtime_status_running_pid(record, expected_home=profile_dir) == record["pid"]
+
+    @pytest.mark.parametrize("case", list(_IDENTITY_EVIDENCE_BREAKS))
+    def test_bare_argv_fallback_never_overrides_identity_evidence(self, tmp_path, monkeypatch, case):
+        edit_record, start_drift, command = _IDENTITY_EVIDENCE_BREAKS[case]
+        profile_dir, pid_path, record = self._write_scoped_profile(tmp_path)
+        record["argv"] = ["hermes", "gateway", "run"]
+        record["gateway_state"] = "running"
+        recorded_start = record["start_time"]
+        if edit_record is not None:
+            edit_record(record, tmp_path)
+        current_start = record.get("start_time", recorded_start) + start_drift
+        pid_path.write_text(json.dumps(record))
+        (profile_dir / "gateway.lock").write_text(json.dumps(record))
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: current_start)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: command)
+
+        assert status.get_running_pid(pid_path) is None
+        assert status.get_runtime_status_running_pid(record, expected_home=profile_dir) is None
 
     def test_scoped_query_still_cleans_dead_pid_record(self, tmp_path, monkeypatch):
         # A dead PID's stale record is still cleanup-unlinked, scoped or not.

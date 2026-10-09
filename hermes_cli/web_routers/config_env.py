@@ -17,8 +17,8 @@ from hermes_cli.web_routers._common import (
 )
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
-    _validated_main_model_selection,
+    _advance_config_revision, _apply_main_model_assignment, _config_revision, _denormalize_config_from_web,
+    _normalize_config_for_web, _schema_with_dynamic_provider_options, _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
@@ -78,17 +78,22 @@ def _env_write_errors(log_msg: str):
 
 
 @config_router.get("/api/config")
-async def get_config(profile: Optional[str] = None, include_defaults: bool = True):
+async def get_config(profile: Optional[str] = None, include_defaults: bool = True, with_revision: bool = False):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
     # load_config() reads from disk; a slow lock-holder on the event loop froze
     # the whole gateway for >1s. asyncio.to_thread copies the contextvar
     # context, so the profile override stays scoped to the worker thread.
     # Opt in to saved values so clients can distinguish user choices from defaults.
-    config = await scoped_to_thread(
-        profile, lambda: _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
-    )
+    def _read():
+        revision = _config_revision()  # before the read: see _config_revision
+        return revision, _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
+
+    revision, config = await scoped_to_thread(profile, _read)
     # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    config = {k: v for k, v in config.items() if not k.startswith("_")}
+    # The revision is opt-in and beside the config, never in it: existing clients
+    # read the bare body and PUT it back whole.
+    return {"config": config, "revision": revision} if with_revision else config
 
 
 @config_router.get("/api/config/defaults")
@@ -126,6 +131,7 @@ async def update_config(
             # in the PUT body, so deep-merge incoming over disk rather than
             # full-replace — the frontend can only overwrite what it sends.
             with _CONFIG_MUTATION_LOCK:
+                before = _config_revision()
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
@@ -144,13 +150,15 @@ async def update_config(
                 save_config(
                     merged, preserve_keys={("display", "language")} if preserve_language else None
                 )
+                # Lets a client order this save against racing reads and other saves.
+                revision = _advance_config_revision(before)
         # REST saves bypass the config.set RPC (which re-emits itself), so
         # refresh live sessions' cached approval/YOLO indicators after a mode
         # change. Own-profile saves only: a profile-scoped save targets a
         # different HERMES_HOME than this process's gateway sessions.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()
-        return {"ok": True}
+        return {"ok": True, "revision": revision}
 
     with http_failure("PUT /api/config failed", 500, detail="Internal server error"):
         return await asyncio.to_thread(_run)

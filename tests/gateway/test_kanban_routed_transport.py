@@ -136,11 +136,11 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
     good = completion()
     # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
-    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+    from hermes_cli.profile_lifecycle import clear_profile_deletion_marker, mark_profile_deleting
     yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
-    mark_named_profile_deleted(yuki_home)
+    mark_profile_deleting(yuki_home)
     assert not collect(runner)
-    clear_named_profile_deleted(yuki_home)
+    clear_profile_deletion_marker(yuki_home)
     rows = collect(runner)
     assert [row["task"].id for row in rows] == [good]
     # Reassignment after the claim must rewind, never send using stale authority.

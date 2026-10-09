@@ -37,7 +37,7 @@ def _make_bot_profile(root, name, *, managed=True, soul=None):
 def test_roster_excludes_infra_dirs_and_tombstones(tmp_path):
     """The teammate roster applies the same identity predicate as ``profile list``: bare
     infrastructure dirs (``@sessions``, ``@logs``) and deleted profiles are not teammates (#99392)."""
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -45,7 +45,7 @@ def test_roster_excludes_infra_dirs_and_tombstones(tmp_path):
     for stray in ("sessions", "logs"):
         (home / "profiles" / stray / "cron").mkdir(parents=True)
     ghost = _make_bot_profile(home, "ghost", managed=True)
-    mark_named_profile_deleted(ghost)
+    mark_profile_deleting(ghost)
 
     assert [name for name, _ in bot_mode_probe._roster(home)] == ["default", "researcher"]
     section = bot_mode_probe.get_bot_mode_protocol_section(home)

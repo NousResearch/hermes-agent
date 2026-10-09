@@ -61,6 +61,10 @@ def profile_env(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     default_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
+    # Profile bookkeeping, not holder detection: the census reads the host's live process
+    # table (test_profile_external_holder_census.py and its Windows live E2E cover it).
+    from hermes_cli import profile_lifecycle
+    monkeypatch.setattr(profile_lifecycle, "external_profile_file_holders", lambda *a, **k: [])
     return tmp_path
 
 
@@ -546,8 +550,14 @@ class TestDeleteProfile:
 
 
     def test_rmtree_failure_raises(self, profile_env):
+        from hermes_state import SessionDB
+
         profile_dir = create_profile("coder", no_alias=True)
         set_active_profile("coder")
+        db = SessionDB(profile_env / ".hermes" / "state.db")
+        route = "agent:coder:telegram:dm:chat"
+        db.save_gateway_routing_entry(route, json.dumps({"session_key": route}))
+        db.close()
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
              patch("hermes_cli.profiles.time.sleep"), \
@@ -557,6 +567,47 @@ class TestDeleteProfile:
 
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
+        db = SessionDB(profile_env / ".hermes" / "state.db")
+        try:
+            assert route in db.load_gateway_routing_entries()
+        finally:
+            db.close()
+
+    def test_confirmation_binds_the_generation_not_its_contents(self, profile_env, monkeypatch):
+        """Typing the name authorizes deleting the generation that was summarized, nothing else.
+
+        A running profile's gateway is stopped only after confirmation, so while the user types
+        it keeps atomically rewriting root files and SQLite creates/removes its -wal/-shm. That
+        churn must not refuse the delete; a delete+recreate under the same name still must.
+        """
+        profile_dir = create_profile("coder", no_alias=True)
+
+        def recreate() -> None:
+            shutil.rmtree(profile_dir)
+            create_profile("coder", no_alias=True)
+            (profile_dir / "replacement").write_text("new", encoding="utf-8")
+
+        def live_gateway_writes() -> None:
+            staged = profile_dir / "gateway_state.json.tmp"
+            staged.write_text("{}", encoding="utf-8")
+            os.replace(staged, profile_dir / "gateway_state.json")
+            (profile_dir / "state.db-wal").write_bytes(b"")
+            (profile_dir / "state.db-wal").unlink()
+
+        during_prompt = iter((recreate, live_gateway_writes))
+
+        def confirm(_prompt: str) -> str:
+            next(during_prompt)()
+            return "coder"
+
+        monkeypatch.setattr("builtins.input", confirm)
+        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+            with pytest.raises(RuntimeError, match="changed while deletion was being confirmed"):
+                delete_profile("coder")
+            assert (profile_dir / "replacement").read_text(encoding="utf-8") == "new"
+
+            assert delete_profile("coder") == profile_dir
+        assert not profile_dir.exists()
 
     def test_delete_purges_profile_keyed_identity(self, profile_env):
         """A deleted profile must not keep routing/heartbeat/delivery identity (#111926, delete side).
@@ -570,7 +621,8 @@ class TestDeleteProfile:
         import time
 
         tmp_path = profile_env
-        create_profile("gone", no_alias=True)
+        gone = create_profile("gone", no_alias=True)
+        SessionDB(gone / "state.db").close()
         create_profile("keepme", no_alias=True)
         scope = str(tmp_path / ".hermes" / "sessions")
         db = SessionDB(tmp_path / ".hermes" / "state.db")
@@ -651,187 +703,6 @@ class TestDeleteProfile:
                 "agent:gone:feishu:dm:chatA"}
         finally:
             check.close()
-
-    def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
-        """The backend PID scan binds by --profile selector and skips self."""
-        create_profile("coder", no_alias=True)
-        profile_dir = get_profile_dir("coder")
-
-        class FakeProc:
-            def __init__(self, pid, cmdline, username="me"):
-                self.pid = pid
-                self.info = {"pid": pid, "name": "python", "username": username, "cmdline": cmdline}
-
-            def parent(self):
-                return None
-
-            def username(self):
-                return "me"
-
-            def environ(self):
-                return {}
-
-        self_pid = os.getpid()
-        procs = [
-            # Backend bound to coder → matched.
-            FakeProc(101, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
-            # Interactive chat for coder → NOT a backend subcommand, skipped.
-            FakeProc(102, ["python", "-m", "hermes_cli.main", "--profile", "coder", "chat"]),
-            # Backend for a different profile → skipped.
-            FakeProc(103, ["python", "-m", "hermes_cli.main", "--profile", "other", "serve"]),
-            # This very process → skipped even if it matched.
-            FakeProc(self_pid, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
-        ]
-
-        fake_psutil = types.SimpleNamespace(
-            process_iter=lambda attrs=None: iter(procs),
-            Process=lambda pid=None: FakeProc(self_pid, []),
-            NoSuchProcess=Exception,
-            AccessDenied=Exception,
-            ZombieProcess=Exception,
-        )
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert pids == [101]
-
-    def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
-        """A `hermes` console-script shim spawned directly (e.g. Electron's
-        findOnPath('hermes') resolution) reports argv[0] as the interpreter
-        (python3) and argv[1] as the shim's path -- not "hermes" -- because
-        the OS execs the shebang. The scanner must still recognize it so
-        profile delete doesn't leave a zombie Desktop-spawned backend behind
-        (issue: deleting a Desktop profile kept reappearing after relaunch).
-        """
-        create_profile("coder", no_alias=True)
-        profile_dir = get_profile_dir("coder")
-
-        class FakeProc:
-            def __init__(self, pid, cmdline, username="me"):
-                self.pid = pid
-                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
-
-            def parent(self):
-                return None
-
-            def username(self):
-                return "me"
-
-            def environ(self):
-                return {}
-
-        self_pid = os.getpid()
-        procs = [
-            # Shebang-exec'd shim bound to coder → matched despite argv[0]
-            # being the python interpreter, not "hermes".
-            FakeProc(201, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "coder", "serve",
-                            "--host", "127.0.0.1", "--port", "0"]),
-            # Same shape but a different profile → skipped.
-            FakeProc(202, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "other", "serve"]),
-            # Non-hermes script run by python3 → skipped.
-            FakeProc(203, ["/usr/bin/python3", "/Users/x/some_script.py", "--profile", "coder", "serve"]),
-        ]
-
-        fake_psutil = types.SimpleNamespace(
-            process_iter=lambda attrs=None: iter(procs),
-            Process=lambda pid=None: FakeProc(self_pid, []),
-            NoSuchProcess=Exception,
-            AccessDenied=Exception,
-            ZombieProcess=Exception,
-        )
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert pids == [201]
-
-    def test_backend_scan_rejects_unrelated_hermes_prefixed_script(self, profile_env, monkeypatch):
-        """A user's own script that happens to start with "hermes" (e.g.
-        hermes-notes.py, hermes-unrelated-tool) must NOT be misidentified as
-        the console-script shim just because argv[0] is a python interpreter
-        and argv[1]'s basename starts with "hermes" -- only the actual known
-        console-script entry points (hermes, hermes-agent, hermes-acp) count.
-        """
-        create_profile("coder", no_alias=True)
-        profile_dir = get_profile_dir("coder")
-
-        class FakeProc:
-            def __init__(self, pid, cmdline, username="me"):
-                self.pid = pid
-                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
-
-            def parent(self):
-                return None
-
-            def username(self):
-                return "me"
-
-            def environ(self):
-                return {}
-
-        self_pid = os.getpid()
-        procs = [
-            # Looks like the shim by prefix alone, but is the user's own
-            # unrelated tool -- must be rejected, not killed by profile delete.
-            FakeProc(301, ["/usr/bin/python3", "/Users/x/scripts/hermes-notes.py",
-                            "--profile", "coder", "serve"]),
-            FakeProc(302, ["/usr/bin/python3", "/Users/x/scripts/hermes-unrelated-tool",
-                            "--profile", "coder", "serve"]),
-        ]
-
-        fake_psutil = types.SimpleNamespace(
-            process_iter=lambda attrs=None: iter(procs),
-            Process=lambda pid=None: FakeProc(self_pid, []),
-            NoSuchProcess=Exception,
-            AccessDenied=Exception,
-            ZombieProcess=Exception,
-        )
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert pids == []
-
-    def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
-        """The other two real console-script entry points (hermes-agent,
-        hermes-acp -- see pyproject.toml [project.scripts]) must also be
-        recognized via the shebang-exec path, not just the primary "hermes"
-        shim.
-        """
-        create_profile("coder", no_alias=True)
-        profile_dir = get_profile_dir("coder")
-
-        class FakeProc:
-            def __init__(self, pid, cmdline, username="me"):
-                self.pid = pid
-                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
-
-            def parent(self):
-                return None
-
-            def username(self):
-                return "me"
-
-            def environ(self):
-                return {}
-
-        self_pid = os.getpid()
-        procs = [
-            FakeProc(401, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-agent",
-                            "--profile", "coder", "serve"]),
-            FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
-                            "--profile", "coder", "serve"]),
-        ]
-
-        fake_psutil = types.SimpleNamespace(
-            process_iter=lambda attrs=None: iter(procs),
-            Process=lambda pid=None: FakeProc(self_pid, []),
-            NoSuchProcess=Exception,
-            AccessDenied=Exception,
-            ZombieProcess=Exception,
-        )
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert set(pids) == {401, 402}
 
 
 # ===================================================================
@@ -1200,6 +1071,9 @@ class TestRenameProfile:
         def _record_notify(name):
             # Snapshot the world at each multiplexer signal to pin ordering.
             calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
+            if name == "newname":
+                assert not profiles.named_profile_is_deleted(new_dir)
+                assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
             if name == "oldname" and old_dir.exists():
                 # A still-live component of the multiplexer writing into the old home mid-teardown.
                 with pytest.raises(FileNotFoundError):
@@ -1212,12 +1086,18 @@ class TestRenameProfile:
 
         # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
         assert calls[0] == ("oldname", True, False, True)
-        assert calls[-1] == ("newname", False, True, False)
+        assert calls[-1] == ("newname", False, True, True)
         assert not old_dir.exists() and new_dir.is_dir()
-        assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
+        assert profiles.named_profile_is_deleted(old_dir)
+        # A future reuse publishes a fresh generation and clears its fence; stale
+        # work targeting the retired name cannot gain the new generation's authority.
+        recreated = create_profile("oldname", no_alias=True)
+        assert recreated == old_dir
+        assert not profiles.named_profile_is_deleted(recreated)
+        assert profiles.read_profile_incarnation(recreated) != profiles.read_profile_incarnation(new_dir)
 
     def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
-        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
+        """A standalone rename fences the retired home without signalling a multiplexer."""
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
@@ -1228,7 +1108,8 @@ class TestRenameProfile:
             new_dir = rename_profile("oldname", "newname")
 
         notify.assert_not_called()
-        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert profiles.named_profile_is_deleted(old_dir)
+        assert not profiles.named_profile_is_deleted(new_dir)
         assert not old_dir.exists() and new_dir.is_dir()
 
     def test_rename_migrates_session_identity_without_live_gateway(self, profile_env):
@@ -1347,6 +1228,24 @@ class TestRenameProfile:
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
 
+    def test_rename_publishes_history_when_alias_update_fails_after_move(self, profile_env):
+        old_dir = create_profile("oldname", no_alias=True)
+        incarnation = profiles.read_profile_incarnation(old_dir)
+        new_dir = get_profile_dir("newname")
+
+        # A post-move alias failure still publishes the moved generation, so
+        # its Bot Mode rename history must be recorded on that path too.
+        with patch("hermes_cli.profiles.check_alias_collision",
+                   side_effect=RuntimeError("alias update failed")):
+            with pytest.raises(RuntimeError, match="alias update failed"):
+                rename_profile("oldname", "newname")
+
+        assert profiles.named_profile_is_deleted(old_dir)
+        assert not profiles.named_profile_is_deleted(new_dir)
+        assert profiles.read_profile_incarnation(new_dir) == incarnation
+        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
+        info = next(p for p in list_profiles() if p.name == "newname")
+        assert info.previous_names == ["oldname"]
 
     def test_rename_accumulates_previous_names(self, profile_env):
         create_profile("firstname", no_alias=True)

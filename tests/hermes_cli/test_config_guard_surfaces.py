@@ -90,7 +90,7 @@ class TestServeGuard:
 
         _write_corrupt_config(tmp_path)
         args = Namespace(
-            headless_backend=True,
+            ui_surface="serve",
             ignore_user_config=False,
             ssh_session_token_file=None,
             ssh_owner_nonce=None,

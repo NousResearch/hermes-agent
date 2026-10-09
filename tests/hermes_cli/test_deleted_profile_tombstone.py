@@ -15,6 +15,7 @@ import pytest
 
 from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
+from hermes_cli.profile_lifecycle import mark_profile_deleting
 from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
@@ -28,6 +29,7 @@ from hermes_cli.profiles import (
 )
 from hermes_constants import (
     named_profile_home,
+    named_profile_is_live,
     reset_hermes_home_override,
     set_hermes_home_override,
 )
@@ -237,6 +239,26 @@ class TestDeletedProfileTombstone:
         (legacy / "config.yaml").symlink_to(profile_env / "gone" / "config.yaml")
         assert profile_exists("legacy")
         assert Path(resolve_profile_env("legacy")) == legacy
+
+    @pytest.mark.platforms("posix")
+    def test_alias_entry_shares_its_real_homes_tombstone(self, profile_env):
+        """An entry symlinked to another profile's home is that home: the lifecycle fence keys its
+        tombstone to the real home, so listing and ``-p`` resolution must read it there too, or a
+        delete through either spelling leaves the other listed and resolvable."""
+        profiles_root = profile_env / ".hermes" / "profiles"
+        real = profiles_root / "alpha"
+        real.mkdir(parents=True)
+        (real / "config.yaml").write_text("{}\n", encoding="utf-8")
+        alias = profiles_root / "beta"
+        alias.symlink_to(real, target_is_directory=True)
+        assert list_profile_names() == ["default", "alpha", "beta"]
+
+        mark_profile_deleting(alias)
+
+        assert list_profile_names() == ["default"]
+        assert not named_profile_is_live(alias) and not profile_exists("beta")
+        with pytest.raises(FileNotFoundError):
+            resolve_profile_env("beta")
 
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)

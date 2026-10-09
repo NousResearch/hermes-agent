@@ -127,11 +127,12 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
 
 
-def _stamped_project_tree(db, params, **kwargs):
-    """``_build_project_tree`` + profile stamping shared by the two tree RPCs."""
+def _stamped_project_tree(db, params, profile_home, **kwargs):
+    """``_build_project_tree`` + profile stamping shared by the two tree RPCs; ``profile_home``: what the RPC
+    resolved ``params['profile']`` to."""
     from tui_gateway.project_tree import stamp_profile
     tree, active_id = _build_project_tree(db, **kwargs)
-    stamp_profile(tree["projects"], _response_profile_name(params.get("profile")))
+    stamp_profile(tree["projects"], _resolved_profile_name(params.get("profile"), profile_home))
     return tree, active_id
 
 
@@ -140,11 +141,12 @@ def _(rid, params: dict) -> dict:
     """Project -> repo -> lane overview with counts + a few preview sessions per project, plus the
     flat set of session ids claimed by any project (excluded from flat Recents). Lanes carry no
     session rows; drill-in uses ``projects.project_sessions``."""
-    with _profile_db(params) as db:
+    resolved = _resolve_profile_home(params.get("profile"))  # one generation for the db and the stamped name
+    with _profile_db(params, resolved=resolved) as db:
         if db is None:
             return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
         tree, active_id = _stamped_project_tree(
-            db, params, preview_limit=int(params.get("preview_limit") or 3), hydrate=False,
+            db, params, resolved[0], preview_limit=int(params.get("preview_limit") or 3), hydrate=False,
             session_limit=int(params.get("session_limit") or 2000), include_discovered=True)
         return _ok(rid, {"projects": tree["projects"], "active_id": active_id,
                          "scoped_session_ids": tree["scoped_session_ids"]})
@@ -156,12 +158,13 @@ def _(rid, params: dict) -> dict:
     project_id = str(params.get("project_id") or "")
     if not project_id:
         return _err(rid, 5063, "project_id required")
-    with _profile_db(params) as db:
+    resolved = _resolve_profile_home(params.get("profile"))
+    with _profile_db(params, resolved=resolved) as db:
         if db is None:
             return _ok(rid, {"project": None})
         # Drill-in only needs the entered project: skip the zero-session discovery tier.
         tree, _active = _stamped_project_tree(
-            db, params, preview_limit=0, hydrate=True,
+            db, params, resolved[0], preview_limit=0, hydrate=True,
             session_limit=int(params.get("session_limit") or 5000), include_discovered=False)
         return _ok(rid, {"project": next((p for p in tree["projects"] if p["id"] == project_id), None)})
 

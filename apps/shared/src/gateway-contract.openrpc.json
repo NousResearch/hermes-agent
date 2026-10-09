@@ -14045,6 +14045,17 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "staged_upload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StagedFileUpload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -16618,6 +16629,18 @@
             "default": "",
             "title": "User",
             "type": "string"
+          },
+          "user_originated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Originated"
           },
           "display_kind": {
             "anyOf": [
@@ -34419,6 +34442,77 @@
         "title": "SkillsReloadResult",
         "type": "object"
       },
+      "SkinChangedPayload": {
+        "additionalProperties": true,
+        "description": "``tui_gateway/change_watcher.py::_skin_changed_payload`` \u2014 the resolved skin plus the profile whose\nconfig it came from. The event reaches every transport of a process that may serve several profiles,\nso a client ignores a change tagged for another. Older backends send no ``profile``.",
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Colors",
+            "type": "object"
+          },
+          "light_colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Light Colors",
+            "type": "object"
+          },
+          "dark_colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dark Colors",
+            "type": "object"
+          },
+          "branding": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Branding",
+            "type": "object"
+          },
+          "banner_logo": {
+            "default": "",
+            "title": "Banner Logo",
+            "type": "string"
+          },
+          "banner_hero": {
+            "default": "",
+            "title": "Banner Hero",
+            "type": "string"
+          },
+          "tool_prefix": {
+            "default": "",
+            "title": "Tool Prefix",
+            "type": "string"
+          },
+          "help_header": {
+            "default": "",
+            "title": "Help Header",
+            "type": "string"
+          },
+          "profile": {
+            "default": "",
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "title": "SkinChangedPayload",
+        "type": "object"
+      },
       "SkinPayload": {
         "additionalProperties": true,
         "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
@@ -34942,6 +35036,43 @@
           "session_id"
         ],
         "title": "SpawnTreeSaveResult",
+        "type": "object"
+      },
+      "StagedFileUpload": {
+        "additionalProperties": false,
+        "description": "Source identity returned by the browser upload route, checked against the live profile.",
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          },
+          "profile_incarnation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Incarnation"
+          }
+        },
+        "required": [
+          "install_id",
+          "path",
+          "profile_home"
+        ],
+        "title": "StagedFileUpload",
         "type": "object"
       },
       "StartChatArgs": {
@@ -37565,6 +37696,18 @@
             ],
             "default": null,
             "title": "Display Metadata"
+          },
+          "user_originated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Originated"
           },
           "name": {
             "anyOf": [
@@ -40971,7 +41114,7 @@
         {
           "name": "payload",
           "schema": {
-            "$ref": "#/components/schemas/SkinPayload"
+            "$ref": "#/components/schemas/SkinChangedPayload"
           }
         }
       ]

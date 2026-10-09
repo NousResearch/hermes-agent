@@ -295,16 +295,21 @@ print(subprocess.run([sys.executable, "-c", probe], capture_output=True, text=Tr
 
 
 # The intermediate is a stand-in script, not a real gateway/update: nothing touches the checkout.
+# A dashboard host is named by its execution target, so that stand-in runs as a hermes_cli/main.py;
+# the same words as another script's arguments name no host.
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.parametrize("host_argv, adopts", [
-    (("hermes_cli.main", "gateway", "run"), False),
-    (("hermes_cli.main", "--profile", "work", "gateway", "run"), False),
-    (("/opt/hermes/hermes_cli/main.py", "-p", "work", "gateway", "run"), False),
-    (("-m", "hermes_cli.main", "--profile", "work", "dashboard"), False),
-    (("hermes_cli.main", "status"), True),
+@pytest.mark.parametrize("script_name, host_argv, adopts", [
+    ("host.py", ("hermes_cli.main", "gateway", "run"), False),
+    ("host.py", ("hermes_cli.main", "--profile", "work", "gateway", "run"), False),
+    ("host.py", ("/opt/hermes/hermes_cli/main.py", "-p", "work", "gateway", "run"), False),
+    ("hermes_cli/main.py", ("--profile", "work", "dashboard"), False),
+    ("hermes_cli/main.py", ("--profile", "work", "webapp"), False),
+    ("host.py", ("-m", "hermes_cli.main", "--profile", "work", "dashboard"), True),
+    ("host.py", ("hermes_cli.main", "status"), True),
 ])
-def test_update_started_from_a_relaunched_gateway_does_not_share_the_claim(tmp_path, host_argv, adopts):
-    script = tmp_path / "host.py"
+def test_update_started_from_a_relaunched_gateway_does_not_share_the_claim(tmp_path, script_name, host_argv, adopts):
+    script = tmp_path / script_name
+    script.parent.mkdir(exist_ok=True)
     script.write_text(_HOST, encoding="utf-8")
     holder = _child(_HOLDER, str(script), *host_argv, env={"HERMES_HOME": str(tmp_path)})
     out, _ = holder.communicate(timeout=60)

@@ -33,6 +33,13 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
     """
+    # The direct stdlib-only preflight runs in its own interpreter. Imported
+    # backups share the process with SessionDB and must exclude probe retirement.
+    if __package__:
+        from hermes_cli.sqlite_safe_read import connect_tracked
+    else:
+        connect_tracked = sqlite3.connect
+
     conn = backup_conn = None
     try:
         # sqlite3.connect() creates a missing destination with the process
@@ -52,7 +59,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
+        conn = connect_tracked(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
 

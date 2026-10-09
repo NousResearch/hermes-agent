@@ -18,7 +18,7 @@ def _create(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_load_cfg", dict)
-    monkeypatch.setattr(server, "_profile_home", lambda *a: None)
+    monkeypatch.setattr(server, "_resolve_profile_home", lambda *a: (None, None))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)

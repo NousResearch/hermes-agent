@@ -11,6 +11,7 @@ import stat
 import sys
 from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
+from itertools import chain
 from pathlib import Path
 
 _profile_fallback_warned: bool = False
@@ -21,6 +22,12 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
+
+# Browser-hosted attachments are staged on the Hermes host and then read back
+# as a base64 data URL for the normal remote attachment RPC. Keep the upload
+# and read-back boundaries identical so a successful picker/drop can always be
+# attached afterward.
+WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
@@ -268,7 +275,9 @@ def named_profile_home(path: str | Path) -> Path | None:
     a default home whose path merely contains a ``profiles`` segment is not a named profile.
     """
     current = Path(path)
-    for candidate in (current, *current.parents):
+    # Lazily: the walk usually stops at the home or ``.hermes``, and it runs on every config
+    # load and session RPC, where building every parent up front was most of its cost.
+    for candidate in chain((current,), current.parents):
         if (candidate.parent.name == "profiles" and not candidate.name.startswith(".")
                 and _is_hermes_profiles_root(candidate.parent)):
             return candidate
@@ -305,10 +314,6 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
 
 def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
-
-
-def named_profile_is_deleted(profile_home: str | Path) -> bool:
-    return profile_tombstone_path(Path(profile_home)).exists()
 
 
 # A directory under profiles/ is a profile only when something identifies it as one.
@@ -357,32 +362,97 @@ def named_profile_is_live(profile_home: str | Path) -> bool:
     return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
 
 
-def mark_named_profile_deleted(profile_home: str | Path) -> None:
-    marker = profile_tombstone_path(Path(profile_home))
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("deleted\n", encoding="utf-8")
+def _named_profile_spelling(path: Path) -> tuple[Path, Path | None]:
+    """``(spelling, named_profile_home(spelling))``, the spelling being *path* resolved when that
+    lands in a named profile home, else *path* as given.
 
-
-def clear_named_profile_deleted(profile_home: str | Path) -> None:
-    profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
+    A symlink/junction alias of a home (or of a path inside it) then shares the home's
+    tombstone and lifecycle lock instead of escaping the fence under another name. A named
+    entry that itself links outside every Hermes root keeps its own lexical fence.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return path, named_profile_home(path)
+    home = named_profile_home(resolved)
+    if home is not None:
+        return resolved, home
+    # The same text cannot name another home, so skip the second walk. Compare text: Windows
+    # path equality ignores the case that named_profile_home matches on.
+    return path, (None if str(resolved) == str(path) else named_profile_home(path))
 
 
 def assert_named_profile_home_live(path: str | Path) -> None:
-    """Refuse missing or tombstoned named profile homes."""
-    home = named_profile_home(path)
-    if home is not None and (named_profile_is_deleted(home) or not home.exists()):
-        raise FileNotFoundError(
-            f"Named profile home does not exist: {home}. "
-            "Create the profile explicitly before using it."
-        )
+    """Refuse a *path* inside a missing or tombstoned named profile home."""
+    _, home = _named_profile_spelling(Path(path))
+    if home is not None:
+        assert_named_profile_home_available(home)
 
 
 def mkdir_under_hermes_home(path: str | Path) -> Path:
-    """Create *path*, but never materialize a deleted/missing named profile."""
+    """Create *path*, but never materialize a deleted/missing named profile.
+
+    Inside a named profile only the segments below the home are created, one at a time: a home
+    deleted after the liveness check makes the first ``mkdir`` fail where ``parents=True`` would
+    recreate it. The second check catches a delete that tombstoned the home mid-call.
+    """
     target = Path(path)
-    assert_named_profile_home_live(target)
-    target.mkdir(parents=True, exist_ok=True)
+    spelled, home = _named_profile_spelling(target)
+    if home is None:
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    assert_named_profile_home_available(home)
+    current = home
+    for part in spelled.relative_to(home).parts:
+        current = current / part
+        current.mkdir(exist_ok=True)
+    assert_named_profile_home_available(home)
     return target
+
+
+def profile_deletion_marker_path(profile_home: Path | str) -> Path | None:
+    """Return the canonical deletion marker for a named profile home (see ``_named_profile_spelling``)."""
+    home, named_home = _named_profile_spelling(Path(profile_home))
+    if named_home is None or named_home != home:
+        return None
+    return profile_tombstone_path(named_home)
+
+
+def _tombstone_published(marker: Path | None) -> bool:
+    # The lifecycle writers (``hermes_cli.profile_lifecycle``) only ever publish a regular file.
+    return marker is not None and marker.is_file()
+
+
+def named_profile_is_deleted(profile_home: str | Path) -> bool:
+    """True when *profile_home* is a named profile home whose deletion tombstone is published.
+
+    Reads the canonical marker, so a symlink/junction alias of a home sees the tombstone the
+    lifecycle fence wrote for it; a path that is not a named home is never deleted.
+    """
+    return _tombstone_published(profile_deletion_marker_path(profile_home))
+
+
+def named_profile_home_is_unavailable(profile_home: Path | str, *, marker: Path | None = None) -> bool:
+    """True when a named profile is absent or durably marked for deletion.
+
+    *marker*: the named home's :func:`profile_deletion_marker_path` when the caller already
+    resolved it; resolving it is most of this check's cost.
+    """
+    home = Path(profile_home)
+    if marker is None:
+        marker = profile_deletion_marker_path(home)
+    return marker is not None and (not home.is_dir() or _tombstone_published(marker))
+
+
+def assert_named_profile_home_available(profile_home: Path | str, *, marker: Path | None = None) -> None:
+    """Raise when :func:`named_profile_home_is_unavailable` (*marker* as there).
+
+    Exact-home scope; :func:`assert_named_profile_home_live` guards any path under a home.
+    """
+    if named_profile_home_is_unavailable(profile_home, marker=marker):
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {profile_home}. "
+            "Create the profile explicitly before using it.")
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:
@@ -848,6 +918,12 @@ def _chown_to_hermes_uid(path) -> None:
     if uid is None and gid is None:
         return
     try:
+        current = os.stat(path)
+    except OSError:
+        current = None
+    if current is not None and (uid is None or current.st_uid == uid) and (gid is None or current.st_gid == gid):
+        return
+    try:
         os.chown(path, uid if uid is not None else -1, gid if gid is not None else -1)
     except (OSError, AttributeError, NotImplementedError):
         pass
@@ -882,8 +958,15 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
         mode = int(explicit_mode or "700", 8)
     except ValueError:
         mode = 0o700
+    # Tokenless profile homes must revalidate on every read. Avoid changing
+    # metadata when the current directory already satisfies the policy.
     try:
-        os.chmod(path, mode)
+        current_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        current_mode = None
+    try:
+        if current_mode != mode:
+            os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)

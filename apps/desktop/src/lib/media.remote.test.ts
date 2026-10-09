@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -21,6 +22,19 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+
+  // The URL's own `/C:/...` pathname opens nothing on Windows, and dropping a
+  // UNC host named another file.
+  it.each([
+    ['file:///C:/Users/me/a%20b.png', 'C:\\Users\\me\\a b.png'],
+    ['file://nas/share/a%20b.png', '\\\\nas\\share\\a b.png']
+  ])('reads %s as the Windows path %s', (url, path) => {
+    expect(filePathFromMediaPath(url)).toBe(path)
+  })
+
+  it.each(['file:///tmp/..%2f..%2fetc/a.png', 'file:///tmp/100%.png'])('keeps %s undecoded', url => {
+    expect(filePathFromMediaPath(url)).toBe(url.slice('file://'.length))
   })
 })
 
@@ -48,6 +62,15 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('/tmp/a b.png')).toBe(
       'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
     )
+  })
+
+  it('downloads a Windows gateway file URL by its native path', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+
+    expect(new URL(mediaExternalUrl('file:///C:/Users/me/a%20b.png')).searchParams.get('path')).toBe(
+      'C:\\Users\\me\\a b.png'
+    )
+    expect(new URL(mediaExternalUrl('file://nas/share/a.png')).searchParams.get('path')).toBe('\\\\nas\\share\\a.png')
   })
 
   it('falls back to file:// when remote connection lacks a token', () => {
@@ -84,7 +107,19 @@ describe('mediaGatewayStreamUrl', () => {
 
   it('rewrites gateway-local media to the main-process remote stream proxy', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
-    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
+
+    for (const path of [
+      '/tmp/a b.mp4',
+      'file:///tmp/a%20b.mp4',
+      'C:/Users/Alice/video.mp4',
+      'file:///C:/Users/Alice/video%20clip.mp4',
+      'file://nas/share/video%20clip.mp4'
+    ]) {
+      const url = new URL(mediaGatewayStreamUrl(path))
+      expect(url.protocol).toBe('hermes-media:')
+      expect(url.hostname).toBe('remote')
+      expect.soft(decodeURIComponent(url.pathname.slice(1)), path).toBe(path)
+    }
   })
 
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
@@ -166,6 +201,42 @@ describe('resolveMediaDisplaySrc', () => {
     )
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a b.png')
   })
+
+  it('reads Windows file URLs from the local desktop shell by their native path', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    $connection.set({ mode: 'local' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png')
+    await resolveMediaDisplaySrc('file://nas/share/a.png')
+    expect(readFileDataUrl.mock.calls).toEqual([['C:\\Users\\me\\a b.png'], ['\\\\nas\\share\\a.png']])
+  })
+
+  it('keeps a local-owned tile on the native reader while a remote gateway is in the foreground', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+    $connection.set({ connectionId: 'remote-gw', mode: 'remote', profile: 'work' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('/Users/me/a.png', { connectionId: LOCAL_CONNECTION_ID, profile: 'default' })
+    ).resolves.toBe('data:image/png;base64,bG9jYWw=')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/a.png')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('reads an owner-pinned Windows file URL through the gateway by its native path', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png', { connectionId: 'win-gw', profile: 'work' })
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'win-gw',
+      path: `/api/fs/read-data-url?path=${encodeURIComponent('C:\\Users\\me\\a b.png')}`,
+      profile: 'work'
+    })
+  })
 })
 
 describe('resolveMediaPlaybackSrc', () => {
@@ -197,6 +268,9 @@ describe('resolveMediaPlaybackSrc', () => {
     $connection.set({ mode: 'local' } as never)
 
     await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
+      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+    )
+    await expect(resolveMediaPlaybackSrc('file:///C:/renders/demo.mp4')).resolves.toBe(
       'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
     )
   })

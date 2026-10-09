@@ -1439,3 +1439,42 @@ def real_bash() -> str:
             if candidate.exists():
                 return str(candidate)
     return found or "bash"
+
+
+@pytest.fixture
+def busy_profile_lease():
+    """Hold profile lifecycle leases on another thread, as an in-flight profile mutation does.
+
+    ``hold(*homes)`` returns once the leases are held, with a callable that ends that hold early
+    (True once the holder thread has exited); holds still open are released at teardown.
+    """
+    import threading
+
+    from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+
+    holders = []
+
+    def hold(*homes):
+        held, release = threading.Event(), threading.Event()
+
+        def run():
+            with profile_lifecycle_lease(*homes):
+                held.set()
+                release.wait(30)
+
+        holder = threading.Thread(target=run, daemon=True)
+        holder.start()
+        holders.append((holder, release))
+        assert held.wait(10)
+
+        def end() -> bool:
+            release.set()
+            holder.join(10)
+            return not holder.is_alive()
+
+        return end
+
+    yield hold
+    for holder, release in holders:
+        release.set()
+        holder.join(10)

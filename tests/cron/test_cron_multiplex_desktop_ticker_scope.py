@@ -110,7 +110,7 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
 @pytest.mark.parametrize("profile_count", [1, 2])
 def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, profile_count):
     """Desktop yields to each live gateway, including a single-profile install."""
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
     running = {homes[-1][1]}
@@ -131,12 +131,12 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
 
     from cron import scheduler_provider as sp
 
-    monkeypatch.setattr(web_server, "resolve_cron_scheduler", lambda: _Provider(), raising=False)
+    monkeypatch.setattr(web_server_lifespan, "resolve_cron_scheduler", lambda: _Provider(), raising=False)
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _Provider())
     monkeypatch.setattr(sp, "InProcessCronScheduler", _Provider)
     monkeypatch.setattr("hermes_logging.enable_profile_log_routing", lambda homes: None)
 
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     # The Desktop hands the scheduler a live enumerator, not a startup snapshot,
     # so profiles created or deleted while the app runs are picked up per tick.

@@ -171,7 +171,8 @@ import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
-import { reconcilePersistedLiveTurn } from './persisted-live-turn'
+import { appendLiveSessionProjection, reconcileLocalLiveProjection } from './live-session-projection'
+import { reconcilePersistedSessionTurn } from './persisted-session-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
@@ -184,13 +185,11 @@ import {
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
-  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   cachedSessionRow,
   chatMessageArraysEquivalent,
-  dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
   goneSessionVerdict,
@@ -200,7 +199,6 @@ import {
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
-  removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
@@ -268,11 +266,16 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeChatMessages(
   authoritativeMessages: ChatMessage[],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
+  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>,
   sourceRows?: SessionMessage[]
 ): ChatMessage[] {
   if (liveProjection && sourceRows) {
-    const reconciled = reconcilePersistedLiveTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
+    const reconciled = reconcilePersistedSessionTurn(
+      authoritativeMessages,
+      previousMessages,
+      sourceRows,
+      liveProjection
+    )
 
     if (reconciled) {
       return reconciled
@@ -288,7 +291,7 @@ function reconcileAuthoritativeChatMessages(
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResult['messages'],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
 ): ChatMessage[] {
   return reconcileAuthoritativeChatMessages(
     toChatMessages(authoritativeMessages),
@@ -1878,12 +1881,9 @@ export function useSessionActions({
 
                   const persistedMessages = graftRefreshedTailOntoBackfill(persistedTail, cachedViewState.messages)
 
-                  const runtimeMessages = toChatMessages(activated.messages)
-                  const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
-
-                  const liveProjection = dedupeInflightUserAgainstTranscript(
+                  const { liveProjection, previousMessages } = reconcileLocalLiveProjection(
+                    cachedViewState.messages,
                     persistedMessages,
-                    runtimeMessages,
                     activated
                   )
 
@@ -1894,7 +1894,7 @@ export function useSessionActions({
                       ? withoutEarlyClarifyProjection(latestCachedMessages, pendingClarify.requestId)
                       : latestCachedMessages
 
-                  const currentLiveTurn = reconcilePersistedLiveTurn(
+                  const currentLiveTurn = reconcilePersistedSessionTurn(
                     persistedMessages,
                     cachedWithoutEarlyClarify ?? previousMessages,
                     persisted.messages,
@@ -2246,18 +2246,14 @@ export function useSessionActions({
         const preferredMessages = (() => {
           if (prefetchApplied && prefetchMatchesResumedSession) {
             if (hasLiveProjection && prefetchedTranscriptMessages) {
-              const runtimeMessages = toChatMessages(resumed.messages)
-              const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
-
-              // Omitted-messages resumes stay safe here: `resumed.messages`
-              // is empty, so `runtimeMessages` has no anchor and the dedupe
-              // helper returns the projection unchanged, while the REST
-              // prefetch below remains the authoritative transcript — the
-              // same "graft, don't rebuild" outcome the pre-restructure
-              // messages_omitted branch produced.
-              const liveProjection = dedupeInflightUserAgainstTranscript(
+              // Omitted-messages resumes stay safe here: when runtime history
+              // is empty, the dedupe helper can prove the current turn from an
+              // exact local optimistic-user + stream pair and anchor the
+              // remaining committed prefix in the REST transcript. Without
+              // either proof it leaves the projection unchanged.
+              const { liveProjection, previousMessages } = reconcileLocalLiveProjection(
+                currentMessages,
                 prefetchedTranscriptMessages,
-                runtimeMessages,
                 resumed
               )
 

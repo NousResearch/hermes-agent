@@ -174,6 +174,7 @@ def test_served_profile_projects_db_move_broadcasts_projects_changed(watcher_hom
     home, events = watcher_home
     coder_home = home / "profiles" / "coder"
     coder_home.mkdir(parents=True)
+    (coder_home / "config.yaml").write_text("{}\n", encoding="utf-8")  # a bare dir is not a profile
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
     assert server._profile_home("coder") == coder_home
@@ -203,6 +204,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     home, events = watcher_home
     bot_home = home / "profiles" / "bot"
     bot_home.mkdir(parents=True)
+    (bot_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
     assert server._profile_home("bot") == bot_home

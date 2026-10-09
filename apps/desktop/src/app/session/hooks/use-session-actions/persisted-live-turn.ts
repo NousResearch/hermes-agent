@@ -17,6 +17,10 @@ const renderedText = (raw: string) => {
   return part.type === 'text' ? part.text : ''
 }
 
+/** A user source row carrying the live turn's prompt text: the anchor `locateTurn` looks for. */
+export const isInflightPromptRow = (row: SessionMessage, inflight: NonNullable<SessionResumeResult['inflight']>) =>
+  row.role === 'user' && userText(String(row.content ?? '')) === userText(inflight.user ?? '')
+
 interface PersistedTurn {
   prompt: ChatMessage
   start: number
@@ -109,11 +113,7 @@ function locateTurn(
       break
     }
 
-    if (
-      row.role === 'user' &&
-      row.display_kind !== 'steer' &&
-      userText(String(row.content ?? '')) === userText(inflight.user ?? '')
-    ) {
+    if (row.display_kind !== 'steer' && isInflightPromptRow(row, inflight)) {
       candidate = candidateTurn(rows, messages, index, inflight.corrections ?? []) ?? candidate
     }
   }

@@ -235,6 +235,12 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
   )
 }
 
+// Older backends omit the canonical classification; an absent flag keeps the
+// legacy fallback downstream, so only a real boolean is carried over.
+function userOriginatedField(message: SessionMessage): Pick<ChatMessage, 'userOriginated'> {
+  return typeof message.user_originated === 'boolean' ? { userOriginated: message.user_originated } : {}
+}
+
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
 function asyncResultBody(content: string): string | undefined {
@@ -598,6 +604,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
+      ...userOriginatedField(message),
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'

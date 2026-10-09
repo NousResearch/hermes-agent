@@ -24,6 +24,10 @@ import { VoiceMenu } from './voice-menu'
 // for these here, and the row is where they read as belonging.
 export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 
+// iOS fires mousedown after touchend, and its default blurs the editor before
+// submit runs. Keep focus where it was so a send leaves the keyboard as it was.
+const keepEditorFocus = (event: { preventDefault: () => void }) => event.preventDefault()
+
 interface ConversationProps {
   active: boolean
   level: number
@@ -114,7 +118,10 @@ export function ComposerControls({
   )
 
   return (
-    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+    <div
+      className="flex min-w-0 shrink items-center justify-end gap-(--composer-control-gap)"
+      style={{ flexWrap: minimal ? 'wrap' : undefined }}
+    >
       {minimal ? null : (
         <>
           {hideModelPill ? null : (
@@ -133,6 +140,7 @@ export function ComposerControls({
             className={GHOST_ICON_BTN}
             disabled={disabled}
             onClick={onQueue}
+            onMouseDown={keepEditorFocus}
             size="icon"
             type="button"
             variant="ghost"
@@ -159,6 +167,7 @@ export function ComposerControls({
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+            onMouseDown={keepEditorFocus}
             type="submit"
           >
             {showStop ? (

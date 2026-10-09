@@ -120,8 +120,11 @@ export function persistStringArray(key: string, value: string[]) {
 }
 
 export function storedStringRecord(key: string): Record<string, string> {
-  const value = readKey(key)
+  return parseStringRecord(readKey(key))
+}
 
+/** A stored string map's string entries; anything absent or malformed reads as `{}`. */
+export function parseStringRecord(value: null | string): Record<string, string> {
   if (!value) {
     return {}
   }

@@ -358,9 +358,8 @@ class TestSetupLogging:
         removes just logs/ of a live profile, whose records must still land somewhere."""
         import shutil
 
-        from hermes_constants import (
-            mark_named_profile_deleted, reset_hermes_home_override, set_hermes_home_override,
-        )
+        from hermes_cli.profile_lifecycle import mark_profile_deleting
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = (hermes_home / "profiles" / "worker").resolve()
         profile_home.mkdir(parents=True)
@@ -381,7 +380,7 @@ class TestSetupLogging:
                   if isinstance(h, hermes_logging._ProfileRoutingFileHandler)]
         assert routed
         if removal == "tombstone":
-            mark_named_profile_deleted(profile_home)
+            mark_profile_deleting(profile_home)
             liveness_clock()  # a tombstone alone is seen on the next interval check
         elif removal == "rmtree":
             shutil.rmtree(profile_home)  # caught by the write itself, inside the interval
@@ -402,7 +401,7 @@ class TestSetupLogging:
     def test_live_profile_liveness_checked_at_most_once_per_interval(
         self, hermes_home, liveness_clock, monkeypatch, stream_closed_after_write
     ):
-        """A live routed profile must not pay the delete check (two stats) on every record.
+        """A live routed profile must not pay the delete check on every record.
 
         ``closed-per-write`` is how concurrent-log-handler behaves on Windows: the stream is
         closed after every write, which must not read as a skipped write.

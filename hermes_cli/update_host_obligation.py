@@ -177,9 +177,11 @@ def _named_profiles_exist() -> bool:
 
     ``profiles.list_profile_names`` suppresses enumeration errors and reads an unreadable roster as
     "default only"; here any error listing the roster or reading an entry's identity raises instead.
-    Same identity rule as ``hermes_constants.named_profile_is_live`` (stdlib only: see above).
+    Same identity rule as ``hermes_constants.named_profile_is_live`` (stdlib only: see above), and
+    the same tombstone as ``named_profile_is_deleted``: the canonical marker, so an alias of a
+    deleted home is deleted too, read here with errors raised where ``is_file()`` would hide them.
     """
-    from hermes_constants import _PROFILE_IDENTITY_MARKERS, PROFILE_ID_RE, get_default_hermes_root, profile_tombstone_path
+    from hermes_constants import _PROFILE_IDENTITY_MARKERS, PROFILE_ID_RE, get_default_hermes_root, profile_deletion_marker_path
 
     try:
         entries = list((get_default_hermes_root() / "profiles").iterdir())
@@ -188,9 +190,11 @@ def _named_profiles_exist() -> bool:
     for home in entries:
         if home.name == "default" or not PROFILE_ID_RE.match(home.name) or not stat.S_ISDIR(_mode(home, os.stat)):
             continue
-        identity = any((mode := _mode(home / name, os.lstat)) and not stat.S_ISDIR(mode)
-                       for name in _PROFILE_IDENTITY_MARKERS)
-        if identity and not _mode(profile_tombstone_path(home), os.lstat):
+        if not any((mode := _mode(home / name, os.lstat)) and not stat.S_ISDIR(mode)
+                   for name in _PROFILE_IDENTITY_MARKERS):
+            continue
+        marker = profile_deletion_marker_path(home)
+        if marker is None or not stat.S_ISREG(_mode(marker, os.stat)):
             return True
     return False
 

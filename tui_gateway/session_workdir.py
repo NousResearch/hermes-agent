@@ -22,7 +22,9 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
-def _completion_cwd(params: dict | None = None) -> str:
+def _completion_cwd(params: dict | None = None, *, resolved: tuple | None = None) -> str:
+    """Workspace for ``params`` (cwd / session_id / profile). ``resolved``: the ``(home, incarnation)`` the RPC
+    already resolved ``params['profile']`` to, so the profile is not resolved (and captured) a second time."""
     params = params or {}
     # Provenance for the client-sent ``cwd`` (#52589): the desktop seeds a new chat's cwd
     # from its app-global workspace (the launch profile's configured directory or the
@@ -34,7 +36,7 @@ def _completion_cwd(params: dict | None = None) -> str:
     profile = params.get("profile")
     session_cwd = _sessions.get(params.get("session_id") or "", {}).get("cwd")
     try:
-        profile_home = _profile_home(profile) if profile else None
+        profile_home = resolved[0] if resolved else (_profile_home(profile) if profile else None)
     except ProfileUnavailableError:
         # Main only resolved the profile when it consulted the profile's config; keep a deleted one fatal exactly there.
         if (client_cwd and not params.get("cwd_explicit")) or not (client_cwd or session_cwd):
@@ -224,8 +226,9 @@ def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
     return bool(session and not session.get("explicit_cwd") and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE)
 
 
-def _resolve_create_cwd(params: dict, source: str, profile_home) -> tuple[bool, str, bool]:
-    """``(explicit_cwd, session_cwd, remote_cwd)`` for a freshly created session.
+def _resolve_create_cwd(params: dict, source: str, resolved: tuple) -> tuple[bool, str, bool]:
+    """``(explicit_cwd, session_cwd, remote_cwd)`` for a freshly created session; ``resolved``: the ``(home,
+    incarnation)`` the create resolved ``params['profile']`` to.
 
     Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace". A
     chosen workspace is one the gateway host can ``isdir``-probe, an ssh-shaped cwd on a remote
@@ -238,12 +241,12 @@ def _resolve_create_cwd(params: dict, source: str, profile_home) -> tuple[bool, 
     persists nothing and a named profile's configured ``terminal.cwd`` keeps winning.
     """
     raw_cwd = str(params.get("cwd") or "").strip()
-    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
+    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(resolved[0])
     explicit_cwd = False
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (
             remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
-    session_cwd = _completion_cwd(params)
+    session_cwd = _completion_cwd(params, resolved=resolved)
     if raw_cwd and not explicit_cwd and source == "desktop":
         if params.get("cwd_explicit"):
             explicit_cwd = True
@@ -740,7 +743,11 @@ def _workdir_owner_db(session: dict, fail_log: str):
     if profile_home := session.get("profile_home"):
         try:
             from hermes_state_registry import acquire
-            db, close_db = acquire(Path(profile_home) / "state.db"), True
+            if _session_profile_rejected(session):
+                raise FileNotFoundError(f"Profile incarnation is stale or home is unavailable: {profile_home}")
+            db, close_db = acquire(
+                Path(profile_home) / "state.db",
+                expected_profile_incarnation=session.get("profile_incarnation")), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
             db = _WORKDIR_DB_OPEN_FAILED
@@ -822,7 +829,8 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     if not session_key or not cwd or not _workdir_valid_generation(generation):
         return
     # Snapshot routing fields; the live session dict may be gone when the thread runs.
-    db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
+    db_session = {"session_key": session_key, "profile_home": session.get("profile_home"),
+                  "profile_incarnation": session.get("profile_incarnation")}
 
     def _run() -> None:
         try:

@@ -15,6 +15,8 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   const innerRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
+  const [horizontalOverflowing, setHorizontalOverflowing] = useState(false)
+  const [horizontalAtEnd, setHorizontalAtEnd] = useState(false)
 
   // Measure inside ResizeObserver timing only (layout is clean there). A
   // synchronous mount-time scrollHeight read forces a reflow per instance,
@@ -24,8 +26,22 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
 
     if (el) {
       setOverflowing(el.scrollHeight > 121)
+      const hasHorizontalOverflow = el.scrollWidth > el.clientWidth + 1
+
+      setHorizontalOverflowing(hasHorizontalOverflow)
+      setHorizontalAtEnd(!hasHorizontalOverflow || el.scrollLeft + el.clientWidth >= el.scrollWidth - 1)
     }
   }, [])
+
+  const handleScroll = useCallback(() => {
+    const el = innerRef.current
+
+    if (!el || !horizontalOverflowing) {
+      return
+    }
+
+    setHorizontalAtEnd(el.scrollLeft + el.clientWidth >= el.scrollWidth - 1)
+  }, [horizontalOverflowing])
 
   useResizeObserver(measure, innerRef)
 
@@ -39,10 +55,19 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
           expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
           className
         )}
+        data-horizontal-overflow={horizontalOverflowing ? '' : undefined}
+        onScroll={handleScroll}
         ref={innerRef}
       >
         {children}
       </div>
+      {horizontalOverflowing && !horizontalAtEnd && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 w-5 bg-linear-to-l from-[var(--expandable-fade-from,var(--ui-chat-surface-background))] to-transparent"
+          data-slot="expandable-horizontal-fade"
+        />
+      )}
       {overflowing && (
         // The fade is a pure overflow cue and must not intercept pointer events:
         // it spans the full bottom edge (over the horizontal scrollbar of a wide

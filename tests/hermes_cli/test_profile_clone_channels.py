@@ -18,6 +18,7 @@ from hermes_cli import gateway_migrate as gm
 from hermes_cli.profile_channels import (
     channel_platforms_configured, shared_channel_credentials, strip_channel_config, strip_channel_env_file,
 )
+from hermes_cli.profile_lifecycle import mark_profile_deleting
 from hermes_cli.profiles import create_profile
 
 _SOURCE_ENV = (
@@ -172,15 +173,15 @@ def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
     def _observing_strip(profile_dir, **kw):
         seen["final_exists"] = (home / "profiles" / "bot2").exists()
         seen["served"] = [n for n, _ in profiles.profiles_to_serve(multiplex=True)]
-        seen["work_dir_hidden"] = profile_dir.name.startswith(".")
         return real_strip(profile_dir, **kw)
 
     monkeypatch.setattr(profile_channels, "strip_channel_settings", _observing_strip)
     profile_dir = create_profile("bot2", clone_config=True, no_alias=True)
 
-    assert seen == {"final_exists": False, "served": ["default"], "work_dir_hidden": True}
+    assert seen == {"final_exists": False, "served": ["default"]}
     assert profile_dir.is_dir() and [n for n, _ in profiles.profiles_to_serve(multiplex=True)] == ["default", "bot2"]
-    assert not [p for p in (home / "profiles").iterdir() if p.name.startswith(".")]
+    staging = home / "profiles" / ".profile-creating"
+    assert not staging.exists() or not list(staging.iterdir())
 
 
 def test_clone_channels_refusal_lives_in_create_profile(home, monkeypatch):
@@ -195,6 +196,34 @@ def test_clone_channels_refusal_lives_in_create_profile(home, monkeypatch):
         create_profile("plain", no_alias=True, clone_channels=True)
     # Without --clone-channels the same clone succeeds (the refusal is about the copy, not the clone).
     assert create_profile("twin", clone_config=True, no_alias=True).is_dir()
+
+
+@pytest.mark.parametrize(("flags", "source_untouched"), [
+    ({"clone_from": "src", "no_skills": True}, True),
+    # The refusal reads the source's channels in its plugin scope, and that config load adopts a
+    # pre-marker home's incarnation (config_home); only the target is pinned for this one.
+    ({"clone_from": "src", "clone_channels": True}, False),
+    ({"sync_imports": True}, True),
+    ({"clone_channels": True}, True),
+], ids=["no-skills-with-clone", "clone-channels-refused", "sync-imports-without-clone", "clone-channels-without-clone"])
+def test_refused_create_touches_neither_source_nor_target(home, monkeypatch, flags, source_untouched):
+    """Flag validation and the live-multiplexer refusal run before anything is built: a refused create
+    must not pin (backfill) the source's incarnation or replace a tombstoned shell at the target."""
+    from hermes_cli import gateway_multiplex_served as served_mod
+    from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME
+    source = create_profile("src", clone_config=True, clone_channels=True, no_alias=True)
+    (source / PROFILE_INCARNATION_FILENAME).unlink()  # a legacy home predating incarnation markers
+    shell = home / "profiles" / "dst"
+    (shell / "cron").mkdir(parents=True)
+    mark_profile_deleting(shell)
+    monkeypatch.setattr(served_mod, "recorded_served_profiles", lambda root=None: ["default", "src"])
+
+    with pytest.raises(ValueError):
+        create_profile("dst", no_alias=True, **flags)
+
+    assert (shell / "cron").is_dir() and hermes_constants.named_profile_is_deleted(shell)
+    if source_untouched:
+        assert not (source / PROFILE_INCARNATION_FILENAME).exists()
 
 
 _SHARED_ENV = (

@@ -329,6 +329,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/observability/shared_metrics_update.py",
     "hermes_cli/main_install_repair.py",
     "hermes_logging.py",
+    "hermes_state_holders.py",  # the Windows pause's interpreter-option walk (update_cmd_windows)
     "hermes_platform/host/__init__.py",
     "hermes_platform/host/facts.py",
     "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
@@ -343,6 +344,7 @@ _UPDATE_DEPENDENCIES = (
     # The compilers source_build / the Desktop build run (freshness, node-deps,
     # tui, web, desktop and their shared frontend-common).
     "scripts/build/",
+    "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
 )
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The

@@ -26,30 +26,30 @@ def _seed_store(home: Path) -> Path:
     return home
 
 
-def _bind_foreign(monkeypatch, tmp_path: Path) -> None:
+def _bind_foreign(route_profiles, tmp_path: Path) -> None:
     foreign = _seed_store(tmp_path / "profiles" / "code")
-    monkeypatch.setattr(server, "_profile_home", lambda name: foreign if (name or "").strip() == "code" else None)
+    route_profiles(server, lambda name: foreign if (name or "").strip() == "code" else None)
 
 
-def test_foreign_profile_db_is_read_only(monkeypatch, tmp_path):
-    _bind_foreign(monkeypatch, tmp_path)
+def test_foreign_profile_db_is_read_only(route_profiles, tmp_path):
+    _bind_foreign(route_profiles, tmp_path)
     with server._profile_db({"profile": "code"}) as db:
         assert db is not None
         assert db.read_only is True
         assert db.get_session("seed") is not None
 
 
-def test_foreign_profile_db_writer_opt_in(monkeypatch, tmp_path):
-    _bind_foreign(monkeypatch, tmp_path)
+def test_foreign_profile_db_writer_opt_in(route_profiles, tmp_path):
+    _bind_foreign(route_profiles, tmp_path)
     with server._profile_db({"profile": "code"}, writer=True) as db:
         assert db is not None
         assert db.read_only is False
         assert db.set_session_title("seed", "renamed") is True
 
 
-def test_discover_repos_payload_skips_backfill_on_read_only(monkeypatch, tmp_path):
+def test_discover_repos_payload_skips_backfill_on_read_only(monkeypatch, tmp_path, route_profiles):
     """The repo-root backfill UPDATE must not be attempted (and swallowed) on a reader."""
-    _bind_foreign(monkeypatch, tmp_path)
+    _bind_foreign(route_profiles, tmp_path)
     with server._profile_db({"profile": "code"}) as db:
         calls = []
         monkeypatch.setattr(type(db), "backfill_repo_roots", lambda self, m: calls.append(m), raising=False)
@@ -63,7 +63,7 @@ def test_discover_repos_payload_skips_backfill_on_read_only(monkeypatch, tmp_pat
         assert len(calls) == 1
 
 
-def test_bot_chat_unarchive_escalates_to_writer(monkeypatch, tmp_path):
+def test_bot_chat_unarchive_escalates_to_writer(tmp_path, route_profiles):
     """An archived-by-accident Bot Chat found via an exact-title lookup on a READ-ONLY foreign
     handle is still resurrected: the write goes through a short-lived registry writer."""
     from tools.bot_mode_probe import BOT_CHAT_TITLE
@@ -76,7 +76,7 @@ def test_bot_chat_unarchive_escalates_to_writer(monkeypatch, tmp_path):
     db.end_session("bot", "ws_orphan_reap")
     db.set_session_archived("bot", True)
     db.close()
-    monkeypatch.setattr(server, "_profile_home", lambda name: foreign if (name or "").strip() == "code" else None)
+    route_profiles(server, lambda name: foreign if (name or "").strip() == "code" else None)
 
     with server._profile_db({"profile": "code"}) as ro_db:
         assert ro_db.read_only is True

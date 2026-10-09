@@ -49,12 +49,12 @@ def resume_db(db, monkeypatch, tmp_path):
     for name, value in {
         "_resolve_model": lambda: "test-model",
         "_enable_gateway_prompts": lambda: None,
-        "_find_live_session_by_key": lambda _key, _home=None: None,
+        "_find_live_session_by_key": lambda _key, _home=None, _incarnation=None: None,
         "_schedule_agent_build": lambda *a, **k: None,
         "_schedule_session_cap_enforcement": lambda *a, **k: None,
         "_maybe_schedule_auto_continue": lambda *a, **k: None,
         "_default_session_cwd": lambda *a, **k: str(tmp_path),
-        "_child_run_active": lambda _key, _home=None: False,
+        "_child_run_active": lambda _key, _home=None, _incarnation=None: False,
     }.items():
         monkeypatch.setattr(server, name, value)
     known = set(server._sessions)

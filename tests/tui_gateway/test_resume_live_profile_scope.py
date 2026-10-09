@@ -10,9 +10,13 @@ A's runtime — the turn then ran with A's persona and wrote A's memory
 * resume with profile B never reuses profile A's live session of the same id;
 * the launch profile (no ``profile``) still matches live records that carry
   no ``profile_home`` — the pre-existing single-profile contract.
+* a stale runtime from a deleted generation cannot hide the recreated
+  profile's current winner during the eager post-build race check.
 """
 
 from __future__ import annotations
+
+import threading
 
 import pytest
 
@@ -51,13 +55,13 @@ class _DB:
 
 
 @pytest.fixture()
-def homes(monkeypatch, tmp_path):
+def homes(monkeypatch, tmp_path, route_profiles):
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
     monkeypatch.setattr("hermes_state_registry.acquire", _DB)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_profile_home", lambda p: homes.get(p) if p else None)
+    route_profiles(server, lambda p: homes.get(p) if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
@@ -106,3 +110,53 @@ def test_launch_profile_still_matches_records_without_profile_home(homes):
 
     assert _resume(session_id="s1", source="desktop")["result"]["session_id"] == "live-launch"
     assert _resume(session_id="s1", profile="a", source="desktop")["result"]["session_id"] == "live-a"
+
+
+def test_eager_resume_post_build_recheck_skips_stale_profile_incarnation(
+    homes, monkeypatch
+):
+    current_incarnation = "1" * 32
+    stale = _register_live("stale-runtime", homes["a"])
+    stale["profile_incarnation"] = "0" * 32
+    built = None
+
+    class _Agent:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def _make_agent(*_args, **_kwargs):
+        nonlocal built
+        built = _Agent()
+        winner = _register_live("current-runtime", homes["a"])
+        winner["profile_incarnation"] = current_incarnation
+        return built
+
+    monkeypatch.setattr(server, "_capture_profile_incarnation", lambda _home: current_incarnation)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, *, cwd=None: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+
+    result = {}
+
+    def _run_resume():
+        result["response"] = _resume(
+            session_id="s1",
+            profile="a",
+            source="desktop",
+            eager_build=True,
+        )
+
+    thread = threading.Thread(
+        target=_run_resume,
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive(), "post-build live reuse deadlocked on the resume lock"
+    response = result["response"]
+    assert response["result"]["session_id"] == "current-runtime"
+    assert built is not None and built.closed is True

@@ -29,8 +29,11 @@ def hermes_root(tmp_path, monkeypatch):
     ``<root>/profiles/<name>/`` and the launch/default profile is ``<root>``.
     """
     root = tmp_path / "hermes_home"
-    (root / "profiles" / "work").mkdir(parents=True)
-    (root / "profiles" / "other").mkdir(parents=True)
+    for name in ("work", "other"):
+        home = root / "profiles" / name
+        home.mkdir(parents=True)
+        # A marker-less directory is not a live profile.
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     # Make sure no stale process-wide home override leaks in from another test.
     from hermes_constants import get_hermes_home_override

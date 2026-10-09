@@ -17,6 +17,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     profile_home = tmp_path / "profiles" / "botA"
     cron_dir = profile_home / "cron"
     cron_dir.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     (cron_dir / "jobs.json").write_text(
         json.dumps(
             {

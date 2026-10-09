@@ -22,7 +22,7 @@ function setup() {
   })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { writeClipboard: vi.fn().mockResolvedValue(undefined) }
+    value: { writeClipboard: vi.fn().mockResolvedValue(true) }
   })
   render(
     <MemoryRouter>

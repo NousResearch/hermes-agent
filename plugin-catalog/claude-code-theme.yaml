@@ -1,0 +1,20 @@
+name: claude-code-theme
+title: Claude Code Theme
+repo: https://github.com/aliilhami/hermes-claude-code-theme
+sha: d2430687cde455e470f5f75b951e488eb0938e61
+description: "Unofficial Claude Code-inspired theme for Hermes Desktop, with light and dark palettes, rounded composer and side-panel cards, softer sidebar and menus, and a context-window meter beside the model switcher. Not affiliated with, endorsed by, or sponsored by Anthropic or Claude Code. Disclosure — unofficial Claude Code lookalike theme; its stylesheet restyles native Desktop surfaces (user bubbles, composer, file panel, sidebar rows, dropdown menus) and hides the chat backdrop image; the context meter reads session.usage through the SDK; an opt-in accent setting uses setAccentOverride; no network calls of its own."
+maintainer: aliilhami
+tier: community
+category: desktop
+docs_url: https://github.com/aliilhami/hermes-claude-code-theme#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/aliilhami/hermes-claude-code-theme/d2430687cde455e470f5f75b951e488eb0938e61/docs/overview-light.png
+  - https://raw.githubusercontent.com/aliilhami/hermes-claude-code-theme/d2430687cde455e470f5f75b951e488eb0938e61/docs/sidebar-menus.png
+  - https://raw.githubusercontent.com/aliilhami/hermes-claude-code-theme/d2430687cde455e470f5f75b951e488eb0938e61/docs/context-meter.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

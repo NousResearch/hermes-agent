@@ -9,7 +9,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/guberm/hermes-telegram-desktop-plugin
-version: "1.2.10"
+version: "1.2.11"
 platforms: []
 capabilities:
   provides_tools: []

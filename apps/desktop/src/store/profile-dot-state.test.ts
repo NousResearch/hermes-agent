@@ -16,11 +16,7 @@ import {
   $unreadFinishedSessionIds,
   setSessions
 } from './session'
-import {
-  clearAllSessionStates,
-  publishSessionState,
-  recordSessionEventScope
-} from './session-states'
+import { clearAllSessionStates, publishSessionState, recordSessionEventScope } from './session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from './session-unread'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })

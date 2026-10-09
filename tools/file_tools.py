@@ -28,13 +28,15 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_bloc
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
+    _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
-    _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
+    _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
+    _check_not_found_cache, _known_full_content_sha256,
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
@@ -150,22 +152,26 @@ _V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(
 _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
-def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, file_ops) -> str:
+def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
+                                      file_ops) -> str:
     """Rewrite V4A file headers to the resolved host paths (host backends only).
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
-    (which can differ — the git-worktree cwd bug).
+    (which can differ — the git-worktree cwd bug). Delete and Move headers take
+    ``path_to_entry``: they act on a symlink itself, never on its target.
     """
     if not _file_ops_uses_host_paths(file_ops):
         return patch
 
-    def _res(raw: str) -> str:
+    def _res(raw: str, entry: bool = False) -> str:
         raw = raw.strip()
-        return path_to_resolved.get(raw) or raw
+        return (path_to_entry if entry else path_to_resolved).get(raw) or raw
 
-    patch = _V4A_SINGLE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(3))}", patch)
-    return _V4A_MOVE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(2))} -> {_res(m.group(3))}", patch)
+    patch = _V4A_SINGLE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}", patch)
+    return _V4A_MOVE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -264,9 +270,9 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend
+    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_unusable_container_cwd,
+        _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
@@ -276,7 +282,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
         recorded_cwd = None
-    cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+    cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -286,18 +292,20 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        if cwd != config["cwd"]:
+    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
+        fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
+        if cwd != fallback:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "
                 "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, config["cwd"])
-        cwd = config["cwd"]
+                cwd, env_type, fallback)
+        cwd = fallback
     logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=host_cwd,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
@@ -368,7 +376,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str = None):
+def clear_file_ops_cache(task_id: str | None = None):
     """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
         if task_id:
@@ -568,6 +576,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 complete = complete and not redacted
             if complete:
                 baselines[resolved_str] = version
+                task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
         if not stable or count >= 4:
@@ -750,10 +759,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str) -> str | None:
-    """Task-resolved path string, or None when resolution fails for any reason."""
+def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str | None:
+    """Task-resolved path string, or None when resolution fails for any reason.
+    ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
-        return str(_resolve_path_for_task(filepath, task_id))
+        return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
 
@@ -905,7 +915,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
-                    # same-task writes stay unblocked. patch never does this.
+                    # same-task writes stay unblocked (patch_tool carries it).
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
@@ -917,13 +927,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
-def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
+def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
     """Extract every path named in V4A headers, rejecting ``..`` traversal.
 
-    Returns ``(all_paths, content_write_paths)`` or a tool_error string. Header
-    paths come from patch CONTENT (more attacker-influenceable than ``path=``,
-    which keeps its legitimate ``..`` use). Move headers check BOTH endpoints;
-    only Update/Add write text and feed the binary-document guard.
+    Returns ``(all_paths, content_write_paths, entry_paths)`` or a tool_error
+    string. Header paths come from patch CONTENT (more attacker-influenceable
+    than ``path=``, which keeps its legitimate ``..`` use). Move headers check
+    BOTH endpoints; only Update/Add write text and feed the binary-document
+    guard; Delete and Move act on the directory entry (``entry_paths``).
     """
     from tools.path_security import has_traversal_component
 
@@ -931,6 +942,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
     headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
     paths: list[str] = []
     content_paths: list[str] = []
+    entry_paths: list[str] = []
     for raw, writes_text in headers:
         v4a_path = raw.strip()
         if has_traversal_component(v4a_path):
@@ -940,13 +952,12 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
                 "path in '*** Update File:' / '*** Add File:' / "
                 "'*** Delete File:' / '*** Move File:' headers.")
         paths.append(v4a_path)
-        if writes_text:
-            content_paths.append(v4a_path)
-    return paths, content_paths
+        (content_paths if writes_text else entry_paths).append(v4a_path)
+    return paths, content_paths, entry_paths
 
 
-def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
+def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
+               new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
                session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
@@ -956,12 +967,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
+    _entry_paths: list[str] = []
     if mode == "patch" and patch:
         collected = _collect_v4a_header_paths(patch)
         if isinstance(collected, str):
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
+        _entry_paths = collected[2]
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
         return tool_error(precheck_err)
@@ -970,11 +983,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # overlapping multi-file patches can't deadlock (every caller locks in
         # the same order). An unresolvable path is simply not locked.
         _path_to_resolved: dict[str, str] = {_p: _resolve_or_none(_p, task_id) for _p in _paths_to_check}
+        _path_to_entry: dict[str, str] = {_p: _resolve_or_none(_p, task_id, entry=True) for _p in _entry_paths}
         with ExitStack() as _locks:
-            for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
+            for _r in sorted({_r for _r in (*_path_to_resolved.values(), *_path_to_entry.values()) if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
+            # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like
+            # every baseline check it stats the host path, so a sandbox path carries nothing.
+            _known = _known_full_content_sha256(_path_to_resolved.values(), task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -988,7 +1005,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, file_ops))
+                result = file_ops.patch_v4a(
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -998,11 +1016,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if not result_dict.get("error"):
                 # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
                 # mismatch is visible instead of silently landing elsewhere.
-                _resolved_modified = [_path_to_resolved.get(_p) or _p for _p in _paths_to_check]
+                _resolved_modified = [_path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p
+                                      for _p in _paths_to_check]
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
                 _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id)
+                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
         # old_string-not-found hint. Failure escalation is tracked for replace
@@ -1018,9 +1038,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "Stop retrying with variations of the same old_string. "
                     "Either: (1) re-read the file fresh to verify current "
                     "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor.")
+                    "surrounding context lines, or (3) re-read the file in "
+                    "full, then use write_file to replace it if the targeted "
+                    "region is hard to anchor.")
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
@@ -1031,7 +1051,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
+                file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
                 task_id: str = "default") -> str:
@@ -1255,7 +1275,7 @@ def _is_openai_family_main() -> bool:
 
         provider = (_read_main_provider() or "").strip().lower()
         model = (_read_main_model() or "").strip().lower()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     if provider in {"openai", "openai-chat", "openai-codex", "azure-openai", "codex"}:
         return True
@@ -1312,22 +1332,27 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    return write_file_tool(
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
+    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_patch(args, **kw):
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
     tid = kw.get("task_id") or "default"
-    return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+    mode = args.get("mode", "replace")
+    return record_file_edit("patch", mode, lambda: patch_tool(
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_search_files(args, **kw):
@@ -1363,7 +1388,7 @@ def _read_file_schema_overrides():
                     "PDF (text layer)", "PDF (scanned or text)"
                 )
             }
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return {}
 
@@ -1388,37 +1413,9 @@ def _patch_schema_overrides():
             "required": ["mode"],
         }
         return {"description": _PATCH_V4A_DESCRIPTION, "parameters": params}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
 
 
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'has_opaque_document_extension': ('tools.binary_extensions', 'has_opaque_document_extension'),
-    'is_pdf_path': ('tools.binary_extensions', 'is_pdf_path'),
-    'notify_other_tool_call': ('tools.file_tools_read_tracking', 'notify_other_tool_call'),
-    'reset_file_dedup': ('tools.file_tools_read_tracking', 'reset_file_dedup'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

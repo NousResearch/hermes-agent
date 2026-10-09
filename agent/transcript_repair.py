@@ -1,13 +1,80 @@
-"""Transcript repair for SessionDB batch appends: reconcile in-memory assistant rows with committed SQLite
-rows (blank-row in-place update, concurrent-winner adoption, watermark-compaction clone lookup) and sync
-markers after commit."""
+"""Transcript repair for SessionDB batch appends: reconcile in-memory rows with committed SQLite rows
+(in-place sanitizer rewrites, assistant blank-row repair, concurrent-winner adoption, watermark-compaction
+clone lookup) and sync markers after commit."""
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.message_metadata import (
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+from hermes_state_common import _id_chunks, _placeholders
+from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
+from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+
+
+# Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
+# role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
+# and a result row's ``tool_call_uid`` are identity too: a rewrite changes the message's content, never
+# which logical message (or which call occurrence) the row is. ``tool_call_uids`` IS payload: it follows
+# ``tool_calls`` (an assistant merge unions both), so it is rewritten with the row.
+_NON_PAYLOAD_COLUMNS = frozenset(
+    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uid"})
+_REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
+# Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
+# backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
+# ownership version: a metadata write must never make our own row look like a foreign winner.
+_METADATA_COLUMNS = frozenset(
+    {"display_kind", "display_metadata", "api_content", "codex_reasoning_items", "platform_message_id"}
+)
+# The ownership version: what we last committed for the payload the sanitizer / live edits change.
+_OWNED_COLUMNS = tuple(c for c in _REPAIR_COLUMNS if c not in _METADATA_COLUMNS)
+# Presentation-only metadata a matched (ours) row may hand to a live dict that lacks it.
+_LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
+# ``message_id`` is identity the flush derived from the live dict (int there, TEXT in SQLite): never synced.
+_SYNC_FIELDS = ("role",) + _REPAIR_COLUMNS
+# Canonical-row markers: a matched row hands over only missing presentation metadata; a legacy (no-digest)
+# dict over a filled assistant row adopts only its content.
+_METADATA_ONLY = "_metadata_only"
+_CONTENT_ONLY = "_content_only"
+
+
+def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
+    """Fixed-size digest of the owned (non-metadata) columns (the CAS version) of a ``SELECT *`` messages row.
+
+    Callers pass rows read back from SQLite, never Python bind values: column affinity rewrites values on
+    storage (int ``platform_message_id`` -> TEXT, float ``token_count`` -> INTEGER), so hashing bind values
+    would never match the stored version. A digest rather than a row copy: the value rides on live message
+    dicts, so a full copy would double transcript memory and anything that prices dict bytes.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for column in _OWNED_COLUMNS:
+        value = row[column]
+        if value is None:
+            digest.update(b"N")
+            continue
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            tag, data = b"B", bytes(value)
+        elif isinstance(value, str):
+            tag, data = b"S", value.encode("utf-8", "surrogatepass")
+        else:
+            tag, data = (b"F" if isinstance(value, float) else b"I"), repr(value).encode("ascii")
+        digest.update(tag + len(data).to_bytes(8, "big") + data)
+    return digest.hexdigest()
+
+
+def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, messages: list[dict[str, Any]]) -> None:
+    """Stamp the stored-row digest on freshly inserted dicts (every ``_insert_message_rows`` caller; one SELECT
+    per batch)."""
+    by_id = {msg["_row_id"]: msg for msg in messages if isinstance(msg.get("_row_id"), int)}
+    for chunk in _id_chunks(by_id):
+        for row in conn.execute(
+            f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})", (session_id, *chunk)
+        ).fetchall():
+            by_id[int(row["id"])][DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
 
 
 def is_content_blank(content: Any) -> bool:
@@ -21,76 +88,244 @@ def is_content_blank(content: Any) -> bool:
     return False
 
 
+def _active_logical_message_row(
+    conn: sqlite3.Connection, session_id: str, role: str, message_uid: str | None,
+) -> Mapping[str, Any] | None:
+    """Newest active physical row for one durable logical message.
+
+    A ``message_uid`` names a logical message, not a physical row: compaction/copy paths deliberately
+    keep it while re-issuing row ids. The later active row is the current version. Callers use this only
+    when the live dict also carries a stored-row snapshot, so a fresh message that merely resembles an
+    older one can never be adopted here.
+    """
+    if message_uid is None:
+        return None
+    return conn.execute(
+        "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (session_id, role, message_uid),
+    ).fetchone()
+
+
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
-) -> List[Dict[str, Any]]:
-    """Partition a message batch within an active write transaction. An assistant message carrying an
-    existing integer ``_row_id`` targets its active SQLite row (or the active clone a watermark compaction
-    made of it): a blank row is updated in place; a non-blank one (concurrent winner) has its canonical
-    content adopted without overwrite. Returns the messages that must be inserted as fresh rows."""
-    inserted_rows: List[Dict[str, Any]] = []
+    serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+    decode_row_fn: Callable[[Mapping[str, Any]], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve row-addressed rewrites without appending duplicates or replacing concurrent winners.
+
+    A durable row snapshot is a compare-and-swap version for sanitizer rewrites. When a live replay loses
+    its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
+    active generation without matching mutable payload. Watermark-compaction clones are matched by their
+    copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
+    stream content repair. Returns only rows that need fresh inserts.
+    """
+    inserted_rows: list[dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
+        role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
+        expected = msg.get(DB_ROW_SNAPSHOT) if isinstance(msg, dict) else None
         target_row = None
-        if isinstance(existing_row_id, int) and msg.get("role", "unknown") == "assistant":
-            target_row = _active_assistant_row(conn, session_id, existing_row_id)
+        if isinstance(existing_row_id, int):
+            target_row = _active_message_row(conn, session_id, existing_row_id, role)
+        elif isinstance(expected, str):
+            # Logical identity + the CAS version prove this dict came from durable replay. A new message
+            # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
+            target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
             inserted_rows.append(msg)
             continue
+
         target_id = int(target_row["id"])
-        decoded = decode_content_fn(target_row["content"])
         msg["_row_id"] = target_id
-        if is_content_blank(decoded):
-            conn.execute(
-                "UPDATE messages SET content = ? "
-                "WHERE id = ? AND session_id = ? AND active = 1",
-                (encode_content_fn(msg.get("content")), target_id, session_id),
-            )
+        _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
+        canonical = None
+        adopt = wrote = False
+        if isinstance(expected, str):
+            # The digest covers only the columns we own, so it answers "is the row still what we last
+            # committed?". Match: the live dict is the source of truth (the DB holds its lossy durable
+            # projection, multimodal parts -> text, which must never flow back): write the live owned values
+            # and leave same-process metadata writes (reactions, backfills) alone. The caller holds BEGIN
+            # IMMEDIATE, so the row cannot change between compare and UPDATE. Mismatch: another writer changed
+            # the payload after our flush; adopt its durable version.
+            adopt = transcript_row_snapshot(target_row) != expected
+            if not adopt:
+                serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
+                if serialized["token_count"] is None:
+                    # Replays never decode token_count (the agent flush row sets it to None): None means
+                    # "unknown", not NULL.
+                    serialized = {**serialized, "token_count": target_row["token_count"]}
+                if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
+                    _rewrite_row(conn, session_id, target_row, serialized)
+                    wrote = True
+                missing = {c: target_row[c] for c in _LIVE_MISSING_METADATA if msg.get(c) is None}
+                if any(value is not None for value in missing.values()):
+                    decoded = decode_row_fn(target_row)
+                    canonical = {c: decoded[c] for c in missing if c in decoded}
+                    canonical[_METADATA_ONLY] = True
+        elif role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
+            # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
+            # from live content with a content-only CAS and never adopt the blank row onto the live dict.
+            wrote = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content IS ?",
+                (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
+            ).rowcount > 0
         else:
-            msg["_canonical_content"] = decoded  # concurrent winner: adopt, don't overwrite
+            # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False
+            # projection) over a non-blank assistant row: another writer already filled it. Adopt its content
+            # only, never the whole row: the live tool_calls / reasoning* / codex_* fields may be sanitizer-fixed
+            # while the durable JSON still holds the raw escaped surrogate, and live-only fields must survive.
+            if role == "assistant":
+                canonical = {"content": decode_content_fn(target_row["content"]), _CONTENT_ONLY: True}
+
+        final_row = conn.execute(
+            "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
+        ).fetchone() if wrote else target_row
+        msg["timestamp"] = final_row["timestamp"]
+        # A row-addressed rewrite keeps the row's identity: the stored uid wins over whatever the live dict
+        # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
+        _restore_row_identity(final_row, msg)
+        msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
+        if adopt:
+            canonical = decode_row_fn(final_row)
+        if canonical:
+            msg[CANONICAL_ROW] = canonical
+        else:
+            msg.pop(CANONICAL_ROW, None)
     return inserted_rows
 
 
-def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int):
-    """The active assistant row for ``row_id``, or the active clone a watermark compaction made of it."""
+def _rewrite_row(
+    conn: sqlite3.Connection,
+    session_id: str,
+    target_row: Mapping[str, Any],
+    serialized: Mapping[str, Any],
+) -> None:
+    """Rewrite one durable payload whose digest matched the live dict's last committed version."""
+    old_identity = target_row["display_identity"]
+    old_peer_ids = [
+        int(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND id != ? "
+            "AND (active = 1 OR compacted = 1) AND display_identity IS ?",
+            (session_id, target_row["id"], old_identity),
+        ).fetchall()
+    ] if old_identity is not None else []
+
+    # Owned columns only: same-process metadata writes (a reaction, a backfill) stay as committed.
+    assignments = ", ".join(f"{column} = ?" for column in _OWNED_COLUMNS)
+    conn.execute(
+        f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ?",
+        [*(serialized[column] for column in _OWNED_COLUMNS), int(target_row["id"]), session_id],
+    )
+    _restore_display_index(conn, session_id, target_row, serialized, old_identity, old_peer_ids)
+
+
+def _restore_display_index(
+    conn: sqlite3.Connection,
+    session_id: str,
+    target_row: Mapping[str, Any],
+    serialized: Mapping[str, Any],
+    old_identity: Any,
+    old_peer_ids: list[int],
+) -> None:
+    """Restore display identities/orders invalidated by the payload-update trigger."""
+    if old_peer_ids:
+        placeholders = _placeholders(old_peer_ids)
+        old_order = min(old_peer_ids)
+        conn.execute(
+            f"UPDATE messages SET display_identity = ?, display_order = ? "
+            f"WHERE session_id = ? AND id IN ({placeholders})",
+            (old_identity, old_order, session_id, *old_peer_ids),
+        )
+
+    target_id = int(target_row["id"])
+    new_identity = serialized["display_identity"]
+    visible = bool(target_row["active"] or target_row["compacted"])
+    if not visible:
+        conn.execute(
+            "UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ? AND session_id = ?",
+            (new_identity, target_id, target_id, session_id),
+        )
+        return
+
+    peers = conn.execute(
+        "SELECT id, display_order FROM messages WHERE session_id = ? AND id != ? "
+        "AND (active = 1 OR compacted = 1) AND display_identity IS ?",
+        (session_id, target_id, new_identity),
+    ).fetchall()
+    new_order = min(
+        [target_id]
+        + [int(peer["display_order"] if peer["display_order"] is not None else peer["id"]) for peer in peers]
+    )
+    conn.execute(
+        "UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ? AND session_id = ?",
+        (new_identity, new_order, target_id, session_id),
+    )
+    if peers:
+        conn.executemany(
+            "UPDATE messages SET display_order = ? WHERE id = ? AND session_id = ?",
+            [(new_order, int(peer["id"]), session_id) for peer in peers],
+        )
+
+
+def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, role: str):
+    """The same-role active clone for ``row_id``, or the addressed inactive row when no clone exists."""
     row = conn.execute(
-        "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE id = ? AND session_id = ?",
-        (row_id, session_id),
+        "SELECT * FROM messages WHERE id = ? AND session_id = ?", (row_id, session_id)
     ).fetchone()
-    if row is None or row["role"] != "assistant":
+    if row is None or row["role"] != role:
         return None
     if int(row["active"] or 0) == 1:
         return row
-    # Watermark compaction soft-archived the concurrent tail and cloned it.
-    return conn.execute(
-        "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE session_id = ? AND active = 1 AND role = 'assistant' "
-        "AND timestamp IS ? AND id != ? "
-        "ORDER BY id DESC LIMIT 1",
-        (session_id, row["timestamp"], row["id"]),
-    ).fetchone()
+    # Watermark compaction copies the complete durable row payload and display identity byte-for-byte.
+    # Timestamp alone is not an identity: externally supplied event timestamps may collide across unrelated
+    # messages. Legacy rows without an indexed identity cannot be resolved safely, so retain the addressed row.
+    if row["display_identity"] is None:
+        return row
+    payload_predicates = " AND ".join(f"{column} IS ?" for column in _REPAIR_COLUMNS)
+    clones = conn.execute(
+        "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? "
+        "AND display_identity IS ? AND timestamp IS ? AND id != ? AND "
+        f"{payload_predicates} ORDER BY id DESC LIMIT 2",
+        (
+            session_id,
+            role,
+            row["display_identity"],
+            row["timestamp"],
+            row["id"],
+            *(row[column] for column in _REPAIR_COLUMNS),
+        ),
+    ).fetchall()
+    return clones[0] if len(clones) == 1 else row
 
 
-def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: List[Dict[str, Any]]) -> None:
-    """Stamp _DB_PERSISTED_MARKER and sync canonical durable fields onto live dicts after commit."""
+def sync_flushed_message_markers(batch_msgs: list[dict[str, Any]], batch_rows: list[dict[str, Any]]) -> None:
+    """Stamp persistence markers and sync canonical durable fields onto live dicts after commit."""
     for written, row in zip(batch_msgs, batch_rows):
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
+        copy_identity_fields(row, written)
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
-        if "_canonical_content" in row:
-            written["content"] = row["_canonical_content"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
+        if isinstance(row.get(DB_ROW_SNAPSHOT), str):
+            written[DB_ROW_SNAPSHOT] = row[DB_ROW_SNAPSHOT]
+        canonical = row.get(CANONICAL_ROW)
+        if isinstance(canonical, dict) and canonical.get(_METADATA_ONLY):
+            # Our own row: only hand over presentation metadata the live dict lacks, never payload.
+            for key in _LIVE_MISSING_METADATA:
+                if canonical.get(key) is not None and written.get(key) is None:
+                    written[key] = canonical[key]
+        elif isinstance(canonical, dict) and canonical.get(_CONTENT_ONLY):
+            written["content"] = canonical["content"]
+        elif isinstance(canonical, dict):
+            for key in _SYNC_FIELDS:
+                if key in canonical and canonical[key] is not None:
+                    written[key] = canonical[key]
+                elif key not in ("role", "content"):
+                    written.pop(key, None)

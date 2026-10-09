@@ -62,6 +62,7 @@ function installEnv(options: InstallEnvOptions): InstallEnv {
     force: flag(options.force),
     target_profile: options.targetProfile
   }
+
   if (options.kind === 'skill') {
     return env
   }
@@ -108,7 +109,12 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
   const profiles = useStore($profiles)
   const [agentHalf, setAgentHalf] = useState(true)
   const [desktopHalf, setDesktopHalf] = useState(entry.hasDesktopHalf)
-  const [targetProfile, setTargetProfile] = useState(normalizeProfileKey(entry.targetProfile))
+
+  // Empty when the chat's home is no named profile: the install then goes to the chat's own home.
+  const [targetProfile, setTargetProfile] = useState(
+    entry.targetProfile ? normalizeProfileKey(entry.targetProfile) : ''
+  )
+
   const [enable, setEnable] = useState(true)
   const [force, setForce] = useState(false)
   const [pin, setPin] = useState(entry.sha ?? '')
@@ -122,8 +128,13 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
   const missingCredential = fields.some(field => field.required && !credentials[field.name]?.trim())
   const nothingSelected = !agentHalf && !desktopHalf
   const known = profiles.some(profile => normalizeProfileKey(profile.name) === targetProfile)
-  const profileOptions = known ? profiles : [...profiles, { name: targetProfile }]
+  const profileOptions = known || !targetProfile ? profiles : [...profiles, { name: targetProfile }]
   const filesUrl = pluginFilesUrl(entry)
+
+  const requirements = [
+    ...(entry.requiresHermes ? [copy.requiresHermes(entry.requiresHermes)] : []),
+    ...fields.map(field => copy.envVar(field.name))
+  ]
 
   const plugin = kind === 'plugin'
 
@@ -206,7 +217,7 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
           </Section>
         ) : null}
 
-        {entry.scan || entry.requirements.length > 0 ? (
+        {entry.scan || requirements.length > 0 ? (
           <Section title={copy.securityHeading}>
             {entry.scan ? (
               <p className={cn(CAPTION, SCAN_TONE[entry.scan.status])}>
@@ -214,8 +225,8 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
                 {entry.scan.summary ? ` · ${entry.scan.summary}` : ''}
               </p>
             ) : null}
-            {entry.requirements.length > 0 ? (
-              <Facts mono={false} rows={[[copy.requirementsLabel, entry.requirements.join(', ')]]} />
+            {requirements.length > 0 ? (
+              <Facts mono={false} rows={[[copy.requirementsLabel, requirements.join(', ')]]} />
             ) : null}
           </Section>
         ) : null}
@@ -267,10 +278,7 @@ function InstallControls(props: InstallControlsProps) {
     <Section title={props.m.includesHeading}>
       <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
         <label className="flex items-start gap-3">
-          <Checkbox
-            checked={props.agentHalf}
-            onCheckedChange={value => props.onAgentHalfChange(value === true)}
-          />
+          <Checkbox checked={props.agentHalf} onCheckedChange={value => props.onAgentHalfChange(value === true)} />
           <span className="font-medium text-foreground">{props.m.agentLabel}</span>
         </label>
         <label className="grid gap-1 pl-7">
@@ -280,16 +288,11 @@ function InstallControls(props: InstallControlsProps) {
       </div>
       {props.hasDesktopHalf ? (
         <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-          <Checkbox
-            checked={props.desktopHalf}
-            onCheckedChange={value => props.onDesktopHalfChange(value === true)}
-          />
+          <Checkbox checked={props.desktopHalf} onCheckedChange={value => props.onDesktopHalfChange(value === true)} />
           <span className="font-medium text-foreground">{props.m.desktopLabel}</span>
         </label>
       ) : null}
-      {props.nothingSelected ? (
-        <p className={cn(CAPTION, 'text-destructive')}>{props.m.selectComponent}</p>
-      ) : null}
+      {props.nothingSelected ? <p className={cn(CAPTION, 'text-destructive')}>{props.m.selectComponent}</p> : null}
     </Section>
   ) : (
     <label className="grid gap-1">
@@ -305,11 +308,7 @@ function InstallControls(props: InstallControlsProps) {
         {props.plugin ? (
           <label className="flex items-center justify-between gap-3">
             <span className={cn(CAPTION, 'text-foreground')}>{props.m.enableAgent}</span>
-            <Switch
-              checked={props.enable}
-              disabled={!props.agentHalf}
-              onCheckedChange={props.onEnableChange}
-            />
+            <Switch checked={props.enable} disabled={!props.agentHalf} onCheckedChange={props.onEnableChange} />
           </label>
         ) : null}
         <label className="flex items-center justify-between gap-3">

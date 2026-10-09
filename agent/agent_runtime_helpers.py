@@ -19,6 +19,8 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
+from agent.message_metadata import (
+    TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -29,7 +31,9 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -103,7 +107,7 @@ _TRAJECTORY_SYSTEM_PROMPT = (
 )
 
 
-def _trajectory_gpt_prefix(msg: Dict[str, Any]) -> str:
+def _trajectory_gpt_prefix(msg: dict[str, Any]) -> str:
     """Leading ``<think>`` block from native reasoning tokens, if any."""
     if msg.get("reasoning") and msg["reasoning"].strip():
         return f"<think>\n{msg['reasoning']}\n</think>\n"
@@ -115,7 +119,7 @@ def _with_think_block(content: str) -> str:
     return content if "<think>" in content else "<think>\n</think>\n" + content
 
 
-def _trajectory_tool_call_turn(msg: Dict[str, Any]) -> str:
+def _trajectory_tool_call_turn(msg: dict[str, Any]) -> str:
     content = _trajectory_gpt_prefix(msg)
     if msg.get("content") and msg["content"].strip():
         # <REASONING_SCRATCHPAD> -> <think> (model reasons via XML when native thinking is off)
@@ -135,7 +139,7 @@ def _trajectory_tool_call_turn(msg: Dict[str, Any]) -> str:
     return _with_think_block(content).rstrip()
 
 
-def _trajectory_tool_responses(msg: Dict[str, Any], messages: List[Dict[str, Any]], start: int) -> Tuple[List[str], int]:
+def _trajectory_tool_responses(msg: dict[str, Any], messages: list[dict[str, Any]], start: int) -> tuple[list[str], int]:
     """Collect the ``<tool_response>`` blocks for the tool run starting at ``start``; returns ``(blocks, next_index)``."""
     tool_responses = []
     j = start
@@ -162,7 +166,7 @@ def _trajectory_tool_responses(msg: Dict[str, Any], messages: List[Dict[str, Any
     return tool_responses, j
 
 
-def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+def convert_to_trajectory_format(agent, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
     """Convert internal message history to trajectory format for saving."""
     # Trajectories are text-only: swap image-bearing tool messages for their text_summary so ~1MB
     # base64 blobs are not embedded.
@@ -227,7 +231,7 @@ def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
 
 
 def sanitize_tool_call_arguments(
-    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
+    messages: list, *, logger=None, session_id: str | None = None, cursor: Optional[dict] = None
 ) -> int:
     """Repair corrupted assistant tool-call argument JSON in-place.
     ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
@@ -309,7 +313,7 @@ def sanitize_tool_call_arguments(
 # Session-scoped in-flight registry for note_turn_start: the gateway caches agents per routing key
 # while the transcript is keyed by session_id, so two agent objects can run concurrent turns on one
 # session unseen by per-agent state.
-_INFLIGHT_TURNS_BY_SESSION: Dict[str, Tuple[str, float]] = {}
+_INFLIGHT_TURNS_BY_SESSION: dict[str, tuple[str, float]] = {}
 _INFLIGHT_TURNS_LOCK = threading.Lock()
 
 
@@ -370,7 +374,7 @@ def note_turn_persisted(agent):
     agent._inflight_turn_session_id = None
 
 
-def _is_codex_interim(m: Dict) -> bool:
+def _is_codex_interim(m: dict) -> bool:
     """Codex Responses interim turn: carries its own continuation state, replayed verbatim."""
     return bool(
         m.get("codex_reasoning_items")
@@ -379,8 +383,9 @@ def _is_codex_interim(m: Dict) -> bool:
     )
 
 
-def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
-    """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
+def _merge_assistant_into(prev: dict, msg: dict) -> bool:
+    """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
+    text survives: multimodal (list) content is never joined."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     prev_calls = list(prev.get("tool_calls") or [])
@@ -388,6 +393,12 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     calls_changed = False
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
+        # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
+        if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
+            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
+                per_occurrence_tool_call_uids(
+                    own if isinstance(own := prev.get(TOOL_CALL_UIDS), dict) else {}, prev_calls),
+                per_occurrence_tool_call_uids(extra, new_calls))
         calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
@@ -409,7 +420,9 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     prev_content = prev.get("content")
     new_content = msg.get("content")
     content_rewritten = False
+    text_kept = not new_content  # nothing to lose
     if isinstance(prev_content, str) and isinstance(new_content, str):
+        text_kept = True
         joined = "\n".join(p for p in (prev_content.strip(), new_content.strip()) if p)
         prev["content"] = joined
         # A falsy new_content leaves ``joined`` == prev_content; that is not a rewrite.
@@ -419,6 +432,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     elif not prev_content and new_content is not None:
         prev["content"] = new_content
         content_rewritten = new_content != prev_content
+        text_kept = True
     # Carry reasoning_content from the later turn only if the earlier lacks it (strict thinking
     # providers need one on the merged tool-call turn).
     reasoning_carried = False
@@ -446,33 +460,96 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # keeps the pre-merge row. The caller recomputes the flush cursor for the surviving sequence.
     if content_rewritten or calls_changed or reasoning_carried:
         prev.pop(_DB_PERSISTED_MARKER, None)
+    return text_kept
 
 
-def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) -> None:
-    """Record durable ids a merge folded into *survivor* and then dropped from the list.
+def _remember_absorbed_row(survivor: dict[str, Any], dropped: dict[str, Any], *, folded: bool) -> None:
+    """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
+    text survives). An empty incoming turn still merges; stamping an empty list would change a message that
+    absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
+    the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
-    No-op when the dropped dict names no row. An empty incoming turn still merges,
-    and stamping an empty list would change a message that absorbed nothing.
-    """
+    own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
-    if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
+    if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0 and row_id != own_id:
         ids.append(row_id)
     for older in dropped.get("_absorbed_row_ids") or ():
         if isinstance(older, int) and not isinstance(older, bool) and older > 0 and older not in ids:
             ids.append(older)
-    if not ids:
-        return
-    absorbed = survivor.setdefault("_absorbed_row_ids", [])
-    for row_id in ids:
-        if row_id not in absorbed:
-            absorbed.append(row_id)
+    if ids:
+        absorbed = survivor.setdefault("_absorbed_row_ids", [])
+        for row_id in ids:
+            if row_id not in absorbed:
+                absorbed.append(row_id)
+    # The rows the retired dict counted are behind the survivor now.
+    if dropped.get(UNNAMED_DURABLE_ROWS):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + int(dropped[UNNAMED_DURABLE_ROWS])
+    # Its own row is behind the survivor now too.
+    if dropped.get(RETIRED_DURABLE_ROWS):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).extend(
+            {k: v for k, v in row.items() if k != OWN_ROW} for row in dropped[RETIRED_DURABLE_ROWS])
+    # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
+    # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
+    if folded:
+        record_absorbed_message(survivor, dropped)
 
 
-def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
+def _count_unnamed_row(survivor: dict[str, Any], retired: dict[str, Any]) -> None:
+    """On a reload without row ids nothing names *retired*'s durable row once the repair takes the dict
+    out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
+    popped its marker since. Call before the merge rewrites the survivor: *retired*'s own fields are
+    recorded so the commit can name its row."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import (
+        OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
+
+    def loaded(message: dict[str, Any]) -> bool:
+        return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
+
+    if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
+        # A previously folded dict already records its original row. The transfer in
+        # _remember_absorbed_row retires that record; its synthetic text/calls never existed in storage.
+        if not any(row.get(OWN_ROW) for row in retired.get(RETIRED_DURABLE_ROWS) or ()):
+            survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
+
+
+def _remember_own_row(survivor: dict[str, Any]) -> None:
+    """An assistant fold rewrites *survivor*'s text, so on a reload without row ids its own row no longer
+    matches it by content. Record its loaded fields first, once."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
+
+    recorded = survivor.get(RETIRED_DURABLE_ROWS) or ()
+    if (survivor.get(_DB_PERSISTED_MARKER) and not isinstance(survivor.get("_row_id"), int)
+            and not any(isinstance(row, dict) and row.get(OWN_ROW) for row in recorded)):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append({**retired_row_payload(survivor), OWN_ROW: True})
+
+
+def _retire_dropped_row(kept: list[dict], dropped: dict[str, Any], leading: list[dict]) -> None:
+    """A durable row the repair drops was still handed to the caller, so the survivor before it stands
+    for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
+    re-sequences it behind the running turn. A drop with no survivor before it waits in *leading*."""
+    if not kept:
+        leading.append(dropped)
+    elif isinstance(kept[-1], dict):
+        _count_unnamed_row(kept[-1], dropped)
+        _remember_absorbed_row(kept[-1], dropped, folded=False)
+
+
+def _retire_leading_drops(kept: list[dict], leading: list[dict]) -> None:
+    """Rows dropped ahead of the first survivor sit right before its own row, so it stands for them."""
+    for dropped in leading if kept and isinstance(kept[0], dict) else ():
+        _count_unnamed_row(kept[0], dropped)
+        _remember_absorbed_row(kept[0], dropped, folded=False)
+
+
+def _merge_consecutive_assistants(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 0: merge consecutive assistant turns (codex interims exempt)."""
     repairs = 0
-    collapsed: List[Dict] = []
+    collapsed: list[dict] = []
     for msg in messages:
         prev = collapsed[-1] if collapsed and isinstance(collapsed[-1], dict) else None
         if (
@@ -482,23 +559,25 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
-                _remember_absorbed_row(msg, prev)
+                _count_unnamed_row(msg, prev)
+                _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
-                _merge_assistant_into(prev, msg)
-                _remember_absorbed_row(prev, msg)
+                _count_unnamed_row(prev, msg)
+                _remember_own_row(prev)
+                _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue
         collapsed.append(msg)
     return collapsed, repairs
 
 
-def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
+def _drop_stray_tool_results(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 1: drop tool results not following a known assistant tool call. Consumes the whole
     alias group (call_id/id/response_item_id/composite) so a duplicate keyed on a sibling
     alias is not replayed to strict providers."""
     repairs = 0
-    known_tool_ids: Dict[str, int] = {}  # alias -> group id; reset by assistant/user turns
+    known_tool_ids: dict[str, int] = {}  # alias -> group id; reset by assistant/user turns
     # Pass 1: drop stray tool messages that don't follow a known assistant tool call. A Responses call can
     # have several equivalent spellings (call_id, id, response_item_id, or a composite ``call|item`` id), so
     # consume the whole alias group when one spelling is matched. Alias expansion lives in
@@ -506,7 +585,8 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
     # owner) — which also handles SDK tool_call objects, preserving the #91768 dict-or-object tolerance.
     matched_tool_groups: set = set()
     next_tool_group = 0
-    filtered: List[Dict] = []
+    filtered: list[dict] = []
+    leading: list[dict] = []
     for msg in messages:
         role = msg.get("role") if isinstance(msg, dict) else None
         if role in ("assistant", "user"):
@@ -527,22 +607,25 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 if tc_id in known_tool_ids and known_tool_ids[tc_id] not in matched_tool_groups
             }
             if result_variants and not candidate_groups:
+                _retire_dropped_row(filtered, msg, leading)
                 repairs += 1
                 continue
             if candidate_groups:
                 matched_tool_groups.add(min(candidate_groups))
         filtered.append(msg)
+    _retire_leading_drops(filtered, leading)
     return filtered, repairs
 
 
-def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]:
+def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 2: prune tool_calls not answered in the IMMEDIATELY following tool run (a displaced
     result masks the per-call stub pass and strict providers 400). Payload-empty turns are
     dropped; codex interims exempt."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     repairs = 0
-    pruned: List[Dict] = []
+    pruned: list[dict] = []
+    leading: list[dict] = []
     for i, msg in enumerate(messages):
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
@@ -562,6 +645,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
+                _retire_dropped_row(pruned, msg, leading)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls
@@ -571,15 +655,22 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
+    _retire_leading_drops(pruned, leading)
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
+def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from hermes_state import SessionDB
+
+    def _plain_text(content: Any) -> bool:
+        # never rewrite the persisted row around undecodable content
+        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
-    merged: List[Dict] = []
+    merged: list[dict] = []
     for msg in messages:
         prev = merged[-1] if merged and isinstance(merged[-1], dict) else None
         if (
@@ -591,22 +682,57 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
+            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
             had_api_sidecar = "api_content" in prev
+            # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
+            # the dict no longer stands for durable rows only.
+            if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
+                prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
+            else:
+                prev.pop(MERGED_DURABLE_ROWS, None)
             prev["content"] = merged_content
+            # The clean-text persist override must replace only the absorbed turn, never the
+            # unanswered text before it; kept across replay passes (an empty turn absorbs too).
+            if prev_content:
+                prev[MERGED_TURN_PREFIX] = prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
+            # A display-marker row (e.g. a model-switch marker persisted as role=user on
+            # purpose, #48338) merging with a plain user row must not bury the plain row's
+            # addressable identity: keeping the marker's display_kind hides the merged pair
+            # from every user-turn index used for rewind/submit addressing (display rows are
+            # excluded), so the plain row's durable id becomes unresolvable and the client's
+            # next prompt.submit fails closed with the input silently dropped (#94486). Keep
+            # the pair addressable instead: drop the display classification and carry the
+            # plain row's id, retiring the marker's own id onto the absorbed list. display_kind
+            # never reaches providers (stripped from every outgoing copy), so the merged
+            # turn's wire payload is unchanged. Deliberate scope: when BOTH rows carry
+            # display_kind (two consecutive model-switch markers) the pair keeps the first
+            # marker's classification and id — no plain row is swallowed there, so no
+            # addressable turn is lost.
+            if prev.get("display_kind") and not msg.get("display_kind"):
+                marker_row_id = prev.get("_row_id")
+                prev.pop("display_kind", None)
+                if msg.get("_row_id") is not None:
+                    if isinstance(marker_row_id, int) and not isinstance(marker_row_id, bool):
+                        absorbed_ids = prev.setdefault("_absorbed_row_ids", [])
+                        if marker_row_id not in absorbed_ids:
+                            absorbed_ids.append(marker_row_id)
+                    prev["_row_id"] = msg["_row_id"]
+                # display_kind is part of the persisted row; reclassifying stales it even
+                # when the merged bytes reproduce the persisted content (empty absorb).
+                prev.pop(_DB_PERSISTED_MARKER, None)
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:
                 prev.pop(_DB_PERSISTED_MARKER, None)
-            _remember_absorbed_row(prev, msg)
+            _remember_absorbed_row(prev, msg, folded=True)
             repairs += 1
             continue
         merged.append(msg)
@@ -618,17 +744,36 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
+def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
+    """Decode any sentinel-encoded row content in place before the alternation passes run, so an
+    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
+    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
+    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
+    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
 
-def repair_message_sequence(agent, messages: List[Dict]) -> int:
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        decoded = SessionDB._decode_content(content)
+        if decoded is not content:
+            msg["content"] = decoded
+            # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
+            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
+
+
+def repair_message_sequence(agent, messages: list[dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
-    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
-    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
+    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
+    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
+    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
+    turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
+    _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
@@ -640,7 +785,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
-def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+def repair_message_sequence_with_cursor(agent, messages: list[dict]) -> int:
     """Run :func:`repair_message_sequence` and keep ``_last_flushed_db_idx`` consistent. Repair
     shrinks the list in place; counting identity-preserved survivors of the flushed prefix gives
     the exact new cursor, whereas a ``min()`` clamp would skip unflushed rows (used only without a snapshot)."""
@@ -731,7 +876,7 @@ _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
 _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
-def _failed_credential_identity(agent, pool) -> Tuple[Optional[str], Optional[str]]:
+def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[str]]:
     """``(api_key_hint, credential_id)`` of the key actually dispatched, not ``pool.current()``:
     the shared pointer often points at a different healthy entry, and marking it exhausted
     can take the whole pool offline from one 429."""
@@ -861,7 +1006,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
 def recover_with_credential_pool(
     agent, *, status_code: Optional[int], has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
-    error_context: Optional[Dict[str, Any]] = None, billing_unverified: bool = False,
+    error_context: Optional[dict[str, Any]] = None, billing_unverified: bool = False,
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation; returns (recovered, has_retried_429).
     Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
@@ -988,7 +1133,7 @@ def recover_with_credential_pool(
     return False, has_retried_429
 
 
-def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
+def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
     """Copy the identity/transport fields of a ``_primary_runtime`` snapshot onto ``agent``
     (shared by transport recovery and turn-start restore; the caller rebuilds the client)."""
     agent.model = rt["model"]
@@ -1005,7 +1150,7 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 
-def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
+def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
     """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
     from agent.anthropic_adapter import build_anthropic_client
     agent._anthropic_api_key = rt["anthropic_api_key"]
@@ -1018,7 +1163,7 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
     agent.client = None
 
 
-def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
+def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
     """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
     if (agent.provider or "").strip().lower() == "moa":
         # MoA has empty client_kwargs; rebuild via the shared facade factory so the
@@ -1098,9 +1243,9 @@ _UNMERGEABLE = object()
 
 
 def drop_thinking_only_and_merge_users(
-    messages: List[Dict[str, Any]], *, drop_codex_reasoning_items: bool = True,
+    messages: list[dict[str, Any]], *, drop_codex_reasoning_items: bool = True,
     drop_nudge_marker: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Drop thinking-only assistant turns and merge adjacent user messages left behind, on the
     per-call ``api_messages`` copy only (``agent.messages`` is never mutated). Drop-and-merge
     (not stub text) keeps history honest and preserves role alternation.
@@ -1117,7 +1262,7 @@ def drop_thinking_only_and_merge_users(
         and not _ra().AIAgent._is_thinking_only_assistant(m, drop_codex_reasoning_items=drop_codex_reasoning_items)
     ]
     dropped = len(messages) - len(kept)
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     merges = 0
     for m in kept:
         prev = merged[-1] if merged else None
@@ -1167,7 +1312,7 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
     return False, prefetched_pool, prefetched
 
 
-def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
+def _restore_runtime_capabilities(agent, rt: dict[str, Any]) -> None:
     # ``capabilities`` is the legacy key from the initial capability propagation patch.
     raw = rt["runtime_capabilities"] if "runtime_capabilities" in rt else rt.get("capabilities")
     if isinstance(raw, dict):
@@ -1243,30 +1388,62 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
+def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
+    """True when a Codex quota window that the primary pool still has benched has reopened.
+
+    A Codex 429 benches the entry, and arms ``_rate_limited_until``, until a ``resets_at`` that can be
+    days out (weekly window). The window can reopen sooner (redeemed reset, top-up, plan change); the
+    pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
+    fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
+
+    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
+    it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
+    fail, and fall back again on every turn of the cached window. Checks in between could only
+    replay that cached verdict, so they return before loading the pool.
+    """
+    if primary_provider != "openai-codex":
+        return False
+    from hermes_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
+    now = time.monotonic()
+    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
+        return False
+    agent._codex_reopen_checked_at = now
+    try:
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None or not matches_primary(pool):
+            pool = load_primary_pool()
+        if pool is None:
+            return False
+        model = primary_model or None
+        benched_until = pool.next_available_at(model=model)
+        if benched_until is None or benched_until <= time.time():
+            return False
+        return pool.lift_reopened_cooldowns(model=model)
+    except Exception:
+        logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)
+        return False
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
-        # _fallback_index past the chain end and silently block future fallbacks.
+        # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
         return False
-    # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
-    # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
-    # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
-    # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
-    # the session. Fixes #20465.
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
-    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
-        # The primary slug was rejected as unentitled for this account (#106475): restoring
-        # here would announce a recovery that was never verified and re-fail every turn.
-        # Stay on the fallback; the user sees the terminal entitlement error instead.
+    from hermes_cli.chat_catalog import is_known_non_chat_model
+    if primary_model and (
+        _is_entitlement_rejected(agent, primary_provider, primary_model)
+        or is_known_non_chat_model(primary_model)
+    ):
+        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
+        # that was never verified and re-fail every turn. Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
@@ -1279,6 +1456,10 @@ def restore_primary_runtime(agent) -> bool:
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
         loaded = load_pool(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
+    if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
+        agent._rate_limited_until = 0
+    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+        return False  # primary still in rate-limit cooldown, stay on fallback
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
     )
@@ -1291,44 +1472,10 @@ def restore_primary_runtime(agent) -> bool:
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
-        _apply_primary_runtime_fields(agent, rt)
-        _restore_runtime_capabilities(agent, rt)
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout for snapshots predating the native-vs-proxy split.
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
+        from agent.route_binding import reinstall_primary_runtime
+        reinstall_primary_runtime(
+            agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
-        # An operator cache disable (_cache_disabled) must survive snapshot restoration.
-        if getattr(agent, "_cache_disabled", False):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-        _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
-        )
-        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
-        if getattr(agent, "_compression_feasibility_checked", False) is True:
-            from agent.conversation_compression import revalidate_compression_feasibility
-            revalidate_compression_feasibility(agent)
-        _rebind_primary_credential_pool(
-            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
-        )
-        # Older snapshots have no reasoning_config; keep the current value.
-        saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
-        # Reset the stale-call circuit breaker: its streak measured the fallback provider.
-        from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
-        _reset_stale_streak(agent)
-        # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
-        # again (prefix cache match).
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -1361,7 +1508,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     (OpenRouter unified), else inline thinking blocks in the content; None when absent."""
     from agent.message_content import flatten_message_text
 
-    parts: List[str] = []
+    parts: list[str] = []
 
     def _add(text) -> None:
         text = flatten_message_text(text, sep="")
@@ -1392,8 +1539,8 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     return "\n\n".join(parts) if parts else None
 
 
-def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
-    info: Dict[str, Any] = {"type": type(error).__name__, "message": str(error)}
+def _api_error_debug_info(error: Exception) -> dict[str, Any]:
+    info: dict[str, Any] = {"type": type(error).__name__, "message": str(error)}
     info.update({
         k: v for k in ("status_code", "request_id", "code", "param", "type", "body")
         if (v := getattr(error, k, None)) is not None
@@ -1409,7 +1556,7 @@ def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
 
 
 def dump_api_request_debug(
-    agent, api_kwargs: Dict[str, Any], *, reason: str, error: Optional[Exception] = None
+    agent, api_kwargs: dict[str, Any], *, reason: str, error: Optional[Exception] = None
 ) -> Optional[Path]:
     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
     try:
@@ -1426,7 +1573,7 @@ def dump_api_request_debug(
         endpoint = {"codex_responses": "/responses", "anthropic_messages": "/messages"}.get(
             agent.api_mode, "/chat/completions"
         )
-        dump_payload: Dict[str, Any] = {
+        dump_payload: dict[str, Any] = {
             "timestamp": datetime.now().isoformat(), "session_id": agent.session_id, "reason": reason,
             "request": {
                 "method": "POST", "url": f"{agent.base_url.rstrip('/')}{endpoint}",
@@ -1522,7 +1669,7 @@ def plan_cache_sections_for_destination(
     messages: list, tools: Optional[list], *, provider: str, base_url: str, api_mode: str,
     model: str, cache_disabled: Optional[bool] = None, cache_ttl: Optional[str] = None,
     static_system_prefix: Optional[str] = None,
-) -> Tuple[list, list]:
+) -> tuple[list, list]:
     """Plan request-local cache sections for one resolved destination (MoA / auxiliary senders):
     stripped copies (non-caching route) or a ``build_prompt_cache_plan`` layout; never mutates
     inputs. ``cache_disabled``/``cache_ttl`` default to live config so the operator's disable and
@@ -1831,7 +1978,11 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.auxiliary_client import (
+        _to_openai_base_url,
+        _validate_base_url,
+        _validate_proxy_env_urls,
+    )
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
     # leaks into later requests (a torn-down httpx transport got reused).
@@ -1842,6 +1993,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    if client_kwargs.get("base_url"):
+        client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
         from providers import get_provider_profile
 
@@ -1974,11 +2127,12 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
+    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
 _MISSING = object()
 
 
-def _snapshot_switch_state(agent) -> Dict[str, Any]:
+def _snapshot_switch_state(agent) -> dict[str, Any]:
     """Snapshot every field the swap+rebuild mutates so a failed rebuild rolls back atomically
     (else a new model name + OLD client 400s next turn). The sentinel distinguishes unset from
     None: tests build bare agents via ``__new__`` without all fields."""
@@ -1988,7 +2142,7 @@ def _snapshot_switch_state(agent) -> Dict[str, Any]:
     return snapshot
 
 
-def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
+def _restore_switch_snapshot(agent, snapshot: dict[str, Any]) -> None:
     for name, value in snapshot.items():
         if value is _MISSING:
             continue  # attribute did not exist before the swap; don't fabricate it
@@ -2067,7 +2221,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
             try:
                 from hermes_cli.auth import build_minimax_oauth_token_provider
                 effective_key = build_minimax_oauth_token_provider()
-            except Exception as _mm_exc:  # noqa: BLE001
+            except Exception as _mm_exc:
                 logger.warning(
                     "MiniMax OAuth: failed to install per-request token provider "
                     "on switch (%s); using static bearer.", _mm_exc,
@@ -2132,6 +2286,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
+    from agent.turn_recovery import reset_codex_reasoning_replay
+    reset_codex_reasoning_replay(agent)
     if api_key:
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes
@@ -2143,7 +2299,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         try:
             from agent.credential_pool import load_pool
             agent._credential_pool = load_pool(new_provider)
-        except Exception as _pool_exc:  # noqa: BLE001
+        except Exception as _pool_exc:
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "
                 "continuing without pool rotation this turn", new_provider, _pool_exc,
@@ -2228,7 +2384,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     revalidate_compression_feasibility(agent)
 
 
-def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
+def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
     """The ``_primary_runtime`` record that persists a switch across turns."""
     cc = getattr(agent, "context_compressor", None) or None
     rt = {
@@ -2389,10 +2545,10 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
+                 tool_call_id: Optional[str] = None, messages: list | None = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
                  skip_tool_execution_middleware: bool = False) -> str:
     """Invoke a single tool (agent-level or registry-dispatched) and return the result string;
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
@@ -2495,8 +2651,8 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
             tool_name = tool_name[:_idx]
     if not tool_name:
         return None
-    _norm = lambda s: s.lower().replace("-", "_").replace(" ", "_")  # noqa: E731
-    _camel_snake = lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()  # noqa: E731
+    _norm = lambda s: s.lower().replace("-", "_").replace(" ", "_")
+    _camel_snake = lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
 
     def _strip_tool_suffix(s: str) -> str | None:
         lc = s.lower()
@@ -2523,10 +2679,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Placeholder for an empty non-final message the provider would reject. Kept identical to the stub
-# placeholder in chat_completion_helpers so healed transcripts read consistently.
-_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
-
 # Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
 # ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
 # Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
@@ -2535,7 +2687,7 @@ _INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 # still fire per window).
 _EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
-_empty_heal_log_state: Dict[str, Dict[str, Any]] = {}
+_empty_heal_log_state: dict[str, dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
 # Sessions already told ONCE (out-of-band, never in conversation context); kept apart from the
 # windowed log state so a new window never re-arms the notice.
@@ -2545,7 +2697,7 @@ _empty_heal_log_lock = threading.Lock()
 _empty_heal_user_notified: set = set()
 # One-shot pending notices keyed by session, drained via ``consume_pending_sanitizer_heal_notice``
 # and delivered via the status/warning callback.
-_empty_heal_pending_notice: Dict[str, str] = {}
+_empty_heal_pending_notice: dict[str, str] = {}
 
 
 def _content_has_payload(content: Any) -> bool:
@@ -2561,7 +2713,7 @@ def _content_has_payload(content: Any) -> bool:
     )
 
 
-def _msg_has_payload(msg: Dict[str, Any]) -> bool:
+def _msg_has_payload(msg: dict[str, Any]) -> bool:
     """True if ``msg`` carries anything the API treats as non-empty content (text, multimodal
     blocks, tool_calls, reasoning). Role-agnostic counterpart of ``AIAgent._is_thinking_only_assistant``.
     Codex Responses item carriers persist with content:"" by design (text lives in codex_*_items
@@ -2576,7 +2728,7 @@ def _msg_has_payload(msg: Dict[str, Any]) -> bool:
     )
 
 
-def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) -> bool:
+def fill_empty_non_final_wire_payload(msg: dict[str, Any], *, is_final: bool) -> bool:
     """Write the interrupted placeholder onto an empty non-final wire copy; True when filled.
     Pass the per-call copy only; durable history must not be mutated."""
     if is_final or not isinstance(msg, dict) or msg.get("role") not in ("user", "assistant"):
@@ -2613,7 +2765,7 @@ def consume_pending_sanitizer_heal_notice() -> Optional[str]:
         return _empty_heal_pending_notice.pop(key, None)
 
 
-def get_sanitizer_heal_stats() -> Dict[str, Dict[str, Any]]:
+def get_sanitizer_heal_stats() -> dict[str, dict[str, Any]]:
     """Read-only per-session sanitiser heal counters (``heal_events``, ``messages_healed``, ``escalated``) for diagnostics."""
     with _empty_heal_log_lock:
         return {
@@ -2678,14 +2830,14 @@ def _log_empty_non_final_heal(healed: int) -> None:
     )
 
 
-def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def repair_empty_non_final_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Substitute a placeholder for empty-content non-final messages on the per-call copy.
     Anthropic/litellm/Bedrock 400 on any empty non-final message and a persisted stub poisons
     every later turn; repairing the wire copy heals the session in memory. Substitution (not
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:
         return messages
-    repaired: List[Dict[str, Any]] = []
+    repaired: list[dict[str, Any]] = []
     healed = 0
     last_idx = len(messages) - 1
     for idx, msg in enumerate(messages):
@@ -2702,7 +2854,7 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
     return messages
 
 
-def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
+def _classify_tool_call_orphans(messages: list[dict[str, Any]]):
     """Classify orphaned tool-call / tool-result pairs; single source of truth for GLOBAL orphan
     detection. Returns ``(surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls)``;
     every id variant of a tool_call is registered so a result matching any alias survives, and
@@ -2728,7 +2880,7 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
 
 
-def _drop_invalid_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _drop_invalid_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop messages whose role the API won't accept."""
     valid = _ra().AIAgent._VALID_API_ROLES
     for msg in messages:
@@ -2737,7 +2889,7 @@ def _drop_invalid_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [m for m in messages if m.get("role") in valid]
 
 
-def _drop_empty_tool_calls_arrays(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _drop_empty_tool_calls_arrays(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Strict providers 400 on ``tool_calls: []``; normalize on shallow copies so history stays byte-stable."""
     # --- Drop empty / malformed tool_calls arrays on assistant messages --- An assistant message carrying
     # ``tool_calls: []`` (an empty array) — or a non-list value under the key — is semantically identical to
@@ -2750,7 +2902,7 @@ def _drop_empty_tool_calls_arrays(messages: List[Dict[str, Any]]) -> List[Dict[s
     # per-call copy rather than in ``repair_message_sequence``, which would destructively rewrite the
     # persisted trajectory. Shallow-copy the message before dropping the key so stored history (and prompt
     # caching) stays byte-stable.
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     dropped = 0
     for msg in messages:
         if (
@@ -2778,7 +2930,7 @@ def _drop_empty_tool_calls_arrays(messages: List[Dict[str, Any]]) -> List[Dict[s
     return normalized
 
 
-def _repair_invalid_tool_call_names(messages: List[Dict[str, Any]]) -> None:
+def _repair_invalid_tool_call_names(messages: list[dict[str, Any]]) -> None:
     """Coerce every ``function.name`` to the provider-safe ``^[A-Za-z0-9_-]{1,64}$``. An empty/missing
     name becomes the ``invalid_tool_call`` sentinel (dropping would unpair the anti-priming result the
     dispatch loop keeps for it); an invalid one (``multi_tool_use.parallel``, a shell command a weak
@@ -2818,7 +2970,7 @@ def _repair_invalid_tool_call_names(messages: List[Dict[str, Any]]) -> None:
                 }
 
 
-def _drop_results_without_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _drop_results_without_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop tool results with a missing/empty tool_call_id. Kept explicit (not left to the
     positional walk) for its own log line and so the final-chokepoint guarantee holds for
     callers skipping ``repair_message_sequence``."""
@@ -2834,7 +2986,7 @@ def _drop_results_without_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, 
     return kept
 
 
-def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _pair_tool_calls_positionally(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Positional tool_call <-> tool_result pairing: strict providers (DeepSeek v4, Kimi) require
     results IMMEDIATELY after their call. Drops positional orphans, stubs unanswered declared
     ids; matching is alias-aware."""
@@ -2854,8 +3006,8 @@ def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[s
     # (``tool_call_id_variants`` / ``tool_result_id_variants``): a result keyed on ANY alias spelling
     # (``id`` / ``call_id`` / ``response_item_id`` / composite bridge) answers the call, preserving the
     # unified alias policy from #55626/#63000/#93251.
-    paired: List[Dict[str, Any]] = []
-    declared_calls: Dict[str, tuple] = {}
+    paired: list[dict[str, Any]] = []
+    declared_calls: dict[str, tuple] = {}
     dropped = 0
     stubs = 0
 
@@ -2908,12 +3060,12 @@ def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[s
     return paired if (dropped or stubs) else messages
 
 
-def _dedupe_tool_call_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedupe_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deduplicate tool_call_ids (strict providers 400 on duplicates): collapse duplicates within
     an assistant message, drop results answering no OUTSTANDING call. Tracks outstanding calls
     (not ids ever seen) because llama.cpp reuses one constant id, and whole variant groups so
     alias-keyed results are not deleted."""
-    outstanding: Dict[str, int] = {}  # every alias of an unanswered call -> its group id
+    outstanding: dict[str, int] = {}  # every alias of an unanswered call -> its group id
     # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a payload where the same tool_call_id
     #   appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'" (#58327). Duplicates can
     #   arise from retries, crash/resume glitches, or a compression window that re-emits a tool result. This
@@ -2932,9 +3084,9 @@ def _dedupe_tool_call_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     #   (#55626/#58168/#63000); tracking only the coalesced id here made a result keyed on any OTHER variant
     #   look like it answered no outstanding call, so this pass deleted the very result step 2's
     #   variant-aware matching had just preserved (issue #93251 — whole parallel batches vanished).
-    outstanding_groups: Dict[int, frozenset] = {}
+    outstanding_groups: dict[int, frozenset] = {}
     next_group_id = 0
-    deduped: List[Dict[str, Any]] = []
+    deduped: list[dict[str, Any]] = []
     removed = 0
     for msg in messages:
         role = msg.get("role")
@@ -2980,7 +3132,7 @@ def _dedupe_tool_call_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return deduped
 
 
-def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _realign_tool_result_names(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Align each tool result's wire ``name`` with its call's function name (per-call copy only):
     Google 400s on a mismatch, routine when tool_search bridges via ``tool_call``."""
     # 4. Google matches functionResponse.name against functionCall.name and rejects a mismatch with HTTP 400
@@ -2999,7 +3151,7 @@ def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str,
     #   changes. A no-op for the native Gemini path, which already resolves the same name. A result whose
     #   assistant call frame is missing entirely never reaches here — pass 1 above drops it as an orphan —
     #   so the only results this pass sees are ones whose call name is knowable.
-    call_names: Dict[str, str] = {}
+    call_names: dict[str, str] = {}
     for msg in messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
@@ -3008,8 +3160,8 @@ def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str,
                 nm = _ra().AIAgent._get_tool_call_name_static(tc)
                 if cid and nm:
                     call_names[cid] = nm
-    realigned: List[Tuple[str, str]] = []
-    aligned: List[Dict[str, Any]] = []
+    realigned: list[tuple[str, str]] = []
+    aligned: list[dict[str, Any]] = []
     for msg in messages:
         if msg.get("role") == "tool":
             expected = call_names.get((msg.get("tool_call_id") or "").strip())
@@ -3029,7 +3181,7 @@ def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str,
     return aligned
 
 
-def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call; runs unconditionally (not
     gated on the compressor). Order matters: empty non-final messages are healed first so the
     substituted turn participates in the pairing and dedup passes."""
@@ -3055,20 +3207,147 @@ _ACK_WORKSPACE_MARKERS = (
 
 
 def looks_like_codex_intermediate_ack(
-    agent, user_message: Any, assistant_content: str, messages: List[Dict[str, Any]],
+    agent, user_message: Any, assistant_content: str, messages: list[dict[str, Any]],
     require_workspace: bool = True,
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; future-ack + short-content + no-prior-tools + action-verb checks always apply."""
+    requirement; short-content + no-prior-tools guardrails always apply. A response must then
+    contain either a first-person future acknowledgement with an action marker or a narrowly
+    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
+    conversational replies such as "I'll help you brainstorm" from tripping it."""
     if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
-    if not _ACK_FUTURE_RE.search(assistant_text):
+    # Some tool-using providers narrate the next action in terse log style
+    # rather than with a first-person lead-in: "Brief written. Creating the
+    # session now." Bare gerunds are too ambiguous ("Reading the traceback
+    # explains the failure" is a final answer), so this path also requires an
+    # explicit transition cue such as "now", "via acpx", "actual log", or
+    # "then launching". Completed reports and questions stay final.
+    action_clause_pattern = re.compile(
+        r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
+        r"(?:(?P<transition>then)\s+)?"
+        r"(?P<action>(?:re)?launching|(?:re)?starting|creating|"
+        r"checking|running|writing|opening|reading|inspecting|reviewing|"
+        r"testing|debugging|searching|fixing)\b"
+    )
+    list_item_prefix_pattern = re.compile(r"(?:^|\n)\s*(?:[-*+]|\d+[.)])\s*$")
+    numbered_item_pattern = re.compile(r"(?:^|\s)(\d+)[.)](?=\s)")
+    status_number_pattern = re.compile(
+        r"\b(?P<label>exit\s+code|attempt|step|retry)\s+"
+        r"(?P<number>\d+)[.)](?=\s)"
+    )
+    question_pattern = re.compile(r"\?(?=\s|$|[\"'’”)\\]])")
+    sentence_boundary_pattern = re.compile(
+        r"(?:[.!…](?=\s|$)|\?(?=\s|$|[\"'’”)\\]])|\n+)"
+    )
+    allowed_trailing_action_pattern = re.compile(
+        r"\s*(?:will\s+report\s+back|"
+        r"then\s+(?:launching|relaunching|starting|restarting|creating)\s+"
+        r"(?:it|(?:the\s+)?(?:session|worker|agent|job|process))|"
+        r"(?:checking|reading|opening|inspecting)\s+(?:the\s+)?(?:log|output))"
+        r"\s*[.!…]?\s*$"
+    )
+    launch_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:session|worker|agent|job|process)|"
+        r"(?:the\s+)?migration\s+file\s+in\s+the\s+repo)\s+)?"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    run_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:(?:repo\s+)?suite|tests?|job|process|"
+        r"server|service))\s+)?now(?:\s*\([^)]*\))?\s*$"
+    )
+    check_now_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?(?:log|output|status|service|session|job)\s+"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    launch_url_tail_pattern = re.compile(
+        r"\s+now\s*[—–-]\s*see\s+https?://\S+"
+        r"(?:\s+for\s+progress)?\s*$"
+    )
+    provider_tail_pattern = re.compile(
+        r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
+        r"on\s+copilot(?:\s+via\s+acpx)?\s*$"
+    )
+    actual_log_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
+    )
+    health_check_tail_pattern = re.compile(
+        r"\s+whether\b.*\b(?:healthy|ready|running|available|reachable|working)\s*$"
+    )
+    launch_with_pattern = re.compile(
+        r"\s+with\s+(?:(?:corrected|updated|new)\s+"
+        r"(?:arguments?|args?|options?|flags?|parameters?)|"
+        r"globals?\s+before\s+(?:the\s+)?agent\s+name)\s*$"
+    )
+    has_pronounless_action = False
+    step_numbers = {
+        status_match.group("number")
+        for status_match in status_number_pattern.finditer(assistant_text)
+        if status_match.group("label") == "step"
+    }
+    has_step_sequence = len(step_numbers) >= 2
+    numbering_text = status_number_pattern.sub("", assistant_text)
+    numbered_markers = {
+        match.group(1) for match in numbered_item_pattern.finditer(numbering_text)
+    }
+    has_numbered_list = has_step_sequence or bool(numbered_markers)
+    if not question_pattern.search(assistant_text):
+        for action_match in action_clause_pattern.finditer(assistant_text):
+            action_prefix = assistant_text[: action_match.start("action")]
+            if has_numbered_list or list_item_prefix_pattern.search(action_prefix):
+                continue
+            raw_clause_tail = assistant_text[action_match.end() :]
+            boundary_match = sentence_boundary_pattern.search(raw_clause_tail)
+            if boundary_match:
+                clause_tail = raw_clause_tail[: boundary_match.start()]
+                remaining_text = raw_clause_tail[boundary_match.end() :]
+            else:
+                clause_tail = raw_clause_tail
+                remaining_text = ""
+            if remaining_text.strip() and not allowed_trailing_action_pattern.fullmatch(
+                remaining_text
+            ):
+                continue
+            action_word = action_match.group("action")
+            is_launch_action = action_word in {
+                "launching",
+                "relaunching",
+                "starting",
+                "restarting",
+                "creating",
+            }
+            has_transition_cue = bool(
+                (is_launch_action and launch_now_tail_pattern.fullmatch(clause_tail))
+                or (action_word == "running" and run_now_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word == "checking"
+                    and check_now_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_url_tail_pattern.fullmatch(clause_tail))
+                or (is_launch_action and provider_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word in {"checking", "reading", "opening", "inspecting"}
+                    and actual_log_tail_pattern.fullmatch(clause_tail)
+                )
+                or (
+                    action_word == "checking"
+                    and health_check_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_with_pattern.fullmatch(clause_tail))
+            )
+            if not has_transition_cue:
+                continue
+            has_pronounless_action = True
+            break
+    if not (_ACK_FUTURE_RE.search(assistant_text) or has_pronounless_action):
         return False
-    if not any(marker in assistant_text for marker in _ACK_ACTION_MARKERS):
+    if not has_pronounless_action and not any(
+        marker in assistant_text for marker in _ACK_ACTION_MARKERS
+    ):
         return False
     # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.
     if not require_workspace:
@@ -3119,7 +3398,7 @@ def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
     return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
 
 
-def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
+def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:
     """Tool-result rows after the most recent user row — whether the turn did real tool work.
 
     ANY user row ends the window, the continuation nudges included: that is what bounds the
@@ -3301,6 +3580,21 @@ def _socket_from_candidate(candidate: Any):
     return sock if sock is not None else _socket_from_stream(candidate)
 
 
+def _socket_from_response(response: Any):
+    """Raw socket behind an httpx response's network stream (``extensions["network_stream"]``
+    first, then ``response.stream``), or None. Callers own their error handling."""
+    exts = getattr(response, "extensions", None) or {}
+    direct = exts.get("network_stream") if isinstance(exts, dict) else None
+    for start in (direct, getattr(response, "stream", None)):
+        if start is None:
+            continue
+        for candidate in _connection_candidates(start):
+            sock = _socket_from_candidate(candidate)
+            if sock is not None:
+                return sock
+    return None
+
+
 def _socket_from_stream(stream: Any):
     """Raw socket behind an httpcore network stream (several backends), or None."""
     sock = getattr(stream, "_sock", None)
@@ -3357,38 +3651,7 @@ def _iter_pool_sockets(client: Any):
                     yield sock
 
 
-def _socket_is_dead(sock) -> bool:
-    """Probe socket health with a non-blocking recv peek."""
-    import socket as _socket
-    try:
-        sock.setblocking(False)
-        return sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT) == b""
-    except BlockingIOError:
-        return False  # no data available: socket is healthy
-    except OSError:
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            sock.setblocking(True)
-
-
-def cleanup_dead_connections(agent) -> bool:
-    """Force-close and rebuild the primary client if its pool has dead sockets (CLOSE-WAIT, errors); returns True if cleaned."""
-    client = getattr(agent, "client", None)
-    if client is None:
-        return False
-    try:
-        dead_count = sum(1 for sock in _iter_pool_sockets(client) if _socket_is_dead(sock))
-        if dead_count > 0:
-            _ra().logger.warning("Found %d dead connection(s) in client pool — rebuilding client", dead_count)
-            agent._replace_primary_openai_client(reason="dead_connection_cleanup")
-            return True
-    except Exception as exc:
-        _ra().logger.debug("Dead connection check error: %s", exc)
-    return False
-
-
-def _set_reset_from_retry_after(context: Dict[str, Any], retry_after: Any) -> None:
+def _set_reset_from_retry_after(context: dict[str, Any], retry_after: Any) -> None:
     if "reset_at" in context:
         return
     seconds = parse_retry_after_seconds(retry_after)
@@ -3422,7 +3685,7 @@ def _duration_string_seconds(text: str) -> Optional[float]:
     return sum(float(n) * _DURATION_UNIT_SECONDS[u] for n, u in parts)
 
 
-def _set_reset_from_vendor_headers(context: Dict[str, Any], headers: Any) -> None:
+def _set_reset_from_vendor_headers(context: dict[str, Any], headers: Any) -> None:
     for name in _VENDOR_RESET_HEADERS:
         value = headers.get(name)
         if not isinstance(value, str) or not value.strip():
@@ -3436,9 +3699,9 @@ def _set_reset_from_vendor_headers(context: Dict[str, Any], headers: Any) -> Non
             return
 
 
-def extract_api_error_context(error: Exception) -> Dict[str, Any]:
+def extract_api_error_context(error: Exception) -> dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
-    context: Dict[str, Any] = {}
+    context: dict[str, Any] = {}
     body = getattr(error, "body", None)
     payload = (body.get("error") if isinstance(body.get("error"), dict) else body) if isinstance(body, dict) else None
     if isinstance(payload, dict):
@@ -3564,40 +3827,29 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 
 __all__ = [
-    "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
-    "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
-    "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
-    "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
-    "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
-    "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
-    "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api", "cleanup_dead_connections",
-    "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
+    "_iter_pool_sockets",
+    "anthropic_prompt_cache_policy",
+    "apply_pending_steer_to_tool_results",
+    "blank_cache_policy_stub",
+    "convert_to_trajectory_format",
+    "copy_reasoning_content_for_api",
+    "create_openai_client",
+    "drop_thinking_only_and_merge_users",
+    "dump_api_request_debug",
+    "extract_api_error_context",
+    "extract_reasoning",
     "force_close_tcp_sockets",
+    "invoke_tool",
+    "looks_like_codex_intermediate_ack",
+    "plan_cache_sections_for_destination",
+    "prompt_caching_disabled_from_config",
+    "recover_with_credential_pool",
+    "repair_message_sequence",
+    "repair_tool_call",
+    "restore_primary_runtime",
+    "sanitize_api_messages",
+    "sanitize_tool_call_arguments",
+    "strip_think_blocks",
+    "switch_model",
+    "try_recover_primary_transport",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
-    """Return True when an agent-level tool path emits its own post hook."""
-    if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
-        return True
-    if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
-        return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
-
-def intent_ack_continuation_enabled(agent) -> bool:
-    """Whether intent-ack continuation should fire at all for this turn.
-
-    The ``codex_ack_continuations < 2`` per-turn cap and the
-    ``looks_like_codex_intermediate_ack`` detector are applied by the caller;
-    this only decides the on/off gate. Callers that also need to know whether
-    the workspace requirement applies should use ``intent_ack_continuation_mode``
-    directly (``"codex_only"`` ⇒ require_workspace=True, ``"all"`` ⇒ False).
-    """
-    return intent_ack_continuation_mode(agent) != "off"
-# ---- END PLUGIN-COMPAT ----

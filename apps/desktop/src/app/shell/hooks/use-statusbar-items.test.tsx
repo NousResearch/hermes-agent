@@ -4,16 +4,25 @@ import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $freeTierStatus } from '@/store/free-tier'
+import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
+import { $onboardingGate } from '@/store/onboarding-gate'
 import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
-  $tileSessionFocusStartedAt
+  $tileSessionFocusStartedAt,
+  setActiveSessionId
 } from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
+import type { FreeTierStatus } from '@/types/hermes'
 
 import { useStatusbarItems } from './use-statusbar-items'
 
@@ -23,14 +32,48 @@ const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<nul
 // The focused pane is derived from the layout tree; a settable atom stands in
 // so a test can focus a tile without building a pane tree.
 vi.mock('@/store/session-focus', async () => {
-  const { atom } = await import('nanostores')
+  const { atom, computed } = await import('nanostores')
+  const { $selectedStoredSessionId } = await import('@/store/session')
 
-  return { $focusedTreePaneId: atom<null | string>(null) }
+  // The focused pane is derived from the layout tree; a settable atom stands
+  // in so a test can focus a tile without building a pane tree.
+  const $focusedTreePaneId = atom<null | string>(null)
+
+  // The preview store (reached via session-states) derives $visiblePreviewTabs
+  // from $focusedStoredSessionId at import time, and the timer tests depend on
+  // the REAL derivation (tile focus overrides the primary selection), so the
+  // mock mirrors session-focus's shape instead of stubbing a static atom.
+  const TILE_PANE_PREFIX = 'session-tile:'
+
+  return {
+    $focusedTreePaneId,
+    $focusedSessionIsTile: computed($focusedTreePaneId, active => Boolean(active?.startsWith(TILE_PANE_PREFIX))),
+    $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+      active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
+    )
+  }
 })
+
+// $focusedStoredSessionId derives from the LAYOUT TREE ($activeTreeGroup +
+// $layoutTree), not from session-focus's pane atom: focusing a tile means the
+// main zone's active pane IS that tile. Drive the tree the same way.
+const MAIN_GROUP_ID = 'statusbar-test-main'
+
+function focusPane(storedId: null | string): void {
+  const tilePane = storedId ? `session-tile:${storedId}` : null
+
+  $layoutTree.set(
+    tilePane
+      ? group(['workspace', tilePane], { active: tilePane, id: MAIN_GROUP_ID })
+      : group(['workspace'], { active: 'workspace', id: MAIN_GROUP_ID })
+  )
+  noteActiveTreeGroup(MAIN_GROUP_ID)
+  $focusedTreePaneId.set(tilePane)
+}
 
 const wrapper = ({ children }: { children: ReactNode }) => <MemoryRouter>{children}</MemoryRouter>
 
-function workspaceMenuIds(): string[] {
+function renderStatusbarItems() {
   const { result } = renderHook(
     () =>
       useStatusbarItems({
@@ -51,7 +94,11 @@ function workspaceMenuIds(): string[] {
     { wrapper }
   )
 
-  const workspace = result.current.leftStatusbarItems.find(item => item.id === 'workspace-cwd')
+  return result.current
+}
+
+function workspaceMenuIds(): string[] {
+  const workspace = renderStatusbarItems().leftStatusbarItems.find(item => item.id === 'workspace-cwd')
 
   return (workspace?.menuItems ?? []).map(item => item.id)
 }
@@ -60,7 +107,7 @@ afterEach(() => {
   $connection.set(null)
   $currentCwd.set('')
   $sessionTiles.set([])
-  $focusedTreePaneId.set(null)
+  focusPane(null)
   $selectedStoredSessionId.set(null)
   $sessions.set([])
   $sessionStartedAt.set(null)
@@ -89,7 +136,7 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
         storedSessionId: 'tile-remote'
       }
     ])
-    $focusedTreePaneId.set('session-tile:tile-remote')
+    focusPane('tile-remote')
     // A focused tile never inherits the primary's cwd; its stored row carries it.
     $sessions.set([{ cwd: '/srv/bot/workspace', id: 'tile-remote' }] as never)
 
@@ -131,12 +178,12 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'primary', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set(null)
+    focusPane(null)
 
     const item = sessionTimerItem()
 
     expect(timerSince(item)).toBe(4_000)
-    expect(item?.label).toBe('Focused since')
+    expect(item?.label).toBe('Focused for')
     expect(item?.title).toMatch(/not how long a turn/)
   })
 
@@ -146,7 +193,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
 
     const item = sessionTimerItem()
     const since = timerSince(item)
@@ -155,7 +202,7 @@ describe('statusbar session timer — focused since (#103123)', () => {
     expect(since).toBeLessThanOrEqual(Date.now())
     expect(since).not.toBe(dayOldRowSeconds * 1000)
     expect(since).not.toBe(4_000)
-    expect(item?.label).toBe('Focused since')
+    expect(item?.label).toBe('Focused for')
     expect(item?.hidden).toBeFalsy()
   })
 
@@ -164,15 +211,15 @@ describe('statusbar session timer — focused since (#103123)', () => {
 
     $selectedStoredSessionId.set('primary')
     now.mockReturnValue(10_000)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     expect($tileSessionFocusStartedAt.get()).toEqual({ since: 10_000, storedId: 'tile-old' })
 
     now.mockReturnValue(20_000)
-    $focusedTreePaneId.set(null)
+    focusPane(null)
     expect($tileSessionFocusStartedAt.get()?.since).toBe(10_000)
 
     now.mockReturnValue(30_000)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     expect($tileSessionFocusStartedAt.get()).toEqual({ since: 30_000, storedId: 'tile-old' })
 
     now.mockRestore()
@@ -182,12 +229,102 @@ describe('statusbar session timer — focused since (#103123)', () => {
     $selectedStoredSessionId.set('primary')
     $sessionStartedAt.set(4_000)
     $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
-    $focusedTreePaneId.set('session-tile:tile-old')
+    focusPane('tile-old')
     $tileSessionFocusStartedAt.set(null)
 
     const item = sessionTimerItem()
 
     expect(timerSince(item)).toBeNull()
     expect(item?.hidden).toBe(true)
+  })
+})
+
+describe('useStatusbarItems session timer — runtime cache anchor', () => {
+  it("anchors a focused branch tile to its runtime cache instead of the parent's stored age", () => {
+    const parentRowStartedAt = 1_600_000_000
+    const branchRuntimeStartedAt = 1_800_000_000_000
+
+    // The branch is a live runtime on the focused tile; its slice carries the
+    // runtime's own start, which must win over the parent row's stored age.
+    setActiveSessionId('branch-runtime')
+    $selectedStoredSessionId.set('parent-stored')
+    $sessionStartedAt.set(1_700_000_000_000)
+    $sessions.set([
+      { id: 'parent-stored', started_at: parentRowStartedAt },
+      { id: 'branch-stored', parent_session_id: 'parent-stored', started_at: parentRowStartedAt }
+    ] as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: null, mode: 'local', profile: 'default' },
+        runtimeId: 'branch-runtime',
+        storedSessionId: 'branch-stored'
+      }
+    ] as never)
+    $sessionStates.set({
+      'branch-runtime': { ...createClientSessionState('branch-stored'), runtimeStartedAt: branchRuntimeStartedAt }
+    } as never)
+    focusPane('branch-stored')
+
+    const item = sessionTimerItem()
+    const since = timerSince(item)
+
+    expect(since).toBe(branchRuntimeStartedAt)
+    expect(since).not.toBe(parentRowStartedAt * 1000)
+  })
+})
+
+// The statusbar chip is a free-tier user's standing way in to a sign-in, and
+// an interface mode decides whether the bar is mounted at all. Whatever a mode
+// rests, a signed-out free-tier user keeps one visible Sign in.
+describe('free-tier Sign in in every interface mode', () => {
+  const freeTier = (available: boolean): FreeTierStatus => ({
+    available,
+    enabled: true,
+    has_guest: available,
+    label: 'Nous · free tier',
+    model: 'nous/welcome',
+    notice_pending: false
+  })
+
+  const desktopBridge = window.hermesDesktop
+
+  function signInChipVisible(): boolean {
+    const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
+    const chip = [...leftStatusbarItems, ...statusbarItems].find(item => item.id === 'free-tier')
+
+    return $statusbarVisible.get() && chip !== undefined && !chip.hidden
+  }
+
+  afterEach(() => {
+    $freeTierStatus.set(null)
+    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'idle' })
+    window.hermesDesktop = desktopBridge
+    setInterfaceMode('advanced')
+  })
+
+  it.each(INTERFACE_MODES)('shows the Sign in chip to a signed-out free-tier user in %s mode', mode => {
+    setInterfaceMode(mode)
+    $freeTierStatus.set(freeTier(true))
+
+    expect(signInChipVisible()).toBe(true)
+  })
+
+  it('lets Simple rest the bar again once the user has signed in', () => {
+    setInterfaceMode('simple')
+    $freeTierStatus.set(freeTier(true))
+    expect($statusbarVisible.get()).toBe(true)
+
+    $freeTierStatus.set(freeTier(false))
+    expect($statusbarVisible.get()).toBe(false)
+  })
+
+  it('holds the chip while a guided setup is running and brings it back after', () => {
+    window.hermesDesktop = { ...desktopBridge, guestOnboardingEnabled: true } as typeof desktopBridge
+    $freeTierStatus.set(freeTier(true))
+    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'guided' })
+    expect(signInChipVisible()).toBe(false)
+
+    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'done' })
+    expect(signInChipVisible()).toBe(true)
   })
 })

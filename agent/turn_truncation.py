@@ -43,8 +43,8 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
 )
 
 def collapse_continuation_trail(
-    agent: Any, messages: List[Dict[str, Any]], current_turn_user_idx: Any, *,
-    finish_reason: str, parts: Optional[List[str]] = None,
+    agent: Any, messages: list[dict[str, Any]], current_turn_user_idx: Any, *,
+    finish_reason: str, parts: Optional[list[str]] = None,
 ) -> str:
     """Drop this turn's ``_length_continuation_fragment``/``_nudge`` rows and append one
     assistant row holding the joined, think-stripped partial; returns that text ("" none).
@@ -59,8 +59,8 @@ def collapse_continuation_trail(
     if parts is None and not (valid_idx and idx < len(messages)):
         return ""
     turn_start = idx + 1 if valid_idx else 0
-    fragment_parts: List[str] = []
-    retained: List[Any] = []
+    fragment_parts: list[str] = []
+    retained: list[Any] = []
     found_trail = False
     for message in messages[turn_start:]:
         if isinstance(message, dict) and (
@@ -102,7 +102,7 @@ _THINKING_EXHAUSTED = (
     "for the response. Try lowering reasoning effort or increasing max_tokens.",
 )
 
-def repetition_copy(stopping: str, outcome: str, refusal: str) -> Tuple[str, str, str]:
+def repetition_copy(stopping: str, outcome: str, refusal: str) -> tuple[str, str, str]:
     """(log line, user copy, error) for a repetition-dominated abort; only the clauses naming
     where the turn stopped differ between the length path and the stop path."""
     return (
@@ -118,6 +118,11 @@ _REPETITION_DOMINATED = repetition_copy(
     "instead of continuing a degenerate response",
     "so continuing would only produce more repeated text. The partial response was discarded.",
     " and was truncated mid-loop; refusing to continue a",
+)
+_REPETITION_STREAM_CUT = repetition_copy(
+    "the stream mid-loop",
+    "so the stream was stopped instead of running on. The partial response was discarded.",
+    " and the stream was cut mid-loop; discarding the",
 )
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
@@ -157,9 +162,9 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
 
 
 def partial_result(
-    messages: List[Dict[str, Any]], api_call_count: int, final_response: str,
+    messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Typed incomplete-turn result (``partial`` unless ``failed``); ``error`` defaults to
     ``final_response``. ``compression_exhausted`` carries the #98722 typed bit the gateway
     consumes to reset/move future input to a clean session (see run_turn.py)."""
@@ -187,10 +192,10 @@ class TruncationVerdict:
     the handler may have rebound."""
 
     action: str
-    result: Optional[Dict[str, Any]]
-    messages: List[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
+    messages: list[dict[str, Any]]
     length_continue_retries: int
-    truncated_response_parts: List[Tuple[str, bool]]
+    truncated_response_parts: list[tuple[str, bool]]
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
@@ -209,18 +214,18 @@ class _Trunc(TruncationVerdict):
     effective_task_id: Any
     current_turn_user_idx: Any
     action: str = "fallthrough"
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     window_filled: Optional[tuple[int, int]] = None  # (prompt_tokens, context_length)
 
-    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> TruncationVerdict:
+    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> TruncationVerdict:
         self.action, self.result = action, result
         return self
 
     def end_turn(
         self, final_response: str, error: Optional[str] = None, *,
-        result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
+        result_messages: Optional[list[dict[str, Any]]] = None, cleanup: bool = True,
         failed: bool = False, compression_exhausted: bool = False,
-        failure: Tuple[str, bool] = ("truncated", True),
+        failure: tuple[str, bool] = ("truncated", True),
     ) -> TruncationVerdict:
         """Persist and end the turn as partial (or ``failed``).
 
@@ -409,7 +414,17 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         )
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
-    if st.is_stub:
+    _failure = FailoverReason.timeout.value if st.is_stub else "truncated"
+    if st.is_stub and getattr(st.response, "_clean_eof", False):
+        # #102766: no transport error — the server (or a proxy) closed the stream cleanly
+        # without a finish_reason, so "check your network" copy / a timeout stamp would mislead.
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Server kept closing the stream mid tool-call after 4 retries — the action was not executed.",
+            force=True, diagnostic=True,
+        )
+        _final_response = site_copy("stream_closed_tool_call", label=provider_label_for(agent.provider))
+        _failure = "truncated"
+    elif st.is_stub:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
             force=True, diagnostic=True,
@@ -426,15 +441,15 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     close_interrupted_tool_sequence(st.messages, _final_response)
     return st.end_turn(
         _final_response, cleanup=False,
-        failure=(FailoverReason.timeout.value if st.is_stub else "truncated", True),
+        failure=(_failure, True),
     )
 
 
 def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
-    messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
+    messages: list[dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
-    truncated_response_parts: List[Tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
+    truncated_response_parts: list[tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
     compression_attempts: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
@@ -450,16 +465,24 @@ def recover_from_truncation(
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts,
     )
+    if getattr(response, "_runaway_repetition", False):
+        # The streaming call cut a live repetition loop: a continuation would only re-enter it,
+        # whatever the partial or its tool calls look like.
+        line, user_response, error = _REPETITION_STREAM_CUT
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+        return st.end_turn(user_response, error)
     st.window_filled = _prompt_filled_window(agent, response)
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  Response truncated — stream ended before completion"
-        if st.is_stub else
-        f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - the prompt filled the "
-        f"context window ({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)"
-        if st.window_filled else
-        f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens",
-        force=True, diagnostic=True,
-    )
+    if st.is_stub and getattr(response, "_clean_eof", False):
+        _banner = ("Response truncated — server ended the stream without ever sending finish_reason "
+                   "(no transport error — the server or a proxy closed the stream cleanly)")
+    elif st.is_stub:
+        _banner = "Response truncated — stream ended before completion"
+    elif st.window_filled:
+        _banner = (f"Response truncated (finish_reason='length') - the prompt filled the context window "
+                   f"({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)")
+    else:
+        _banner = "Response truncated (finish_reason='length') - model hit max output tokens"
+    agent._vprint(f"{agent.log_prefix}⚠️  {_banner}", force=True, diagnostic=True)
 
     # #106260: a context-overflow error after partial delivery must not seed a
     # continuation. _partial_stream_stub marks such stubs _overflow_terminal and
@@ -530,7 +553,7 @@ CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
 
 
 def continue_codex_incomplete(
-    agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
+    agent: Any, assistant_message: Any, finish_reason: str, *, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, response: Any = None,
 ) -> Optional[Any]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
@@ -680,13 +703,13 @@ class RefusalVerdict:
     is the possibly re-synced system prompt."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     active_system_prompt: Any
 
 
 def handle_content_policy_refusal(
     agent: Any, response: Any, _retry: TurnRetryState, *, thinking_spinner: Any,
-    messages: List[Dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
+    messages: list[dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
 ) -> RefusalVerdict:

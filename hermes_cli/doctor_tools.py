@@ -43,7 +43,7 @@ def _pm_package_for_command(command: str) -> str | None:
     package definitions (binary_rel → executable basename) — no restated
     name table, so new pm packages are covered without doctor changes."""
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm import registry, store
         from pm.packages import BinaryPackage
 
@@ -142,18 +142,12 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
     updated_available, updated_unavailable = list(available), []
     for item in unavailable:
-        if _is_kanban_worker_env_gate(item):
-            gated = "kanban"
-        elif item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
-            gated = "honcho"
-        else:
+        if not _is_kanban_worker_env_gate(item):
             updated_unavailable.append(item)
-            continue
-        if gated not in updated_available:
-            updated_available.append(gated)
+        elif "kanban" not in updated_available:
+            updated_available.append("kanban")
     return updated_available, updated_unavailable
 
 
@@ -252,7 +246,7 @@ def _check_daytona_backend(issues: list[str]) -> None:
              ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
              "run `hermes setup terminal` (Daytona) to enter it.", issues)
     try:
-        from daytona import Daytona  # noqa: F401 — SDK presence check
+        from daytona import Daytona
         check_ok("daytona SDK", "(installed)")
     except ImportError:
         _fail_and_issue("daytona SDK not installed", "(run hermes setup terminal)", "Run hermes setup terminal and select Daytona, then restart Hermes", issues)
@@ -403,7 +397,8 @@ def _check_lightpanda() -> None:
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
-    if _safe_which("node"):
+    # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
+    if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
         _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
@@ -431,10 +426,12 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     prescribes a local mutating fix command. See #116774.
     """
     import json
+    from hermes_constants import with_hermes_node_path
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
-                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                                      env=with_hermes_node_path())
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
@@ -468,7 +465,8 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
-    npm_bin = _safe_which("npm")
+    staged = _pm_tool_path("npm")
+    npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
     if npm_bin:
         try:
             # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so

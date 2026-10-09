@@ -15,10 +15,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 PIL = pytest.importorskip("PIL")
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from gateway.platforms.base import PlatformConfig  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.platforms.base import PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _adapter():

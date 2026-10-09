@@ -17,6 +17,7 @@ import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
+import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
@@ -81,6 +82,7 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
 // whether it did, so dispatch stops at the first taker.
 const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
+  handleFreeTierEvent,
   handleSessionInfoEvent,
   handleControlEvent,
   handleMessageStreamEvent,
@@ -94,7 +96,9 @@ const HANDLERS: GatewayEventHandler[] = [
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
-  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+  // One pin per concurrent unscoped stream, not a single shared slot: two chats
+  // streaming at once used to clobber each other's pin (#46194 / #62823).
+  const unscopedStreamSessionIdsRef = useRef<readonly string[]>([])
 
   // session.info arrives in bursts (agent build ready + turn end + title /
   // MCP / compress edges within the same second). Each used to fire its own
@@ -157,10 +161,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         activeSessionId: activeSessionIdRef.current,
         eventType: event.type,
         explicitSessionId: explicitSid,
-        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+        unscopedStreamSessionIds: unscopedStreamSessionIdsRef.current
       })
 
-      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       if (route.drop) {
         return

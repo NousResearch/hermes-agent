@@ -148,7 +148,7 @@ def test_native_busy_image_reports_the_process_holding_its_file(tmp_path):
         with held.open("w") as handle:
             handle.write("owned test handle\n")
             handle.flush()
-            code, output = observed("detach", device, plist=False)
+            code, _output = observed("detach", device, plist=False)
             assert code != 0, "native fixture must reproduce a busy detach"
             report = log.getvalue()
             assert str(os.getpid()) in report

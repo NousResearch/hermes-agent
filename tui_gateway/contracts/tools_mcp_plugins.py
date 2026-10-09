@@ -205,9 +205,11 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills);
+    ``profile`` scopes a session-less rescan."""
 
     session_id: str | None = None
+    profile: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -265,7 +267,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
+    fullLabel: str
     meta: str
     body: str
     style: str
@@ -637,10 +639,12 @@ class PluginSettingField(Result):
 class PluginServerState(WireEnum):
     connected = "connected"
     app_not_running = "app_not_running"
+    hermes_not_connected = "hermes_not_connected"
     endpoint_unavailable = "endpoint_unavailable"
     no_interactive_session = "no_interactive_session"
     version_too_old = "version_too_old"
     missing_app = "missing_app"
+    unsupported_gpu = "unsupported_gpu"
     unknown = "unknown"
 
 
@@ -696,7 +700,8 @@ class PluginLiveNow(Result):
 
 class PluginActivation(Result):
     """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
-    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
+    language-pack layers), ``gateway_transforms`` / ``hooks`` (hook
     names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
@@ -750,6 +755,8 @@ class PluginsManageResult(Result):
     missing_env: list[str] | None = None
     # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
     python_dependencies: list[str] | None = None
+    # ``install`` from the catalog → the entry's informational ``known_issues`` (``[]`` when none).
+    known_issues: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None

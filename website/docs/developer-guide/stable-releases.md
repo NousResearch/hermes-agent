@@ -13,7 +13,7 @@ files on `main`.
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and
    `abandoned-rc.*`). Derive the next SemVer from the published release family
-   seeded at `0.21.4` alone: the newer of the protected R2 stable head and the
+   seeded at `0.21.5` (the last legacy CalVer release, v2026.9.24) alone: the newer of the protected R2 stable head and the
    newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
    release that skipped bundles moves only the second. Attempts do not move the
    version line. A cut whose next version already has a final `vX.Y.Z` tag is
@@ -159,7 +159,8 @@ python scripts/release.py abandon --version 0.21.5 --remote origin
 
 `publish` performs a synchronous supersession preflight, then dispatches the same
 ordered controller used by automatic recovery. It refuses a known burned version
-below a newer published release. `abandon` deletes the draft when one exists,
+below a newer published release. `abandon` force-cancels the attempt's
+in-progress `Stable Release` runs, deletes the draft when one exists,
 writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
@@ -250,6 +251,11 @@ The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 groups, which wait for a real Linux build. Each Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
+
+Every gate and every candidate starts straight after `admit`. CI is a gate that
+`acceptance` requires, not a lock the signed builds wait behind, so a slow gate
+cannot delay a bundle; the price is that a broken `main` still pays for signed
+candidates that `acceptance` then refuses.
 The `smoke-win32-universal` job is gone; the per-arch MSIX smokes cover each
 arch, and the Windows install arms install the `.msixbundle` on both arches.
 
@@ -299,8 +305,7 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkout channels are separate: `hermes update --set-channel`
-remains available there and selects the published release's source commit.
+build. Source checkouts are separate: `main` is their only valid channel.
 
 `--build-commit` prints its deterministic downloads-page URL before dispatch,
 including in dry runs:
@@ -345,6 +350,19 @@ selected repository; no R2 credentials are required.
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin --publish
 python scripts/release.py --channels --remote origin
+```
+
+By default a preview channel installs as its own side-by-side app (`Hermes
+NAME`, its own package ID). To test an exact commit as the regular app instead,
+create the channel with `--branding stable`: it copies the published stable
+channel's name, icon and package ID, so the build installs over the official
+app, shares its desktop settings, and later updates follow the channel. Branding is fixed when the channel is
+created; repeat the flag on every dispatch of that channel and use a new channel
+name to change it. `--branding` needs `--channel`, since a plain one-off commit
+build always carries its `Hermes Agent <sha>` identity.
+
+```sh
+python scripts/release.py --channel my-commit --branding stable --build-commit SHA --remote origin --publish
 ```
 
 Disposable R2 scoping is opt-in, for test runs only. Dispatch the desktop

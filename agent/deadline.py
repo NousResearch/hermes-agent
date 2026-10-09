@@ -30,8 +30,14 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "MAX_SAFE_TIMEOUT_S", "BoundedResult", "DeadlineExpired", "clamp_timeout", "resolve_timeout",
-    "run_bounded_async", "run_bounded_sync", "kill_process_tree",
+    "MAX_SAFE_TIMEOUT_S",
+    "BoundedResult",
+    "DeadlineExpired",
+    "clamp_timeout",
+    "kill_process_tree",
+    "resolve_timeout",
+    "run_bounded_async",
+    "run_bounded_sync",
 ]
 
 # Upper bound for any timeout handed to platform wait primitives.
@@ -431,7 +437,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         try:
             proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=15, check=False, creationflags=creationflags,
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False, creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0

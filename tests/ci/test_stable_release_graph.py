@@ -14,6 +14,11 @@ def workflow(name):
     return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
 
 
+def direct_needs(jobs, name):
+    needs = jobs[name].get("needs", [])
+    return [needs] if isinstance(needs, str) else needs
+
+
 def ancestors(jobs, name):
     seen = set()
     pending = [name]
@@ -38,9 +43,16 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert "secrets" not in jobs["ci"]
     assert jobs["docker"]["uses"] == jobs["publish-docker"]["uses"]
     assert jobs["docker"]["with"]["release-phase"] == "test"
-    assert "ci" in ancestors(jobs, "docker")
+    # B7: every gate and every signed candidate starts straight after admit.
+    # The acceptance join requires CI, so a slow gate cannot delay a build.
+    for parallel in ("docker", "nix", "pm-bundle", "termux-checks", "windows-live", "install-e2e"):
+        assert direct_needs(jobs, parallel) == ["admit"], parallel
     candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                        "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
+    # The Windows bundle group is the only candidate that waits on a peer.
+    for call in candidate_calls:
+        assert set(direct_needs(jobs, call)) <= {
+            "admit", "candidates-win32-arm64", "candidates-win32-x64"}, call
     required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged",
                 "macos-packaged-arm64", "macos-packaged-x64", "termux-checks", "windows-live",
                 "candidate-manifest", "transitions-darwin-arm64", "transitions-darwin-x64",
@@ -235,6 +247,19 @@ def test_release_gates_extract_consumer_facing_versions():
     )
     assert '"$package/bin/hermes" --version' in nix_check
     assert "actual != expected" in nix_check
+    # A path: flake has no git metadata; without ?rev= the stamp has no commit
+    # and the packaged CLI reports "unknown".
+    assert 'release-source?rev=$GITHUB_SHA' in nix_check
+    flake_check = next(step["run"] for step in nix["flake-check"]["steps"] if step.get("name") == "nix flake check")
+    assert "release-source?rev={1}" in flake_check and "github.sha" in flake_check
+
+
+def test_versioned_docker_images_belong_to_one_attempt():
+    # The final vX.Y.Z does not exist until publish; a second attempt pushing
+    # under it collides with the first attempt's immutable manifest list.
+    jobs = workflow("stable-release.yml")["jobs"]
+    for name in ("docker", "publish-docker"):
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():

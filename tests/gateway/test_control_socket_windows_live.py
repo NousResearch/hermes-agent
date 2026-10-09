@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.live_process_fixtures import sleeper_script_path
+
 pytestmark = pytest.mark.platforms("windows")  # live Windows named-pipe E2E
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -117,7 +119,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch):
-    proc, home, server_pid = live_server
+    _proc, home, server_pid = live_server
     from gateway.control_socket import identify_gateway, query_gateway_control
 
     ident = identify_gateway(home, timeout=5.0)
@@ -152,7 +154,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
 
 @pytest.mark.spawns_gateway_lookalike
 def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
-    proc, home, server_pid = live_server
+    proc, home, _server_pid = live_server
     from gateway.control_socket import identify_gateway
 
     assert identify_gateway(home, timeout=5.0) is not None
@@ -191,8 +193,10 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     standin = subprocess.Popen(
         # Use the real interpreter: a Windows venv's python.exe can be a shim
-        # whose PID differs from the process running the command line.
-        [getattr(sys, "_base_executable"), "-c", "import time; time.sleep(120)", "hermes", "gateway", "run"],
+        # whose PID differs from the process running the command line. The
+        # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
+        # inferred from inline `-c` source (#107002).
+        [sys._base_executable, sleeper_script_path(), "hermes", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

@@ -16,8 +16,8 @@ import signal
 import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from datetime import datetime
 from pathlib import Path
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -35,6 +35,29 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
+    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
+    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
+    Blocking: call it off the event loop."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.left_core_migration import recover_at_startup
+    with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
+        recover_at_startup()
+
+
+def recover_left_core_at_gateway_start() -> None:
+    """Left-core migration for the homes whose platform config the runner loads first: the launch
+    home and the default root (the multiplex primary; a named launcher is then served as a
+    secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
+    so a platform plugin it gets starts its adapter in the same gateway start."""
+    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    recover_at_startup()
+    root = Path(get_default_hermes_root())
+    if root.resolve() != Path(get_hermes_home()).resolve():
+        recover_left_core_in(root)
 
 
 class GatewayStartupMixin:
@@ -106,7 +129,7 @@ class GatewayStartupMixin:
                     continue
                 # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
                 with suppress(Exception):
-                    setattr(event, "_hermes_startup_restore_replay", True)
+                    event._hermes_startup_restore_replay = True
                 await adapter.handle_message(event)
             except Exception:
                 # One bad replay must not abort the drain: the remaining queued
@@ -330,7 +353,7 @@ class GatewayStartupMixin:
             # Claim only rows whose exact transport owner is connected: platform-only filtering would spend
             # a disconnected bot's retry budget because another bot on that platform is online.
             _profile_adapters = getattr(self, "_profile_adapters", None) or {}
-            _pval = lambda p: getattr(p, "value", str(p))  # noqa: E731
+            _pval = lambda p: getattr(p, "value", str(p))
             _deliverable_targets = {(_pval(p), "default") for p in self.adapters}
             # Legacy rows (no adapter_profile) are unambiguous only without multiplexing; else fail closed.
             if not _profile_adapters:
@@ -380,7 +403,7 @@ class GatewayStartupMixin:
             # Remember refusals arriving during a threaded SELECT or a send. An empty stale
             # snapshot cannot retire this worker until it has observed the wake.
             wakes[key].set()
-            return None
+            return
         wake = wakes[key] = asyncio.Event()
 
         async def _redeliver_after_wait():
@@ -532,10 +555,10 @@ class GatewayStartupMixin:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when
         enumeration failed or the restart-loop breaker tripped for this boot."""
         try:
-            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+            with self.session_store._lock:
+                self.session_store._ensure_loaded_locked()
                 candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
+                    entry for entry in self.session_store._entries.values()
                     if entry.resume_pending
                     and not entry.suspended
                     and entry.origin is not None
@@ -553,7 +576,7 @@ class GatewayStartupMixin:
                 _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
                 if _rlg.check_and_record(_max_restarts, _window, max_gap_seconds=_max_gap):
                     return None
-            except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
+            except Exception as exc:
                 logger.debug("Restart-loop guard check skipped: %s", exc)
         return candidates
 
@@ -577,16 +600,19 @@ class GatewayStartupMixin:
         ``_is_resume_pending`` injection path owns the wording). Sessions whose adapter is offline stay
         ``resume_pending`` for the reconnect watcher, which re-calls this scoped to that ``platform``;
         sessions with a running agent are skipped so none is resumed twice."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window
+        from gateway.run import (
+            _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
+        )
         window = _auto_continue_freshness_window()
         candidates = self._resume_pending_candidates(platform)
         if candidates is None:
             return 0
-        now = datetime.now()
         scheduled = 0
         for entry in candidates:
+            # Epoch math: the marker was stamped naive-local by the previous process, possibly
+            # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            if not _is_fresh_gateway_interruption(marker, window_secs=window):
                 continue
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
@@ -730,12 +756,12 @@ class GatewayStartupMixin:
         from gateway.delivery_ledger import compute_obligation_id, ledger_enabled, record_crash_left_reply
         ledger_on = await asyncio.to_thread(ledger_enabled)
         cutoff = time.time() - max_age_seconds  # older markers are cleared, never acted on
-        with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-            self.session_store._ensure_loaded_locked()  # noqa: SLF001
+        with self.session_store._lock:
+            self.session_store._ensure_loaded_locked()
             marked = [
                 (e.session_key, e.session_id, e.active_turn_token, e.active_turn_started_at, e.origin,
                  e.transport_profile)
-                for e in self.session_store._entries.values()  # noqa: SLF001
+                for e in self.session_store._entries.values()
                 if e.active_turn_token and e.active_turn_started_at and e.origin and not e.suspended
             ]
         ledgered = 0
@@ -760,12 +786,15 @@ class GatewayStartupMixin:
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
-        silence marker on a machinery turn, a muted diagnostic wake); else the text to send, with a
-        human turn's bare silence marker replaced by the same notice the live path sends."""
+        silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
+        bot, a muted diagnostic wake); else the text to send, with any other bare silence marker
+        replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
-        from gateway.response_filters import is_intentional_silence_response, is_machinery_display_kind
+        from gateway.response_filters import (
+            is_intentional_silence_response, is_machinery_display_kind, silence_allowed,
+        )
         from gateway.run import _sanitize_gateway_final_response
-        from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
+        from gateway.run_turn import _unexpected_silence_reply
         from gateway.warning_notifications import diagnostic_turn_muted
         from hermes_cli.timefmt import coerce_epoch
         visible = [m for m in history if m.get("role") not in ("session_meta", "system")]
@@ -774,8 +803,7 @@ class GatewayStartupMixin:
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
-        machinery = is_machinery_display_kind(prompt.get("display_kind"))
-        if machinery:
+        if is_machinery_display_kind(prompt.get("display_kind")):
             try:  # the owning profile's display policy, as the adapter reads it at delivery
                 scope = self._media_delivery_scope_for_source(origin)
             except Exception:
@@ -785,13 +813,15 @@ class GatewayStartupMixin:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
         if is_intentional_silence_response(last["content"]):
-            return "" if machinery else _UNEXPECTED_SILENCE_REPLY
+            silent_ok = silence_allowed(
+                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
+            return "" if silent_ok else _unexpected_silence_reply()
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
 
     @staticmethod
     def _start_hosted_room_worker_sync():
         """Start the local Group Chat worker without importing the dashboard."""
-        import tui_gateway.server  # noqa: F401
+        import tui_gateway.server
         from tui_gateway import methods_groups
         service = methods_groups.get_hosted_room_service()
         if service is None:
@@ -882,6 +912,7 @@ class GatewayStartupMixin:
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
+        self._start_log_retired_session_reset()
         self._log_agent_budget()
         # Warn prominently when redaction is opted out; the redactor snapshots its state at import time,
         # so this line is the source of truth for the process lifetime.
@@ -931,6 +962,19 @@ class GatewayStartupMixin:
             if _adv_msg:
                 logger.warning("%s", _adv_msg)
                 logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
+
+    def _start_log_retired_session_reset(self) -> None:
+        """Warn per served profile whose config still declares an idle/daily ``session_reset``,
+        unless the plugin that honours it is enabled. Never raises."""
+        with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
+            from gateway.config_loader import read_yaml_layers
+            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
+                    if (found := retired_reset_policy(read_yaml_layers(home)))]
+            if hits and not reset_plugin_enabled():
+                for name, (path, mode) in hits:
+                    logger.warning("Profile %s: %s", name, format_notice(path, mode))
 
     def _start_log_systemd_timing_alignment(self) -> None:
         """Warn when systemd's TimeoutStopSec does not cover the drain window (a unit file from before
@@ -1017,6 +1061,8 @@ class GatewayStartupMixin:
         # lazily imports run_agent, so model_tools' discover_plugins() side-effect may not have run.
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
             from hermes_cli.plugins import discover_plugins
+            from hermes_cli.plugins_cmd_remove import sweep_pending_plugin_deletes
+            sweep_pending_plugin_deletes()  # trees a previous life still held when they were uninstalled
             discover_plugins()
         # Relay entrypoints share the effective profile opt-out, including when a
         # deployment injects a URL. No URL or explicitly disabled -> no side effects.
@@ -1137,10 +1183,11 @@ class GatewayStartupMixin:
             if stuck:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
 
-    async def _start_prefilter_platforms(self) -> Tuple[bool, int, list, list]:
+    async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
         from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
@@ -1175,6 +1222,17 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
+                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
+                # flag it so the unserved enabled platform is visible.
+                heals = self._adapter_may_heal(platform, platform_config)
+                self._update_platform_runtime_status(
+                    platform.value, platform_state="retrying" if heals else "fatal",
+                    error_code="adapter_unavailable",
+                    error_message=_adapter_unavailable_message(platform, retrying=heals),
+                    needs_attention=True,
+                )
+                if heals:
+                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
@@ -1195,7 +1253,7 @@ class GatewayStartupMixin:
             )
             try:
                 ok = await self._connect_initial_adapter_with_timeout(adp, p)
-            except Exception as _exc:  # noqa: BLE001 - surfaced below as a retryable error
+            except Exception as _exc:
                 return (p, adp, p_cfg, "exception", _exc)
             return (p, adp, p_cfg, "ok" if ok else "failed", None)
 
@@ -1306,9 +1364,13 @@ class GatewayStartupMixin:
 
     async def _start_secondary_profiles(
         self, connected_count: int, _multiplex_skipped_platforms: list
-    ) -> Tuple[bool, int]:
+    ) -> tuple[bool, int]:
         """Bring up multiplexed secondary-profile adapters. Returns (aborted, connected_count)."""
         from gateway.run import MultiplexConfigError
+        from tools.process_registry import process_registry as _pr
+        # The launch profile's durable completions replay here, not at import (#123265); the
+        # secondaries' ledgers are replayed by _restore_secondary_completion_ledgers below.
+        _pr.restore_completions()
         # Secondary-profile adapters connect under their own home + credential scope.
         try:
             connected_count += await self._start_secondary_profile_adapters()
@@ -1393,7 +1455,7 @@ class GatewayStartupMixin:
             # All retryable: stay alive (cron runs, watcher recovers) rather than systemd restart-loop.
             logger.warning(
                 "Gateway started with no connected platforms — %d platform(s) queued for retry: %s",
-                len(self._failed_platforms), "; ".join(startup_retryable_errors),
+                len(startup_retryable_errors), "; ".join(startup_retryable_errors),
             )
             _write_runtime_status_quiet(gateway_state="degraded", exit_reason=None)
         # No adapter for any enabled platform: fleet nodes share one config.yaml but hold a subset of
@@ -1405,7 +1467,8 @@ class GatewayStartupMixin:
             # (#5196).
             "No adapter could be created for any of the %d configured platform(s). "
             "Check that required dependencies are installed and credentials are set. "
-            "Gateway will continue for cron job execution.", enabled_platform_count,
+            "Gateway will continue for cron job execution; platforms whose plugin may still register "
+            "are queued for background retry.", enabled_platform_count,
         )
         return False
 
@@ -1447,6 +1510,7 @@ class GatewayStartupMixin:
     async def _start_finish_wiring(self, connected_count: int) -> None:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        from gateway.shutdown_flush import recover_gateway_pending
         await self._start_post_connect_services(connected_count)
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
@@ -1462,6 +1526,11 @@ class GatewayStartupMixin:
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
+        # Replay the previous run's pending spool before resume turns and queued inbound write live
+        # rows: only this pass tells the store which sessions have spooled rows, and a live row
+        # written first would get a lower row id than them for good.
+        with _log_suppressed(logging.WARNING, "Pending-message recovery failed: %s"):
+            recover_gateway_pending(self)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()
@@ -1469,6 +1538,8 @@ class GatewayStartupMixin:
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()
+        from gateway.cron_store_notices import install_cron_store_notices
+        install_cron_store_notices(self, asyncio.get_running_loop())
         # Resume recovered process watchers. Detach the batch atomically (fresh list, not clear(): a
         # concurrent append during the yield must not be lost); yield every 100 to keep the loop live.
         with _log_suppressed(logging.ERROR, "Recovered watcher setup error: %s"):
@@ -1519,7 +1590,7 @@ class GatewayStartupMixin:
             else:
                 # Say WHY an OPTED-IN instance didn't arm (non-opted stays silent).
                 self._log_scale_to_zero_not_armed_reason()
-        except Exception:  # noqa: BLE001 - arming must never block startup
+        except Exception:
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).
@@ -1606,6 +1677,8 @@ class GatewayStartupMixin:
         self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
+        from hermes_cli.observability.shared_metrics_startup import record_process_ready
+        record_process_ready("gateway_boot", background=True)
         logger.info("Press Ctrl+C to stop")
         return True
 
@@ -1641,7 +1714,7 @@ class GatewayStartupMixin:
             raise RuntimeError(f"could not load config for profile '{profile_name}': {exc}") from exc
 
     async def _handoff_resolve_destination(
-        self, row: Dict[str, Any], profile_name: Optional[str]
+        self, row: dict[str, Any], profile_name: Optional[str]
     ) -> "GatewayStartupMixin._HandoffDestination":
         """Resolve platform, transport, home channel, thread and destination source for a row."""
         from gateway.delivery import resolve_delivery_transport
@@ -1669,7 +1742,7 @@ class GatewayStartupMixin:
         cli_title = row.get("title") or cli_session_id[:8]
         try:
             new_thread_id = await transport.adapter.create_handoff_thread(
-                home_chat_id, f"Hermes — {cli_title}",
+                home_chat_id, t("gateway.startup.handoff_thread_title", title=cli_title),
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
@@ -1753,7 +1826,7 @@ class GatewayStartupMixin:
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )
 
-    async def _process_handoff(self, row: Dict[str, Any], profile_name: Optional[str] = None) -> None:
+    async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
         ``_profile_adapters`` and the key must be namespaced ``agent:<profile>:...`` or nobody reads it."""
@@ -1763,7 +1836,9 @@ class GatewayStartupMixin:
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(
+            session_key, cli_session_id, preserve_prompt_pin=False,
+        )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

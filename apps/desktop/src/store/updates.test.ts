@@ -344,11 +344,47 @@ describe('reportBackendContract', () => {
 
   it('clears the snooze once the backend catches up, so a regression warns again', () => {
     reportBackendContract(1)
-    lastToast().onDismiss()
+    lastToast().onDismiss() // user closes it → cooldown starts
     notifySpy.mockClear()
 
     reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns when the GUI is older than the backend (contract ahead of this build)', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    // The backend-older toast must not fire — this is the reverse direction.
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ id: 'gui-contract-skew', kind: 'warning' })
+  })
+
+  it('gui-skew warning snoozes on close and reminds after the cooldown', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss() // user closes it → cooldown starts
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // another session open within the cooldown
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the gui-skew toast + snooze once versions align, so a later skew warns again', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // GUI updated (or backend rolled back) → aligned
+    expect(dismissSpy).toHaveBeenCalledWith('gui-contract-skew')
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // a later skew must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
@@ -396,13 +432,15 @@ describe('checkBackendUpdates', () => {
       behind: -1,
       update_available: true,
       can_apply: false,
-      update_command: 'managed outside dashboard',
+      update_command: '',
       message: 'Update available.'
     })
 
     const result = await checkBackendUpdates()
 
-    expect(result?.behind).toBe(0)
+    // behind: -1 is the producer's "update available, count unknown" sentinel;
+    // DesktopUpdateStatus carries it as null, never a literal number.
+    expect(result?.behind).toBeNull()
     expect(result?.updateAvailable).toBe(true)
     expect(result?.targetSha).toBe('backend:0.16.0')
   })
@@ -526,6 +564,34 @@ describe('requestActiveUpdate', () => {
 
     requestActiveUpdate()
     await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+  })
+
+  it('shows the refusal message, not a fake command, when the backend has no command to run', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({
+      ok: false,
+      name: 'hermes-update',
+      error: 'dashboard_update_managed_externally',
+      message: 'Hermes updates are managed outside this dashboard in containerized environments.',
+      update_command: ''
+    })
+
+    const result = await applyBackendUpdate()
+
+    expect(result.manual).toBe(true)
+    expect(result.command).toBeUndefined()
+    expect($backendUpdateApply.get().stage).toBe('manual')
+    expect($backendUpdateApply.get().command).toBeNull()
+    expect($backendUpdateApply.get().message).toContain('managed outside this dashboard')
+  })
+
+  it('falls back to `hermes update` only when an older backend omits update_command', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({ ok: false, name: 'hermes-update', message: 'Run it yourself.' })
+
+    await applyBackendUpdate()
+
+    expect($backendUpdateApply.get().command).toBe('hermes update')
   })
 })
 
@@ -1421,6 +1487,100 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
   }, 10000)
+
+  it('reports a committed update with owed follow-ups as success plus an owed-step warning', async () => {
+    updateHermesSpy.mockResolvedValue({ action_id: 'e'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['Update complete!'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: 'e'.repeat(32),
+        outcome: 'success',
+        followups: [{ step: 'dependencies', reason: 'sync failed' }],
+        user_action: null
+      }
+    })
+    notifySpy.mockClear()
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result).toMatchObject({ ok: true })
+    expect(result.message).toContain('dependencies (sync failed)')
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: expect.stringContaining('dependencies (sync failed)') })
+    )
+  })
+
+  it("names a partial update's owed user action verbatim, only from this action's own receipt", async () => {
+    const instruction = 'Your local changes are parked in stash@{0}; run `git stash pop` in ~/.hermes/hermes-agent.'
+
+    const status = (actionId: string) => ({
+      exit_code: 1,
+      lines: ['update parked local changes'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'partial',
+        followups: [],
+        user_action: { step: 'local_changes', reason: instruction }
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'c'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(status('c'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await own
+
+    // exit 1 stays a failed apply, but the committed run's debt is named, never as "re-run hermes update".
+    expect(result).toMatchObject({ ok: false, error: 'apply-failed' })
+    expect(result.message).toContain(`local_changes: ${instruction}`)
+    expect(result.message).not.toMatch(/Re-run `hermes update`/)
+    expect($backendUpdateApply.get()).toMatchObject({ stage: 'error', message: result.message })
+
+    // The status route attaches the latest receipt when this action has none: another run's debt is not ours.
+    getActionStatusSpy.mockResolvedValue(status('d'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect((await foreign).message).not.toContain('local_changes')
+  })
+
+  it("never lets another action's receipt certify this update", async () => {
+    const receipt = (actionId: string) => ({
+      exit_code: null,
+      lines: [],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'success',
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+        followups: [],
+        user_action: null
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'b'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(receipt('a'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 1500)
+    await expect(foreign).resolves.toMatchObject({ ok: false })
+
+    getActionStatusSpy.mockResolvedValue(receipt('b'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    await expect(own).resolves.toMatchObject({ ok: true })
+  })
 })
 
 describe('startUpdatePoller', () => {
@@ -1500,6 +1660,159 @@ describe('startUpdatePoller', () => {
     listeners['focus']?.()
     await vi.advanceTimersByTimeAsync(0)
     expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-checks backend updates when switching directly between two remote profiles', async () => {
+    // Both profiles resolve to mode: 'remote' — only baseUrl differs. A
+    // mode-only comparison would treat this as "no change" and never
+    // re-check, leaving profile A's stale status on screen for profile B.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
+  it('re-checks backend updates when switching between two profiles on the same remote backend', async () => {
+    // Pooled profiles share a baseUrl; only the profile field differs. The
+    // update check is profile-scoped (per-profile overrides can pin a
+    // different channel/branch), so a baseUrl-only key would treat this as
+    // "no change" and keep the first profile's status on screen.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const pooled = (profile: string) => ({
+      baseUrl: 'http://shared-box:9119',
+      isFullscreen: false,
+      mode: 'remote' as const,
+      nativeOverlayWidth: 0,
+      profile,
+      token: 't',
+      wsUrl: 'ws://shared-box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    setConnection(pooled('alpha'))
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection(pooled('beta'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
+  it('discards a stale in-flight response and re-checks after switching to B before A resolves', async () => {
+    // A's check is still in flight when the switch to B happens — B's
+    // trigger is locked out by $backendUpdateChecking. Once A's (now stale)
+    // response lands it must not overwrite the display with A's result, and
+    // B's own check must still run once the lock clears.
+    checkHermesUpdateSpy.mockReset()
+
+    let resolveA: (value: unknown) => void = () => {}
+
+    const aPending = new Promise(resolve => {
+      resolveA = resolve
+    })
+
+    checkHermesUpdateSpy.mockImplementationOnce(() => aPending)
+    checkHermesUpdateSpy.mockResolvedValueOnce({
+      install_method: 'git',
+      current_version: '0.17.0',
+      behind: 4,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    // A's checkHermesUpdate() call is now in flight (aPending unresolved).
+    // Switch profiles before it settles.
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    // Now A's slow response lands.
+    resolveA({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    // Flush the automatic follow-up check queued for B once A's lock cleared.
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalledTimes(2)
+    // B's result (behind: 4), not A's stale one (behind: 1).
+    expect($backendUpdateStatus.get()?.behind).toBe(4)
   })
 })
 

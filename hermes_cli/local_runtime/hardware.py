@@ -9,6 +9,7 @@ stripped PATH — gateway and service sessions don't inherit the interactive env
 from __future__ import annotations
 
 from contextlib import suppress
+import csv
 import logging
 import os
 import re
@@ -16,9 +17,12 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
+from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
 from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_platform.host.facts import gpu_class
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,9 @@ _GIB = 1 << 30
 # reality). Small cards give up window to this; spill mode is their path to big models.
 _MARGIN_FLOOR = 2 << 30
 _MARGIN_FRACTION = 0.09
+# Room left on top of what other programs hold when a model launches: a browser tab or a chat app
+# can take another GiB between launch and the next request.
+_LAUNCH_HEADROOM = 1 << 30
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
@@ -194,20 +201,66 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int] | None:
-    """(total, free) MiB->bytes from nvidia-smi, or None."""
+def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
+    """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query, or None."""
+    query = _cached_nvidia_gpu_query()
+    if query is None:
+        return None
+    return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
+
+
+_gpu_query_cache: "tuple[float, dict | None] | None" = None
+# The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
+# name/util/vram; the budget probe needs total/free. One shared query (with a TTL
+# shorter than the poll) serves both, so one poll = one nvidia-smi spawn (#120262)
+# instead of two, and the spawn carries CREATE_NO_WINDOW so a console-less backend
+# never flashes a window (#101895).
+_GPU_QUERY_TTL_S = 4.0
+
+
+def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
+    """One nvidia-smi read shared by the budget probe and the hardware endpoint.
+
+    Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
+    gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
+    Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
+    """
+    global _gpu_query_cache
+    now = time.monotonic()
+    if _gpu_query_cache is not None and now - _gpu_query_cache[0] < ttl_s:
+        return _gpu_query_cache[1]
+
     exe = _nvidia_smi_path()
     if exe is None:
+        _gpu_query_cache = (now, None)
         return None
+
+    from hermes_cli._subprocess_compat import windows_hide_flags
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free",
+            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            creationflags=windows_hide_flags())
         if out.returncode != 0 or not out.stdout.strip():
+            _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
-        return total_mib << 20, free_mib << 20
+        total_mib, free_mib, name, raw_id, used_mib, util = next(
+            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+        pci_id = None
+        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+            pci_id = int(raw_id, 16)
+        data = {
+            "gpu_name": name.strip(),
+            "total_bytes": int(total_mib) << 20,
+            "free_bytes": int(free_mib) << 20,
+            "used_bytes": int(used_mib) << 20,
+            "gpu_util_percent": int(util),
+            "gpu_pci_id": pci_id,
+        }
+        _gpu_query_cache = (now, data)
+        return data
+    _gpu_query_cache = (now, None)
     return None
 
 
@@ -245,20 +298,31 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
+def _configured_engine():
+    """The engine the probes below run: the managed server's own when one is up or booting, else
+    the installed engine for ``local_runtime.backend``."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.local_runtime.binaries import installed_engine
+    from hermes_cli.local_runtime.bootstrap import serving_engine
+
+    engine = serving_engine()
+    if engine is not None:
+        return engine
+    section = load_config_readonly().get("local_runtime") or {}
+    return installed_engine(section.get("backend") or "auto")
+
+
 def _engine_device_pool() -> "tuple[int, bool | None] | None":
     """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.config import get_config_value
-        from hermes_cli.local_runtime.binaries import installed_engine
-
-        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        engine = _configured_engine()
         if engine is None:
             return None
         exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, timeout=30, cwd=str(exe.parent))
+                             text=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(exe.parent))
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():
@@ -282,6 +346,35 @@ def _device_pool_view() -> "tuple[int, bool | None] | None":
     return view
 
 
+_accelerator_cache: "dict[str, tuple[float, dict | None]]" = {}
+
+
+def _accelerator_device(*, fresh: bool = False) -> "dict | None":
+    """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
+
+    Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
+    otherwise; among discrete devices the largest. Cached per engine binary like
+    ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
+    endpoint polls this every few seconds and each probe initializes the GPU driver. ``fresh`` skips
+    the cache read for a launch-time free-memory answer.
+    """
+    with suppress(Exception):  # a probe miss must never block budgeting
+        from hermes_cli.local_runtime.devices import probe_devices
+
+        engine = _configured_engine()
+        if engine is None or engine.backend not in ("vulkan", "hip"):
+            return None
+        key, now = str(engine.binary), time.monotonic()
+        cached = _accelerator_cache.get(key)
+        if not fresh and cached is not None and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
+            return cached[1]
+        devices = probe_devices(engine.binary.parent, engine.backend)
+        device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
+        _accelerator_cache[key] = (now, device)
+        return device
+    return None
+
+
 def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     """The real pool size when this NVIDIA device is unified memory behind a carve-out, else None.
 
@@ -300,10 +393,12 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
-def _uma_budget(base: int, total: int) -> HardwareBudget:
+def _uma_budget(base: int, total: int, *, gpu_name: str = "",
+                gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
-                          ram_available_bytes=0, uma=True)
+                          ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
+                          gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -337,16 +432,58 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
             live = (vram[1] + ram_avail) if vram else ram_avail
             base = min(unified, live)
-        return _uma_budget(base, unified)
+        return _uma_budget(base, unified, gpu_name=vram[2] if vram else "",
+                           gpu_pci_id=vram[3] if vram else None)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
-        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        device = _accelerator_device()
+        if device is not None and device["type"] == GGML_DEVICE_GPU:
+            # Discrete AMD/Intel card behind a Vulkan/HIP engine: its own memory, with system RAM
+            # as spill. Capacity serves the polled live view; launch_budget reads free memory.
+            total = device["total"]
+            margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
+            return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
+                                  ram_available_bytes=ram_total if planning else ram_avail,
+                                  uma=False, gpu_name=device["description"], platform=sys.platform)
+        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory. llama.cpp
+        # loads lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand
+        # halved prefill (#28160).
+        return _uma_budget(ram_total if planning else ram_avail, ram_total,
+                           lazy_reads=gpu_class() not in ("amd", "intel"))
 
-    total, free = vram
+    total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False)
+                          uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id)
+
+
+def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:
+    """Capacity less what other programs hold on the card right now, or None when that can't apply.
+
+    Capacity assumes other programs hold no more than the fixed margin. Beside a heavier desktop the
+    capacity-sized window doesn't fit, and Windows pages part of the model to host memory without
+    an error: a 32 GiB card with 4.5-6.3 GiB held by other apps decoded at ~24 tok/s at the
+    capacity window, and at ~90 tok/s at a window sized from free memory.
+
+    ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
+    A stopped server's memory reads as free by the time its process has exited (measured on
+    Windows: free memory was fully back at the first reading after exit). None for unified memory
+    (its live budget is already free memory) and when the device query fails, so callers keep the
+    capacity plan.
+    """
+    if capacity.uma:
+        return None
+    vram = _nvidia_vram()
+    if vram is not None:
+        total, free = vram[0], vram[1]
+    else:
+        # A discrete card behind Vulkan/HIP: the driver's free count includes other programs.
+        device = _accelerator_device(fresh=True)
+        if device is None or device["type"] != GGML_DEVICE_GPU:
+            return None
+        total, free = device["total"], device["free"]
+    others = max(0, total - free - max(0, own_bytes))
+    usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
+    return replace(capacity, usable_vram_bytes=usable)

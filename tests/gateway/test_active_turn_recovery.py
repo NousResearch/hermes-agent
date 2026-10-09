@@ -384,15 +384,7 @@ async def test_runner_active_turn_carrier_clears_the_exact_resolved_key():
     runner.session_store = MagicMock()
     mark_active = AsyncMock(return_value="token-1")
     clear_active = AsyncMock(return_value=True)
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            mark_turn_active=mark_active,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, mark_turn_active=mark_active, clear_turn_active=clear_active)
     event = SimpleNamespace()
 
     await runner._mark_durable_active_turn(
@@ -416,14 +408,7 @@ async def test_runner_active_turn_clear_is_best_effort():
     clear_active = AsyncMock(
         side_effect=[OSError("disk unavailable"), True]
     )
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, clear_turn_active=clear_active)
     event = SimpleNamespace(
         _gateway_active_turn_session_key="resolved-session-key",
         _gateway_active_turn_token="token-1",
@@ -441,14 +426,7 @@ async def test_runner_active_turn_clear_stops_after_bounded_retries():
     runner = object.__new__(GatewayRunner)
     runner.session_store = MagicMock()
     clear_active = AsyncMock(side_effect=OSError("disk unavailable"))
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, clear_turn_active=clear_active)
     event = SimpleNamespace(
         _gateway_active_turn_session_key="resolved-session-key",
         _gateway_active_turn_token="token-1",
@@ -523,11 +501,13 @@ _WAKE = {"display_kind": "internal_notification"}
     ("disk is 91% full", {**_WAKE, "display_metadata": {"notification_category": "diagnostic"}}, []),
     ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
                       "Try again or rephrase."]),
+    ("NO_REPLY", {"display_metadata": {"reply_expected": False}}, []),
 ])
 async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(tmp_path, reply, prompt, owed):
     """A crash-left reply is owed exactly what live delivery would have sent: nothing for a silence
-    marker on a machinery turn or a muted diagnostic wake (and the finished turn is not resumed), the
-    unexpected-silence notice for a human turn, never the raw marker."""
+    marker on a machinery turn, a muted diagnostic wake or a message the adapter reported as not
+    addressed to the bot (and the finished turn is not resumed), the unexpected-silence notice for
+    any other human turn, never the raw marker."""
     from gateway.delivery_ledger import sweep_recoverable
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")

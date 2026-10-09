@@ -36,7 +36,7 @@ def stale_tcc_grant_hint(*missing: str) -> str:
     return ("If System Settings already shows CuaDriver ON, the stored grant is stale (it no longer matches the installed "
             f"driver's signature): run `{resets}`, then `hermes computer-use permissions grant`.")
 
-def _child_env() -> Dict[str, str]:
+def _child_env() -> dict[str, str]:
     """cua-driver child env (telemetry policy + provider secrets stripped); ``os.environ`` on import error.
 
     cua-driver is a third-party binary — it must never inherit provider API keys (#53503/#55709/#58889
@@ -57,7 +57,7 @@ def _json_out(binary: str, *args: str, timeout: float) -> Any:
     raw = (_run(binary, *args, timeout=timeout).stdout or "").strip()
     return json.loads(raw) if raw else None
 
-def _doctor(binary: str) -> Optional[Dict[str, Any]]:
+def _doctor(binary: str) -> Optional[dict[str, Any]]:
     """``cua-driver doctor --json`` → ``{ok, checks:[{label,status,message}]}`` (None on any failure)."""
     try:
         data = _json_out(binary, "doctor", "--json", timeout=12)
@@ -68,7 +68,7 @@ def _doctor(binary: str) -> Optional[Dict[str, Any]]:
     checks = [{k: str(p.get(k, "")) for k in ("label", "status", "message")} for p in data.get("probes", []) if isinstance(p, dict)]
     return {"ok": bool(data.get("ok")), "checks": checks}
 
-def _mac_permissions(binary: str, out: Dict[str, Any]) -> None:
+def _mac_permissions(binary: str, out: dict[str, Any]) -> None:
     """Fold ``cua-driver permissions status --json`` booleans (+ ``source``) into ``out``."""
     try:
         data = _json_out(binary, "permissions", "status", "--json", timeout=10)
@@ -82,15 +82,27 @@ def _mac_permissions(binary: str, out: Dict[str, Any]) -> None:
             if isinstance(data.get("source"), dict):
                 out["source"] = data["source"]
 
-def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
+def computer_use_status(driver_cmd: Optional[str] = None) -> dict[str, Any]:
     """OS-aware readiness for the desktop card; key order is an API payload contract. ``ready`` is the single signal the
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
+    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
-    plat, binary = sys.platform, resolve_cua_driver_cmd(driver_cmd)
-    out: Dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
+    plat, name = sys.platform, configured_backend_name()
+    binary = resolve_cua_driver_cmd(driver_cmd) if name == DEFAULT_BACKEND else None
+    out: dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
                            "installed": bool(binary), "version": None, "ready": None, "can_grant": plat == "darwin",
                            "checks": [], "source": None, "error": None, **{k: None for k in _BOOLS}}
+    if name != DEFAULT_BACKEND:  # another driver is selected: cua-driver probes and TCC grants do not apply
+        out.update(platform_supported=True, can_grant=False)
+        try:
+            provider = get_active_provider()
+        except LookupError as e:
+            out["error"] = str(e)
+            return out
+        out.update(installed=True, version=f"{provider.display_name} (computer_use.backend: {provider.name})",
+                   ready=provider.is_available())
+        return out
     if not binary:
         return out
     with suppress(Exception):
@@ -126,11 +138,3 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
     except Exception as exc:  # pragma: no cover - defensive
         print(f"cua-driver permissions grant failed: {exc}", file=sys.stderr)
         return 2
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

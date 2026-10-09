@@ -174,7 +174,7 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        def __init__(self, account_id="", pickle_key=""):  # noqa: S301
+        def __init__(self, account_id="", pickle_key=""):
             self.account_id = account_id
             self.pickle_key = pickle_key
 
@@ -199,7 +199,7 @@ def _make_fake_mautrix():
     class PgCryptoStore:
         upgrade_table = MagicMock()
 
-        def __init__(self, account_id="", pickle_key="", db=None):  # noqa: S301
+        def __init__(self, account_id="", pickle_key="", db=None):
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db
@@ -1572,7 +1572,7 @@ class TestMatrixEncryptedSendFallback:
 class TestJoinedRoomsReference:
     def test_joined_rooms_reference_preserved_after_reassignment(self):
         """_CryptoStateStore must see updates after initial sync populates rooms."""
-        from plugins.platforms.matrix.adapter import _CryptoStateStore
+        from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
 
         joined = set()
         store = _CryptoStateStore(MagicMock(), joined)
@@ -1965,7 +1965,7 @@ class TestMatrixImageOnlyMediaNormalization:
     async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
         """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -2033,7 +2033,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_log_redacts_signed_url(self, caplog, monkeypatch):
         from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#frag"
         self.adapter._download_external_media_with_cap = AsyncMock(
@@ -2052,7 +2052,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_response_preserves_caption(self, monkeypatch):
         from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"
         self.adapter._download_external_media_with_cap = AsyncMock(

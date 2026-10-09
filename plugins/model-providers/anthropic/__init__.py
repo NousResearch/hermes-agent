@@ -25,12 +25,16 @@ class AnthropicProfile(ProviderProfile):
 
         def _page(after_id: str | None):
             req = urllib.request.Request(_anthropic_models_url(base_url, after_id=after_id))
-            for k, v in (("x-api-key", api_key), ("anthropic-version", "2023-06-01"), ("Accept", "application/json")):
+            for k, v in headers.items():
                 req.add_header(k, v)
             with open_credentialed_url(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode())
 
         try:
+            from hermes_cli.config import get_custom_provider_extra_headers
+
+            headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Accept": "application/json"}
+            headers.update(get_custom_provider_extra_headers(base_url or self.base_url))
             models: list[str] = []
             seen_cursors: set[str] = set()
             cursor: str | None = None

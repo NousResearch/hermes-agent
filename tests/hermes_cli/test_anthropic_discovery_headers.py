@@ -53,10 +53,14 @@ def configure(base, shape="providers"):
 
 
 @pytest.mark.parametrize("shape", ["providers", "custom_providers"])
-def test_workspace_headers_reach_every_catalog_page(workspace_server, shape):
+@pytest.mark.parametrize("entry_point", ["shared", "profile"])
+def test_workspace_headers_reach_every_catalog_page(workspace_server, shape, entry_point):
+    from providers import get_provider_profile
+
     base, seen = workspace_server
     configure(base, shape)
-    result = models._fetch_anthropic_models(base_url=base, api_key="sk-ant-api-fixture")
+    fetch = models._fetch_anthropic_models if entry_point == "shared" else get_provider_profile("anthropic").fetch_models
+    result = fetch(base_url=base, api_key="sk-ant-api-fixture")
     assert result == ["claude-fixture-a", "claude-fixture-b"]
     assert len(seen) == 2
     assert all(row.get("anthropic-workspace-id") == "workspace-test" for row in seen)
@@ -108,13 +112,18 @@ def test_failed_catalog_preserves_fallback(monkeypatch):
     assert result == list(models._PROVIDER_MODELS["anthropic"])
 
 
-def test_oauth_beta_retry_keeps_workspace_header(monkeypatch):
+@pytest.mark.parametrize("beta_name", ["anthropic-beta", "Anthropic-Beta"])
+def test_oauth_beta_retry_keeps_workspace_header(monkeypatch, beta_name):
     import io
     from urllib.error import HTTPError
 
     from agent.anthropic_adapter import _CONTEXT_1M_BETA
 
     configure("https://api.anthropic.com")
+    path = get_hermes_home() / "config.yaml"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["providers"]["fixture"]["extra_headers"][beta_name] = f"{_CONTEXT_1M_BETA},required-fixture-beta"
+    path.write_text(json.dumps(data), encoding="utf-8")
     captured = []
 
     def get(url, **kwargs):
@@ -131,6 +140,8 @@ def test_oauth_beta_retry_keeps_workspace_header(monkeypatch):
     assert all(row["anthropic-workspace-id"] == "workspace-test" for row in captured)
     assert all(row["Authorization"] == f"Bearer {token}" for row in captured)
     assert _CONTEXT_1M_BETA not in captured[1]["anthropic-beta"]
+    assert captured[1]["anthropic-beta"] == "required-fixture-beta"
+    assert len([key for key in captured[1] if key.lower() == "anthropic-beta"]) == 1
 
 
 def test_configured_header_precedence_matches_inference(monkeypatch):
@@ -153,3 +164,26 @@ def test_configured_header_precedence_matches_inference(monkeypatch):
     expected = _custom_provider_extra_headers("https://api.anthropic.com")
     assert expected == config.get_custom_provider_extra_headers("https://api.anthropic.com")
     assert expected.items() <= captured[0].items()
+
+
+def test_header_lookup_exception_preserves_no_catalog(monkeypatch):
+    from hermes_cli import config
+    from providers import get_provider_profile
+
+    def fail(*args, **kwargs):
+        raise OSError("fixture configuration unavailable")
+
+    monkeypatch.setattr(config, "get_custom_provider_extra_headers", fail)
+    assert models._fetch_anthropic_models(api_key="sk-ant-api-fixture") is None
+    assert get_provider_profile("anthropic").fetch_models(api_key="sk-ant-api-fixture") is None
+
+
+def test_profile_without_credentials_does_not_probe(monkeypatch):
+    from providers import get_provider_profile
+    from hermes_cli import config
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("header lookup must not run without credentials")
+
+    monkeypatch.setattr(config, "get_custom_provider_extra_headers", unexpected)
+    assert get_provider_profile("anthropic").fetch_models() is None

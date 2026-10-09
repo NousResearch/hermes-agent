@@ -2249,7 +2249,9 @@ def _fetch_anthropic_models(
 
         # Match inference's endpoint-scoped headers, using the pool endpoint if it won
         # credential resolution. Reuse the same headers for retries and every page.
-        headers.update(get_custom_provider_extra_headers(resolved_base_url or "https://api.anthropic.com"))
+        for key, value in get_custom_provider_extra_headers(resolved_base_url or "https://api.anthropic.com").items():
+            # Canonicalize the retry-managed header; HTTP field names are case-insensitive.
+            headers["anthropic-beta" if key.lower() == "anthropic-beta" else key] = value
         try:
             data = _get_json(url, timeout=timeout, headers=headers)
         except urllib.error.HTTPError as http_err:
@@ -2264,7 +2266,8 @@ def _fetch_anthropic_models(
             if not ("long context beta" in body_text and "not yet available" in body_text):
                 raise
             headers["anthropic-beta"] = ",".join(
-                [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                beta.strip() for beta in headers.get("anthropic-beta", "").split(",")
+                if beta.strip() and beta.strip() != _CONTEXT_1M_BETA
             )
             data = _get_json(url, timeout=timeout, headers=headers)
         models = [m["id"] for m in data.get("data", []) if m.get("id")]

@@ -35,6 +35,7 @@ async def test_direct_discord_watcher_send_stays_with_spawning_session(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "gateway_voice_mode.json")
     (tmp_path / "config.yaml").write_text(
         f"display:\n  background_process_notifications: {'all' if kind == 'running' else 'concise'}\n",
         encoding="utf-8",

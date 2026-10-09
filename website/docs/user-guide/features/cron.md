@@ -1094,6 +1094,17 @@ next occurrence cannot be computed, the existing run-once fallback is preserved.
 This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
 below. There is no per-job override.
 
+A job that finished while no gateway was up (a restart-safe worker hands its output to the
+gateway) keeps that output queued until a gateway drains it, however long that takes. To drop
+output that has gone stale instead of delivering it late, set:
+
+```yaml
+cron:
+  delivery_max_age_seconds: 3600   # default: 0 (wait forever)
+```
+
+Older queued output is marked failed with a logged reason and is not sent.
+
 ### Misfire catch-up
 
 When an external scheduler provider is active (managed cron on hosted deployments), the gateway also runs a catch-up sweep: a job whose scheduled time passed with no fire delivered — and whose grace window has elapsed — is claimed and run locally, so an outage in the fire hand-off costs minutes instead of the whole day. The sweep is de-duplicated against late scheduler retries by the same store claim used for normal fires.

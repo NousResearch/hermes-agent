@@ -30,6 +30,7 @@ def test_live_local_identity_survives_new_chat_and_resume(local_route):
     model = "Local.Model-Q4_K_M"
     runtime = rp.resolve_runtime_provider(requested="llamacpp", target_model=model)
     agent = SimpleNamespace(model=model, provider=runtime["provider"], base_url=runtime["base_url"],
+                            requested_provider=runtime["requested_provider"],
                             api_mode=runtime["api_mode"], reasoning_config=None, service_tier=None,
                             session_id=session["session_key"])
     # The renderer carries these two fields into the next session.create.

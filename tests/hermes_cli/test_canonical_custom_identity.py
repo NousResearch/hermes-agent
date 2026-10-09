@@ -63,6 +63,55 @@ def test_config_key_spelling_still_resolves(keyed_provider_config):
     assert rp.canonical_custom_identity(config_provider=PROVIDER_KEY) == CANONICAL
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("display_name", [DISPLAY_NAME, "ollama"])
+def test_explicit_identity_beats_shared_endpoint_and_model(keyed_provider_config, monkeypatch, legacy, display_name):
+    """Provider aliases name an entry, not the first peer using its URL or model."""
+    selected = keyed_provider_config["providers"][PROVIDER_KEY]
+    keyed_provider_config["providers"] = {
+        "other-wire": {**selected, "name": "Other Wire", "transport": "chat_completions"},
+        PROVIDER_KEY: {**selected, "name": display_name, "transport": "codex_responses", "key_env": "TEST_ROUTE_KEY"},
+    }
+    if legacy:
+        keyed_provider_config["custom_providers"] = [
+            {**{key: value for key, value in entry.items() if key != "api"}, "base_url": BASE_URL}
+            for entry in keyed_provider_config.pop("providers").values()
+        ]
+    expected = f"custom:{display_name.lower().replace(' ', '-')}" if legacy else CANONICAL
+    requests = ((display_name, expected) if legacy
+                else (PROVIDER_KEY, PROVIDER_KEY.upper(), display_name, CANONICAL))
+
+    def refuse_secret_read(*args, **kwargs):
+        raise AssertionError("Identity lookup must not read provider credentials")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider_custom.get_secret_str", refuse_secret_read)
+    for requested in requests:
+        assert rp.canonical_custom_identity(
+            base_url=BASE_URL, model=MODEL, requested_provider=requested,
+        ) == expected
+    assert rp.canonical_custom_identity(
+        base_url=BASE_URL, model=MODEL, config_provider=DISPLAY_NAME,
+    ) == "custom:other-wire"
+    selected_entry = (keyed_provider_config["custom_providers"][1] if legacy
+                      else keyed_provider_config["providers"][PROVIDER_KEY])
+    for requested in requests:
+        assert rp.canonical_custom_identity(
+            base_url="https://unrelated.invalid/v1", requested_provider=requested,
+        ) is None
+    selected_entry["base_url" if legacy else "api"] = "https://selected.invalid/v1"
+    for requested in requests:
+        assert rp.canonical_custom_identity(base_url=BASE_URL, requested_provider=requested) is None
+    selected_entry["base_url" if legacy else "api"] = BASE_URL
+    if legacy:
+        return
+    selected_entry["enabled"] = False
+    for requested in requests:
+        assert rp.canonical_custom_identity(base_url=BASE_URL, requested_provider=requested) is None
+    keyed_provider_config["providers"]["anthropic"] = selected
+    assert rp.canonical_custom_identity(requested_provider="anthropic") is None
+    assert rp.canonical_custom_identity(requested_provider="custom:anthropic") == "custom:anthropic"
+
+
 def test_all_recovery_sources_agree_on_one_identity(keyed_provider_config):
     """Endpoint, model and configured-provider recovery must not disagree.
 

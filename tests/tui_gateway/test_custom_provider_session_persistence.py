@@ -27,6 +27,8 @@ import json
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import hermes_cli.runtime_provider as rp
 from hermes_state import SessionDB
 
@@ -63,6 +65,83 @@ def _custom_agent(base_url=MIMO_URL):
         reasoning_config=None,
         service_tier=None,
     )
+
+
+@pytest.mark.parametrize("voice_turn", [False, True])
+def test_selected_shared_endpoint_identity_survives_profile_resume(tmp_path, monkeypatch, voice_turn):
+    """Regression for #102725: the selected entry survives persistence and A→B→A."""
+    from hermes_cli.config import save_config
+    from hermes_state import SessionDB
+    from tui_gateway import server
+    from hermes_cli import _early_recovery
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+
+    # The installed source's Git common dir is real runtime state, not this fixture.
+    monkeypatch.setattr(_early_recovery, "_project_root", lambda: tmp_path)
+
+    endpoint, model = "https://example.invalid/v1", "shared-model"
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    selections = [(homes[0], "response-route", "codex_responses"),
+                  (homes[1], "chat-route", "chat_completions"),
+                  (homes[0], "response-route", "codex_responses")]
+    for home, selected, wire in selections:
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        config = {
+            "model": {"provider": selected, "default": model, "context_length": 131072},
+            "providers": {
+                "chat-route": {"base_url": endpoint, "transport": "chat_completions",
+                               "api_key": "test-only", "models": [model], "discover_models": False},
+                "response-route": {"base_url": endpoint, "transport": "codex_responses",
+                                   "api_key": "test-only", "models": [model], "discover_models": False},
+            },
+            "platform_toolsets": {"cli": [], "gui": []},
+            "memory": {"memory_enabled": False, "user_profile_enabled": False},
+            "compression": {"enabled": False},
+            "checkpoints": {"enabled": False},
+        }
+        save_config(config, strip_defaults=False)
+        key = f"selected-{selected}"
+        multiplex_token = set_multiplex_context(True)
+        scopes = server._profile_runtime_scope_tokens(str(home), hydrate_secrets=False)
+        db = SessionDB(home / "qualification.db")
+        agent = None
+        try:
+            if db.get_session(key) is None:
+                db.create_session(key, source="tui", model=model)
+            agent = server._make_agent(
+                key, key, session_id=key, session_db=db, provider_override=selected,
+                model_override={"model": model, "provider": selected,
+                                "base_url": endpoint, "api_mode": wire},
+                platform_override="gui", cwd_override=str(home),
+            )
+            assert agent.requested_provider == selected
+            if voice_turn:
+                from agent.voice_turn_route import _capture
+
+                agent._voice_route_state = {
+                    **_capture(agent),
+                    "reasoning_config": agent.reasoning_config,
+                }
+                agent.requested_provider = "chat-route" if selected == "response-route" else "response-route"
+            server._persist_live_session_runtime({"agent": agent, "session_key": key})
+            row = db.get_session(key)
+            stored = json.loads(row["model_config"])
+            assert stored["provider"] == f"custom:{selected}"
+            assert stored["api_mode"] == wire
+            assert "api_key" not in stored
+            overrides = server._stored_session_runtime_overrides(row)
+            resumed = rp.resolve_runtime_provider(
+                requested=overrides["provider_override"], target_model=model,
+            )
+            assert resumed["api_mode"] == wire
+            assert resumed["base_url"] == endpoint
+        finally:
+            if agent is not None:
+                agent.close()
+            db.close()
+            server._release_profile_runtime_scope_tokens(scopes)
+            reset_multiplex_context(multiplex_token)
 
 
 class TestRuntimeModelConfigPersistsEntryIdentity:

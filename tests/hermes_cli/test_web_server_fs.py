@@ -1049,7 +1049,7 @@ def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
 
 
 def _session_detail(cwds: dict):
-    async def fake_detail(session_id, profile=None):
+    async def fake_detail(request, session_id, profile=None):
         return {"cwd": cwds[session_id], "id": session_id}
 
     return fake_detail

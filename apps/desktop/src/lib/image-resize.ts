@@ -16,7 +16,7 @@
  */
 
 /** 1×1 transparent PNG — fail closed so the pill never receives the original. */
-const FALLBACK_PLACEHOLDER =
+export const FALLBACK_PLACEHOLDER =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
 // Composer pills render at 32 CSS pixels. A 512px source stays sharp on

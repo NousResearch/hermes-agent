@@ -11,11 +11,11 @@ before mutation, so ``--global`` succeeds and the config is rewritten in
 the proper ``model: {default: ..., provider: ...}`` form.
 """
 
-import yaml
+import hermes_yaml as yaml
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -67,7 +67,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     )
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
@@ -102,7 +102,8 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert "base_url" not in written["model"]
+    # The resolved aggregator endpoint is persisted (same shape as CLI/TUI --global, #25106).
+    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
 
 
 @pytest.mark.asyncio
@@ -118,7 +119,7 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
     cfg_path.write_text(yaml.safe_dump({"providers": {}}), encoding="utf-8")
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),

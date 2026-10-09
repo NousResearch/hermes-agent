@@ -56,6 +56,8 @@ def _aux_egress_response(content="ok"):
     ("nous", True), ("nous", False),
     ("screening-remote", True), ("screening-remote", False),
     ("opencode-free", False),
+    ("profile-custom-env", True), ("profile-custom-config", True),
+    ("profile-custom-env-live", True), ("profile-custom-config-live", True),
 ])
 def test_blocked_recovery_screens_remote_auth_before_resolving_local(
     monkeypatch, tmp_path, remote_provider, has_local
@@ -71,15 +73,19 @@ def test_blocked_recovery_screens_remote_auth_before_resolving_local(
               "base_url": "http://127.0.0.1:11434/v1"}]
     if remote_provider == "opencode-free":
         chain[0].update(model="minimax-m2.5-free", api_mode="anthropic_messages", api_key="synthetic-key")
-    if has_local:
+    profile_case = remote_provider.startswith("profile-custom-")
+    if profile_case:
+        chain[0] = {"provider": "custom", "model": "local-model"}
+    elif has_local:
         chain.append({"provider": "custom", "model": "local-model",
                       "base_url": "http://127.0.0.1:11434/v1", "api_key": "local-test-key"})
-    (home / "config.yaml").write_text(yaml.safe_dump({
+    config = {
         "model": {"provider": "nous", "default": "main-remote-model"},
         "auxiliary": {task: {"fallback_chain": chain}},
         "providers": {"screening-remote": {"base_url": "https://remote.invalid/v1",
                                                 "key_env": "SCREENING_REMOTE_API_KEY"}},
-    }))
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     auth_reads = []
@@ -110,22 +116,125 @@ def test_blocked_recovery_screens_remote_auth_before_resolving_local(
                             final_model="blocked-model", route_info={},
                             base_info="https://chatgpt.com/backend-api/codex",
                             main_runtime=None, async_mode=False)
-    ladder = local_fallback_steps(route, lambda kind, args: SimpleNamespace(kind=kind, args=args))
-    if has_local:
-        step = next(ladder)
-        client, model, _ = step.args
-        assert str(client.base_url) == "http://127.0.0.1:11434/v1/"
-        assert model == "local-model"
-        with pytest.raises(StopIteration) as result:
-            ladder.send("local response")
-        assert result.value.value == "local response"
-        client.close()
+    if profile_case:
+        from pathlib import Path
+        from agent import secret_scope
+        from gateway.run import _profile_runtime_scope
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        other = tmp_path / "other-profile"
+        other.mkdir()
+        bases = {home: "http://127.0.0.1:11434/v1", other: "https://remote-profile.invalid/v1"}
+        for profile, base in bases.items():
+            profile_config = config
+            custom_env = f"CUSTOM_BASE_URL={base}\n"
+            if "config" in remote_provider:
+                profile_config = {**config, "model": {"provider": "custom", "default": "configured-model",
+                                                       "base_url": base, "api_key": "profile-test-key"}}
+                custom_env = ""
+            (profile / "config.yaml").write_text(yaml.safe_dump(profile_config))
+            (profile / ".env").write_text(f"{custom_env}OPENAI_BASE_URL={base}\nOPENAI_API_KEY=profile-test-key\n")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://launch-profile.invalid/v1")
+        main_token = None
+        if remote_provider.endswith("live"):
+            main_token = auxiliary.set_runtime_main("custom", "main-remote-model",
+                                                   base_url="https://remote-main.invalid/v1", api_key="main-remote-key")
+        multiplex = secret_scope.is_multiplex_active()
+        secret_scope.set_multiplex_active(True)
+        try:
+            for profile in (home, other, home):
+                with _profile_runtime_scope(profile, hydrate_secrets=False):
+                    ordinary, model = auxiliary.resolve_provider_client("custom", "local-model")
+                    assert ordinary is not None
+                    try:
+                        assert str(ordinary.base_url).rstrip("/") == bases[profile]
+                        assert model == "local-model"
+                    finally:
+                        ordinary.close()
+                    ordinary_key_reads = list(key_reads)
+                    ladder = local_fallback_steps(route, lambda kind, args: SimpleNamespace(kind=kind, args=args))
+                    if profile == other:
+                        assert list(ladder) == []
+                        assert key_reads == ordinary_key_reads
+                        continue
+                    client, model, _ = next(ladder).args
+                    try:
+                        assert str(client.base_url).rstrip("/") == bases[profile]
+                        assert client.api_key == "profile-test-key"
+                        assert model == "local-model"
+                        with pytest.raises(StopIteration) as result:
+                            ladder.send("local response")
+                        assert result.value.value == "local response"
+                    finally:
+                        client.close()
+                    assert key_reads == ordinary_key_reads
+        finally:
+            secret_scope.set_multiplex_active(multiplex)
+            if main_token is not None:
+                auxiliary.reset_runtime_main(main_token)
     else:
-        assert list(ladder) == []
+        ladder = local_fallback_steps(route, lambda kind, args: SimpleNamespace(kind=kind, args=args))
+        if has_local:
+            step = next(ladder)
+            client, model, _ = step.args
+            assert str(client.base_url) == "http://127.0.0.1:11434/v1/"
+            assert model == "local-model"
+            with pytest.raises(StopIteration) as result:
+                ladder.send("local response")
+            assert result.value.value == "local response"
+            client.close()
+        else:
+            assert list(ladder) == []
     assert auth_reads == []
-    assert key_reads == []
+    if not profile_case:
+        assert key_reads == []
     remote_catalog.assert_not_called()
     assert context_reads == []
+
+
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:18434/v1", "https://remote-main.invalid/v1", None, "", "  "])
+def test_blocked_custom_main_preserves_live_endpoint_and_key(monkeypatch, tmp_path, base_url):
+    import yaml
+    import agent.auxiliary_client as auxiliary
+    import agent.model_metadata as model_metadata
+
+    home = tmp_path / "main-pin-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({"model": {
+        "provider": "custom", "default": "configured-model", "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": "environment-key",
+    }}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:12434/v1")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:12434/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    final_http = MagicMock(side_effect=RuntimeError("unexpected metadata I/O"))
+    monkeypatch.setattr(model_metadata.requests, "get", final_http)
+    runtime = {"provider": "custom", "model": "live-model", "api_key": "live-main-key"}
+    if base_url is not None:
+        runtime["base_url"] = base_url
+    expected_base = base_url.strip() if base_url and base_url.strip() else "http://127.0.0.1:12434/v1"
+    expected_key = runtime["api_key"] if base_url and base_url.strip() else "environment-key"
+    with auxiliary.scoped_runtime_main(runtime):
+        ordinary, model = auxiliary.resolve_provider_client("custom", "live-model", main_runtime=runtime)
+        assert ordinary is not None
+        try:
+            assert str(ordinary.base_url).rstrip("/") == expected_base
+            assert ordinary.api_key == expected_key
+            assert model == runtime["model"]
+        finally:
+            ordinary.close()
+        client, model, _ = auxiliary._try_main_agent_model_fallback("openai-codex", "title_generation", local_only=True)
+        if expected_base.startswith("https:"):
+            assert client is None
+        else:
+            assert client is not None
+            try:
+                assert str(client.base_url).rstrip("/") == expected_base
+                assert client.api_key == expected_key
+                assert model == runtime["model"]
+            finally:
+                client.close()
+    final_http.assert_not_called()
 
 
 def _run_aux_codex_call(

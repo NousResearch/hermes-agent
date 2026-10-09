@@ -24,13 +24,27 @@ def local_fallback_entry(entry, *, main_runtime=None):
     if provider == "custom":
         # Pin a concrete endpoint so the custom resolver cannot discover a
         # remote provider when the main/task configuration is incomplete.
-        base_url = (
-            base_url
-            or str((main_runtime or {}).get("base_url") or "").strip()
-            or str(auxiliary._runtime_main_value("base_url") or "").strip()
-            or os.getenv("OPENAI_BASE_URL", "").strip()
-            or auxiliary._read_main_field("base_url", readonly=True)
-        )
+        try:
+            from agent.secret_scope import get_secret
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+
+            model_cfg = load_config_readonly().get("model") or {}
+            configured_base = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
+            if not _config_base_url_trustworthy_for_bare_custom(configured_base, configured_provider):
+                configured_base = ""
+            # Match the terminal resolver; OPENAI_BASE_URL does not select its endpoint.
+            # Only the explicit main candidate may reuse the session's runtime URL.
+            base_url = (
+                base_url
+                or str((main_runtime or {}).get("base_url") or "").strip()
+                or get_secret("CUSTOM_BASE_URL", "").strip()
+                or configured_base
+                or get_secret("OPENROUTER_BASE_URL", "").strip()
+            )
+        except Exception:
+            return None
     else:
         try:
             from hermes_cli.runtime_provider import _get_named_custom_provider

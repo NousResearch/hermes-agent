@@ -3933,7 +3933,14 @@ def _try_main_agent_model_fallback(
     local_entry = None
     if local_only:
         from agent.auxiliary_egress_recovery import local_fallback_entry
-        local_entry = local_fallback_entry({"provider": main_provider, "model": main_model})
+        runtime = _normalize_main_runtime(None)
+        if (main_provider != "custom" or runtime.get("provider") != main_provider
+                or runtime.get("model") != main_model or not runtime.get("base_url")):
+            runtime = {}
+        local_entry = local_fallback_entry(
+            {"provider": main_provider, "model": main_model, "api_key": runtime.get("api_key")},
+            main_runtime=runtime,
+        )
         if local_entry is None:
             return None, None, ""
     try:

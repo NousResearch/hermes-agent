@@ -220,3 +220,49 @@ def test_every_rotation_in_one_turn_is_marked_on_that_turn(relay, tmp_path, monk
     ]
     assert all(mark["handle"] is turn.handle for mark in marks)
     assert all(mark["data"]["split_status"] == "rotated_committed" for mark in marks)
+
+
+def test_a_post_turn_micro_compaction_in_a_rotated_child_is_marked_on_the_turn(relay, tmp_path, monkeypatch):
+    """A rotating commit moves the agent to a child session with no Relay scope. The micro-compaction pass the
+    finalizer then runs in that child, before the turn ends, must be marked on the live turn like the
+    rotation itself, not dropped."""
+    import logging
+
+    from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
+    from agent.turn_finalizer import _micro_compact_after_turn
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    fake, runtime, coordinator = relay
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="rotating-session",
+        skip_context_files=True, skip_memory=True,
+    )
+    agent.compression_in_place = False
+    compressor = agent.context_compressor
+    compressor.tail_token_budget = 10
+    lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="rotating-session", platform="cli")
+    turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task")
+    note_turn_start(agent, "t1")
+    try:
+        with patch.object(compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+            compacted, _ = agent._compress_context(
+                [{"role": "system", "content": "sys"}, *_transcript(0)], "sys", approx_tokens=80_000,
+                trigger="turn_start_threshold",
+            )
+        child = agent.session_id
+        compressor._micro_compact_enabled = True
+        with patch.object(compressor, "_micro_summarize_one", return_value="ROLLING SUMMARY"):
+            _micro_compact_after_turn(
+                agent, compacted + _transcript(10), "done", logging.getLogger(__name__), "task",
+            )
+    finally:
+        note_turn_persisted(agent)
+        coordinator.end_turn(turn, outcome="success")
+        agent.close()
+
+    assert child != "rotating-session"
+    micro = [event for event in fake.scope.events if event["data"]["kind"] == "micro_summarize"]
+    assert [(mark["data"]["session_id"], mark["handle"]) for mark in micro] == [(child, turn.handle)]

@@ -21,7 +21,9 @@ from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
-Prelude = Generator[tuple[str, str, dict], Optional[str]]
+# ruff UP043 assumes a 3.13+ target; pyproject declares ">=3.11,<3.15" and the alias is
+# evaluated at import, so the defaulted two-argument form breaks 3.11/3.12 (issue #135587).
+Prelude = Generator[tuple[str, str, dict], Optional[str], None]  # noqa: UP043
 
 
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:

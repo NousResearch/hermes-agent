@@ -192,8 +192,9 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 def build_tool_title(tool_name: str, args: Args) -> str:
     """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
     every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;
-    bare tool name when the arguments yield no preview."""
-    preview = build_tool_preview(tool_name, args, max_len=80)
+    bare tool name when the arguments yield no preview. No explicit ``max_len``: the limit
+    defers to the global ``tool_preview_length`` setting the session already applied."""
+    preview = build_tool_preview(tool_name, args)
     return f"{tool_name}: {preview}" if preview else tool_name
 
 

@@ -1264,6 +1264,8 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 
 When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
 
+Set `script_failure_policy: "fail"` on the job to end the run when the script exits non-zero instead of waking the agent with the failure text — the failure notice names the script's own output, and no model is charged (default `"agent"` keeps the wake behavior).
+
 #### Recipes: cheap pre-run gates
 
 The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should spend any LLM tokens at all. Three patterns cover most use cases.

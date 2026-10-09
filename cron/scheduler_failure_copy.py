@@ -127,6 +127,22 @@ def script_timeout_notice(job_name: str, job_id: str) -> str:
     )
 
 
+def script_origin_failure_notice(job_name: str, job_id: str, script_output: str) -> str:
+    """The notice for a ``script_failure_policy=fail`` run: the job's pre-run script exited
+    non-zero and the run was ended BEFORE the model — so the script's own stderr is the whole
+    story and must never be re-diagnosed as provider trouble ("429"/"timed out" in script
+    output would otherwise blame the model service)."""
+    detail = " ".join(script_output.split()).strip().rstrip(".")
+    if len(detail) > 180:
+        detail = detail[:177].rstrip() + "..."
+    return (
+        f"⚠️ Cron '{job_name}' failed: its pre-run script exited non-zero, so the job was "
+        f"stopped without running the model. Script output: {detail}. "
+        f"Check the script under {cron_output_dir_display(job_id)} or `hermes cron runs {job_id}`, "
+        f"fix it or its stderr, then run it again with `hermes cron run {job_id}`."
+    )
+
+
 def inactivity_notice(job_name: str, job_id: str) -> str:
     return (
         f"⚠️ Cron '{job_name}' failed: the job stalled — it stopped doing anything for too long "

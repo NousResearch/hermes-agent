@@ -698,6 +698,7 @@ def _action_create(a: dict[str, Any]) -> str:
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            script_failure_policy=a["script_failure_policy"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -858,6 +859,9 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
     if a["interpreter"] is not None:
         # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
         updates["interpreter"] = a["interpreter"]
+    if a["script_failure_policy"] is not None:
+        # '' clears (fall back to the default agent policy); update_job validates.
+        updates["script_failure_policy"] = a["script_failure_policy"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -1009,6 +1013,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
+    script_failure_policy: Optional[str] = None,
     task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -1102,6 +1107,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
             },
+            "script_failure_policy": {
+                "type": "string",
+                "enum": ["agent", "fail"],
+                "description": "What happens when the pre-run script exits non-zero: 'agent' (default) wakes the agent with the failure text injected as context; 'fail' ends the run immediately — no LLM call, the run records ok=False and failure delivery follows failure_deliver. Only meaningful with a script on agent jobs. On update, '' clears (back to 'agent')."
+            },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1170,7 +1180,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "script_failure_policy")
 
 
 def _cronjob_handler(args, **kw):

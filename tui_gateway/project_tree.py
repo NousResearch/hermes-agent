@@ -506,6 +506,35 @@ def _home_project(homeless: list[dict], hydrate: bool, previews: list[dict]) -> 
         previews, homeless, isNoProject=True)
 
 
+def _discovered_project_rows(
+        discovered_repos: list[dict], resolve: Optional[Resolve], folder_index: _FolderIndex,
+        is_junk: Callable[[str], bool]) -> list[dict]:
+    """The discovered repos that get a project row, as project-shaped dicts keyed by root.
+
+    A repo that IS a declared project's folder is that project's row already — the one duplicate
+    worth refusing. Anything else is a row, including a repo INSIDE a declared project's folder: a
+    superproject whose submodules live in its own tree is exactly the case discovery exists for.
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for repo in discovered_repos or []:
+        raw_root = _field(repo, "root")
+        if not raw_root:
+            continue
+        info = resolve(raw_root) if resolve else None
+        root = (info or {}).get("repo_root") or raw_root
+        root_key = _path_key(root)
+        if not root_key or root_key in seen or is_junk(root) or folder_index.owns_exactly(root):
+            continue
+        seen.add(root_key)
+        label = repo.get("label") or base_name(root) or root
+        rows.append({
+            "id": root, "name": label, "path": root,
+            "folders": [{"path": root}], "scan": repo,
+        })
+    return rows
+
+
 def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
@@ -523,10 +552,16 @@ def build_tree(
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
-    by_project: dict[str, list[dict]] = {}  # explicit project id -> owned rows
+    # A discovered repo is a row of its own (Tier 3 below), and a chat started in one belongs THERE,
+    # not in the superproject whose folder happens to contain it: the user picked that repo. Ownership
+    # therefore considers both, deepest folder first — a declared project keeps a tie, so a row that IS
+    # a declared project's folder stays that project's.
+    discovered_rows = _discovered_project_rows(discovered_repos, resolve, folder_index, _junk)
+    owner_index = _FolderIndex(active_projects + discovered_rows)
+    by_project: dict[str, list[dict]] = {}  # project id (a discovered row keys by its root) -> rows
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        owner = _project_for_session(session, owner_index, resolve)
         (by_project.setdefault(owner["id"], []) if owner else unowned).append(session)
 
     scoped_ids: list[str] = []
@@ -569,32 +604,28 @@ def build_tree(
             repo_node["sessionCount"], _last_active(auto_sessions), _previews(auto_sessions),
             auto_sessions, isAuto=True))
 
-    # Tier 3: discovered repos with no loaded sessions, folded to their common root.
-    for repo in discovered_repos or []:
-        raw_root = _field(repo, "root")
-        if not raw_root:
-            continue
-        info = resolve(raw_root) if resolve else None
-        root = (info or {}).get("repo_root") or raw_root
+    # Tier 3: discovered repos, each a row of its own, carrying the sessions started inside it.
+    for row in discovered_rows:
+        root, label = row["path"], row["name"]
         root_key = _path_key(root)
-        # A discovered repo that IS a declared project's folder is that project's row already — the
-        # only duplicate worth refusing. A repo merely INSIDE a declared project's folder is kept:
-        # its sessions stay owned by the project (that is what `folder_index.match` decides, above),
-        # and its own row is the subproject `_assign_parent_projects` nests under it. Dropping it
-        # here is what made nested discovery find nothing in the case it exists for — a superproject
-        # whose submodules live in its own tree.
-        if root_key in seen or _junk(root) or folder_index.owns_exactly(root):
+        if root_key in seen:
             continue
         seen.add(root_key)
-        label = repo.get("label") or base_name(root) or root
-        # A discovered repo inside a declared project's folder is a SUBPROJECT row: its sessions stay the
-        # declared project's (that is what `_project_for_session` decides, by folder depth), so the row
-        # carries no count of its own — a badge N with an empty drill-in talks past the parent's N.
-        owned = bool(folder_index.match(root)[0])
+        owned = by_project.get(root, [])
+        _scope(owned)
+        repos = _build_repos(owned, resolve, hydrate) or [_repo_node(root, label)]
+        # A repo INSIDE a declared project's folder keeps its own sessions but no scanned count: the
+        # scan's aggregate is wider than what this row renders, and a badge with an empty drill-in
+        # talks past the parent's own count. Same for a row that loaded its own sessions — it counts
+        # what it shows. Only a repo nothing owns keeps the count the scan saw.
+        nested = bool(folder_index.match(root)[0])
+        scan = row.get("scan") or {}
+        counted = nested or owned
         result.append(_project_node(
-            root, label, root, [_repo_node(root, label)],
-            0 if owned else int(repo.get("sessions") or 0),
-            0.0 if owned else float(repo.get("last_active") or 0), [], isAuto=True, discovered=True))
+            root, label, root, repos,
+            len(owned) if counted else int(scan.get("sessions") or 0),
+            _last_active(owned) if counted else float(scan.get("last_active") or 0),
+            _previews(owned), owned, isAuto=True, discovered=True))
 
     # Auto-project basename labels can collide; explicit projects keep their user-chosen names.
     _disambiguate_labels([p for p in result if p.get("isAuto")])

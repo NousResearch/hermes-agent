@@ -476,8 +476,10 @@ def test_discovered_repo_inside_a_declared_project_nests_under_it():
 
 
 def test_a_discovered_subproject_keeps_no_session_count_of_its_own():
-    # The payload aggregates sessions onto the scanned root, but those sessions belong to the declared
-    # project that owns the folder (by depth). A badge here would count them twice and drill in empty.
+    # The payload aggregates sessions onto the scanned root, but none of them is LOADED here, and the
+    # scan's aggregate is wider than what this row would render: a badge N with an empty drill-in
+    # talks past the parent's own count. Its own loaded sessions are counted on the row that holds
+    # them (see the test below).
     project = _project("p_app", "App", ["/www/app"])
     discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 7, "last_active": 9}]
 
@@ -487,6 +489,29 @@ def test_a_discovered_subproject_keeps_no_session_count_of_its_own():
     assert child["sessionCount"] == 0
     assert child["lastActive"] == 0.0
     assert child["sessionIds"] == []
+
+
+def test_a_chat_in_a_nested_repo_stays_in_that_repos_row():
+    # A superproject's submodules live in its own folder, and the scan finds them. A chat started in
+    # one belongs to THAT repo — the user picked it there — so the row that owns it is the one that
+    # renders it, with the lanes the chat actually worked in. The container project counts its own
+    # sessions only: a session is placed once.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 1, "last_active": 9}]
+    sessions = [_session("/www/app/vendor/lib", branch="main", repo_root="/www/app/vendor/lib")]
+
+    tree = pt.build_tree([project], sessions, discovered, resolve=None, hydrate=True)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["sessionCount"] == 1
+    assert child["sessionIds"] == [sessions[0]["id"]]
+    assert [s["id"] for repo in child["repos"] for g in repo["groups"] for s in g["sessions"]] == [
+        sessions[0]["id"]
+    ]
+    assert tree["scoped_session_ids"] == [sessions[0]["id"]]
+
+    container = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert container["sessionCount"] == 0
 
 
 def test_a_discovered_repo_nobody_owns_keeps_the_count_the_scan_saw():

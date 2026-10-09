@@ -212,7 +212,8 @@ class _Cred:
 
     ``creds``: env names that must ALL be truthy (inner tuple = ANY of). ``token``: env stored as
     ``PlatformConfig.token`` even when yaml disables the adapter (sending skills use it). ``fixed``:
-    ``(extra_key, env[, default[, fn]])`` always written once enabled. ``optional*``: ``_env_extras``
+    ``(extra_key, env[, default[, fn]])`` written once enabled when the env value is truthy
+    (blank env preserves the config.yaml value). ``optional*``: ``_env_extras``
     specs. ``warn_missing``: ``(env, msg)`` logged BEFORE enabling when blank. ``then``: tail
     ``fn(config, platform_config)``. ``home``: ``_env_home_channel`` env base applied only when the gate passed.
     """
@@ -239,6 +240,8 @@ class _Cred:
         for key, env, *rest in self.fixed:
             default = rest[0] if rest else ""
             value = _env_first(env) or default if isinstance(env, tuple) else getenv(env, default)
+            if not value:
+                continue
             extra[key] = rest[1](value) if len(rest) > 1 else value
         _env_extras(extra, self.optional)
         _env_extras(extra, self.optional_stripped, strip=True)

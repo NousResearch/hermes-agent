@@ -61,6 +61,11 @@ def _resolve_target(
     return target
 
 
+def compaction_target_available(session_id: str, *, turn_session_id: str | None = None) -> bool:
+    """Whether a mark for this session has a live Relay scope to receive it."""
+    return bool(session_id and _resolve_target(session_id, turn_session_id))
+
+
 def emit_compaction_mark(
     session_id: str, name: str, data: dict[str, Any], *, turn_session_id: str | None = None,
 ) -> bool:
@@ -72,6 +77,6 @@ def emit_compaction_mark(
     host, session, handle = target
     host.run_in_session(
         session, host.relay.scope.event, name, handle=handle, data=data, data_schema=dict(COMPACTION_DATA_SCHEMA),
-        metadata=relay_runtime.runtime_metadata(host.runtime_id),
+        metadata=relay_runtime.runtime_metadata(host.runtime_id), timeout=relay_runtime._SCOPE_OP_TIMEOUT,
     )
     return True

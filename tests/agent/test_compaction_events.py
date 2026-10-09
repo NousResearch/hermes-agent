@@ -36,6 +36,7 @@ V1_FIELDS = {
 def published(monkeypatch):
     """Every (session_id, mark name, payload) handed to the Relay emitter."""
     marks = []
+    monkeypatch.setattr("agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         "agent.relay_compaction.emit_compaction_mark",
         lambda session_id, name, data, **_kwargs: marks.append((session_id, name, data)) or True,
@@ -177,6 +178,15 @@ def test_a_raising_emitter_never_changes_the_compaction_result(monkeypatch, capl
     failures = [r for r in caplog.records if r.getMessage() == "compaction event publish failed"]
     assert [r.levelno for r in failures] == [logging.WARNING, logging.DEBUG]
     assert failures[0].exc_info is not None
+
+
+def test_prune_without_relay_target_skips_transcript_estimates(monkeypatch):
+    agent = _Agent(_compressor())
+    messages = _messages()
+    monkeypatch.setattr("agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: False)
+    with patch("agent.compaction_events.estimate_messages_tokens_rough") as estimate:
+        compaction_events.publish_prune(agent, messages, messages[:-1], 1)
+    estimate.assert_not_called()
 
 
 def test_overflow_attempt_records_its_classified_overflow_reason(published):

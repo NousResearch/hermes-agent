@@ -235,11 +235,19 @@ def provider_native_payload(*, session_id: str, compression_count: Any = None) -
     )
 
 
-def _publish(build: Any, *args: Any, turn_session_id: str | None = None, **kwargs: Any) -> None:
+def _publish(
+    build: Any, *args: Any, turn_session_id: str | None = None, require_target_session_id: str | None = None,
+    **kwargs: Any,
+) -> None:
     """Build one record and fan it out to the built-in Relay integration. Never raises into compaction: the
     first failure logs at WARNING with its traceback, later ones at DEBUG."""
     global _warned
     try:
+        if require_target_session_id is not None:
+            from agent.relay_compaction import compaction_target_available
+
+            if not compaction_target_available(require_target_session_id, turn_session_id=turn_session_id):
+                return
         payload = build(*args, **kwargs)
         from agent.relay_compaction import emit_compaction_mark
 
@@ -279,12 +287,14 @@ def publish_micro(record: dict[str, Any], *, turn_session_id: str | None = None)
 def publish_prune(agent: Any, messages: list, pruned: list, tool_results_pruned: int) -> None:
     """Publish one committed proactive tool-result prune, measured like the attempt record (rough estimate of
     the message list the model sees next)."""
+    session_id = getattr(agent, "session_id", None) or ""
+    turn_session_id = _turn_session_id(agent)
     if _publishes_for(agent):
         _publish(lambda: prune_payload(
-            session_id=getattr(agent, "session_id", None) or "", tokens_before=estimate_messages_tokens_rough(messages),
+            session_id=session_id, tokens_before=estimate_messages_tokens_rough(messages),
             tokens_after=estimate_messages_tokens_rough(pruned), messages=len(pruned),
             tool_results_pruned=tool_results_pruned,
-        ), turn_session_id=_turn_session_id(agent))
+        ), turn_session_id=turn_session_id, require_target_session_id=session_id)
 
 
 def publish_provider_native(agent: Any) -> None:

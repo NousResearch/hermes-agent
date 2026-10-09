@@ -234,6 +234,43 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         )
 
 
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass
+def test_detached_grandchild_is_killed_by_runner(tmp_path: Path) -> None:
+    """A child in its OWN session (an auto-started ``gateway run``) escapes the process-group
+    kill; the runner still finds it by the attempt's temp root in its environment."""
+    repo_root = _probe_root(tmp_path)
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    handoff = tmp_path / "detached.json"
+    (probe_dir / "test_probe_detached.py").write_text(textwrap.dedent(f"""
+        import json, os, subprocess, sys
+        from pathlib import Path
+
+        def test_spawns_detached_child_and_walks_away():
+            child = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"],
+                start_new_session=True,
+            )
+            Path({str(handoff)!r}).write_text(json.dumps({{"pid": child.pid}}), encoding="utf-8")
+    """).lstrip(), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    pid = json.loads(handoff.read_text(encoding="utf-8-sig"))["pid"]
+    deadline = time.monotonic() + 5.0
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        os.kill(pid, 9)
+        pytest.fail(f"detached child {pid} survived the runner; output:\n{proc.stdout}")
+    assert proc.returncode == 0, proc.stdout
+
 # ── Bare pytest-flag passthrough ─────────────────────────────────────────────
 #
 # The runner routes any token starting with ``-`` that isn't one of its own

@@ -352,12 +352,13 @@ def _payload_store_python(root: Path) -> Path | None:
 def venv_command(project_root: Path, venv: Path, options: tuple[str, ...] | list[str] = ()) -> list[str]:
     """The argv prefix that runs Python inside *venv*; append a script, ``-c`` or ``-m``.
 
-    A sealed payload never enters a venv through ``Scripts\\python.exe``. That redirector is
-    an executable outside the package that starts the package's interpreter, which an MSIX
-    refuses (WinError 5) to a process without package identity. Instead the payload's own
-    interpreter attaches the venv's site-packages (``pm/_venv_entry.py``): the same
-    contract as the payload's launchers and its PM worker. Elsewhere the venv's
-    interpreter runs as is. *options* are interpreter flags (``-I``, ``-u``, ``-X …``).
+    A sealed payload never enters a venv through ``Scripts\\python.exe``. That redirector sits
+    outside the package and starts PM's writable copy of the Python (``pm._uv._toolchain``),
+    and a process on that copy has no package identity, so Windows refuses it the package's
+    git, rg and PM worker (WinError 5). Instead the payload's own interpreter attaches the
+    venv's site-packages (``pm/_venv_entry.py``): the same contract as the payload's
+    launchers and its PM worker. Elsewhere the venv's interpreter runs as is. *options* are
+    interpreter flags (``-I``, ``-u``, ``-X …``).
     """
     root = Path(project_root).resolve()
     store_python = _payload_store_python(root)
@@ -502,8 +503,8 @@ def activate_dependencies(project_root: Path) -> None:
     # A sealed payload's launchers live in <payload>/bin instead.
     directories = [payload_command_dir(project_root) or project_root.resolve() / ".hermes" / "bin"]
     # A sealed payload's Windows venv redirectors never go on PATH: a shipped venv's still
-    # names the build machine, and a generation built since names the payload's interpreter,
-    # which an MSIX refuses to an outside executable (see venv_command).
+    # names the build machine, and a generation built since names PM's writable Python copy,
+    # which cannot start the package's executables (see venv_command).
     if not (os.name == "nt" and _payload_manifest(project_root.resolve()) is not None):
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]

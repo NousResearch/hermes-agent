@@ -1,8 +1,20 @@
 # Spotify
 
-Hermes 可以直接控制 Spotify——播放、队列、搜索、播放列表、已保存的曲目/专辑以及收听历史——通过 Spotify 官方 Web API 配合 PKCE OAuth 实现。Token（令牌）存储在 `~/.hermes/auth.json` 中，遇到 401 时自动刷新；每台机器只需登录一次。
+Hermes 通过[插件目录](./plugins.md)中的官方 **`spotify` 插件**控制 Spotify——播放、队列、搜索、播放列表、已保存的曲目/专辑以及收听历史——基于 Spotify 官方 Web API 配合 PKCE OAuth 实现。该插件由 Nous Research 在 [NousResearch/hermes-spotify](https://github.com/NousResearch/hermes-spotify) 维护，不属于 Hermes 核心。Token（令牌）存储在 `~/.hermes/auth.json` 中，遇到 401 时自动刷新；每台机器只需登录一次。
 
-与 Hermes 内置的 OAuth 集成（Google、GitHub Copilot、Codex）不同，Spotify 要求每位用户自行注册一个轻量级开发者应用。Spotify 不允许第三方发布可供所有人使用的公共 OAuth 应用。整个过程大约需要两分钟，`hermes auth spotify` 会全程引导你完成。
+与 Hermes 内置的 OAuth 集成不同，Spotify 要求每位用户自行注册一个轻量级开发者应用。Spotify 不允许第三方发布可供所有人使用的公共 OAuth 应用。整个过程大约需要两分钟，`hermes spotify login` 会全程引导你完成。
+
+## 安装
+
+```bash
+hermes plugins install spotify
+```
+
+插件按 profile 安装。若要在其他 profile 中使用 Spotify，请在该 profile 中同样安装（`hermes -p <profile> plugins install spotify`）。
+
+:::info 从内置 Spotify 的版本升级
+无需任何操作。所有已在使用 Spotify 的 profile（`auth.json` 中存有 Spotify 登录，或 `platform_toolsets` 中列出了 `spotify` 工具集）都会由 `hermes update` 自动从插件目录安装该插件；若该步骤未能运行，则在该 profile 首次启动时安装（遵循 `security.allow_lazy_installs`）。你的登录、`spotify` 工具集和工具名称都保持不变。唯一可见的变化：`hermes auth spotify` 改为 `hermes spotify login`（`hermes auth status spotify` / `hermes auth logout spotify` 改为 `hermes spotify status` / `hermes spotify logout`）；旧写法会打印新命令。若之后移除插件（`hermes plugins remove spotify`），它将保持移除状态。
+:::
 
 ## 前提条件
 
@@ -12,37 +24,21 @@ Hermes 可以直接控制 Spotify——播放、队列、搜索、播放列表�
 
 ## 设置
 
-### 一键完成：`hermes tools` 或首次运行设置
+### 1. 启用工具集
 
-最快捷的方式。运行：
-
-```bash
-hermes tools
-```
-
-滚动到 `🎵 Spotify`，按空格键启用，再按 `s` 保存。同样的开关也可在首次运行 `hermes setup` / `hermes setup tools` 流程中找到。Spotify 默认为可选启用，在此处启用会触发与 `hermes tools` 相同的提供商感知配置流程。
-
-Hermes 会直接进入 OAuth 流程——如果你还没有 Spotify 应用，它会内联引导你创建一个。完成后，工具集即被启用并完成认证，一步到位。
-
-如果你希望分步操作（或稍后重新认证），请使用下方的两步流程。
-
-### 两步流程
-
-#### 1. 启用工具集
+插件的 `spotify` 工具集默认关闭，以避免不需要它的用户在每次 API 调用时额外传输工具 schema。在 `hermes tools` 中启用（选中 `🔌 Spotify` 后保存），或运行：
 
 ```bash
-hermes tools
+hermes tools enable spotify
 ```
 
-启用 `🎵 Spotify`，保存，当内联向导弹出时关闭它（Ctrl+C）。工具集保持开启状态，仅跳过认证步骤。
-
-#### 2. 运行登录向导
+### 2. 登录
 
 ```bash
-hermes auth spotify
+hermes spotify login
 ```
 
-7 个 Spotify 工具只有在完成第 1 步后才会出现在 agent 的工具集中——它们默认关闭，以避免不需要它们的用户在每次 API 调用时额外传输工具 schema。
+7 个 Spotify 工具只有在登录后才会提供给 agent。
 
 若未设置 `HERMES_SPOTIFY_CLIENT_ID`，Hermes 会内联引导你完成应用注册：
 
@@ -81,10 +77,10 @@ ssh -N -L 43827:127.0.0.1:43827 user@remote-host
 ## 验证
 
 ```bash
-hermes auth status spotify
+hermes spotify status
 ```
 
-显示 token 是否存在以及 access token 的过期时间。刷新是自动的：当任何 Spotify API 调用返回 401 时，客户端会用 refresh token 换取新 token 并重试一次。Refresh token 在 Hermes 重启后仍然有效，只有在你的 Spotify 账号设置中撤销该应用，或运行 `hermes auth logout spotify` 后才需要重新认证。
+显示 token 是否存在以及 access token 的过期时间。刷新是自动的：当任何 Spotify API 调用返回 401 时，客户端会用 refresh token 换取新 token 并重试一次。Refresh token 在 Hermes 重启后仍然有效，只有在你的 Spotify 账号设置中撤销该应用，或运行 `hermes spotify logout` 后才需要重新认证。
 
 ## 使用方法
 
@@ -222,7 +218,7 @@ hermes cron add \
 ## 退出登录
 
 ```bash
-hermes auth logout spotify
+hermes spotify logout
 ```
 
 从 `~/.hermes/auth.json` 中移除 token。若还需清除应用配置，请从 `~/.hermes/.env` 中删除 `HERMES_SPOTIFY_CLIENT_ID`（以及 `HERMES_SPOTIFY_REDIRECT_URI`，如果你设置了的话），或重新运行向导。
@@ -241,7 +237,7 @@ hermes auth logout spotify
 
 **`429 Too Many Requests`** — Spotify 的速率限制。Hermes 会返回友好的错误提示；等待一分钟后重试。若持续出现，你可能在脚本中运行了紧密循环——Spotify 的配额大约每 30 秒重置一次。
 
-**`401 Unauthorized` 持续出现** — 你的 refresh token 已被撤销（通常是因为你从账号中移除了该应用，或应用被删除）。重新运行 `hermes auth spotify`。
+**`401 Unauthorized` 持续出现** — 你的 refresh token 已被撤销（通常是因为你从账号中移除了该应用，或应用被删除）。重新运行 `hermes spotify login`。
 
 **向导未打开浏览器** — 若你通过 SSH 连接或在没有显示器的容器中运行，Hermes 会检测到并跳过自动打开。复制它打印的 dashboard URL 并手动打开。
 
@@ -250,7 +246,7 @@ hermes auth logout spotify
 默认情况下，Hermes 会请求所有已发布工具所需的 scope。若需限制访问权限，可覆盖默认值：
 
 ```bash
-hermes auth spotify --scope "user-read-playback-state user-modify-playback-state playlist-read-private"
+hermes spotify login --scope "user-read-playback-state user-modify-playback-state playlist-read-private"
 ```
 
 Scope 参考：[Spotify Web API scopes](https://developer.spotify.com/documentation/web-api/concepts/scopes)。若请求的 scope 少于某个工具所需，该工具的调用将以 403 失败。
@@ -258,7 +254,7 @@ Scope 参考：[Spotify Web API scopes](https://developer.spotify.com/documentat
 ## 进阶：自定义 client ID / redirect URI
 
 ```bash
-hermes auth spotify --client-id <id> --redirect-uri http://localhost:3000/callback
+hermes spotify login --client-id <id> --redirect-uri http://localhost:3000/callback
 ```
 
 或在 `~/.hermes/.env` 中永久设置：

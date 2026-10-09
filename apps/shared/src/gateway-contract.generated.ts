@@ -2449,7 +2449,7 @@ export interface ProjectIdParams {
 export interface ProjectResult {
   project: ProjectInfo
 }
-/** ``use`` also activates the new project. */
+/** ``use`` also activates the new project. ``parent_id`` nests it from the start — ``''`` for an explicit top level, an absent (or null) value leaves it to folder containment, and an unknown id falls back the same way. */
 export interface ProjectsCreateParams {
   profile?: string | null
   name: string
@@ -2460,6 +2460,7 @@ export interface ProjectsCreateParams {
   icon?: string | null
   color?: string | null
   board_slug?: string | null
+  parent_id?: string | null
   use?: boolean
 }
 export interface OptionalProjectResult {

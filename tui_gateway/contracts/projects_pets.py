@@ -73,7 +73,9 @@ method("projects.get", params=ProjectIdParams, result=ProjectResult,
 
 
 class ProjectsCreateParams(ProfileParams):
-    """``use`` also activates the new project."""
+    """``use`` also activates the new project. ``parent_id`` nests it from the start — ``''`` for an
+    explicit top level, an absent (or null) value leaves it to folder containment, and an unknown id
+    falls back the same way."""
 
     name: str
     folders: list[str] | None = None
@@ -83,6 +85,7 @@ class ProjectsCreateParams(ProfileParams):
     icon: str | None = None
     color: str | None = None
     board_slug: str | None = None
+    parent_id: str | None = None
     use: bool = False
 
 

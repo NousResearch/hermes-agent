@@ -174,14 +174,14 @@ class BrowserControlBroker:
         self._command_timeout = command_timeout
         self._clock = clock if clock is not None else time.monotonic
         self._lock = threading.RLock()
-        self._tickets: Dict[str, _TicketRecord] = {}
-        self._controllers: Dict[ControllerScope, _Controller] = {}
-        self._pending: Dict[str, _PendingCommand] = {}
+        self._tickets: dict[str, _TicketRecord] = {}
+        self._controllers: dict[ControllerScope, _Controller] = {}
+        self._pending: dict[str, _PendingCommand] = {}
         # None defers to live config on every selection (so flipping developer_mode off REVOKES
         # raw CDP/eval from attached controllers without restart); a bool pins the gate.
         self._developer_mode_pinned: Optional[bool] = None if developer_mode is None else developer_mode is True
         # Artifact stores keyed by profile id; ``None`` is the default slot.
-        self._artifact_stores: Dict[Optional[str], Any] = {}
+        self._artifact_stores: dict[Optional[str], Any] = {}
 
     @property
     def developer_mode(self) -> bool:

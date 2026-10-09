@@ -558,7 +558,9 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
+                    'user-guide/skills/optional/productivity/productivity-first-task',
                     'user-guide/skills/optional/productivity/productivity-here-now',
+                    'user-guide/skills/optional/productivity/productivity-initiate-setup',
                     'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-property-listings',
@@ -835,6 +837,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
                 'developer-guide/plugins/application-declarations',
+                'developer-guide/plugins/catalog-submission',
               ],
             },
             'developer-guide/creating-skills',

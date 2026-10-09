@@ -24,6 +24,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
 
+from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
@@ -35,6 +36,7 @@ from hermes_cli.backup_restore import (
     _detect_prefix,
     _extract_member_atomically,
     _import_db_member,
+    _restore_auth_json,
     _safe_restore_db,
     _validate_backup_zip,
 )
@@ -42,7 +44,7 @@ from hermes_cli.backup_restore import (
 logger = logging.getLogger(__name__)
 
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     # Shim to stop the old updater doing work until relaunch. None means unknown,
     # not permission to restore over a database whose holders we did not scan.
     return None
@@ -100,7 +102,8 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
 # subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
-_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
+_KEPT_CACHE_SUBDIRS = {
+    "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
@@ -235,7 +238,7 @@ def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Op
         raise
 
 
-def _collect_memory_provider_external_paths() -> List[Path]:
+def _collect_memory_provider_external_paths() -> list[Path]:
     """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
     provider failure (backup must never fail because of a flaky plugin)."""
     try:
@@ -251,7 +254,7 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     except Exception as exc:
         logger.warning("backup_paths() failed for memory provider %r: %s", active, exc)
         return []
-    out: Dict[Path, Path] = {}  # resolved -> first declared spelling
+    out: dict[Path, Path] = {}  # resolved -> first declared spelling
     for raw in declared:
         try:
             p = Path(raw).expanduser()
@@ -267,13 +270,13 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return list(out.values())
 
 
-def _iter_external_files(base: Path) -> List[Path]:
+def _iter_external_files(base: Path) -> list[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
     if base.is_file() and not base.is_symlink():
         return [base]
     if not base.is_dir():
         return []
-    files: List[Path] = []
+    files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
@@ -500,7 +503,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
+    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path,
     *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
@@ -529,7 +532,7 @@ def _write_zip_entries(
     return total_bytes
 
 
-def _print_capped(header: str, lines: List[str], indent: str) -> None:
+def _print_capped(header: str, lines: list[str], indent: str) -> None:
     """Print *header*, then at most 10 of *lines* (each prefixed by *indent*) and a "... and N more" tail."""
     print(header)
     for line in lines[:10]:
@@ -677,7 +680,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
 
 # --- Import ---
 
-def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
+def _find_corrupt_members(zf: zipfile.ZipFile, members: list[str]) -> list[str]:
     """Return ``"<member>: <error>"`` for every member whose data does not decompress or
     fails its CRC, streaming each one in 1 MiB chunks so a multi-GB ``state.db`` is never
     held in memory.
@@ -1081,7 +1084,7 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
-def _newest_first(root: Path, keep_entry) -> List[Path]:
+def _newest_first(root: Path, keep_entry) -> list[Path]:
     """Entries of *root* passing ``keep_entry``, newest (by name) first; ``[]`` if *root* is missing."""
     if not root.exists():
         return []
@@ -1095,12 +1098,12 @@ _CRON_JOBS_REL = "cron/jobs.json"
 # Config paths the update flow must never change (#64160): model routing and the MoA section are
 # consumed machine-wide, so an update/repair cycle that rewrites them silently redirects paid
 # inference. Dotted paths into raw config.yaml; a single-element tuple protects a whole section.
-_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
+_PROTECTED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("model", "provider"), ("model", "default"), ("model", "base_url"), ("model", "api_key"),
     ("moa",))
 
 
-def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int:
+def _prune_oldest(newest_first: list[Path], keep: int, remove, what: str) -> int:
     """``remove(path)`` every entry past the first *keep*; return how many succeeded."""
     deleted = 0
     for p in newest_first[keep:]:
@@ -1273,7 +1276,7 @@ def _create_quick_snapshot_locked(
     staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
-    manifest: Dict[str, int] = {}  # rel_path -> file size
+    manifest: dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
     # #68805: track protected DB files skipped for size — they are snapshot
     # incompleteness just like a failed copy, so pruning must be suppressed
@@ -1454,7 +1457,7 @@ def _create_quick_snapshot_locked(
 def list_quick_snapshots(
     limit: int = 20,
     hermes_home: Optional[Path] = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """List existing quick state snapshots, most recent first."""
     root = _quick_snapshot_root(hermes_home)
     if not root.exists():
@@ -1477,6 +1480,21 @@ def list_quick_snapshots(
     return results
 
 
+def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
+    """True only for a file symlink resolving to this restore home's default-root auth store."""
+    if not path.is_symlink():
+        return False
+    try:
+        root = get_default_hermes_root(home=home).resolve(strict=False)
+        if home.resolve(strict=False) == root:
+            return False
+        trusted = (root / "auth.json").resolve(strict=False)
+        trusted.relative_to(root)
+        return path.resolve(strict=False) == trusted
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1484,7 +1502,8 @@ def restore_quick_snapshot(
     """Restore state from a quick snapshot.
 
     Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored.
+    Returns True if at least one file was restored and the listed auth.json
+    was not refused or skipped.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -1515,6 +1534,7 @@ def restore_quick_snapshot(
         meta = json.load(f)
 
     restored = 0
+    auth_restore_failed = False
     for rel in meta.get("files", {}):
         # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
@@ -1522,16 +1542,27 @@ def restore_quick_snapshot(
             src.resolve().relative_to(snap_dir.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
+            if rel == "auth.json":
+                auth_restore_failed = True
             continue
 
         dst = home / rel
         try:
             dst.resolve().relative_to(home.resolve())
         except ValueError:
-            logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+            # Named profiles may deliberately share the machine-root auth store via an
+            # auth.json symlink. Let only that exact trusted alias reach _restore_auth_json;
+            # every other manifest destination outside the profile remains a traversal.
+            if rel != "auth.json" or not _is_trusted_root_auth_alias(dst, home):
+                logger.error("Manifest path traversal blocked: %s", rel)
+                if rel == "auth.json":
+                    auth_restore_failed = True
+                continue
 
         if not src.exists():
+            if rel == "auth.json":
+                logger.error("Snapshot auth.json listed in manifest is missing: %s", src)
+                auth_restore_failed = True
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1547,14 +1578,25 @@ def restore_quick_snapshot(
                     # dst left as it was. Count as a failure, not a restore.
                     logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
                     continue
+            elif rel == "auth.json":
+                # Refresh tokens for these OAuth providers rotate on use. A historical
+                # snapshot can therefore contain a spent pair even though the current
+                # auth.json has the live successor. Restore the historical auth state
+                # while retaining that live single-use grant under the auth-store lock.
+                if not _restore_auth_json(src, dst):
+                    logger.error("Failed to restore %s safely", rel)
+                    auth_restore_failed = True
+                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
+            if rel == "auth.json":
+                auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    return restored > 0 and not auth_restore_failed
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
@@ -1591,7 +1633,7 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
 def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Safety net for silent cron-job loss across ``hermes update``.
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
@@ -1695,7 +1737,7 @@ def _cron_jobs_list(doc: Any) -> list[Any]:
     return []
 
 
-def _prompt_degraded(job: Dict[str, Any]) -> bool:
+def _prompt_degraded(job: dict[str, Any]) -> bool:
     """True when an agent job's prompt field is unusable: blank, missing, or
     collapsed to the job's own name (a name is not a prompt)."""
     if job.get("no_agent"):
@@ -1709,7 +1751,7 @@ def _prompt_degraded(job: Dict[str, Any]) -> bool:
 def restore_cron_prompt_fields_if_degraded(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Safety net for field-level cron-job degradation across ``hermes update``.
 
     A writer active during the update's mutation window replaced every
@@ -1757,7 +1799,7 @@ def restore_cron_prompt_fields_if_degraded(
     if snap_doc is None:
         return None
 
-    snap_by_id: Dict[str, Dict[str, Any]] = {}
+    snap_by_id: dict[str, dict[str, Any]] = {}
     for job in _cron_jobs_list(snap_doc):
         if isinstance(job, dict):
             snap_by_id[str(job.get("id", ""))] = job
@@ -1811,9 +1853,9 @@ def restore_cron_prompt_fields_if_degraded(
 
 
 def restore_cron_prompt_fields_all_profiles(
-    profile_snapshots: Dict[str, str],
+    profile_snapshots: dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run the cron prompt-field safety net for every sibling profile.
 
     Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
@@ -1821,7 +1863,7 @@ def restore_cron_prompt_fields_all_profiles(
     pre-update snapshot. Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[Dict[str, Any]] = []
+    restored: list[dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     home = invoking_home or get_hermes_home()
@@ -1885,7 +1927,7 @@ def create_pre_update_snapshots_all_profiles(
     invoking_home: Optional[Path] = None,
     keep: Optional[int] = None,
     max_file_size: Optional[int] = None,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Pre-update quick snapshots for every SIBLING profile (#66140).
 
     Same snapshot set, same per-file size cap, same keep policy as the
@@ -1895,7 +1937,7 @@ def create_pre_update_snapshots_all_profiles(
     it where it expects. Returns ``{profile_name: snapshot_id}`` for the
     siblings that snapshotted successfully. Never raises.
     """
-    results: Dict[str, str] = {}
+    results: dict[str, str] = {}
     home = invoking_home or get_hermes_home()
     for name, profile_home in _sibling_profile_homes(home):
         try:
@@ -1917,7 +1959,7 @@ def create_pre_update_snapshots_all_profiles(
 # (gateway, cron, desktop), so an update/repair cycle that rewrites them
 # silently redirects paid inference. Each entry is a dotted path into the raw
 # config.yaml document; a single-element tuple protects the whole section.
-_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
+_PROTECTED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("model", "provider"),
     ("model", "default"),
     ("model", "base_url"),
@@ -1926,7 +1968,7 @@ _PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
 )
 
 
-def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
+def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
     """Parse ``path`` as a YAML mapping. ``None`` = missing/unreadable/non-dict."""
     if not path.is_file():
         return None
@@ -1940,7 +1982,7 @@ def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
+def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
     node: Any = data
     for key in dotted:
         if not isinstance(node, dict):
@@ -1949,7 +1991,7 @@ def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any
     return node
 
 
-def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
+def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
     node = data
     for key in dotted[:-1]:
         child = node.get(key)
@@ -1963,7 +2005,7 @@ def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value:
 def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Safety net for silent config.yaml model/MoA loss across ``hermes update``.
 
     Desktop update/repair cycles have been observed to rewrite user-set
@@ -2042,9 +2084,9 @@ def restore_config_model_settings_if_rewritten(
 
 
 def restore_config_model_settings_all_profiles(
-    profile_snapshots: Dict[str, str],
+    profile_snapshots: dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run the config model-settings safety net for every sibling profile.
 
     Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
@@ -2052,7 +2094,7 @@ def restore_config_model_settings_all_profiles(
     pre-update snapshot. Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[Dict[str, Any]] = []
+    restored: list[dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     home = invoking_home or get_hermes_home()
@@ -2079,9 +2121,9 @@ def restore_config_model_settings_all_profiles(
 
 
 def restore_cron_jobs_all_profiles(
-    profile_snapshots: Dict[str, str],
+    profile_snapshots: dict[str, str],
     invoking_home: Optional[Path] = None,
-) -> list[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Run the cron-jobs safety net for every sibling profile (#66140).
 
     ``profile_snapshots`` is the map returned by
@@ -2091,7 +2133,7 @@ def restore_cron_jobs_all_profiles(
     this update run). Returns one result dict per restored profile, each
     with a ``profile`` key added. Never raises.
     """
-    restored: list[Dict[str, Any]] = []
+    restored: list[dict[str, Any]] = []
     if not profile_snapshots:
         return restored
     home = invoking_home or get_hermes_home()

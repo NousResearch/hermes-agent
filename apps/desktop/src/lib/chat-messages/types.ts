@@ -49,6 +49,8 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** The user stopped this reply before it finished; its text is partial. */
+  interrupted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -71,13 +73,6 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -149,7 +144,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)
@@ -219,6 +214,8 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — `text` is a response this turn already delivered: it adds no text.
+  response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -148,6 +148,10 @@ class GatewayGoalsMixin:
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
             return  # keep missed intervals due until user work has drained
+        from agent.estop import check_paused
+
+        if check_paused("heartbeat", logger):
+            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
         from hermes_cli.heartbeat import HeartbeatManager
 
         mgr = HeartbeatManager(session_id=session_id)
@@ -422,6 +426,12 @@ class GatewayGoalsMixin:
 
         mgr = LoopManager(session_id=sid)
         if not mgr.is_due(now):
+            return
+        from agent.estop import check_paused
+
+        # Loop wakeups are injected as internal events, which bypass the inbound estop gate; without
+        # this a `hermes pause` would still start agent turns. Not claiming the tick keeps it due.
+        if check_paused("loop", logger):
             return
         # fire_tick()/complete_tick() are writes (BEGIN IMMEDIATE) taking the SessionDB writer lock; a slow
         # writer elsewhere holding it while the loop thread blocked froze the gateway until the watchdog

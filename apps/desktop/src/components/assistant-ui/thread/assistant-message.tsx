@@ -23,6 +23,7 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
@@ -308,6 +309,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           >
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
+            <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
@@ -362,6 +364,28 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   )
 }
 
+const StoppedNotice: FC = () => {
+  const { t } = useI18n()
+
+  const stopped = useAuiState(
+    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
+  )
+
+  if (!stopped) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
+      data-slot="aui_assistant-message-stopped"
+    >
+      <Codicon className="size-3" name="debug-stop" />
+      {t.assistant.thread.responseStopped}
+    </div>
+  )
+}
+
 /**
  * PERF leaf: the only subscriber to this message's streaming status inside the
  * message content. Previously `messageStatus` / `isPlaceholder` /
@@ -399,14 +423,26 @@ const AssistantStatusSlot: FC = () => {
       return 'none'
     }
 
-    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+    if (s.message.status?.type !== 'running') {
+      return 'activity'
+    }
+
+    if (s.message.content.length === 0) {
+      return 'placeholder'
+    }
+
+    return s.message.content.every(part => part.type === 'reasoning') ? 'thinking' : 'activity'
   })
 
   if (slot === 'none') {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
+  return slot === 'placeholder' ? (
+    <ResponseLoadingIndicator />
+  ) : (
+    <TurnActivityIndicator thinking={slot === 'thinking'} />
+  )
 }
 
 /**
@@ -1020,6 +1056,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         }
         data-slot="aui_msg-actions"
       >
+        <MessageHoverTime className="mr-1 px-0.5" />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {

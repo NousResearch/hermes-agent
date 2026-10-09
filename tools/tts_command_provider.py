@@ -60,7 +60,7 @@ def quote_command_placeholder(value: str, quote_context: Optional[str]) -> str:
     return subprocess.list2cmdline([value]) if os.name == "nt" else shlex.quote(value)
 
 
-def render_command_template(command_template: str, placeholders: Dict[str, str]) -> str:
+def render_command_template(command_template: str, placeholders: dict[str, str]) -> str:
     """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``."""
     names = "|".join(re.escape(name) for name in placeholders)
     pattern = re.compile(rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
@@ -101,8 +101,12 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
         return
     if os.name == "nt":
         try:
+            # CREATE_NO_WINDOW: taskkill is a console-subprocess — the kill itself must not
+            # flash a window on windowless hosts, same class of defect as the spawn above.
+            from hermes_cli._subprocess_compat import windows_hide_flags
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
+                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
+                           creationflags=windows_hide_flags())
         except Exception:
             proc.kill()
         return
@@ -120,7 +124,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
         signal("kill")
 
 
-def command_env_passthrough(config: Dict[str, Any]) -> list:
+def command_env_passthrough(config: dict[str, Any]) -> list:
     """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env."""
     raw = config.get("env_passthrough")
     return [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
@@ -130,6 +134,25 @@ def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
     """``stderr: ...; stdout: ...`` for a failed command provider, or ``no command output``."""
     parts = [f"{stream}: {text.strip()}" for stream, text in (("stderr", exc.stderr), ("stdout", exc.stdout)) if text]
     return "; ".join(parts) or "no command output"
+
+
+def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
+    """Process-group spawn kwargs for a command-provider child, per platform.
+
+    On Windows the shell=True spawn routes through cmd.exe, a console-subsystem
+    shim: with only CREATE_NEW_PROCESS_GROUP it allocates a *visible* console
+    window flash on every provider run from a windowless host (pythonw gateway,
+    TUI, Desktop). The shared detach bundle (hermes_cli._subprocess_compat.
+    windows_detach_flags_without_breakaway) adds CREATE_NO_WINDOW so the child
+    owns a hidden console its descendants inherit instead — deliberately without
+    CREATE_BREAKAWAY_FROM_JOB: this child is foreground-owned and killed by us on
+    idle timeout, so job teardown propagation must keep working. POSIX keeps the
+    session detach (setsid) so the tree can be signalled on idle timeout.
+    """
+    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+    if os_name == "nt":
+        return {"creationflags": windows_detach_flags_without_breakaway()}
+    return {"start_new_session": True}
 
 
 def run_command_provider(
@@ -149,15 +172,16 @@ def run_command_provider(
         value = resolve_passthrough_value(key, os.environ.get(key))
         if value is not None:
             scrubbed[key] = value
-    # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:
-    # locale-mismatched bytes must not raise in the reader threads.
-    group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
-             else {"start_new_session": True})
+    # Own process group so the whole tree can be signalled on idle timeout; on Windows the
+    # shared bundle also hides the console (shell=True spawns via cmd.exe, which otherwise
+    # flashes a window on windowless hosts). Lossy UTF-8 decode: locale-mismatched bytes
+    # must not raise in the reader threads.
+    group = provider_popen_group_kwargs(os.name)
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
     output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
-    chunks: Dict[str, list[str]] = {"stdout": [], "stderr": []}
+    chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}
 
     def read_stream(name: str, stream: Any) -> None:
@@ -215,13 +239,13 @@ def run_command_provider(
 
 
 # ---- Generic ``<section>.providers.<name>`` config layer (TTS and STT share it) ----
-def _get_provider_section(config: Dict[str, Any], name: str) -> Dict[str, Any]:
+def _get_provider_section(config: dict[str, Any], name: str) -> dict[str, Any]:
     """Return ``config[name]`` if it's a dict, else an empty dict."""
     section = config.get(name) if isinstance(config, dict) else None
     return section if isinstance(section, dict) else {}
 
 
-def _named_provider_config(config: Dict[str, Any], name: str, builtins: FrozenSet[str]) -> Dict[str, Any]:
+def _named_provider_config(config: dict[str, Any], name: str, builtins: frozenset[str]) -> dict[str, Any]:
     """``<section>.providers.<name>`` (canonical), else ``<section>.<name>`` for non-built-in names
     only — refused for built-ins so a user's ``openai:`` block still means OpenAI, not a command."""
     section = _get_provider_section(config, "providers").get(name)
@@ -230,7 +254,7 @@ def _named_provider_config(config: Dict[str, Any], name: str, builtins: FrozenSe
     return _get_provider_section(config, name) if name.lower() not in builtins else {}
 
 
-def _is_command_provider_config(config: Dict[str, Any]) -> bool:
+def _is_command_provider_config(config: dict[str, Any]) -> bool:
     """True when *config* declares a command-type provider (has a non-empty ``command``)."""
     if not isinstance(config, dict):
         return False
@@ -240,7 +264,7 @@ def _is_command_provider_config(config: Dict[str, Any]) -> bool:
 
 
 def _resolve_command_config(
-    provider: str, config: Dict[str, Any], reserved: FrozenSet[str]) -> Optional[Dict[str, Any]]:
+    provider: str, config: dict[str, Any], reserved: frozenset[str]) -> Optional[dict[str, Any]]:
     """Config of a user-declared command provider; None for *reserved* names, unknown or non-command."""
     key = (provider or "").lower().strip()
     if not key or key in reserved:
@@ -249,7 +273,7 @@ def _resolve_command_config(
     return named if _is_command_provider_config(named) else None
 
 
-def _command_timeout(config: Dict[str, Any], default: float) -> float:
+def _command_timeout(config: dict[str, Any], default: float) -> float:
     """Timeout in seconds (``timeout`` > ``timeout_seconds``); invalid or non-positive -> *default*."""
     raw = config.get("timeout", config.get("timeout_seconds", default))
     try:
@@ -259,7 +283,7 @@ def _command_timeout(config: Dict[str, Any], default: float) -> float:
     return value if value > 0 else float(default)
 
 
-def _command_output_format(config: Dict[str, Any], formats: FrozenSet[str], default: str) -> str:
+def _command_output_format(config: dict[str, Any], formats: frozenset[str], default: str) -> str:
     """Validated ``format``/``output_format`` from *config*, else *default*."""
     raw = config.get("format") or config.get("output_format") or default
     fmt = str(raw).lower().strip().lstrip(".")
@@ -284,14 +308,14 @@ _resolve_command_provider_config = partial(_resolve_command_config, reserved=BUI
 _get_command_tts_timeout = partial(_command_timeout, default=DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
 
 
-def _iter_command_providers(tts_config: Dict[str, Any]):
+def _iter_command_providers(tts_config: dict[str, Any]):
     """Yield (name, config) pairs for every declared command-type provider."""
     for name, cfg in _get_provider_section(tts_config, "providers").items():
         if isinstance(name, str) and name.lower() not in BUILTIN_TTS_PROVIDERS and _is_command_provider_config(cfg):
             yield name, cfg
 
 
-def _get_command_tts_output_format(config: Dict[str, Any], output_path: Optional[str] = None) -> str:
+def _get_command_tts_output_format(config: dict[str, Any], output_path: Optional[str] = None) -> str:
     """Validated output format: the output path's suffix wins, then ``format``/``output_format``."""
     suffix = Path(output_path).suffix.lower().strip().lstrip(".") if output_path else ""
     if suffix in COMMAND_TTS_OUTPUT_FORMATS:
@@ -299,18 +323,18 @@ def _get_command_tts_output_format(config: Dict[str, Any], output_path: Optional
     return _command_output_format(config, COMMAND_TTS_OUTPUT_FORMATS, DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
 
 
-def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
+def _is_command_tts_voice_compatible(config: dict[str, Any]) -> bool:
     """True only when the user explicitly opted in to voice delivery."""
     return is_truthy_value(config.get("voice_compatible", False))
 
 
-def _configured_command_tts_output_path(path: Path, config: Dict[str, Any]) -> Path:
+def _configured_command_tts_output_path(path: Path, config: dict[str, Any]) -> Path:
     """Return an output path whose extension matches the provider's output_format."""
     return path.with_suffix(f".{_get_command_tts_output_format(config)}")
 
 
 def _generate_command_tts(
-    text: str, output_path: str, provider_name: str, config: Dict[str, Any], tts_config: Dict[str, Any],
+    text: str, output_path: str, provider_name: str, config: dict[str, Any], tts_config: dict[str, Any],
 ) -> str:
     """Generate speech by running a user-configured shell command; returns the audio path it wrote.
     Raises ``ValueError`` for bad provider config, ``RuntimeError`` for timeouts / bad exits / no output."""

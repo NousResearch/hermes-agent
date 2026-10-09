@@ -195,6 +195,28 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 })
 
 describe('ClarifyTool choice selection', () => {
+  it('labels single-select vs multi-select before the user clicks', () => {
+    const { rerender } = renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-select-mode="single"]')?.textContent).toMatch(/pick one/i)
+    expect(document.querySelector('[data-clarify-select-mode="multi"]')).toBeNull()
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    act(() => {
+      setClarifyRequest({
+        questions: [
+          { choices: ['staging', 'production'], multiSelect: true, qid: 'q0', question: 'Which deployment target?' }
+        ],
+        requestId: 'request-1',
+        sessionId: 'session-1'
+      })
+    })
+    rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
+
+    expect(document.querySelector('[data-clarify-select-mode="multi"]')?.textContent).toMatch(/select all that apply/i)
+  })
+
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
     const { request } = renderLiveClarify({ multiSelect: true })
     const staging = screen.getByRole('button', { name: /staging/ })
@@ -1150,6 +1172,137 @@ describe('ClarifyTool visible-card scoping', () => {
     // shortcut": neither zone may be permanently starved of its own keys.
     await waitFor(() => {
       expect(lockedRequestIds(request)).toEqual([ZONE_A_REQUEST])
+    })
+  })
+})
+
+// --- One-entry batch hydration (#123126) ---
+// The canonical tool shape is `questions[]` even for one question, and the
+// wire request parks that same one-entry batch with its qid. The card must
+// hydrate off the live request (not sit a disabled args-only preview) so a
+// one-question clarify stays answerable — the dead state #123126 reported was
+// a permanently-disabled "0 of 1 answered" preview until the request timed out.
+
+describe('ClarifyTool one-entry batch hydration', () => {
+  function oneEntryArgsProps(question: string): ToolCallMessagePartProps {
+    const args = { questions: [{ choices: ['staging', 'production'], question }] }
+
+    return {
+      addResult: vi.fn(),
+      args,
+      argsText: JSON.stringify(args),
+      isError: false,
+      respondToApproval: vi.fn(),
+      result: undefined,
+      resume: vi.fn(),
+      status: { type: 'running' },
+      toolCallId: 'clarify-one-entry',
+      toolName: 'clarify',
+      type: 'tool-call'
+    }
+  }
+
+  function oneEntryOpenEndedProps(): ToolCallMessagePartProps {
+    const args = { questions: [{ question: 'Anything else?' }] }
+
+    return {
+      addResult: vi.fn(),
+      args,
+      argsText: JSON.stringify(args),
+      isError: false,
+      respondToApproval: vi.fn(),
+      result: undefined,
+      resume: vi.fn(),
+      status: { type: 'running' },
+      toolCallId: 'clarify-one-entry-open',
+      toolName: 'clarify',
+      type: 'tool-call'
+    }
+  }
+
+  function parkOneEntryBatch(
+    request: ReturnType<typeof vi.fn>,
+    requestId: string,
+    question: string,
+    choices: string[] | null
+  ) {
+    const respond = liveServerRequest(requestId)
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      questions: [{ choices, multiSelect: false, qid: 'q0', question }],
+      requestId,
+      sessionId: 'session-1'
+    })
+
+    return respond
+  }
+
+  it('keeps a one-question choice card answerable on its parked request', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    parkOneEntryBatch(request, 'request-one-entry', 'Which deployment target?', ['staging', 'production'])
+    renderClarify(<ClarifyTool {...oneEntryArgsProps('Which deployment target?')} />)
+
+    // The dead state this guards: a disabled batch preview counting down to a timeout skip.
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    expect((staging as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(staging)
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'staging',
+        question_id: 'q0',
+        request_id: 'request-one-entry'
+      })
+    })
+  })
+
+  it('keeps a one-question choice card answerable when the args text is padded and the request text is stripped', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    // The model's raw arg keeps the padding the backend strips before the
+    // gateway request goes out (`tools/clarify_tool.py` `.strip()`); the live
+    // request supplies the rendered text, so the card hydrates off it.
+    parkOneEntryBatch(request, 'request-one-entry-padded', 'Which deployment target?', ['staging', 'production'])
+    renderClarify(<ClarifyTool {...oneEntryArgsProps('  Which deployment target?\n')} />)
+
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    expect((staging as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(staging)
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'staging',
+        question_id: 'q0',
+        request_id: 'request-one-entry-padded'
+      })
+    })
+  })
+
+  it('keeps a one-question open-ended card typable on its parked request', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    parkOneEntryBatch(request, 'request-one-entry-open', 'Anything else?', null)
+    renderClarify(<ClarifyTool {...oneEntryOpenEndedProps()} />)
+
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    const field = screen.getByPlaceholderText(/Type your answer/)
+    expect((field as HTMLTextAreaElement).disabled).toBe(false)
+
+    fireEvent.change(field, { target: { value: 'my answer' } })
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'my answer',
+        question_id: 'q0',
+        request_id: 'request-one-entry-open'
+      })
     })
   })
 })

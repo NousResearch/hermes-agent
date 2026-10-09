@@ -715,7 +715,7 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
-    def rewritten_held_row_ids(self, session_id: str, held: List[Tuple[int, Any]]) -> List[int]:
+    def rewritten_held_row_ids(self, session_id: str, held: list[tuple[int, Any]]) -> list[int]:
         """Ids among *held* ``(row_id, content)`` pairs whose ACTIVE row no longer stores that content.
 
         An in-place commit (the proactive prune's ``rewrite_pruned_rows``) changes what a row says and
@@ -1182,7 +1182,7 @@ class SessionMessagesMixin:
             return inserted
         return self._execute_transcript_write(_do, compacted_messages)
 
-    def rewrite_pruned_rows(self, session_id: str, changes: List[Tuple[Dict[str, Any], Dict[str, Any]]], *,
+    def rewrite_pruned_rows(self, session_id: str, changes: list[tuple[dict[str, Any], dict[str, Any]]], *,
         model_config_patch: Optional[Dict[str, Any]] = None) -> int:
         """Proactive-prune commit that rewrites only the changed rows, in place (#124102).
 
@@ -1291,7 +1291,7 @@ class SessionMessagesMixin:
         self._ensure_display_order(session_id)  # every row holds its stored slot before one is carried over
         return self._execute_write(_do)
 
-    def _message_column_names(self, conn) -> List[str]:
+    def _message_column_names(self, conn) -> list[str]:
         """Column names of the messages table, cached per-connection era."""
         if not getattr(self, "_message_columns_cache", None):
             self._message_columns_cache = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]

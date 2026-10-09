@@ -38,7 +38,7 @@ def _trim_ring(events: list, keep: int) -> list:
 _REDACTED_FIELDS = frozenset({"message", "default_prompt"})
 
 
-def _dialog_dict(obj: Any, keys: tuple) -> Dict[str, Any]:
+def _dialog_dict(obj: Any, keys: tuple) -> dict[str, Any]:
     """Snapshot dict of ``keys`` with page-originated text fields redacted."""
     return {k: _redact_supervisor_text(getattr(obj, k)) if k in _REDACTED_FIELDS else getattr(obj, k) for k in keys}
 
@@ -121,7 +121,7 @@ class PendingDialog:
     # Bridge XHR path: respond via Fetch.fulfillRequest, NOT Page.handleJavaScriptDialog.
     bridge_request_id: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return _dialog_dict(self, ("id", "type", "message", "default_prompt", "opened_at", "frame_id"))
 
 
@@ -137,14 +137,14 @@ class DialogRecord:
     closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
     frame_id: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return _dialog_dict(self, ("id", "type", "message", "opened_at", "closed_at", "closed_by", "frame_id"))
 
 
 class DialogSupervisionMixin:
     """Dialog event handling for ``CDPSupervisor`` (all methods run on its loop)."""
 
-    async def _cdp_quiet(self, method: str, params: Dict[str, Any], *, session_id: Optional[str],
+    async def _cdp_quiet(self, method: str, params: dict[str, Any], *, session_id: Optional[str],
                          timeout: float, what: str) -> None:
         """Best-effort CDP call: failures are logged at debug and swallowed."""
         try:
@@ -171,13 +171,13 @@ class DialogSupervisionMixin:
 
     # ── Capture ──────────────────────────────────────────────────────────────
 
-    async def _on_dialog_opening(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    async def _on_dialog_opening(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         self._admit_dialog(
             type=str(params.get("type") or ""), message=str(params.get("message") or ""),
             default_prompt=str(params.get("defaultPrompt") or ""), session_id=session_id, frame_id=params.get("frameId"),
         )
 
-    async def _on_fetch_paused(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    async def _on_fetch_paused(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         """Bridge XHR captured mid-flight — materialize as a pending dialog. The page's JS
         thread is blocked on the XHR until we Fetch.fulfillRequest (agent or watchdog);
         requests for other hosts are forwarded unchanged."""
@@ -240,7 +240,7 @@ class DialogSupervisionMixin:
                 session_id=session_id, timeout=5.0, what=f"bridge fulfill {dialog.id}",
             )
             return
-        params: Dict[str, Any] = {"accept": accept}
+        params: dict[str, Any] = {"accept": accept}
         if prompt_text is not None and dialog.type == "prompt":
             params["promptText"] = prompt_text
         await self._cdp("Page.handleJavaScriptDialog", params, session_id=session_id, timeout=5.0)
@@ -289,7 +289,7 @@ class DialogSupervisionMixin:
                               closed_at=time.time(), closed_by=closed_by, frame_id=dialog.frame_id)
         self._recent_dialogs = _trim_ring([*self._recent_dialogs, record], RECENT_DIALOGS_MAX)
 
-    async def _on_dialog_closed(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    async def _on_dialog_closed(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         # ``Page.javascriptDialogClosed`` carries only ``result``/``userInput``: match by
         # session id and clear the oldest native dialog on it (the JS thread blocks while
         # a dialog is up, so at most one is in flight). Bridge dialogs resolve via Fetch.
@@ -300,7 +300,7 @@ class DialogSupervisionMixin:
             self._retire_dialog(candidate, "remote")
 
     # CDP event → handler(self, params, session_id); merged into CDPSupervisor._EVENT_HANDLERS.
-    EVENT_HANDLERS: Dict[str, Callable[..., Any]] = {
+    EVENT_HANDLERS: dict[str, Callable[..., Any]] = {
         "Page.javascriptDialogOpening": _on_dialog_opening,
         "Page.javascriptDialogClosed": _on_dialog_closed,
         "Fetch.requestPaused": _on_fetch_paused,

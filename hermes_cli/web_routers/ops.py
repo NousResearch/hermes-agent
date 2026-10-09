@@ -50,7 +50,7 @@ load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
-def _spawn_action(argv: List[str], name: str, *, log_msg: str, prefix: str,
+def _spawn_action(argv: list[str], name: str, *, log_msg: str, prefix: str,
                   profile: Optional[str] = None) -> dict:
     """Spawn a ``hermes -p <profile> <argv>`` action; spawn failure -> 500.
 
@@ -133,7 +133,7 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
 
 
-def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -208,8 +208,14 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
             status_code=400, detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
         )
 
+    def _snapshot():
+        subscriptions = wh._load_subscriptions()
+        return subscriptions.get(name, wh._MISSING_SUBSCRIPTION)
+
+    expected = await config_scoped_to_thread(profile, _snapshot)
+
     secret = body.secret or secrets.token_urlsafe(32)
-    route: Dict[str, Any] = {
+    route: dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
         "events": [e.strip() for e in body.events if e.strip()],
         "secret": secret,
@@ -226,26 +232,23 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
     def _save():
-        subs = wh._load_subscriptions()
-        subs[name] = route
-        wh._save_subscriptions(subs)
-        return _webhook_route_summary(name, route, wh._get_webhook_base_url())
+        try:
+            published = wh._replace_subscription(name, route, expected)
+        except wh.SubscriptionMutationConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _webhook_route_summary(name, published, wh._get_webhook_base_url())
 
     summary = await config_scoped_to_thread(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create
     return summary
 
 
-def _webhook_subs_with(name: str):
-    """(module, subscriptions, key) for an existing route; 404 otherwise. Call inside the
-    request's profile scope — ``_load_subscriptions`` resolves the home at call time."""
-    import hermes_cli.webhook as wh
-
+def _webhook_key_in(subscriptions: dict[str, dict], name: str) -> str:
+    """Normalized key for an existing route in a lock-held subscription snapshot."""
     key = (name or "").strip().lower()
-    subs = wh._load_subscriptions()
-    if key not in subs:
+    if key not in subscriptions:
         raise HTTPException(status_code=404, detail=f"No subscription named '{key}'")
-    return wh, subs, key
+    return key
 
 
 @router.delete("/api/webhooks/{name}")
@@ -253,9 +256,12 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
 
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        del subs[key]
-        wh._save_subscriptions(subs)
+        import hermes_cli.webhook as wh
+
+        def remove(subscriptions):
+            del subscriptions[_webhook_key_in(subscriptions, name)]
+
+        wh._mutate_subscriptions(remove)
 
     await config_scoped_to_thread(profile, _run)
     return {"ok": True}
@@ -266,10 +272,14 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
     def _run():
-        wh, subs, key = _webhook_subs_with(name)
-        subs[key]["enabled"] = bool(body.enabled)
-        wh._save_subscriptions(subs)
-        return key
+        import hermes_cli.webhook as wh
+
+        def toggle(subscriptions):
+            key = _webhook_key_in(subscriptions, name)
+            subscriptions[key]["enabled"] = bool(body.enabled)
+            return key
+
+        return wh._mutate_subscriptions(toggle)
 
     key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
@@ -313,7 +323,7 @@ async def stop_gateway(profile: Optional[str] = None):
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 
 
-def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
+def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
     """Redacted view of one PooledCredential; ``index`` is 1-based to match
     CredentialPool.remove_index()."""
     token = entry.access_token or ""
@@ -447,8 +457,8 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
         if removed is None:
             raise HTTPException(status_code=404, detail="No pool entry at that index")
 
-        cleaned: List[str] = []
-        hints: List[str] = []
+        cleaned: list[str] = []
+        hints: list[str] = []
         step = find_removal_step(provider, removed.source or "")
         if step is not None:
             try:
@@ -733,7 +743,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
             entries = hooks_cfg.get(event)
             if not isinstance(entries, list):
                 entries = hooks_cfg[event] = []
-            new_entry: Dict[str, Any] = {"command": command}
+            new_entry: dict[str, Any] = {"command": command}
             if body.matcher:
                 new_entry["matcher"] = body.matcher
             if body.timeout is not None:

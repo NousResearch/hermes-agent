@@ -23,6 +23,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from cron.constants import is_recurring
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger("cron.scheduler")
@@ -64,16 +65,12 @@ def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
     return _is_transient_provider_resolve_error(exc)
 
 
-def _is_recurring(job: Dict[str, Any]) -> bool:
-    return job.get("schedule", {}).get("kind") in {"cron", "interval"}
-
-
-def _ladder_applies(job: Dict[str, Any]) -> bool:
+def _ladder_applies(job: dict[str, Any]) -> bool:
     """The ladder's applicability gate: recurring, not paused, and enabled in config."""
-    return _is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+    return is_recurring(job) and job.get("state") != "paused" and retry_enabled()
 
 
-def _ladder_instant(job: Dict[str, Any], natural_next: Optional[datetime],
+def _ladder_instant(job: dict[str, Any], natural_next: Optional[datetime],
                     now: datetime) -> Optional[datetime]:
     """The ladder instant ``plan_retry`` parks for this flagged failure, or None when it
     parks nothing: not recurring, paused, disabled, ladder exhausted, or the schedule's
@@ -91,12 +88,13 @@ def _ladder_instant(job: Dict[str, Any], natural_next: Optional[datetime],
     return retry_dt
 
 
-def will_retry(job: Dict[str, Any]) -> bool:
+def will_retry(job: dict[str, Any]) -> bool:
     """True iff ``plan_retry`` will park a re-run for this flagged failure, so the scheduler
     may hold the interim notice. Called before ``mark_job_run``."""
     repeat = job.get("repeat") or {}
     times = repeat.get("times")
-    if times is not None and times > 0 and int(repeat.get("completed") or 0) + 1 >= times:
+    counted = 0 if is_retry_run(job) else 1  # a ladder re-run does not count (``ladder_rung``)
+    if times is not None and times > 0 and int(repeat.get("completed") or 0) + counted >= times:
         return False  # _advance_after_run completes the job; plan_retry never runs
     from cron.jobs import _parse_aware, compute_next_run
 
@@ -109,12 +107,12 @@ def will_retry(job: Dict[str, Any]) -> bool:
     return _ladder_instant(job, natural_next, now) is not None
 
 
-def clear_state(job: Dict[str, Any]) -> None:
+def clear_state(job: dict[str, Any]) -> None:
     """A run reached the model (any outcome): the ladder resets."""
     job.pop(STATE_KEY, None)
 
 
-def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
+def is_retry_fire(job: dict[str, Any], next_run: str) -> bool:
     """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice).
 
     The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
@@ -124,7 +122,17 @@ def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
     return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
 
 
-def plan_retry(job: Dict[str, Any]) -> bool:
+def is_retry_run(job: dict[str, Any]) -> bool:
+    """True when this dispatch snapshot fired the ladder instant parked by ``plan_retry``: a
+    re-run of an occurrence that already counted toward ``repeat``, so it must not count again.
+    Manual runs carry no ``_scheduled_instant`` and always count."""
+    from cron.occurrences import scheduled_instant
+
+    instant = job.get("_scheduled_instant")
+    return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
+
+
+def plan_retry(job: dict[str, Any]) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's
     natural ``next_run_at`` for a failed, flagged run. Pulls ``next_run_at`` earlier to
     the ladder instant when that is sooner than the natural occurrence; exhausted or

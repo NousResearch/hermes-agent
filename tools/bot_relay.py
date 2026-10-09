@@ -586,11 +586,23 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
     profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
     profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
     ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
-    caller knows it (relay RPC, roster); otherwise the active override."""
+    caller knows it (relay RPC, roster); otherwise the active override, and under multiplex the launch
+    home."""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     from tools.environments.local import served_profile_child_env
 
-    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
+    # ``_profile_home`` answers None for the launch profile by design and a relay RPC binds no scope,
+    # so under multiplex an empty target means the launch profile, not "unknown" (the fail-closed
+    # raise; cf. the slash-worker spawn, #115427). An explicit target beats an override or bound scope
+    # inside ``served_profile_child_env``, so fill it only when both are absent; a single-profile host
+    # keeps its pass-through env.
+    target_home = profile_home
+    if (not target_home and is_multiplex_active() and not get_hermes_home_override()
+            and current_secret_scope() is None):
+        target_home = get_routing_process_hermes_home()
+    env = served_profile_child_env(base=os.environ, target_home=target_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
     for name in _delivery_child_session_env_names():
         env.pop(name, None)
@@ -625,7 +637,7 @@ class TurnBusyError(RuntimeError):
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
+                         f"queued behind it for ~{round(waited_seconds)}s without it finishing. "
                          "The message was NOT delivered; retry shortly.")
 
 

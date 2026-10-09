@@ -34,7 +34,7 @@ def test_entry_stores_only_changed_paths_and_rollback_still_restores(ledger_home
     after = _manifest(skills, "big", **{"SKILL.md": "v2", "references/a.md": "same", "references/new.md": "added"})
     entry_id = skill_ledger.append_entry("patch", "big", before=before, after=after, actor="agent")
     entry = skill_ledger.get_entry(entry_id)
-    names = lambda items: {Path(i["path"]).name for i in items}  # noqa: E731
+    names = lambda items: {Path(i["path"]).name for i in items}
     assert names(entry["before"]) == {"SKILL.md", "gone.md"}
     assert names(entry["after"]) == {"SKILL.md", "new.md"}
 

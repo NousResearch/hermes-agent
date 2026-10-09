@@ -1,0 +1,34 @@
+name: fish-audio
+title: Fish Audio
+repo: https://github.com/100yenadmin/fish-audio-hermes
+sha: 6f2497e76702c5200c67d630878e663438ee0464
+description: "The official Fish Audio plugin, maintained by Electric Sheep: expressive text-to-speech in 80+ languages, speech-to-text, Fish Audio's community voice library, voice cloning and voice design, with a Voices page in Hermes Desktop. Fish Audio becomes a Hermes speech and transcription provider for voice replies, read-aloud, voice notes and Desktop dictation, with sentence-by-sentence streaming in CLI voice mode and Desktop. Adds the fish_speak, fish_voices and fish_transcribe tools, /fish and hermes fish commands, and three skills. Disclosure — sends your Fish API key and the text, audio (with file names) and voice titles, tags, descriptions, cover images and design instructions you ask it to process to api.fish.audio, or to the base_url you configure, and reads your Fish wallet for balances and model choice; synthesis, transcription, cloning and voice design are paid requests billed to your Fish account, except the free s2.1-pro-free model, whose requests Fish may use to improve its models. The key comes from the profile's secret scope (Hermes stores it in the profile .env; a single-profile install may also read FISH_API_KEY from the environment). Generated audio and subtitles are written to Hermes's audio cache; clone samples and recordings it uploads must be regular audio files, and Hermes config, secret and credential paths are refused. Cloning and deleting voices from chat or the model tools go through Hermes's approval gate and follow your approval settings. The Desktop Voices page adds gateway routes under /api/plugins/fish-audio/, behind the Hermes dashboard's existing authentication. On that page, previews, clones and voice designs are billed; cloning a voice or saving a designed one creates a voice in your Fish account; cloning and deleting are confirmed on the page (a speaker-consent box, a typed voice name) instead of through Hermes's approval gate; and Use sets the profile's Fish voice, and its speech provider when none is set. Preview and design audio files are deleted from the gateway once returned; a design's audio is held in gateway memory so you can save it, until it is saved, a later design or save finds it over an hour old, or the gateway stops; clone uploads are deleted after the clone, or by the next upload once idle for 15 minutes. With a key set, Desktop reads your Fish wallet when an agent is selected and about every five minutes, for the status-bar credit; favourites stay in Desktop's plugin storage on that computer, and fetched previews stay in the window's memory until it closes. No telemetry."
+maintainer: 100yenadmin
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/100yenadmin/fish-audio-hermes#readme
+version: "1.3.1"
+image: https://raw.githubusercontent.com/100yenadmin/fish-audio-hermes/6f2497e76702c5200c67d630878e663438ee0464/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/fish-audio-hermes/6f2497e76702c5200c67d630878e663438ee0464/docs/media/screenshot-desktop-library.png
+  - https://raw.githubusercontent.com/100yenadmin/fish-audio-hermes/6f2497e76702c5200c67d630878e663438ee0464/docs/media/screenshot-desktop-create.png
+  - https://raw.githubusercontent.com/100yenadmin/fish-audio-hermes/6f2497e76702c5200c67d630878e663438ee0464/docs/media/screenshot-desktop-account.png
+  - https://raw.githubusercontent.com/100yenadmin/fish-audio-hermes/6f2497e76702c5200c67d630878e663438ee0464/docs/media/screenshot-setup.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Hermes's text normaliser alters <|speaker:N|> markup on the plain text_to_speech path; use fish_speak for multi-speaker speech (NousResearch/hermes-agent#133131)."
+  - "Streaming voice needs a Hermes build with the plugin streaming hook (#133723); older builds, including 0.21.5, use whole-file synthesis (sentence by sentence in CLI voice mode, the whole reply in Desktop read-aloud and gateway voice)."
+  - "Under plugins.isolation: host the hermes fish terminal command is unavailable and voice replies use whole-file speech instead of streaming; /fish, the tools and both providers still work."
+capabilities:
+  provides_tools:
+    - fish_speak
+    - fish_voices
+    - fish_transcribe
+  provides_hooks:
+    - transform_llm_output
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - FISH_API_KEY

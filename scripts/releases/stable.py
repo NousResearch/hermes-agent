@@ -562,8 +562,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
 
 def emit(values: dict, env: dict) -> None:
     with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
-        for key, value in values.items():
-            file.write(f"{key}={value if isinstance(value, str) else json.dumps(value, separators=(',', ':'))}\n")
+        file.writelines(f"{key}={value if isinstance(value, str) else json.dumps(value, separators=(',', ':'))}\n" for key, value in values.items())
 
 
 def read_candidate(env: dict) -> dict:
@@ -672,7 +671,7 @@ def transitions(env: dict) -> None:
     receipt = env.get("RECEIPT", "")
     if receipt not in RECEIPT_TARGETS:
         raise ValueError(f"Unknown receipt: {receipt}")
-    tag, commit, claim = stable_context(env)
+    _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     previous = _published_baseline(env, base)

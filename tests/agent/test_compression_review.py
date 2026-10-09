@@ -297,7 +297,7 @@ class TestF6ExecutorSaturation:
                 session_id = "SATURATED_SESSION"
                 _compression_attempt_id = "sat-attempt"
 
-                class context_compressor:  # noqa: D106 — minimal stub
+                class context_compressor:
                     _last_compression_telemetry = None
                     _last_summary_fallback_used = False
                     _last_aux_model_failure_model = None
@@ -445,7 +445,7 @@ class TestS3IdleChargedFromLastProgress:
 
         t0 = time.monotonic()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
+            _msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",

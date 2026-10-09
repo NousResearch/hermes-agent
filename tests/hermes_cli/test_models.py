@@ -750,23 +750,23 @@ class TestLocalOllamaModelDiscovery:
         assert first != second
 
     def test_clear_provider_models_cache_clears_ollama_native_tags_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
-        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache = models._OLLAMA_LOCAL_MODELS_CACHE
         cache["http://127.0.0.1:11434"] = ("old-model",)
         models.clear_provider_models_cache("ollama")
         assert cache == {}
 
     def test_clear_provider_models_cache_custom_clears_native_tags_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
-        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache = models._OLLAMA_LOCAL_MODELS_CACHE
         cache["http://127.0.0.1:11434"] = ("old-model",)
         models.clear_provider_models_cache("custom")
         assert cache == {}
 
     def test_clear_provider_models_cache_does_not_remove_custom_disk_cache(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         disk_cache = {
             "custom": {"models": ["custom-model"]},
@@ -1268,7 +1268,7 @@ class TestLocalOllamaModelDiscovery:
         assert _root_for_ollama_native_api("http://ollama.example/api/tags") == "http://ollama.example"
 
     def test_ollama_failed_probe_is_cached_briefly(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         models._OLLAMA_LOCAL_MODELS_CACHE.clear()
         models._OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
@@ -1281,7 +1281,7 @@ class TestLocalOllamaModelDiscovery:
         request.assert_called_once()
 
     def test_empty_ollama_catalog_does_not_resurrect_stale_disk_models(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1301,7 +1301,7 @@ class TestLocalOllamaModelDiscovery:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
     def test_failed_ollama_catalog_preserves_stale_disk_models(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         base_url = "http://127.0.0.1:11434"
         probe_key = models._ollama_probe_cache_key(base_url, None)
@@ -1321,7 +1321,7 @@ class TestLocalOllamaModelDiscovery:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
     def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         response = MagicMock()
         response.read.return_value = b'{"models": [{"name": "qwen3:1.7b"}]}'
@@ -1364,7 +1364,7 @@ class TestLocalOllamaModelDiscovery:
 
 
     def test_switch_model_direct_ollama_alias_preserves_matching_origin_api_key(self):
-        import hermes_cli.model_switch as model_switch
+        from hermes_cli import model_switch
 
         base_url = "https://ollama.internal/v1"
         original_aliases = dict(model_switch.DIRECT_ALIASES)
@@ -1398,7 +1398,7 @@ class TestLocalOllamaModelDiscovery:
         assert result.api_key == "secret", result
 
     def test_switch_model_direct_ollama_alias_clears_different_origin_api_key(self):
-        import hermes_cli.model_switch as model_switch
+        from hermes_cli import model_switch
 
         original_aliases = dict(model_switch.DIRECT_ALIASES)
         model_switch.DIRECT_ALIASES.clear()

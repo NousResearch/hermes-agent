@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 
 import sys
-import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
+import tools.terminal_tool
 _tt_mod = sys.modules["tools.terminal_tool"]
 from tools.terminal_tool import _parse_env_var
 

@@ -49,6 +49,9 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
 _LIVE_WAIT_SECONDS = 300
+# A live owner may run a turn past one wait window, but each waiting runner holds ~46 MB and the
+# sender's notify slot: past this the runner reports pending (do not resend) and exits.
+_LIVE_WAIT_MAX_SECONDS = 30 * 60
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -518,9 +521,38 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
-    from tools.bot_live_delivery import await_delivery
+    from tools.bot_failure_reasons import RUNTIME_OFFLINE
+    from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
-    record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+    deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
+    missed = 0
+    while True:
+        record = await_delivery(home, delivery_id, max(0.0, min(_LIVE_WAIT_SECONDS, deadline - time.monotonic())))
+        if record is None or record["status"] not in ("queued", "claimed") or time.monotonic() >= deadline:
+            break
+        try:
+            held = owner_holds_delivery(home, record)
+        except Exception:
+            logger.debug("Could not check live DM owner", exc_info=True)
+            held = None
+        if held:
+            missed = 0
+            continue
+        if held is False and record["status"] == "queued":
+            # Under the same mailbox lock as claim, either cancellation wins or
+            # the claim wins and we must keep waiting for its outcome.
+            record = cancel_queued_delivery(
+                home, delivery_id, error="Live Bot Chat owner is no longer available",
+                reason=RUNTIME_OFFLINE)
+            if record is None or record["status"] != "claimed":
+                break
+            missed = 0
+            continue
+        # A vanished consumer may leave a permanent claim, and an owner we cannot look up
+        # may be gone: allow one more window for an in-flight turn, then release the runner.
+        missed += 1
+        if missed > 1:
+            break
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
@@ -859,7 +891,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:
         try:
-            import hermes_bootstrap  # noqa: F401
+            import hermes_bootstrap
         except (Exception, SystemExit) as exc:
             # A pinned live intent means the sender may already have admitted this DM and was
             # told not to resend; a bare repair hint would read as "NOT delivered". Without an

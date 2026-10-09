@@ -25,7 +25,10 @@ from tools.browser_camofox import (
 
 class TestCamofoxMode:
     def test_disabled_by_default(self, monkeypatch):
-        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        # every lane that can auto-activate the gateway mode must be cleared —
+        # SEKRETO_URL/BROWSER_MCP_URL also resolve via _backend_url() on this branch
+        for var in ("CAMOFOX_URL", "SEKRETO_URL", "BROWSER_MCP_URL"):
+            monkeypatch.delenv(var, raising=False)
         assert is_camofox_mode() is False
 
 

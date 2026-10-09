@@ -359,6 +359,12 @@ def _register_child(
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
     _raw_depth = getattr(child, "_delegate_depth", 1)
+    # Owner's profile home for read-only same-profile visibility in action='list' (#135864).
+    # Resolved from parent-owned state, NOT ambient get_hermes_dir(): this runs on the child
+    # worker thread, past the raw threading.Thread boundary that drops the session's
+    # HERMES_HOME override ContextVar (#91996).
+    from tools.delegate_tool import _parent_live_home
+    _owner_home = _parent_live_home(parent_agent)
     _register_subagent({
         "subagent_id": _subagent_id,
         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
@@ -378,6 +384,7 @@ def _register_child(
         "owner_session_id": owner_session_id,
         "owner_transport": owner_transport,
         "owner_session_record": owner_session_record,
+        "owner_home": str(_owner_home) if _owner_home else None,
     })
     return _subagent_id
 

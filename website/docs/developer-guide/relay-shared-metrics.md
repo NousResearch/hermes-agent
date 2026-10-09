@@ -175,7 +175,8 @@ their compaction rewrites only their own transcript.
 
 `data` is flat so OpenTelemetry flattens every field into
 `nemo_relay.mark.data.<key>`. Every v1 key is present on every mark; a value
-that does not apply is `null`. Categorical fields come from these closed sets:
+that does not apply is `null`. Categorical fields come from these closed sets,
+except the two summarizer identifiers:
 
 | Field | v1 values |
 |---|---|
@@ -189,8 +190,9 @@ that does not apply is `null`. Categorical fields come from these closed sets:
 | `split_status` | `not_applicable`, `in_place_committed`, `rotated_committed`, `failed_not_indexed`, `aborted`, or `null` |
 | `token_count_method` | `estimate_rough`, or `null` |
 | `overflow_reason` | `context_overflow`, `payload_too_large`, `long_context_tier` (the error classifier's reason for the provider rejection a `trigger: overflow` attempt recovers from), or `null` for every other trigger |
+| `summarizer_provider`, `summarizer_model` | Free-form, not a closed set: the provider and model identifiers Hermes resolved for the summary call, or `null` when the attempt recorded none. A micro-compaction mark carries only `summarizer_model`, the configured summary model |
 
-A value outside its set reads `other`. `failure_class` uses the
+A value outside a closed set reads `other`. `failure_class` uses the
 `hermes.compression.count` classes plus the attempt-only classes (guard exits
 such as `blocked:cooldown`, Codex route exits such as `codex_auto_native`, the
 lease exits `session_ownership_lost`, `session_ownership_unreadable` and

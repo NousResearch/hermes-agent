@@ -148,9 +148,9 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
                 entries.append(f"`{cmd}` — {desc}")
         # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
         from agent.skill_commands import skill_command_collision_note
-        from tools.skills_tool import _find_all_skills
+        from tools.skills_tool import find_all_skills
         entries.extend(f"⚠ {note}" for note in filter(None, map(
-            skill_command_collision_note, sorted(s["name"] for s in _find_all_skills()))))
+            skill_command_collision_note, sorted(s["name"] for s in find_all_skills()))))
     except Exception:
         pass
 

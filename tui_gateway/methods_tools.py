@@ -496,7 +496,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
-    names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
+    names = sorted(s["name"] for s in _tools_mod("tools.skills_tool").find_all_skills())
     return "; ".join(filter(None, map(sc.skill_command_collision_note, names)))
 
 

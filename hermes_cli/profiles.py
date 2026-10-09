@@ -1254,7 +1254,7 @@ def _junction_target(path: str) -> Optional[str]:
 def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:
     """``shutil.copytree(symlinks=True)`` that re-creates NTFS junctions as junctions instead of
     traversing them. A ``skills/foo`` junction into a ``skills.external_dirs`` root copied as a
-    physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
+    physical tree is a second same-named candidate and ``locate_skill`` refuses to guess (#113471).
     A junction whose target is gone is skipped with a warning, never a crash."""
     junctions: dict[str, str] = {}
 

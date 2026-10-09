@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
-from tools.skill_usage import _read_skill_name
+from tools.skill_usage import _read_skill_name, read_skill_name  # noqa: F401 (private spelling re-exported)
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
@@ -105,7 +105,7 @@ def _build_external_skill_index() -> set[str]:
     external_names: set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
-            external_names.update({skill_md.parent.name, _read_skill_name(skill_md, "")})
+            external_names.update({skill_md.parent.name, read_skill_name(skill_md, "")})
     external_names.discard("")
     return external_names
 
@@ -174,7 +174,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
     if not bundled_dir.exists():
         return []
     return [
-        (_read_skill_name(md, md.parent.name), md.parent)
+        (read_skill_name(md, md.parent.name), md.parent)
         for md in bundled_dir.rglob("SKILL.md")
         if not is_excluded_skill_path(md.relative_to(bundled_dir), root=bundled_dir)]
 
@@ -184,7 +184,7 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return _skills_dir() / skill_dir.relative_to(bundled_dir)
 
 
-def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
+def dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
     """MD5 of package paths/content, excluding generated runtime state.
 
     The legacy option is only for proving an exact pre-filter origin match.
@@ -199,6 +199,9 @@ def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
     return hasher.hexdigest()
 
 
+_dir_hash = dir_hash  # original private spelling, kept as an alias
+
+
 def _matches_origin_hash(directory: Path, origin_hash: str, user_hash: Optional[str] = None) -> bool:
     """Prove unchanged package ownership against a clean OR exact legacy hash.
 
@@ -208,8 +211,8 @@ def _matches_origin_hash(directory: Path, origin_hash: str, user_hash: Optional[
     """
     if not origin_hash:
         return False
-    current = _dir_hash(directory) if user_hash is None else user_hash
-    return current == origin_hash or _dir_hash(directory, include_runtime_cache=True) == origin_hash
+    current = dir_hash(directory) if user_hash is None else user_hash
+    return current == origin_hash or dir_hash(directory, include_runtime_cache=True) == origin_hash
 
 
 def _move_dir(src: Path, dest: Path) -> None:
@@ -232,7 +235,7 @@ def _recover_renamed_skill(st: _SyncState, skill_name: str, dest: Path) -> Optio
     if st.active_index is None:  # by frontmatter name
         st.active_index = {}
         for md in _iter_active_skill_mds():
-            st.active_index.setdefault(_read_skill_name(md, md.parent.name), []).append(md.parent)
+            st.active_index.setdefault(read_skill_name(md, md.parent.name), []).append(md.parent)
         st.hub_paths = _read_hub_install_paths()
     for candidate in st.active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():
@@ -299,7 +302,7 @@ def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    if dest.exists() and dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
         st.manifest.pop(skill_name, None)
@@ -312,7 +315,7 @@ def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: P
             # Never overwrite a same-named user skill. Baseline the manifest only when
             # byte-identical: a differing copy's bundled_hash reads as "user-modified" forever.
             st.skipped += 1
-            if _dir_hash(dest) == bundled_hash:
+            if dir_hash(dest) == bundled_hash:
                 st.manifest[skill_name] = bundled_hash
             else:
                 st.say(
@@ -359,7 +362,7 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     if origin_hash and bundled_hash == origin_hash:  # bundled unchanged: skip without hashing the user copy
         st.skipped += 1
         return
-    user_hash = _dir_hash(dest)
+    user_hash = dir_hash(dest)
     if not origin_hash:  # v1 migration: baseline from user's copy (can't tell edit from upstream)
         st.manifest[skill_name] = user_hash
         st.skipped += 1
@@ -418,7 +421,7 @@ def sync_skills(quiet: bool = False) -> dict:
             st.suppressed.append(skill_name)
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)
-        bundled_hash = _dir_hash(skill_src)
+        bundled_hash = dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
         _recover_orphan_backup(dest)
         if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
@@ -439,7 +442,7 @@ def sync_skills(quiet: bool = False) -> dict:
     present = set()
     if removed:  # curator archive is flat: directory name == skill name
         archive = _skills_dir() / ".archive"
-        present = {_read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
+        present = {read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
             {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
     cleaned = [name for name in removed if name not in present]
     for name in cleaned:

@@ -89,7 +89,7 @@ def ensure_bundled_skill(name: str) -> dict:
             f"shadows it. To get the built-in back: `hermes skills uninstall {name}`, then "
             f"`hermes skills install {name}`.")}
     active = next((md.parent for md in ss._iter_active_skill_mds()
-                   if ss._read_skill_name(md, md.parent.name) == name), None)
+                   if ss.read_skill_name(md, md.parent.name) == name), None)
     if active is not None or name in ss._build_external_skill_index():
         return {"ok": True, "action": "present", "path": active, "message": ""}
     try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
@@ -100,7 +100,7 @@ def ensure_bundled_skill(name: str) -> dict:
     except (OSError, ValueError) as e:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}
-    manifest[name] = ss._dir_hash(src)
+    manifest[name] = ss.dir_hash(src)
     ss._write_manifest(manifest)
     skill_usage._toggle_suppressed_name(name, add=False)  # lift a curator prune the way restore_skill does
     skill_usage.set_state(name, skill_usage.STATE_ACTIVE)

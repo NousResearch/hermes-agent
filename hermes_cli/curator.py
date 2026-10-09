@@ -445,7 +445,7 @@ def _cmd_purge(args) -> int:
         # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
         # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
         # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
-        rec = usage.get(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
+        rec = usage.get(skill_usage.read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
         archived = rec.get("state") == skill_usage.STATE_ARCHIVED
         at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if archived else None
         return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime

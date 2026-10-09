@@ -30,6 +30,7 @@ import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { RepoScanSettingsTranslations } from './types_repo_scan'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
@@ -599,7 +600,7 @@ export interface Translations extends NoticeTranslations {
     noResults: string
   }
 
-  settings: {
+  settings: RepoScanSettingsTranslations & {
     subpages: Record<string, string>
     closeSettings: string
     exportConfig: string
@@ -923,20 +924,6 @@ export interface Translations extends NoticeTranslations {
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
-    repoScan: {
-      title: string
-      hint: string
-      scanNow: string
-      scanning: string
-      found: (count: number) => string
-      foundOne: string
-      disabled: string
-      noRoots: string
-      noBridge: string
-      rejected: string
-      failed: string
-      failedWith: (detail: string) => string
-    }
     poolLimits: {
       warmBotBackendsAria: string
       warmBotBackendsTitle: string

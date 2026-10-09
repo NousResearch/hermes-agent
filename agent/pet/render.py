@@ -57,6 +57,37 @@ def supports_kitty_placeholders() -> bool:
     return detect_terminal_graphics() == "kitty" and not _is_wezterm()
 
 
+def supports_kitty_animation() -> bool:
+    """True when the terminal consuming the stream implements the kitty animation sub-protocol (``a=f`` frame data, ``a=a`` control).
+
+    Known matrix: kitty (0.20+) and herdr panes play animations; Ghostty (through 1.3.x)
+    and WezTerm do not implement frame data and silently ignore it, freezing the image on
+    its base frame. When in doubt this returns False and callers keep the per-frame
+    re-transmit path, which needs only transmit+placement.
+    """
+    term = os.environ.get("TERM", "").lower()
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if term_program == "vscode" or _is_wezterm():
+        return False
+    # herdr before the Ghostty check: its panes inherit GHOSTTY_RESOURCES_DIR but parse
+    # the kitty stream with their own (animation-capable) graphics implementation.
+    if term_program == "herdr":
+        return True
+    if term_program == "ghostty" or "ghostty" in term or os.environ.get("GHOSTTY_RESOURCES_DIR"):
+        return False
+    return bool(os.environ.get("KITTY_WINDOW_ID") or "kitty" in term)
+
+
+def resolve_kitty_animation(configured: str | None) -> bool:
+    """Effective animation usage from ``display.pet.kitty_animation``: ``on``/``off`` force, ``auto`` (default) probes the terminal."""
+    mode = (configured or "auto").strip().lower()
+    if mode in ("on", "true", "1", "yes"):
+        return True
+    if mode in ("off", "false", "0", "no"):
+        return False
+    return supports_kitty_animation()
+
+
 def resolve_mode(configured: str | None, *, stream=None) -> str:
     """Effective render mode from ``display.pet.render_mode`` + env; ``off`` when not a TTY."""
     mode = (configured or "auto").strip().lower()
@@ -317,28 +348,38 @@ class PetRenderer:
         frames = self._frames(state)
         return _downscale_cells(frames[index % len(frames)], target_cols=cols or self.unicode_cols) if frames else []
 
-    def kitty_payload(self, state: PetState | str, *, image_id: int) -> dict | None:
+    def kitty_payload(self, state: PetState | str, *, image_id: int, animate: bool = True) -> dict | None:
         """kitty placeholder payload ``{cols, rows, placeholder, upload, frames}``; ``None`` if no frames.
 
-        ``upload`` is the ONE-TIME escape stream for this state — the base frame as the
-        virtual placement plus the remaining frames as ``a=f`` animation data — and
-        ``frames`` holds one tiny ``a=a,c=N`` switch per animation frame. Animation works
-        by switching frames, never by re-transmitting pixel data: re-sending data for a
-        displayed image id blanks the placement until the upload completes (visible
-        flicker in multiplexers, herdr/herdr#3676), while a frame switch is pure control
-        data the terminal applies without touching the placement.
+        Callers send ``upload`` ONCE (first sight of a state) and then one ``frames[index]``
+        escape per tick. Two shapes, selected by ``animate`` (from
+        :func:`resolve_kitty_animation`):
+
+        - ``animate=True``: ``upload`` is the frame set — base frame as the virtual
+          placement plus ``a=f`` animation frames — and each frame is a tiny ``a=a,c=N``
+          switch. Animation works by switching frames, never by re-transmitting pixel
+          data: re-sending data for a displayed image id blanks the placement until the
+          upload completes (visible flicker in multiplexers, herdr/herdr#3676).
+        - ``animate=False`` (terminals without frame support, e.g. Ghostty/WezTerm):
+          ``upload`` is empty and each frame re-transmits its pixels on the same id
+          (``a=T,U=1``) — the pre-animation behaviour, steady where image replacement
+          is atomic and the only option where ``a=f``/``a=a`` would freeze on frame 1.
         """
         if not (frames := self._frames(state)):
             return None
         frames = _fit_frames_to_cell_grid(frames)
         cols, rows = _cell_box(frames[0])
-        gap = max(1, int(LOOP_MS / max(1, len(frames))))
-        upload = _encode_kitty_virtual(frames[0], image_id=image_id, cols=cols, rows=rows) + "".join(
-            _kitty_apc(f"a=f,i={image_id},f=100,z={gap},q=2", _png_b64(f)) for f in frames[1:]
-        )
-        switches = [_encode_kitty_frame_switch(image_id=image_id, frame=i + 1) for i in range(len(frames))]
+        if animate:
+            gap = max(1, int(LOOP_MS / max(1, len(frames))))
+            upload = _encode_kitty_virtual(frames[0], image_id=image_id, cols=cols, rows=rows) + "".join(
+                _kitty_apc(f"a=f,i={image_id},f=100,z={gap},q=2", _png_b64(f)) for f in frames[1:]
+            )
+            ticks = [_encode_kitty_frame_switch(image_id=image_id, frame=i + 1) for i in range(len(frames))]
+        else:
+            upload = ""
+            ticks = [_encode_kitty_virtual(f, image_id=image_id, cols=cols, rows=rows) for f in frames]
         return {"cols": cols, "rows": rows, "placeholder": kitty_placeholder_rows(cols, rows),
-                "upload": upload, "frames": switches}
+                "upload": upload, "frames": ticks}
 
     def frame(self, state: PetState | str, index: int) -> str:
         """Encoded escape string for one frame (``index`` taken modulo the frame count), or ``""``."""

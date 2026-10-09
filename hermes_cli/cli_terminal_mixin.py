@@ -159,6 +159,10 @@ class CLITerminalMixin:
         # A viewport refill paints at once, before prompt_toolkit's next erase; after CSI 3J
         # the whole history goes through the usual print (the screen was cleared anyway).
         _replay_output_history(fit, None if fit is None else app.renderer.output)
+        # This path exists for terminal-side state loss we can't detect (mux reattach,
+        # external clears) — terminal-side kitty images die with it, so forget what was
+        # uploaded and let the next queue re-ship the current state's animation.
+        self._pet_kitty_uploaded = set()
         self._pet_queue_kitty_frame()
         self._app_invalidate(app, "force_full_redraw", swallow=True)
 

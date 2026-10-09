@@ -183,6 +183,28 @@ def test_pet_fragments_render_kitty_placeholders(boba_like):
     assert cli_obj._pet_kitty_pending == ""
 
 
+def test_pet_queue_ships_animation_once_then_switches(boba_like):
+    """The core of the flicker fix: a state's animation data rides on the FIRST queue
+    only; every later tick is a pure a=a frame switch with no pixel payload."""
+    cli_obj = _make_cli()
+    pet = store.load_pet("boba")
+    assert pet is not None
+    cli_obj._pet_renderer = PetRenderer(str(pet.spritesheet), mode="kitty", scale=0.4)
+    cli_obj._pet_slug = "boba"
+    cli_obj._pet_kitty_animate = True
+    cli_obj._pet_enabled = True
+
+    cli_obj._pet_queue_kitty_frame("idle")
+    first = cli_obj._pet_kitty_pending
+    assert "\x1b_Ga=f," in first  # frame data ships with the first tick
+
+    cli_obj._pet_queue_kitty_frame("idle")
+    second = cli_obj._pet_kitty_pending
+    assert second.startswith("\x1b_G")
+    assert "a=a" in second
+    assert "f=100" not in second and "\x1b_Ga=f," not in second  # switch only, no pixels
+
+
 def test_pet_off_clears_pending_kitty_frame(boba_like):
     from hermes_cli.config import load_config, save_config
 

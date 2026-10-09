@@ -677,6 +677,7 @@ class CLIStatusBarMixin:
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
             configured_mode = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            animate = pet_render.resolve_kitty_animation(pet_cfg.get("kitty_animation"))
             # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
             # while detect_terminal_graphics() still says kitty, hence the narrower gate.
             use_kitty = (
@@ -699,6 +700,7 @@ class CLIStatusBarMixin:
                     or self._pet_slug != pet.slug
                     or self._pet_cols != cols
                     or self._pet_scale != scale
+                    or getattr(self, "_pet_kitty_animate", None) != animate
                     or self._pet_renderer.mode != renderer_mode):
                     self._pet_renderer = pet_render.PetRenderer(
                         str(pet.spritesheet), mode=renderer_mode, scale=scale, unicode_cols=cols)
@@ -710,6 +712,7 @@ class CLIStatusBarMixin:
                     self._pet_kitty_pending = ""
                     self._pet_kitty_image_id = pet_render.kitty_image_id(pet.slug)
                     self._pet_kitty_uploaded = set()
+                    self._pet_kitty_animate = animate
                     self._pet_frame_idx = 0
                 self._pet_enabled = True
         except Exception:
@@ -797,7 +800,8 @@ class CLIStatusBarMixin:
         image_id = pet_render.kitty_image_id(f"{slug}:{state}")
         try:
             # PNG encoding outside _pet_lock: first visit of a state must not stall the prompt.
-            payload = renderer.kitty_payload(state, image_id=image_id)
+            payload = renderer.kitty_payload(state, image_id=image_id,
+                                            animate=getattr(self, "_pet_kitty_animate", True))
         except Exception:
             payload = None
         if payload is not None:

@@ -208,6 +208,19 @@ export function usePet(): PetRender {
     }
   }, [write])
 
+  // Terminal-side kitty images die on resets/reattaches we can't observe; clearing the
+  // uploaded marks makes the next tick re-ship the current state's animation.
+  useEffect(() => {
+    const stdout = process.stdout
+    const onResize = () => uploadedRef.current.clear()
+
+    stdout.on('resize', onResize)
+
+    return () => {
+      stdout.off('resize', onResize)
+    }
+  }, [])
+
   const disablePet = useCallback(() => {
     releaseKitty()
     slugRef.current = ''

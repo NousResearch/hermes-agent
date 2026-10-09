@@ -23,6 +23,9 @@ import threading
 logger = logging.getLogger(__name__)
 
 MAX_FRAME = 4 * 1024 * 1024
+# Toolsets a managed worker turn never offers (subtracted last, so the tool_search bridge and a
+# restored tools[] pin drop them too): delegate_task's child has no owner registration here.
+WORKER_DISABLED_TOOLSETS = ('delegation',)
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
                     'turn_author', 'safe_mode', 'ignore_user_config'}
 # The bounded run_conversation fields a turn receipt keeps (outcome, exit reason, tokens, cost,
@@ -313,6 +316,9 @@ def execute(frame, channel):
             agent = _construct_agent(frame, AIAgent, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
+                # A delegated child needs its own owner-registered execution, which this single-turn
+                # worker cannot reserve; never offer a tool whose only outcome here is a refusal.
+                disabled_toolsets=list(WORKER_DISABLED_TOOLSETS),
                 reasoning_config=policy.reasoning_config,
                 # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
                 platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,

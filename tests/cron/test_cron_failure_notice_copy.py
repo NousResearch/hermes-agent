@@ -76,3 +76,50 @@ def test_blocked_config_notice_says_it_did_not_run_and_will_self_heal():
         final_response="", output_file=None)
     assert blocked is True
     assert "provider credential missing: no key" in text
+
+
+def test_script_failure_keeps_its_cause(monkeypatch, tmp_path):
+    """A monitor script runs before the model; its HTTP errors are not model failures."""
+    _no_chain(monkeypatch)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "monitor.py").write_text(
+        'import sys\nprint("HTTP 401: deploy token revoked", file=sys.stderr)\nsys.exit(1)\n')
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {**JOB, "monitor_script": "monitor.py"}
+    early, _, _ = scheduler._apply_monitor_gate(job, JOB["id"], JOB["name"], None)
+    assert early is not None and early[0] is False
+    real_error = early[3]
+    for error in (
+        real_error,
+        "Script execution failed: HTTP 429: remote service rate limit",
+        "Script exited with code 1\nstderr:\nidle for 600s (limit 600s)",
+    ):
+        msg = _summarize_cron_failure_for_delivery(job, error)
+        assert error.splitlines()[-1] in msg, msg
+        assert "backup provider" not in msg.lower(), msg
+        assert "auth add" not in msg, msg
+        assert "--provider" not in msg, msg
+    provider = _summarize_cron_failure_for_delivery(
+        {**JOB, "script": "collect.py"}, "HTTP 401: Unauthorized")
+    assert "auth add" in provider, provider
+
+
+def test_cron_actions_target_the_owning_profile(monkeypatch, tmp_path):
+    """Copy-pasted recovery commands must act on this profile's job, not the root store."""
+    _no_chain(monkeypatch)
+    profile_home = tmp_path / ".hermes" / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    for error in ("HTTP 401: Unauthorized", "Request timed out.", "unknown failure",
+                  "Script timed out after 60s: collect.py", "idle for 600s (limit 600s)"):
+        msg = _summarize_cron_failure_for_delivery(JOB, error)
+        assert "hermes -p ops cron" in msg, msg
+        assert "`hermes cron " not in msg, msg
+    job = {**JOB, "failure_streak": 27, "schedule": {"kind": "interval"}}
+    from cron.scheduler_failure_copy import _failure_streak_nudge, blocked_config_notice
+
+    assert "hermes -p ops cron doctor" in blocked_config_notice(JOB["name"], "missing key")
+    nudge = _failure_streak_nudge(job)
+    assert "hermes -p ops cron pause ab12cd34" in nudge, nudge

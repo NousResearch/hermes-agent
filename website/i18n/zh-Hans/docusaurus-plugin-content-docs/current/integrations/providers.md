@@ -527,7 +527,7 @@ model:
   default: "step-5-preview"
 ```
 
-**升级说明.** 拆分前的 `stepfun` 配置会自动迁移（config 版本 46）到与其实际使用接口对应的 id；
+**升级说明.** 拆分前的 `stepfun` 配置会自动迁移到与其实际使用接口对应的 id；
 国内配置的 key 会从 `STEPFUN_API_KEY` 迁移到 `STEPFUN_CN_API_KEY`，以保证鉴权不中断。
 
 ### Hugging Face 推理提供商

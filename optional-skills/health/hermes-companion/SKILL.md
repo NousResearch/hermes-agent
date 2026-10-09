@@ -1,6 +1,6 @@
 ---
 name: hermes-companion
-description: Requires the Companion iPhone app for place and health.
+description: Companion iPhone app for place, health, and post inbox.
 version: 1.2.0
 author: danielmain
 license: MIT
@@ -22,7 +22,7 @@ metadata:
 
 # Hermes Companion
 
-Read the user's live place, motion, sleep, workout, and recovery. The script prints facts. How to answer is in Language.
+Read the user's live place, motion, sleep, workout, and recovery. Send and receive asynchronous letters in Hermes Post / Inbox. The script prints facts. How to answer is in Language.
 
 ## Requires the iPhone app
 
@@ -36,6 +36,8 @@ Until that app is installed, Location is set to Always, and iCloud has synced th
 - A reply depends on being still, walking, driving, at the gym, or in transit.
 - The user asks about sleep, a workout, steps, heart rate, recovery, or post-workout food.
 - A check-in would be wrong without knowing if they are mid-workout or still at a known place.
+- The user asks to check Hermes Post, their inbox, letters, or memos from their iPhone.
+- Replying to an asynchronous letter/memo or posting a message to the user's iPhone inbox.
 
 Do not use this skill for a generic map, a route, or weather. Do not invent a place or a health number when the script has no file.
 
@@ -136,6 +138,12 @@ This file is English because the model reads it. The user never sees it.
 5. Treat a fresh `recorded_at` as an accepted move. It does not say they arrived, left, or came back. Do not announce an arrival unless they said so.
 6. For health, use only lines present in this run. `age_seconds` is when that snapshot was saved. Steps and calories are from that time. Sleep is for the morning, or a short night mentioned in the evening. Do not recap last night's hours in the afternoon. A workout in progress gets one short line. A workout finished within about 90 minutes can include how it felt and protein or water as care. Recovery `fatigued` is the only case for urging rest.
 7. If `place_name` is from an Apple Maps placemark (category `apple_maps`) or is `Unlisted place`, you can refer to it naturally. You may ask the user if they'd like to remember it as a custom place (e.g., Home, Work, Gym).
+8. For Hermes Post / Inbox:
+   - Check pending letters awaiting agent attention: `companion.py --inbox --pending` (add `--profile <name>` to filter for the active profile).
+   - Read full thread chronology: `companion.py --thread <thread_id>`.
+   - Post an agent reply letter back to the user's inbox: `companion.py --reply <thread_id> --message "..."`.
+   - Compose a new letter from the agent: `companion.py --new-post --to-profile <name> --subject "..." --message "..."`.
+   - Style: Compose thoughtful, clear letters or memos matching the agent's persona.
 
 ## Place and Motion Rules
 
@@ -158,6 +166,7 @@ Field notes live in `references/files.md`. Load that file only when a raw key is
 - Ignore `battery_level`, `battery_state`, and `speed` if an older file still has them. Battery percentage and speed are omitted from data and are not part of this app or skill.
 - Two Macs on the same Apple ID share the container. Read the local file; do not fetch it from the network.
 - The iPhone app reverse-geocodes via Apple Maps (CLGeocoder) and saves `placemark_name`. User-saved places in `places.json` always take precedence. If neither is available, it reports `Unlisted place`.
+- Profiles: Running any companion command automatically registers or refreshes the active Hermes profile in `profiles.json` so the iPhone user can address letters to it.
 
 ## Verification
 

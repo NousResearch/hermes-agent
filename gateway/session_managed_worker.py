@@ -226,10 +226,9 @@ class ManagedWorker:
             raise RuntimeStoreError('worker_control_backpressure') from exc
 
     def _stop_budget(self, ack):
-        """Seconds left of the ``ack`` window that opened at the first Stop (zero before the
-        child can receive controls)."""
-        if self.stopped_at is None:
-            self.stopped_at = time.monotonic()
+        """Seconds left of the ``ack`` window that opened at the first Stop. Pure: only
+        ``control`` stamps ``stopped_at``, so a read before any Stop (the hello) never starts
+        the window a later Stop must receive in full."""
         return self.stopped_at + ack - time.monotonic()
 
     async def next_frame(self, timeout, ack):
@@ -252,9 +251,11 @@ class ManagedWorker:
                 await asyncio.wait({arrived, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
                 if not self._frames and not self.stop.is_set():
                     raise RuntimeStoreError('managed_worker_hello_timeout')
-            remaining = self._stop_budget(ack)
-            if not self._frames and remaining > 0:
-                await asyncio.wait({arrived}, timeout=remaining)
+            if not self._frames:
+                # Only a latched Stop gets here; its window runs from the first Stop.
+                remaining = self._stop_budget(ack)
+                if remaining > 0:
+                    await asyncio.wait({arrived}, timeout=remaining)
             if not self._frames:
                 raise RuntimeStoreError('managed_worker_stopped')
             return self._take()

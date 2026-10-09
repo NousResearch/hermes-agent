@@ -30,9 +30,25 @@ def _get_or_create_reentrant_manager(home_key: Path, thread_id: int):
     manager = plugins._plugin_managers_by_home.get(home_key)
     if manager is None:
         manager = plugins.PluginManager(scope_key=plugins.hermes_home_key(home_key))
+        manager._retired = True
         plugins._plugin_managers_by_home[home_key] = manager
     plugins._plugin_manager = manager
     plugins._plugin_manager_teardown_owners[home_key] = (thread_id, manager)
+    return manager
+
+
+def _manager_for_home(plugins, home_key: Path):
+    """Find a cached manager for *home_key*, including the legacy single-slot seam."""
+    manager = plugins._plugin_managers_by_home.get(home_key)
+    if manager is None and plugins._plugin_manager is not None:
+        manager_home = getattr(plugins._plugin_manager, "home_path", None)
+        if manager_home is not None:
+            try:
+                matches = Path(manager_home).expanduser().resolve() == home_key
+            except (OSError, RuntimeError):
+                matches = Path(manager_home).expanduser() == home_key
+            if matches:
+                manager = plugins._plugin_manager
     return manager
 
 
@@ -52,31 +68,53 @@ def reserve_plugin_manager_for_home(home: Path) -> Iterator[tuple[bool, Exceptio
         home_key = Path(home).expanduser()
 
     thread_id = threading.get_ident()
-    reentrant = False
     manager = None
-    with plugins._plugin_manager_teardown_condition:
-        while home_key in plugins._plugin_manager_teardown_owners:
-            owner, _manager = plugins._plugin_manager_teardown_owners[home_key]
-            if owner == thread_id:
-                reentrant = True
+    manager_lock = None
+    reentrant = False
+    while True:
+        with plugins._plugin_manager_teardown_condition:
+            while home_key in plugins._plugin_manager_teardown_owners:
+                owner, _manager = plugins._plugin_manager_teardown_owners[home_key]
+                if owner == thread_id:
+                    reentrant = True
+                    break
+                plugins._plugin_manager_teardown_condition.wait()
+            if reentrant:
                 break
-            plugins._plugin_manager_teardown_condition.wait()
-        if not reentrant:
-            manager = plugins._plugin_managers_by_home.get(home_key)
-            if manager is None and plugins._plugin_manager is not None:
-                manager_home = getattr(plugins._plugin_manager, "home_path", None)
-                if manager_home is not None:
-                    try:
-                        matches = Path(manager_home).expanduser().resolve() == home_key
-                    except (OSError, RuntimeError):
-                        matches = Path(manager_home).expanduser() == home_key
-                    if matches:
-                        manager = plugins._plugin_manager
-            plugins._plugin_manager_teardown_owners[home_key] = (thread_id, manager)
-            if plugins._plugin_managers_by_home.get(home_key) is manager:
-                plugins._plugin_managers_by_home.pop(home_key, None)
-            if plugins._plugin_manager is manager:
-                plugins._plugin_manager = None
+            manager = _manager_for_home(plugins, home_key)
+            if manager is None:
+                plugins._plugin_manager_teardown_owners[home_key] = (thread_id, None)
+                break
+
+        # Discovery takes manager-lock -> teardown-condition paths when plugin code re-enters
+        # manager lookup. Never publish the reservation while waiting for that lock.
+        manager_lock = getattr(manager, "_discovery_lock", None)
+        if manager_lock is not None:
+            manager_lock.acquire()
+        retry = False
+        with plugins._plugin_manager_teardown_condition:
+            if home_key in plugins._plugin_manager_teardown_owners:
+                owner, _manager = plugins._plugin_manager_teardown_owners[home_key]
+                reentrant = owner == thread_id
+                retry = True
+            elif _manager_for_home(plugins, home_key) is not manager:
+                retry = True
+            else:
+                manager._retired = True
+                plugins._plugin_manager_teardown_owners[home_key] = (thread_id, manager)
+                if plugins._plugin_managers_by_home.get(home_key) is manager:
+                    plugins._plugin_managers_by_home.pop(home_key, None)
+                if plugins._plugin_manager is manager:
+                    plugins._plugin_manager = None
+
+        if reentrant or retry:
+            if manager_lock is not None:
+                manager_lock.release()
+                manager_lock = None
+            if reentrant:
+                break
+            continue
+        break
 
     if reentrant:
         yield False, None
@@ -91,23 +129,30 @@ def reserve_plugin_manager_for_home(home: Path) -> Iterator[tuple[bool, Exceptio
                 teardown_error = exc
         yield manager is not None, teardown_error
     finally:
-        with plugins._plugin_manager_teardown_condition:
-            owner, pending = plugins._plugin_manager_teardown_owners.get(home_key, (None, None))
-            created = pending if owner == thread_id and pending is not manager else None
+        try:
+            with plugins._plugin_manager_teardown_condition:
+                owner, pending = plugins._plugin_manager_teardown_owners.get(home_key, (None, None))
+                created = pending if owner == thread_id and pending is not manager else None
+                if created is not None:
+                    created._retired = True
+                    if plugins._plugin_managers_by_home.get(home_key) is created:
+                        plugins._plugin_managers_by_home.pop(home_key, None)
+                    if plugins._plugin_manager is created:
+                        plugins._plugin_manager = None
             if created is not None:
-                if plugins._plugin_managers_by_home.get(home_key) is created:
-                    plugins._plugin_managers_by_home.pop(home_key, None)
-                if plugins._plugin_manager is created:
-                    plugins._plugin_manager = None
-        if created is not None:
-            try:
-                _dispose_manager(plugins, created)
-            except Exception:
-                logger.warning("Could not unload reentrant plugin manager for %s", home_key, exc_info=True)
-        with plugins._plugin_manager_teardown_condition:
-            if plugins._plugin_manager_teardown_owners.get(home_key, (None, None))[0] == thread_id:
-                plugins._plugin_manager_teardown_owners.pop(home_key, None)
-            plugins._plugin_manager_teardown_condition.notify_all()
+                try:
+                    _dispose_manager(plugins, created)
+                except Exception:
+                    logger.warning(
+                        "Could not unload reentrant plugin manager for %s", home_key, exc_info=True
+                    )
+        finally:
+            with plugins._plugin_manager_teardown_condition:
+                if plugins._plugin_manager_teardown_owners.get(home_key, (None, None))[0] == thread_id:
+                    plugins._plugin_manager_teardown_owners.pop(home_key, None)
+                plugins._plugin_manager_teardown_condition.notify_all()
+            if manager_lock is not None:
+                manager_lock.release()
 
 
 def unload_plugin_manager_for_home(home: Path) -> bool:

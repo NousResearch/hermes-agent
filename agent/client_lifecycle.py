@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
@@ -19,6 +20,128 @@ _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
+
+
+@dataclass
+class _ClientCandidateRecord:
+    resource: Any
+    kind: str
+    owned: bool
+    disposed: bool = False
+
+
+class ClientCandidateJournal:
+    """Lifecycle-owned journal for clients created while a route is prepared.
+
+    The coordinator restores agent fields; this owner disposes only resources
+    positively registered as transition-owned.  Provider/plugin clients can
+    declare ``_hermes_lifecycle_borrowed = True`` and are never closed here.
+    """
+
+    def __init__(self, owner: Any) -> None:
+        self._owner = owner
+        self._original_ids = {
+            id(resource)
+            for resource in (
+                getattr(owner, "client", None),
+                getattr(owner, "_anthropic_client", None),
+            )
+            if resource is not None
+        }
+        self._records: list[_ClientCandidateRecord] = []
+        self._managed_ids: set[int] = set()
+        self._borrowed_ids: set[int] = set()
+        self._state = "prepared"
+
+    @property
+    def managed_resource_ids(self) -> frozenset[int]:
+        return frozenset(self._managed_ids)
+
+    @property
+    def borrowed_resource_ids(self) -> frozenset[int]:
+        return frozenset(self._borrowed_ids)
+
+    def checkpoint(self) -> int:
+        return len(self._records)
+
+    @staticmethod
+    def _declared_borrowed(resource: Any) -> bool:
+        return getattr(resource, "_hermes_lifecycle_borrowed", False) is True
+
+    def _track(self, resource: Any, kind: str, *, owned: Optional[bool]) -> Any:
+        if resource is None:
+            return resource
+        resource_id = id(resource)
+        if resource_id in self._managed_ids:
+            return resource
+        is_owned = (
+            resource_id not in self._original_ids
+            and not self._declared_borrowed(resource)
+            and owned is not False
+        )
+        self._records.append(_ClientCandidateRecord(resource, kind, is_owned))
+        self._managed_ids.add(resource_id)
+        if not is_owned:
+            self._borrowed_ids.add(resource_id)
+        return resource
+
+    def track_openai(self, resource: Any, *, owned: Optional[bool] = None) -> Any:
+        return self._track(resource, "openai", owned=owned)
+
+    def track_anthropic(self, resource: Any, *, owned: Optional[bool] = None) -> Any:
+        return self._track(resource, "anthropic", owned=owned)
+
+    def _dispose(self, record: _ClientCandidateRecord) -> None:
+        if record.disposed or not record.owned:
+            return
+        record.disposed = True
+        if record.kind == "anthropic":
+            close = getattr(record.resource, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    close()
+            return
+        close_owned = getattr(self._owner, "_close_openai_client", None)
+        if callable(close_owned):
+            try:
+                close_owned(
+                    record.resource,
+                    reason="route_transition_abort",
+                    shared=False,
+                )
+                return
+            except Exception:
+                logger.debug("route candidate lifecycle close failed", exc_info=True)
+        close = getattr(record.resource, "close", None)
+        if callable(close):
+            with suppress(Exception):
+                close()
+
+    def abort_since(self, checkpoint: int) -> None:
+        for record in reversed(self._records[checkpoint:]):
+            self._dispose(record)
+
+    def settle_attempt(self, checkpoint: int, *live_resources: Any) -> None:
+        live_ids = {id(resource) for resource in live_resources if resource is not None}
+        for record in self._records[checkpoint:]:
+            if id(record.resource) not in live_ids:
+                self._dispose(record)
+
+    def commit(self) -> None:
+        if self._state == "aborted":
+            raise RuntimeError("cannot commit an aborted client candidate journal")
+        self.settle_attempt(
+            0,
+            getattr(self._owner, "client", None),
+            getattr(self._owner, "_anthropic_client", None),
+        )
+        self._state = "committed"
+
+    def abort(self) -> None:
+        if self._state == "aborted":
+            return
+        self.abort_since(0)
+        self._state = "aborted"
 
 
 class _CredentialRouteView:
@@ -77,13 +200,27 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
-def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
+def _swap_fallback_clients(
+    agent,
+    fb_client,
+    fb_provider: str,
+    fb_model: str,
+    fb_base_url: str,
+    fb_api_mode: str,
+    *,
+    candidate_journal=None,
+) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
     if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
         from agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
+        if candidate_journal is not None:
+            candidate_journal.track_openai(getattr(agent, "client", None))
+            candidate_journal.track_anthropic(
+                getattr(agent, "_anthropic_client", None)
+            )
         return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
@@ -96,6 +233,8 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        if candidate_journal is not None:
+            candidate_journal.track_anthropic(agent._anthropic_client)
         agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
@@ -110,7 +249,15 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
         # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
-        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+        if candidate_journal is None:
+            agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+        else:
+            agent.client = agent._create_openai_client(
+                dict(agent._client_kwargs),
+                reason="fallback_timeout_apply",
+                shared=True,
+            )
+            candidate_journal.track_openai(agent.client)
 
 
 class ClientLifecycleMixin:

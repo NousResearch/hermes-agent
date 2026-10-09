@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_reclaim import CredentialPoolReclaimMixin
+from agent.credential_pool_selection import CredentialPoolSelectionMixin
 
 import logging
 import os
@@ -981,7 +982,10 @@ class _RefreshDone(Exception):
 
 
 class CredentialPool(
-    CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolReclaimMixin,
+    CredentialPoolAdminMixin,
+    CredentialPoolModelCooldownMixin,
+    CredentialPoolReclaimMixin,
+    CredentialPoolSelectionMixin,
 ):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
@@ -1976,9 +1980,11 @@ class CredentialPool(
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self, *, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    def _select_under_lock(
+        self, *, model: Optional[str] = None, preferred_id: Optional[str] = None,
+    ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked(model=model)
+            return self._select_unlocked(model=model, preferred_id=preferred_id)
 
     def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -2117,6 +2123,7 @@ class CredentialPool(
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        preferred_id: Optional[str] = None,
     ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
@@ -2133,7 +2140,14 @@ class CredentialPool(
         # logs immediately.
         self._last_no_entries_log_at = None
 
-        if self._strategy == STRATEGY_RANDOM:
+        if preferred_id is not None:
+            entry = next(
+                (candidate for candidate in available if candidate.id == preferred_id),
+                None,
+            )
+            if entry is None:
+                return None, pending_refresh
+        elif self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)

@@ -22,6 +22,12 @@ class _TokenBudgetEffectSink:
         self._callbacks.append(callback)
         return True
 
+    def checkpoint(self) -> int:
+        return len(self._callbacks)
+
+    def discard_since(self, checkpoint: int) -> None:
+        del self._callbacks[checkpoint:]
+
     def discard(self) -> None:
         self._callbacks.clear()
 
@@ -51,6 +57,7 @@ class _TokenBudgetTransition:
         self._compressor_ticket = None
         self._owner_tickets = []
         self._coordinator_commits = []
+        self._client_candidate_journal = None
 
     @property
     def compressor_route(self):
@@ -71,6 +78,31 @@ class _TokenBudgetTransition:
             "prepare_route_update() for atomic route changes"
         )
 
+    @staticmethod
+    def _validate_compressor_ticket(ticket):
+        """Return a usable owner ticket or fail closed before it can be stored.
+
+        A callable ``prepare_route_update`` is only a factory capability.  The
+        returned object is the actual atomicity capability and must implement
+        both sides of the owner protocol.
+        """
+        if ticket is not None and all(
+            callable(getattr(ticket, name, None)) for name in ("commit", "abort")
+        ):
+            return ticket
+        abort = getattr(ticket, "abort", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception:
+                logger.debug("invalid compressor ticket abort failed", exc_info=True)
+        from agent.token_budget_policy import TokenBudgetPolicyError
+
+        raise TokenBudgetPolicyError(
+            "prepare_route_update() must return a non-null ticket with callable "
+            "commit() and abort()"
+        )
+
     def prepare_compressor_guard(self) -> None:
         compressor = getattr(self.owner, "context_compressor", None)
         if compressor is None:
@@ -78,7 +110,7 @@ class _TokenBudgetTransition:
         prepare = self._require_ticket_factory(compressor)
         route = self.owner._token_budget_compressor_route(compressor)
         self._compressor = compressor
-        self._guard_ticket = prepare(**route)
+        self._guard_ticket = self._validate_compressor_ticket(prepare(**route))
 
     def stage_compressor_route(self, compressor, **route) -> None:
         self._require_ticket_factory(compressor)
@@ -120,11 +152,21 @@ class _TokenBudgetTransition:
         prepare = self._require_ticket_factory(compressor)
         self._compressor = compressor
         self._compressor_route = dict(route)
-        self._compressor_ticket = prepare(**self._compressor_route)
+        self._compressor_ticket = self._validate_compressor_ticket(
+            prepare(**self._compressor_route)
+        )
 
     def add_owner_ticket(self, ticket) -> None:
         if ticket is not None:
             self._owner_tickets.append(ticket)
+
+    def client_candidate_journal(self):
+        if self._client_candidate_journal is None:
+            from agent.client_lifecycle import ClientCandidateJournal
+
+            self._client_candidate_journal = ClientCandidateJournal(self.owner)
+            self.add_owner_ticket(self._client_candidate_journal)
+        return self._client_candidate_journal
 
     def defer_coordinator(self, callback) -> None:
         self._coordinator_commits.append(callback)
@@ -421,7 +463,7 @@ class TokenBudgetRuntimeMixin:
             "fields": captured,
         }
 
-    def _restore_token_budget_runtime(self, snapshot):
+    def _restore_token_budget_runtime(self, snapshot, candidate_journal=None):
         """Restore failed transitions before retiring only replacement clients."""
         if not isinstance(snapshot, dict):
             return
@@ -459,6 +501,12 @@ class TokenBudgetRuntimeMixin:
             and isinstance(captured, dict)
             and captured.get("present")
         }
+        managed_resource_ids = set(
+            getattr(candidate_journal, "managed_resource_ids", ()) or ()
+        )
+        borrowed_resource_ids = set(
+            getattr(candidate_journal, "borrowed_resource_ids", ()) or ()
+        )
         retired_client_ids = set()
         for name, replacement in live_clients.items():
             if (
@@ -466,6 +514,8 @@ class TokenBudgetRuntimeMixin:
                 or replacement is None
                 or id(replacement) in original_clients
                 or id(replacement) in retired_client_ids
+                or id(replacement) in managed_resource_ids
+                or id(replacement) in borrowed_resource_ids
             ):
                 continue
             retired_client_ids.add(id(replacement))
@@ -566,7 +616,9 @@ class TokenBudgetRuntimeMixin:
                 transition.abort()
                 if self._failed_transition_mutated_runtime(snapshot):
                     bookkeeping = self._snapshot_token_budget_bookkeeping()
-                    self._restore_token_budget_runtime(snapshot)
+                    self._restore_token_budget_runtime(
+                        snapshot, transition._client_candidate_journal
+                    )
                     self._restore_token_budget_bookkeeping(bookkeeping)
                 return result
             transition.capture_helper_route_if_needed()
@@ -574,7 +626,9 @@ class TokenBudgetRuntimeMixin:
             transition.commit_owner_tickets()
         except Exception:
             transition.abort()
-            self._restore_token_budget_runtime(snapshot)
+            self._restore_token_budget_runtime(
+                snapshot, transition._client_candidate_journal
+            )
             raise
         transition.publish()
         return result

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import json
 import logging
 import math
@@ -1832,14 +1833,25 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     return "chat_completions"
 
 
-def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
+def _route_info(effect_sink, message: str, *args: Any) -> None:
+    publish = lambda: logger.info(message, *args)
+    if effect_sink is not None:
+        effect_sink.defer(publish)
+    else:
+        logger.debug(message, *args)
+
+
+def _rebind_fallback_credential_pool(
+    agent, fb_provider: str, fb_model: str, *, effect_sink=None
+) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
     existing_pool = getattr(agent, "_credential_pool", None)
     if existing_pool is not None:
         pool_provider = (getattr(existing_pool, "provider", "") or "").strip().lower()
         if pool_provider and pool_provider != fb_provider:
-            logger.info(
+            _route_info(
+                effect_sink,
                 "Fallback to %s/%s: clearing primary credential pool (pool_provider=%s) to prevent cross-provider contamination",
                 fb_provider, fb_model, pool_provider)
             agent._credential_pool = agent._credential_pool_entry_id = None
@@ -1849,7 +1861,12 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             fallback_pool = load_pool(fb_provider)
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
-                logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
+                _route_info(
+                    effect_sink,
+                    "Fallback to %s/%s: attached fallback credential pool",
+                    fb_provider,
+                    fb_model,
+                )
         except Exception as exc:
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
@@ -2004,7 +2021,7 @@ def _update_fallback_context_compressor(
             revalidate_compression_feasibility(agent)
 
 
-def _reresolve_fallback_reasoning_config(agent) -> None:
+def _reresolve_fallback_reasoning_config(agent, *, effect_sink=None) -> None:
     """Per-model override > global reasoning_effort (YAML False = disabled); a config load
     failure keeps the current reasoning_config rather than killing the swap."""
     try:
@@ -2013,12 +2030,24 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
         from hermes_cli.config import load_config
         from hermes_constants import resolve_reasoning_config
         agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
-        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
+        _route_info(
+            effect_sink,
+            "Fallback %s: reasoning_config resolved: %s",
+            agent.model,
+            copy.deepcopy(agent.reasoning_config),
+        )
     except Exception as _reasoning_err:
         logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
 
 
-def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
+def _rescope_fallback_extra_body(
+    agent,
+    old_model: str,
+    old_provider: str,
+    old_base_url: str,
+    *,
+    effect_sink=None,
+) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
     config injected — a caller override of the same key won at init and differs, so it survives;
@@ -2037,7 +2066,14 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
                 overrides.pop("extra_body", None)
             agent.request_overrides = overrides
         _merge_custom_provider_extra_body(agent, custom_providers)
-        logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
+        _route_info(
+            effect_sink,
+            "Fallback %s: extra_body resolved: %s",
+            agent.model,
+            copy.deepcopy(
+                (getattr(agent, "request_overrides", {}) or {}).get("extra_body")
+            ),
+        )
     except Exception as _eb_err:
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
 
@@ -2068,6 +2104,66 @@ def _buffer_fallback_notice(
         commit_pending_notice()
 
 
+_FALLBACK_ATTEMPT_FIELDS = (
+    "model",
+    "provider",
+    "requested_provider",
+    "base_url",
+    "api_mode",
+    "api_key",
+    "client",
+    "_anthropic_client",
+    "_anthropic_api_key",
+    "_anthropic_base_url",
+    "_is_anthropic_oauth",
+    "_config_context_length",
+    "_reasoning_echo_flag",
+    "_credential_pool",
+    "_credential_pool_entry_id",
+    "_use_prompt_caching",
+    "_use_native_cache_layout",
+    "_fallback_activated",
+    "_provider_fallback_active",
+    "_provider_fallback_route",
+    "reasoning_config",
+    "request_overrides",
+    "runtime_capabilities",
+    "_cached_system_prompt",
+)
+_FALLBACK_ATTEMPT_MISSING = object()
+
+
+def _snapshot_fallback_attempt(agent):
+    snapshot = {}
+    for name in _FALLBACK_ATTEMPT_FIELDS:
+        value = getattr(agent, name, _FALLBACK_ATTEMPT_MISSING)
+        snapshot[name] = (
+            copy.deepcopy(value)
+            if isinstance(value, (dict, list, set))
+            else value
+        )
+    transports = getattr(agent, "_transport_cache", _FALLBACK_ATTEMPT_MISSING)
+    snapshot["_transport_cache"] = (
+        dict(transports) if isinstance(transports, dict) else transports
+    )
+    return snapshot
+
+
+def _restore_fallback_attempt(agent, snapshot) -> None:
+    for name, value in snapshot.items():
+        if value is _FALLBACK_ATTEMPT_MISSING:
+            vars(agent).pop(name, None)
+        elif name == "_transport_cache" and isinstance(value, dict):
+            current = getattr(agent, name, None)
+            if isinstance(current, dict):
+                current.clear()
+                current.update(value)
+            else:
+                setattr(agent, name, dict(value))
+        else:
+            setattr(agent, name, value)
+
+
 def try_activate_fallback(
     agent,
     reason: "FailoverReason | None" = None,
@@ -2083,9 +2179,21 @@ def try_activate_fallback(
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    from agent.client_lifecycle import ClientCandidateJournal
+
+    journal_factory = getattr(transition, "client_candidate_journal", None)
+    coordinator_owned_journal = callable(journal_factory)
+    candidate_journal = (
+        journal_factory()
+        if coordinator_owned_journal
+        else ClientCandidateJournal(agent)
+    )
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
-            return _fallback_chain_exhausted(agent, reason)
+            result = _fallback_chain_exhausted(agent, reason)
+            if not coordinator_owned_journal:
+                candidate_journal.abort()
+            return result
         fb = agent._fallback_chain[agent._fallback_index]
         agent._fallback_index += 1
         fb_key = _fallback_entry_key(fb)
@@ -2097,6 +2205,12 @@ def try_activate_fallback(
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
             continue
 
+        attempt_checkpoint = candidate_journal.checkpoint()
+        attempt_snapshot = _snapshot_fallback_attempt(agent)
+        effect_checkpoint_fn = getattr(effect_sink, "checkpoint", None)
+        effect_checkpoint = (
+            effect_checkpoint_fn() if callable(effect_checkpoint_fn) else None
+        )
         try:
             from agent.auxiliary_client import resolve_provider_client
             from hermes_cli.fallback_config import resolve_entry_api_key
@@ -2117,6 +2231,7 @@ def try_activate_fallback(
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
                 continue
+            candidate_journal.track_openai(fb_client)
             if fb_provider == "moa":
                 # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
                 # ``/model <preset> --provider moa``. The chokepoint's client is the preset's
@@ -2154,13 +2269,24 @@ def try_activate_fallback(
                 agent._transport_cache.clear()
             agent._fallback_activated = True
 
-            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
+            _rebind_fallback_credential_pool(
+                agent, fb_provider, fb_model, effect_sink=effect_sink
+            )
             if fb_provider == "moa":
                 from agent.moa_loop import bind_moa_runtime
                 bind_moa_runtime(agent, fb_model)
+                candidate_journal.track_openai(getattr(agent, "client", None))
             else:
                 from agent.client_lifecycle import _swap_fallback_clients
-                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+                _swap_fallback_clients(
+                    agent,
+                    fb_client,
+                    fb_provider,
+                    fb_model,
+                    fb_base_url,
+                    fb_api_mode,
+                    candidate_journal=candidate_journal,
+                )
 
             from agent.agent_runtime_helpers import sync_credential_pool_entry_id
             sync_credential_pool_entry_id(agent)
@@ -2171,9 +2297,25 @@ def try_activate_fallback(
             _update_fallback_context_compressor(
                 agent, transition=transition, effect_sink=effect_sink
             )
-            _reresolve_fallback_reasoning_config(agent)
-            _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            _reresolve_fallback_reasoning_config(
+                agent, effect_sink=effect_sink
+            )
+            _rescope_fallback_extra_body(
+                agent,
+                old_model,
+                old_provider,
+                old_base_url,
+                effect_sink=effect_sink,
+            )
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+
+            # Resolve the last fallible destination metadata before buffering
+            # any direct-path success publication.
+            from agent.native_compaction import resolve_native_compaction_capabilities
+            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider,
+                is_codex_backend=fb_provider == "openai-codex",
+            )
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
@@ -2200,11 +2342,20 @@ def try_activate_fallback(
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
-            from agent.native_compaction import resolve_native_compaction_capabilities
-            agent.runtime_capabilities = resolve_native_compaction_capabilities(
-                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            candidate_journal.settle_attempt(
+                attempt_checkpoint,
+                getattr(agent, "client", None),
+                getattr(agent, "_anthropic_client", None),
+            )
+            if not coordinator_owned_journal:
+                candidate_journal.commit()
             return True
         except Exception as e:
+            _restore_fallback_attempt(agent, attempt_snapshot)
+            candidate_journal.abort_since(attempt_checkpoint)
+            discard_effects = getattr(effect_sink, "discard_since", None)
+            if effect_checkpoint is not None and callable(discard_effects):
+                discard_effects(effect_checkpoint)
             if fb_provider == "nous":
                 unavailable.add(fb_key)
             logger.error("Failed to activate fallback %s: %s", fb_model, e)

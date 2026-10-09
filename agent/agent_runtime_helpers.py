@@ -1151,7 +1151,18 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
-def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+def _rebind_primary_credential_pool(
+    agent,
+    primary_provider,
+    primary_model,
+    matches_primary,
+    load_primary_pool,
+    prefetched_pool,
+    prefetched,
+    *,
+    transition=None,
+    effect_sink=None,
+) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
     401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
@@ -1170,6 +1181,55 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
+    if transition is not None:
+        prepare_selection = getattr(pool, "prepare_selection", None)
+        if not callable(prepare_selection):
+            logger.warning(
+                "Restore skipped credential selection: pool for %s does not expose "
+                "prepare_selection()",
+                primary_provider or "?",
+            )
+            return
+        pool_ticket = prepare_selection(model=primary_model or None)
+        if pool_ticket is None:
+            return
+        entry = getattr(pool_ticket, "candidate", None)
+        if entry is None or not (
+            getattr(entry, "runtime_api_key", None)
+            or getattr(entry, "access_token", "")
+        ):
+            pool_ticket.abort()
+            return
+        if not matches_primary(entry):
+            pool_ticket.abort()
+            logger.debug(
+                "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+                getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+                str(getattr(entry, "provider", "") or "").strip().lower() or "?",
+                primary_provider or "?",
+            )
+            return
+        swap_ticket = agent._prepare_credential_swap(entry)
+        if swap_ticket is None:
+            pool_ticket.abort()
+            return
+        transition.add_owner_ticket(
+            _CredentialRevertTransitionTicket(pool_ticket, swap_ticket)
+        )
+        entry_id = getattr(entry, "id", "?")
+        entry_label = getattr(entry, "label", "?")
+
+        def publish_selection_log() -> None:
+            logger.info(
+                "Restore re-selected pool entry %s (%s)", entry_id, entry_label
+            )
+
+        if effect_sink is not None:
+            effect_sink.defer(publish_selection_log)
+        else:
+            publish_selection_log()
+        return
+
     entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
@@ -1178,8 +1238,8 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         # ``_swap_credential`` rebuilds the OpenAI/Anthropic client, reapplies base-url-scoped headers, and
         # carries the accumulated base_url / OAuth-detection fixes (#33163).
         agent._swap_credential(entry)
-        logger.info(
-            "Restore re-selected pool entry %s (%s)",
+        logger.debug(
+            "Restore prepared pool entry %s (%s)",
             getattr(entry, "id", "?"), getattr(entry, "label", "?"),
         )
     else:
@@ -1369,7 +1429,15 @@ def restore_primary_runtime(agent, *, transition=None, effect_sink=None) -> bool
             else:
                 revalidate_compression_feasibility(agent)
         _rebind_primary_credential_pool(
-            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            agent,
+            primary_provider,
+            primary_model,
+            _matches_primary,
+            _load_primary_pool,
+            prefetched_pool,
+            prefetched,
+            transition=transition,
+            effect_sink=effect_sink,
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
@@ -2106,7 +2174,16 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     return api_mode, base_url, destination_capabilities
 
 
-def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
+def _build_switched_client(
+    agent,
+    new_provider,
+    api_key,
+    base_url,
+    api_mode,
+    new_norm,
+    *,
+    candidate_journal=None,
+) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
         from agent.moa_loop import bind_moa_runtime
@@ -2114,12 +2191,19 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
         # client.responses.create against the facade (same pins as agent_init / fallback).
         bind_moa_runtime(agent, agent.model, api_key)
+        if candidate_journal is not None:
+            candidate_journal.track_openai(getattr(agent, "client", None))
         return
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
         # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
         from agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
+        if candidate_journal is not None:
+            candidate_journal.track_openai(getattr(agent, "client", None))
+            candidate_journal.track_anthropic(
+                getattr(agent, "_anthropic_client", None)
+            )
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
@@ -2147,6 +2231,8 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
         )
+        if candidate_journal is not None:
+            candidate_journal.track_anthropic(agent._anthropic_client)
         agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
         agent._client_kwargs = {}
@@ -2176,9 +2262,23 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
     # rebuilt; otherwise attribution shows "Unknown".
     agent._apply_client_headers_for_base_url(effective_base)
     agent.client = agent._create_openai_client(dict(agent._client_kwargs), reason="switch_model", shared=True)
+    if candidate_journal is not None:
+        candidate_journal.track_openai(agent.client)
 
 
-def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm) -> None:
+def _swap_switch_runtime(
+    agent,
+    new_model,
+    new_provider,
+    api_key,
+    base_url,
+    api_mode,
+    old_provider,
+    old_norm,
+    new_norm,
+    *,
+    candidate_journal=None,
+) -> None:
     """Swap identity/transport fields, reload the pool, rebuild the client (rolled back by the caller on error)."""
     # Clear the per-config override so the new model's context window is re-resolved.
     agent._config_context_length = None
@@ -2217,7 +2317,15 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
                 "switch_model: credential pool reload failed for %s (%s); "
                 "continuing without pool rotation this turn", new_provider, _pool_exc,
             )
-    _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
+    _build_switched_client(
+        agent,
+        new_provider,
+        api_key,
+        base_url,
+        api_mode,
+        new_norm,
+        candidate_journal=candidate_journal,
+    )
     sync_credential_pool_entry_id(agent)
 
 
@@ -2423,7 +2531,7 @@ def _persist_switch_billing_route(agent, *, effect_sink=None) -> None:
         publish()
 
 
-def switch_model(
+def _switch_model_with_candidate_journal(
     agent,
     new_model,
     new_provider,
@@ -2434,6 +2542,7 @@ def switch_model(
     *,
     transition=None,
     effect_sink=None,
+    candidate_journal=None,
 ):
     """Switch the model/provider in-place for a live agent (rebuild clients, caching flags,
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
@@ -2455,7 +2564,16 @@ def switch_model(
     snapshot = _snapshot_switch_state(agent)
     try:
         _swap_switch_runtime(
-            agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm
+            agent,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            old_provider,
+            old_norm,
+            new_norm,
+            candidate_journal=candidate_journal,
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
@@ -2483,9 +2601,24 @@ def switch_model(
         from hermes_constants import resolve_reasoning_config
         from hermes_cli.config import load_config as _sm_load_config
         agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
-        logger.info(
-            "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
-        )
+        resolved_model = agent.model
+        resolved_reasoning = copy.deepcopy(agent.reasoning_config)
+
+        def publish_reasoning_log() -> None:
+            logger.info(
+                "switch_model: reasoning_config resolved for %s: %s",
+                resolved_model,
+                resolved_reasoning,
+            )
+
+        if effect_sink is not None:
+            effect_sink.defer(publish_reasoning_log)
+        else:
+            logger.debug(
+                "switch_model: reasoning_config prepared for %s: %s",
+                resolved_model,
+                resolved_reasoning,
+            )
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
     # Invalidate the cached system prompt so it rebuilds next turn.
@@ -2518,6 +2651,55 @@ def switch_model(
     else:
         publish_switch_log()
     _persist_switch_billing_route(agent, effect_sink=effect_sink)
+
+
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    capabilities=None,
+    *,
+    transition=None,
+    effect_sink=None,
+):
+    """Lifecycle wrapper for an in-place route prepare."""
+    from agent.client_lifecycle import ClientCandidateJournal
+
+    journal_factory = getattr(transition, "client_candidate_journal", None)
+    coordinator_owned = callable(journal_factory)
+    journal = (
+        journal_factory() if coordinator_owned else ClientCandidateJournal(agent)
+    )
+    checkpoint = journal.checkpoint()
+    try:
+        result = _switch_model_with_candidate_journal(
+            agent,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            capabilities,
+            transition=transition,
+            effect_sink=effect_sink,
+            candidate_journal=journal,
+        )
+    except Exception:
+        journal.abort_since(checkpoint)
+        if not coordinator_owned:
+            journal.abort()
+        raise
+    journal.settle_attempt(
+        checkpoint,
+        getattr(agent, "client", None),
+        getattr(agent, "_anthropic_client", None),
+    )
+    if not coordinator_owned:
+        journal.commit()
+    return result
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):

@@ -20,6 +20,14 @@ import pytest
 from run_agent import AIAgent
 
 
+class _CloseableClient:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
 def _make_agent_openrouter():
     """Agent on openrouter (openai-compatible) with sentinel client + kwargs."""
     agent = AIAgent.__new__(AIAgent)
@@ -184,4 +192,49 @@ def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
     assert agent.api_mode == "anthropic_messages"
     assert agent.base_url == "https://api.anthropic.com"
 
+
+def test_compressor_prepare_failure_closes_hidden_switch_candidate_once(monkeypatch):
+    """Helper rollback must not make its newly built client unreachable to lifecycle cleanup."""
+    from agent.agent_runtime_helpers import switch_model
+
+    agent = _make_agent_openrouter()
+    original = _CloseableClient()
+    candidate = _CloseableClient()
+    agent.client = original
+    agent.context_compressor = MagicMock()
+    agent._create_openai_client = MagicMock(return_value=candidate)
+    agent._read_reasoning_echo_from_config = MagicMock(return_value=False)
+    agent._apply_client_headers_for_base_url = MagicMock()
+    agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    class FailingTransition:
+        compressor_route = None
+
+        def stage_compressor_route(self, *_args, **_kwargs):
+            raise RuntimeError("compressor prepare failed")
+
+        def defer_coordinator(self, _callback):
+            return None
+
+    with (
+        patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_cli.config.load_config_readonly", return_value={}),
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+    ):
+        with pytest.raises(RuntimeError, match="compressor prepare failed"):
+            switch_model(
+                agent,
+                "openai/gpt-5",
+                "openai-codex",
+                api_key="codex-key-new",
+                base_url="https://chatgpt.com/backend-api/codex/responses",
+                api_mode="chat_completions",
+                transition=FailingTransition(),
+            )
+
+    assert agent.client is original
+    assert original.close_calls == 0
+    assert candidate.close_calls == 1
 

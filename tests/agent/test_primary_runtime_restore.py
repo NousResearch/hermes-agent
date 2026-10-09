@@ -74,6 +74,17 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="fallback-key
     return mock_client
 
 
+class _FallbackCandidate:
+    def __init__(self, name, base_url):
+        self.name = name
+        self.base_url = base_url
+        self.api_key = f"{name}-key"
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
 # =============================================================================
 # _primary_runtime snapshot
 # =============================================================================
@@ -157,6 +168,40 @@ class TestRestorePrimaryRuntime:
             agent._restore_primary_runtime()
 
         assert agent._fallback_index == 0  # reset for next turn
+
+    def test_failed_fallback_attempts_close_owned_candidates_but_not_borrowed_or_original(self):
+        """Every attempt has an owner savepoint; a plugin-borrowed winner stays open."""
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "openrouter", "model": "candidate-a"},
+                {"provider": "openrouter", "model": "candidate-b"},
+                {"provider": "openrouter", "model": "borrowed-winner"},
+            ],
+        )
+        original = _FallbackCandidate("original", "https://primary.example/v1")
+        first = _FallbackCandidate("first", "https://openrouter.ai/api/v1")
+        second = _FallbackCandidate("second", "https://openrouter.ai/api/v1")
+        borrowed = _FallbackCandidate("borrowed", "https://openrouter.ai/api/v1")
+        borrowed._hermes_lifecycle_borrowed = True
+        agent.client = original
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                side_effect=[(first, None), (second, None), (borrowed, None)],
+            ),
+            patch(
+                "agent.chat_completion_helpers._update_fallback_context_compressor",
+                side_effect=[RuntimeError("first setup failed"), RuntimeError("second setup failed"), None],
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert first.close_calls == 1
+        assert second.close_calls == 1
+        assert borrowed.close_calls == 0
+        assert original.close_calls == 0
+        assert agent.client is borrowed
 
     def test_restores_compressor_state(self):
         agent = _make_agent(

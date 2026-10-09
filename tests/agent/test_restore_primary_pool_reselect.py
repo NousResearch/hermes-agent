@@ -127,6 +127,36 @@ class TestRestorePrimaryPoolReselect:
         assert agent.api_key == "key-2"
         assert agent._client_kwargs["api_key"] == "key-2"
 
+    def test_pool_selection_ticket_is_read_only_until_commit_and_compensates(self):
+        """Prepared restore selection owns cursor/count changes and can abort them."""
+        pool = _build_mock_pool(
+            [
+                _make_entry("entry-1", "key-1", priority=0),
+                _make_entry("entry-2", "key-2", priority=1),
+            ],
+            strategy="fill_first",
+        )
+        before_entries = [entry.to_dict() for entry in pool.entries()]
+        before_epoch = pool._mutation_epoch
+        before_current = pool.current()
+
+        ticket = pool.prepare_selection(model="gpt-5.5")
+
+        assert ticket is not None
+        assert ticket.candidate.id == "entry-1"
+        assert [entry.to_dict() for entry in pool.entries()] == before_entries
+        assert pool._mutation_epoch == before_epoch
+        assert pool.current() is before_current
+
+        selected = ticket.commit()
+        assert selected.id == "entry-1"
+        assert pool.current().id == "entry-1"
+        assert pool.current().request_count == 1
+
+        ticket.abort()
+        assert pool.current() is None
+        assert [entry.request_count for entry in pool.entries()] == [0, 0]
+
 
 
 

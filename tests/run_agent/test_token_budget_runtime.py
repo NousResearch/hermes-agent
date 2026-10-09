@@ -98,6 +98,107 @@ class _SlottedTicketCompressor:
         return Ticket()
 
 
+class _CommitOnlyTicket:
+    def commit(self):
+        return None
+
+
+@pytest.mark.parametrize(
+    "ticket_factory",
+    (
+        pytest.param(lambda: None, id="none"),
+        pytest.param(_CommitOnlyTicket, id="missing-abort"),
+        pytest.param(
+            lambda: SimpleNamespace(commit=None, abort=lambda: None),
+            id="non-callable-commit",
+        ),
+    ),
+)
+def test_policy_on_rejects_invalid_compressor_guard_ticket_before_helper_mutation(
+    monkeypatch, ticket_factory
+):
+    """A callable factory is not capability proof unless it returns a real ticket."""
+    _patch_policy(monkeypatch)
+
+    class Compressor(_Compressor):
+        def prepare_route_update(self, **_kwargs):
+            return ticket_factory()
+
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, Compressor())
+    helper_calls = []
+
+    def switch(runtime, *_args, **_kwargs):
+        helper_calls.append(True)
+        runtime.model = "mutated"
+        return True
+
+    monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", switch)
+
+    with pytest.raises(
+        token_budget_policy.TokenBudgetPolicyError,
+        match="prepare_route_update.*ticket",
+    ):
+        agent.switch_model("gpt-5.6-sol", "openai-codex")
+
+    assert helper_calls == []
+    assert agent.model == "gpt-6-astra"
+
+
+@pytest.mark.parametrize(
+    "ticket_factory",
+    (
+        pytest.param(lambda: None, id="none"),
+        pytest.param(_CommitOnlyTicket, id="missing-abort"),
+    ),
+)
+def test_policy_on_rejects_invalid_final_compressor_ticket_and_rolls_back(
+    monkeypatch, ticket_factory
+):
+    """The final owner ticket is validated even after a valid pre-mutation guard."""
+    _patch_policy(monkeypatch)
+
+    class Compressor(_Compressor):
+        def __init__(self):
+            super().__init__()
+            self.prepares = 0
+
+        def prepare_route_update(self, **kwargs):
+            self.prepares += 1
+            if self.prepares == 1:
+                return super().prepare_route_update(**kwargs)
+            return ticket_factory()
+
+    compressor = Compressor()
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    original = (agent.model, agent.provider)
+
+    def switch(runtime, *_args, transition=None, **_kwargs):
+        runtime.model = "gpt-5.6-sol"
+        transition.stage_compressor_route(
+            runtime.context_compressor,
+            model=runtime.model,
+            context_length=272_000,
+            base_url=runtime.base_url,
+            api_key=runtime.api_key,
+            provider=runtime.provider,
+            api_mode=runtime.api_mode,
+        )
+        return True
+
+    monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", switch)
+
+    with pytest.raises(
+        token_budget_policy.TokenBudgetPolicyError,
+        match="prepare_route_update.*ticket",
+    ):
+        agent.switch_model("gpt-5.6-sol", "openai-codex")
+
+    assert (agent.model, agent.provider) == original
+    assert compressor.context_length == 872_000
+
+
 def _policy_config():
     models = {}
     for model, canonical in token_budget_policy._CANONICAL_MODEL_BUDGETS.items():
@@ -1722,6 +1823,245 @@ class _CoordinatorCompressor:
                 state = "aborted"
 
         return Ticket()
+
+
+def test_primary_restore_stages_pool_and_client_until_after_compressor_commit(
+    caplog,
+):
+    """A compressor failure aborts prepared restore owners without selecting live state."""
+    from agent.agent_runtime_helpers import _rebind_primary_credential_pool
+    from agent.token_budget_runtime import _TokenBudgetTransition
+
+    events = []
+    compressor = _CoordinatorCompressor(events, fail_final=True)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    entry = SimpleNamespace(
+        id="primary-entry",
+        label="primary",
+        provider="openai-codex",
+        runtime_api_key="fresh-key",
+        access_token="fresh-key",
+    )
+
+    class PoolTicket(_CoordinatorTicket):
+        candidate = entry
+
+        def commit(self):
+            super().commit()
+            return self.candidate
+
+    pool_ticket = PoolTicket("pool", events)
+
+    class SwapTicket(_CoordinatorTicket):
+        def commit(self, _entry=None):
+            super().commit()
+            return True
+
+    swap_ticket = SwapTicket("credential", events)
+
+    class Pool:
+        provider = "openai-codex"
+
+        def prepare_selection(self, **_kwargs):
+            events.append("pool:prepare")
+            return pool_ticket
+
+        def has_available(self, **_kwargs):
+            raise AssertionError("policy-on restore must not select during prepare")
+
+        def select(self, **_kwargs):
+            raise AssertionError("policy-on restore must not select during prepare")
+
+    agent._credential_pool = Pool()
+    agent._credential_pool_entry_id = "fallback-entry"
+    agent._prepare_credential_swap = lambda candidate: (
+        events.append(f"credential:prepare:{candidate.id}") or swap_ticket
+    )
+    transition = _TokenBudgetTransition(agent)
+    transition.prepare_compressor_guard()
+    caplog.set_level("INFO")
+
+    _rebind_primary_credential_pool(
+        agent,
+        "openai-codex",
+        "gpt-6-astra",
+        lambda candidate: getattr(candidate, "provider", "") == "openai-codex",
+        lambda: None,
+        None,
+        False,
+        transition=transition,
+        effect_sink=transition.effect_sink,
+    )
+    transition.stage_final_compressor(
+        {
+            "model": "gpt-5.6-sol",
+            "context_length": 272_000,
+            "base_url": agent.base_url,
+            "api_key": agent.api_key,
+            "provider": agent.provider,
+            "api_mode": agent.api_mode,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="compressor commit failed"):
+        transition.commit_owner_tickets()
+    transition.abort()
+
+    assert "pool:commit" not in events
+    assert "credential:commit" not in events
+    assert events[-3:] == [
+        "credential:abort",
+        "pool:abort",
+        "compressor:abort",
+    ]
+    assert "Restore re-selected pool entry" not in caplog.text
+
+
+def test_switch_commit_failure_discards_destination_reasoning_info(monkeypatch, caplog):
+    """Switch preparation may resolve reasoning, but INFO publishes only after owner commit."""
+    _patch_policy(monkeypatch)
+    events = []
+    compressor = _CoordinatorCompressor(events, fail_final=True)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    agent.requested_provider = agent.provider
+    agent.client = _CoordinatorClient()
+    agent._anthropic_client = None
+    agent._anthropic_api_key = ""
+    agent._anthropic_base_url = None
+    agent._is_anthropic_oauth = False
+    agent._client_kwargs = {"api_key": agent.api_key, "base_url": agent.base_url}
+    agent._transport_cache = {}
+    agent._config_context_length = None
+    agent._reasoning_echo_flag = False
+    agent.reasoning_config = None
+    agent.request_overrides = {}
+    agent.runtime_capabilities = {}
+    agent._custom_providers = []
+    agent._use_prompt_caching = False
+    agent._use_native_cache_layout = False
+    agent._cached_system_prompt = None
+    agent._fallback_activated = False
+    agent._provider_fallback_active = False
+    agent._provider_fallback_route = None
+    agent._fallback_index = 0
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._credential_pool_revert_id = None
+    agent._credential_pool_entry_id = None
+    agent._session_db = None
+    agent.session_id = None
+    agent._anthropic_prompt_cache_policy = lambda **_kwargs: (False, False)
+
+    def swap(runtime, model, provider, *_args, **_kwargs):
+        runtime.model = model
+        runtime.provider = runtime.requested_provider = provider
+
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers._resolve_switch_destination",
+        lambda *_args, **_kwargs: (
+            "codex_responses",
+            agent.base_url,
+            {"native_compaction": False},
+        ),
+    )
+    monkeypatch.setattr("agent.agent_runtime_helpers._swap_switch_runtime", swap)
+    monkeypatch.setattr(
+        "agent.agent_runtime_helpers._resolve_switch_context_length",
+        lambda *_args, **_kwargs: ([], 272_000),
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length", lambda *_args, **_kwargs: 272_000
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "hermes_constants.resolve_reasoning_config",
+        lambda *_args, **_kwargs: {"enabled": True, "effort": "high"},
+    )
+    caplog.set_level("INFO")
+
+    with pytest.raises(RuntimeError, match="compressor commit failed"):
+        agent.switch_model("gpt-5.6-sol", "openai-codex")
+
+    assert "switch_model: reasoning_config resolved" not in caplog.text
+
+
+def test_fallback_commit_failure_discards_all_destination_success_info(
+    monkeypatch, caplog
+):
+    """Pool attach, reasoning and extra-body INFO share the post-commit sink."""
+    from agent.chat_completion_helpers import (
+        _rebind_fallback_credential_pool,
+        _reresolve_fallback_reasoning_config,
+        _rescope_fallback_extra_body,
+    )
+
+    _patch_policy(monkeypatch)
+    events = []
+    compressor = _CoordinatorCompressor(events, fail_final=True)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+    agent._credential_pool = SimpleNamespace(provider="old-provider")
+    agent._credential_pool_entry_id = "old-entry"
+    agent._custom_providers = []
+    agent.reasoning_config = None
+    agent.request_overrides = {}
+    fallback_pool = SimpleNamespace(
+        provider="openai-codex", has_credentials=lambda: True
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool", lambda _provider: fallback_pool
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "hermes_constants.resolve_reasoning_config",
+        lambda *_args, **_kwargs: {"enabled": True, "effort": "medium"},
+    )
+    monkeypatch.setattr(
+        "agent.agent_init._custom_provider_extra_body_for_agent",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "agent.agent_init._merge_custom_provider_extra_body",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fallback(runtime, *_args, transition=None, effect_sink=None, **_kwargs):
+        _rebind_fallback_credential_pool(
+            runtime,
+            "openai-codex",
+            "gpt-6-astra",
+            effect_sink=effect_sink,
+        )
+        _reresolve_fallback_reasoning_config(runtime, effect_sink=effect_sink)
+        _rescope_fallback_extra_body(
+            runtime,
+            "old-model",
+            "old-provider",
+            "https://old.example/v1",
+            effect_sink=effect_sink,
+        )
+        transition.stage_compressor_route(
+            runtime.context_compressor,
+            model=runtime.model,
+            context_length=272_000,
+            base_url=runtime.base_url,
+            api_key=runtime.api_key,
+            provider=runtime.provider,
+            api_mode=runtime.api_mode,
+        )
+        return True
+
+    monkeypatch.setattr("agent.chat_completion_helpers.try_activate_fallback", fallback)
+    caplog.set_level("INFO")
+
+    with pytest.raises(RuntimeError, match="compressor commit failed"):
+        agent._try_activate_fallback()
+
+    assert "attached fallback credential pool" not in caplog.text
+    assert "reasoning_config resolved" not in caplog.text
+    assert "extra_body resolved" not in caplog.text
 
 
 def _stage_recording_transition(

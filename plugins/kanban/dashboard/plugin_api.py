@@ -1654,9 +1654,20 @@ def get_orchestration_settings(board: Optional[str] = Query(None)):
     try:
         from hermes_cli import profiles as profiles_mod
         active_default = profiles_mod.get_active_profile_name() or "default"
-        for k, v in explicit.items():
-            if not v or not profiles_mod.profile_exists(v):
-                resolved[k] = active_default
+        for k in _PROFILE_SETTINGS:
+            # Per layer, not merged first: a board value naming an unknown
+            # profile falls through to a valid global instead of swallowing it.
+            resolved[k] = active_default
+            for candidate in (board_explicit[k], global_explicit[k]):
+                if not candidate:
+                    continue
+                try:
+                    exists = profiles_mod.profile_exists(candidate)
+                except OSError:
+                    exists = True  # filesystem lookup failed: trust the config (fail-open)
+                if exists:
+                    resolved[k] = candidate
+                    break
     except Exception:
         active_default = "default"
         resolved = {k: v or active_default for k, v in resolved.items()}

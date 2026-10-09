@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from hermes_cli.kanban_board_settings import effective_setting
+from hermes_cli.kanban_board_settings import board_override, board_pin_suppressed
 
 # load_config failure modes we tolerate: a missing/unreadable file (OSError),
 # a malformed YAML value (ValueError), an import-time problem (ImportError), a
@@ -34,6 +34,11 @@ def resolve_default_assignee(
     The board's ``kanban.boards.<slug>.default_assignee`` overrides the value
     the caller passed (its global default); a board with no override keeps the
     passed value, so existing callers are byte-for-byte unchanged.
+
+    Candidates are validated one at a time, in order: the board value (unless
+    pin-collapsed) then the caller's global. A board value naming an unknown
+    profile no longer swallows that valid global — it falls through to it,
+    matching the ``board -> global -> built-in`` chain the other readers use.
     """
     # Late import: kanban_db_dispatch owns ``_kb`` / ``_profile_exists_fn`` and
     # imports this module at its foot, so a module-level import would be a cycle.
@@ -46,13 +51,19 @@ def resolve_default_assignee(
         kanban_cfg = {}
     if not isinstance(kanban_cfg, dict):
         kanban_cfg = {}
-    resolved = effective_setting(
-        kanban_cfg, "default_assignee", board or dispatch._kb.get_current_board(),
-        fallback=default_assignee,
-    )
-    name = (resolved or "").strip() or None
-    if name:
-        profile_exists = dispatch._profile_exists_fn()
-        if profile_exists is not None and not profile_exists(name):
-            return None
-    return name
+    board_scope = board or dispatch._kb.get_current_board()
+    candidates: list[str] = []
+    if board_scope is not None and not board_pin_suppressed(board_scope):
+        override = board_override(kanban_cfg, "default_assignee", board_scope)
+        if override:
+            candidates.append(override)
+    global_value = (default_assignee or "").strip()
+    if global_value:
+        candidates.append(global_value)
+    profile_exists = dispatch._profile_exists_fn()
+    for name in candidates:
+        # ``profile_exists`` None means the roster can't be consulted: trust the
+        # operator's config (fail-open), same as the pre-fix single-candidate path.
+        if profile_exists is None or profile_exists(name):
+            return name
+    return None

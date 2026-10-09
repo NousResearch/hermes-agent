@@ -78,6 +78,38 @@ def test_get_board_inherits_global(client, home):
     assert data["board_default_assignee"] == ""  # no board override
 
 
+def test_get_board_unknown_override_falls_through_to_global(client, home, monkeypatch):
+    """Review #135651: a board override naming an unknown profile must not
+    swallow a valid global when resolving the effective value."""
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    _make_board("tsa-mgmt")
+    _write_config(
+        home,
+        "kanban:\n  default_assignee: worker\n"
+        "  boards:\n    tsa-mgmt:\n      default_assignee: ghost\n",
+    )
+    data = client.get("/api/plugins/kanban/orchestration?board=tsa-mgmt").json()
+    # Raw fields keep the pre-fix semantics (board wins the merge verbatim).
+    assert data["board_default_assignee"] == "ghost"
+    assert data["default_assignee"] == "ghost"
+    # The resolved value falls through to the valid global.
+    assert data["resolved_default_assignee"] == "worker"
+
+
+def test_get_board_and_global_unknown_resolves_to_active(client, home, monkeypatch):
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    _make_board("tsa-mgmt")
+    _write_config(
+        home,
+        "kanban:\n  default_assignee: ghost-global\n"
+        "  boards:\n    tsa-mgmt:\n      default_assignee: ghost-board\n",
+    )
+    data = client.get("/api/plugins/kanban/orchestration?board=tsa-mgmt").json()
+    assert data["resolved_default_assignee"] == "default"
+
+
 def test_put_board_writes_board_scope(client, home):
     _make_board("tsa-mgmt")
     r = client.put(

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_board_settings import effective_setting
+from hermes_cli.kanban_board_settings import board_override, board_pin_suppressed
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
@@ -130,11 +130,15 @@ def _profile_author() -> str:
 def _resolve_profile_from_cfg(
     cfg: dict, key: str, *, fallback: Optional[str] = None, board: Optional[str] = None,
 ) -> str:
-    """``kanban.boards.<board>.<key>`` if set, else ``kanban.<key>`` if it names
-    an existing profile, else ``fallback`` (the root task's own assignee) if
-    that does, else the active default profile — so a task is never stranded
+    """``kanban.boards.<board>.<key>`` if it names an existing profile, else
+    ``kanban.<key>`` if it does, else ``fallback`` (the root task's own assignee)
+    if it does, else the active default profile — so a task is never stranded
     for lack of an owner. ``orchestrator_profile`` owns the root after
     fan-out; ``default_assignee`` catches children the decomposer can't route.
+
+    A board value naming an unknown profile is skipped and the chain continues
+    to the global key rather than falling straight to ``fallback`` — a typo'd
+    board override must not silently discard a valid global.
 
     The root's assignee sits before the active profile because the decomposer
     runs inside whatever profile hosts the dispatcher — an operator's
@@ -148,16 +152,23 @@ def _resolve_profile_from_cfg(
             "kanban.%s: expected a string, got %s; ignoring", key, type(global_value).__name__,
         )
         global_value = ""
-    explicit = effective_setting(
-        kanban_cfg, key, board, fallback=global_value or None,
-    ) or ""
-    for candidate in (explicit, (fallback or "").strip()):
-        if candidate:
-            try:
-                if profiles_mod.profile_exists(candidate):
-                    return candidate
-            except Exception:
-                pass
+    global_value = (global_value or "").strip()
+    candidates: list[str] = []
+    if board is not None and not board_pin_suppressed(board):
+        override = board_override(kanban_cfg, key, board)
+        if override:
+            candidates.append(override)
+    if global_value:
+        candidates.append(global_value)
+    root = (fallback or "").strip()
+    if root:
+        candidates.append(root)
+    for candidate in candidates:
+        try:
+            if profiles_mod.profile_exists(candidate):
+                return candidate
+        except Exception:
+            pass
     try:
         return profiles_mod.get_active_profile_name() or "default"
     except Exception:

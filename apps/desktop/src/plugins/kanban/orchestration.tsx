@@ -25,6 +25,8 @@ import { useState } from 'react'
 import {
   $boardSlug,
   autoDescribeProfile,
+  boardsKey,
+  fetchBoards,
   fetchOrchestration,
   fetchProfiles,
   orchestrationKey,
@@ -138,12 +140,21 @@ export function OrchestrationPanel() {
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
-  const key = orchestrationKey(scope, slug)
-  const { data: settings } = useQuery({ queryKey: key, queryFn: fetchOrchestration })
+  const { data: boards } = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
+  const [globalMode, setGlobalMode] = useState(false)
+
+  // The panel scopes to the EFFECTIVE board in view: an explicit selection, else
+  // the machine's current board. No board yet (no boards data) degrades to the
+  // global scope. The scope switch lets the operator opt back out to global.
+  const effectiveBoard = slug || boards?.current || ''
+  const boardMode = !globalMode && Boolean(effectiveBoard)
+  const querySlug = boardMode ? effectiveBoard : ''
+  const key = orchestrationKey(scope, querySlug)
+  const { data: settings } = useQuery({ queryKey: key, queryFn: () => fetchOrchestration(querySlug) })
   const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   const save = useMutation({
-    mutationFn: (patch: Record<string, unknown>) => saveOrchestration(patch),
+    mutationFn: (patch: Record<string, unknown>) => saveOrchestration(querySlug, patch),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: key })
   })
@@ -156,21 +167,30 @@ export function OrchestrationPanel() {
   // is the effective (board -> global) value and the tag says which one won.
   const boardOrchestrator = settings.board_orchestrator_profile ?? ''
   const boardDefault = settings.board_default_assignee ?? ''
-  const boardScoped = Boolean(slug)
-  const hasBoardOverride = boardScoped && Boolean(boardOrchestrator || boardDefault)
+  const hasBoardOverride = boardMode && Boolean(boardOrchestrator || boardDefault)
   const scopeTag = (overridden: boolean) => (overridden ? k.boardOverrideLabel : k.boardInheritLabel)
 
-  const orchestratorLabel = boardScoped
+  const orchestratorLabel = boardMode
     ? `${k.orchestratorProfile} · ${scopeTag(Boolean(boardOrchestrator))}`
     : k.orchestratorProfile
 
-  const assigneeLabel = boardScoped
+  const assigneeLabel = boardMode
     ? `${k.defaultAssignee} · ${scopeTag(Boolean(boardDefault))}`
     : k.defaultAssignee
 
   return (
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
-      {boardScoped && (
+      {effectiveBoard && (
+        <div className="flex items-center gap-1">
+          <Button onClick={() => setGlobalMode(false)} size="xs" variant={boardMode ? 'outline' : 'ghost'}>
+            {k.boardSettingsLabel}
+          </Button>
+          <Button onClick={() => setGlobalMode(true)} size="xs" variant={globalMode ? 'outline' : 'ghost'}>
+            {k.globalScopeLabel}
+          </Button>
+        </div>
+      )}
+      {boardMode && (
         <div className="flex items-center justify-between gap-2">
           <span className={FIELD_LABEL}>{k.boardSettingsLabel}</span>
           {hasBoardOverride && (
@@ -198,8 +218,8 @@ export function OrchestrationPanel() {
           value={settings.default_assignee}
         />
         {/* auto_decompose / auto_promote_children stay global in v1, so the
-            switch is only offered on the global (no board in view) panel. */}
-        {!boardScoped && (
+            switch is only offered on the global scope. */}
+        {!boardMode && (
           <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[0.75rem] text-(--ui-text-secondary)">
             <Switch
               aria-label={k.autoDecompose}

@@ -211,6 +211,7 @@ type KanbanMessages = {
   auto: string
   // per-board orchestration overrides
   boardSettingsLabel: string
+  globalScopeLabel: string
   boardOverrideLabel: string
   boardInheritLabel: string
   clearBoardOverride: string
@@ -445,6 +446,7 @@ export const en: KanbanMessages = {
   profileGoodAt: 'What is this profile good at?',
   auto: 'Auto',
   boardSettingsLabel: 'This board',
+  globalScopeLabel: 'Global defaults',
   boardOverrideLabel: 'overridden here',
   boardInheritLabel: 'inherited from global',
   clearBoardOverride: 'Clear board override',
@@ -676,6 +678,7 @@ const ja: KanbanMessages = {
   profileGoodAt: 'このプロフィールの得意分野は？',
   auto: '自動',
   boardSettingsLabel: 'このボード',
+  globalScopeLabel: 'グローバル既定',
   boardOverrideLabel: 'このボードで上書き',
   boardInheritLabel: 'グローバルを継承',
   clearBoardOverride: 'ボードの上書きを解除',
@@ -904,6 +907,7 @@ const zh: KanbanMessages = {
   profileGoodAt: '这个配置档擅长什么？',
   auto: '自动',
   boardSettingsLabel: '本看板',
+  globalScopeLabel: '全局默认',
   boardOverrideLabel: '本看板已覆盖',
   boardInheritLabel: '继承全局',
   clearBoardOverride: '清除本看板覆盖',
@@ -1132,6 +1136,7 @@ const zhHant: KanbanMessages = {
   profileGoodAt: '這個設定檔擅長什麼？',
   auto: '自動',
   boardSettingsLabel: '本看板',
+  globalScopeLabel: '全域預設',
   boardOverrideLabel: '本看板已覆寫',
   boardInheritLabel: '繼承全域',
   clearBoardOverride: '清除本看板覆寫',

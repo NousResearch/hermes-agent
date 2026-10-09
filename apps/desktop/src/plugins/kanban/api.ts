@@ -355,10 +355,15 @@ function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
 }
 
-/** Append the selected board (and other params) to a path. */
-function withBoard(path: string, params: Record<string, string> = {}): string {
+/** Append a board param (and other params) to a path.
+ *
+ *  ``boardSlug`` overrides the selected-board atom:
+ *  ``undefined`` = legacy behaviour (use ``$boardSlug``),
+ *  ``''`` = no ``board`` param (global scope),
+ *  non-empty = ``?board=<slug>`` (that explicit board). */
+function withBoard(path: string, params: Record<string, string> = {}, boardSlug?: string): string {
   const search = new URLSearchParams(params)
-  const slug = $boardSlug.get()
+  const slug = boardSlug === undefined ? $boardSlug.get() : boardSlug
 
   if (slug) {
     search.set('board', slug)
@@ -406,7 +411,11 @@ export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profile
 /** First-class Hermes projects, for scoping a board's default workspace. */
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
 
-export const fetchOrchestration = () => call<OrchestrationSettings>(withBoard('/orchestration'))
+/** ``boardSlug`` is the EFFECTIVE board in view (``''`` = global scope); callers
+ *  pass it explicitly so a board-less selection follows ``boards.current``
+ *  instead of silently reading the global. */
+export const fetchOrchestration = (boardSlug?: string) =>
+  call<OrchestrationSettings>(withBoard('/orchestration', {}, boardSlug))
 
 // ── writes ────────────────────────────────────────────────────────────────────
 
@@ -506,8 +515,8 @@ export const importBoard = (archive: string) =>
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 
-export const saveOrchestration = (patch: Record<string, unknown>) =>
-  call<OrchestrationSettings>(withBoard('/orchestration'), { method: 'PUT', body: patch })
+export const saveOrchestration = (boardSlug: string, patch: Record<string, unknown>) =>
+  call<OrchestrationSettings>(withBoard('/orchestration', {}, boardSlug), { method: 'PUT', body: patch })
 
 export const saveProfileDescription = (name: string, description: string) =>
   call(`/profiles/${encodeURIComponent(name)}`, { method: 'PATCH', body: { description } })

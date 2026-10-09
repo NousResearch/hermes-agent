@@ -18,7 +18,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { $boardSlug, fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
+import { $boardSlug, boardsKey, fetchBoards, fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
 import { columnLabel, useKanban } from './i18n'
 import { columnMeta, type KanbanTask } from './types'
 
@@ -34,12 +34,21 @@ export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } fro
 export const $newTaskLane = atom<null | string>(null)
 
 /** Orchestration knobs (cached per connection + board; the settings panel
- *  invalidates). The board in view scopes the key so switching boards refetches. */
+ *  invalidates). The EFFECTIVE board in view scopes the key and the request:
+ *  an explicit selection, else ``boards.current`` (machine current board), so a
+ *  board-less desktop view still reads the SAME per-board values the dispatcher
+ *  routes by. No boards data yet falls back to '' = global scope. */
 export function useOrchestration() {
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const { data: boards } = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
+  const effective = slug || boards?.current || ''
 
-  return useQuery({ queryKey: orchestrationKey(scope, slug), queryFn: fetchOrchestration, staleTime: 60_000 }).data
+  return useQuery({
+    queryKey: orchestrationKey(scope, effective),
+    queryFn: () => fetchOrchestration(effective),
+    staleTime: 60_000
+  }).data
 }
 
 /** The dispatcher's configured fallback for unassigned ready cards

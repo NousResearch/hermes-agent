@@ -857,6 +857,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // moment the final reply lands is also the moment nothing follows the
   // virtualizer's re-measure. A reader who was at the bottom when the turn
   // ended gets re-pinned; a reader in history keeps their position (#135583).
+  // The gate is the MEASURED distance-from-bottom, not `isAtBottom`:
+  // use-stick-to-bottom escapes its lock on any unrecognized scrollTop
+  // decrease, including the synthetic one from an above-viewport
+  // content-visibility re-measure, so `isAtBottom` can already be false while
+  // the viewport is still parked at the end.
   const wasRunningRef = useRef(isRunning)
   wasRunningRef.current = isRunning
   useEffect(() => {
@@ -868,10 +873,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const el = scrollRef.current
 
-    if (el && shouldPinOnRunEnd(isAtBottom, isHistorical)) {
+    if (el && shouldPinOnRunEnd(threadScrollStateFromMetrics(el).kind === 'bottom', isHistorical)) {
       scrollToBottomUnlessSelecting()
     }
-  }, [isRunning, isAtBottom, isHistorical, scrollRef, scrollToBottomUnlessSelecting])
+  }, [isRunning, isHistorical, scrollRef, scrollToBottomUnlessSelecting])
 
   // Live scroll state of the CURRENT session, updated on every scroll event
   // AND on content height changes (ResizeObserver). The RO leg is what keeps

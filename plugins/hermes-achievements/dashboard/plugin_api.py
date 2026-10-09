@@ -54,13 +54,12 @@ def _load_locale(locale_code: str) -> Dict[str, Any]:
     path = _LOCALE_DIR / f"{locale_code}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if isinstance(data, dict):
-            _LOCALE_CACHE[locale_code] = data
-            return data
-    except Exception:
-        pass
-    _LOCALE_CACHE[locale_code] = {}
-    return {}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    _LOCALE_CACHE[locale_code] = data
+    return data
 
 
 def _supported_locale(language_range: str) -> Optional[str]:

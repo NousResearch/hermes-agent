@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import threading
 import time
 from dataclasses import replace
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -43,17 +45,82 @@ def _with_revision(entry: Any, revision: int) -> Any:
     )
 
 
-def _durable_row(pool: Any, credential_id: str) -> Optional[dict[str, Any]]:
-    from agent.credential_pool import read_credential_pool
+def _generation(pool: Any, credential_id: str) -> int:
+    return int(getattr(pool, "_entry_generations", {}).get(credential_id, 0))
 
+
+def _owning_store_path(pool: Any, credential_id: str) -> Path:
+    """Exact auth.json owning this row (active profile or borrowed global root)."""
+    from agent.credential_pool import (
+        SINGLE_USE_REFRESH_POOL_PROVIDERS,
+        _borrowed_single_use_pool_root,
+    )
+    import hermes_cli.auth as auth_mod
+
+    if (
+        pool.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+        and credential_id in getattr(pool, "_borrowed_root_ids", ())
+    ):
+        root = _borrowed_single_use_pool_root()
+        if root is not None:
+            return root
+    return auth_mod._auth_file_path()
+
+
+def _durable_row(
+    pool: Any,
+    credential_id: str,
+    store_path: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """Read one row from its exact owner instead of the profile/root merged view."""
+    import hermes_cli.auth as auth_mod
+
+    path = store_path or _owning_store_path(pool, credential_id)
+    store = auth_mod._load_auth_store(path)
+    rows = (store.get("credential_pool") or {}).get(pool.provider)
+    if not isinstance(rows, list):
+        return None
     return next(
         (
             copy.deepcopy(row)
-            for row in read_credential_pool(pool.provider)
+            for row in rows
             if isinstance(row, dict) and row.get("id") == credential_id
         ),
         None,
     )
+
+
+def _write_durable_row(
+    pool: Any,
+    credential_id: str,
+    entry: Any,
+    store_path: Path,
+) -> dict[str, Any]:
+    """Write exactly one target row while the caller holds ``store_path``'s lock."""
+    import hermes_cli.auth as auth_mod
+    from agent.credential_persistence import sanitize_borrowed_credential_payload
+
+    store = auth_mod._load_auth_store(store_path)
+    pool_section = store.get("credential_pool")
+    if not isinstance(pool_section, dict):
+        pool_section = {}
+        store["credential_pool"] = pool_section
+    rows = pool_section.get(pool.provider)
+    rows = list(rows) if isinstance(rows, list) else []
+    payload = sanitize_borrowed_credential_payload(entry.to_dict(), pool.provider)
+    replaced = False
+    for index, row in enumerate(rows):
+        if isinstance(row, dict) and row.get("id") == credential_id:
+            rows[index] = payload
+            replaced = True
+            break
+    if not replaced:
+        if credential_id in getattr(pool, "_borrowed_root_ids", ()):
+            raise RuntimeError("borrowed credential row disappeared from its owning store")
+        rows.append(payload)
+    pool_section[pool.provider] = rows
+    auth_mod._save_auth_store(store, target_path=store_path)
+    return copy.deepcopy(payload)
 
 
 def _eligible(pool: Any, entry: Any, model: Optional[str]) -> bool:
@@ -89,6 +156,8 @@ class CredentialReclaimTicket:
         candidate: Any,
         model: Optional[str],
         durable_basis: Optional[dict[str, Any]],
+        store_path: Path,
+        generation: int,
     ) -> None:
         self._pool = pool
         self._credential_id = entry.id
@@ -96,8 +165,11 @@ class CredentialReclaimTicket:
         self._prepared_entry = entry
         self._prepared_snapshot = _snapshot(entry)
         self._durable_basis = durable_basis
+        self._store_path = store_path
+        self._prepared_generation = generation
         self._prepared_revision = _revision(entry)
         self._committed_revision: Optional[int] = None
+        self._committed_generation: Optional[int] = None
         self._committed_snapshot: Optional[dict[str, Any]] = None
         self._committed_durable: Optional[dict[str, Any]] = None
         self._commit_started = False
@@ -134,94 +206,107 @@ class CredentialPoolReclaimMixin:
             if entry is None or not _eligible(self, entry, model):
                 return None
             candidate = replace(entry, **{**_CLEAR_STATUS, "last_status": STATUS_OK})
-            durable_basis = _durable_row(self, credential_id)
+            store_path = _owning_store_path(self, credential_id)
+            durable_basis = _durable_row(self, credential_id, store_path)
             return CredentialReclaimTicket(
-                self, entry, candidate, model, durable_basis,
+                self,
+                entry,
+                candidate,
+                model,
+                durable_basis,
+                store_path,
+                _generation(self, credential_id),
             )
+
+    def _refresh_reclaim_candidate(self, entry: Any) -> Optional[Any]:
+        """Run existing refresh logic against a private pool view with pool writes deferred."""
+        scratch = copy.copy(self)
+        scratch._entries = [entry]
+        scratch._lock = threading.RLock()
+        scratch._entry_generations = {entry.id: _generation(self, entry.id)}
+        scratch._borrowed_root_ids = set(getattr(self, "_borrowed_root_ids", ()))
+        scratch._persist = lambda **_kwargs: None
+        return scratch._refresh_entry(entry, force=False)
+
+    def _validate_reclaim_basis(self, ticket: CredentialReclaimTicket) -> Any:
+        current = next(
+            (item for item in self._entries if item.id == ticket._credential_id), None,
+        )
+        if (
+            current is None
+            or _snapshot(current) != ticket._prepared_snapshot
+            or _generation(self, ticket._credential_id) != ticket._prepared_generation
+            or not _eligible(self, current, ticket._model)
+        ):
+            raise RuntimeError("stale credential reclaim ticket")
+        return current
 
     def _commit_credential_reclaim_ticket(self, ticket: CredentialReclaimTicket):
         from agent.credential_pool import STATUS_OK, _CLEAR_STATUS, _auth_store_lock
 
         ticket._commit_started = True
-        with _auth_store_lock():
+        try:
             with self._lock:
-                current = next(
-                    (item for item in self._entries if item.id == ticket._credential_id), None
-                )
-                if (
-                    current is None
-                    or _snapshot(current) != ticket._prepared_snapshot
-                    or _revision(current) != ticket._prepared_revision
-                    or not _eligible(self, current, ticket._model)
-                ):
-                    raise RuntimeError("stale credential reclaim ticket")
-                if _durable_row(self, ticket._credential_id) != ticket._durable_basis:
-                    raise RuntimeError("stale credential reclaim ticket: durable row changed")
-                committed_revision = ticket._prepared_revision + 1
-                staged = _with_revision(current, committed_revision)
-                self._replace_entry(current, staged)
+                current = self._validate_reclaim_basis(ticket)
+                needs_refresh = self._entry_needs_refresh(current)
 
-            try:
-                if self._entry_needs_refresh(staged):
-                    committed = self._refresh_entry(staged, force=False)
-                    if committed is None:
-                        raise RuntimeError("credential reclaim refresh failed")
-                    with self._lock:
-                        live = next(
-                            (item for item in self._entries if item.id == ticket._credential_id), None
-                        )
-                        if live is None or _revision(live) != committed_revision:
-                            raise RuntimeError("credential reclaim changed during refresh")
-                        committed = live
-                        if committed.last_status != STATUS_OK:
-                            committed = replace(
-                                committed, **{**_CLEAR_STATUS, "last_status": STATUS_OK},
-                            )
-                            self._replace_entry(live, committed)
-                            self._persist(status_cleared_ids=[committed.id])
-                else:
-                    with self._lock:
-                        live = next(
-                            (item for item in self._entries if item.id == ticket._credential_id), None
-                        )
-                        if live is None or _snapshot(live) != _snapshot(staged):
-                            raise RuntimeError("credential reclaim changed before commit")
-                        committed = replace(
-                            live, **{**_CLEAR_STATUS, "last_status": STATUS_OK},
-                        )
-                        self._replace_entry(live, committed)
-                        self._persist(status_cleared_ids=[committed.id])
-            except Exception:
+            refreshed = self._refresh_reclaim_candidate(current) if needs_refresh else current
+            if refreshed is None:
+                raise RuntimeError("credential reclaim refresh failed")
+            committed_revision = ticket._prepared_revision + 1
+            committed = _with_revision(
+                replace(refreshed, **{**_CLEAR_STATUS, "last_status": STATUS_OK}),
+                committed_revision,
+            )
+
+            with _auth_store_lock(target_path=ticket._store_path):
                 with self._lock:
-                    live = next(
-                        (item for item in self._entries if item.id == ticket._credential_id), None
+                    current = self._validate_reclaim_basis(ticket)
+                    durable = _durable_row(
+                        self, ticket._credential_id, ticket._store_path,
                     )
-                    if live is not None and _snapshot(live) == _snapshot(staged):
-                        self._replace_entry(live, ticket._prepared_entry)
-                ticket.state = CredentialReclaimTicketState.ABORTED
-                raise
+                    if durable != ticket._durable_basis:
+                        raise RuntimeError("stale credential reclaim ticket: durable row changed")
+                    committed_durable = _write_durable_row(
+                        self,
+                        ticket._credential_id,
+                        committed,
+                        ticket._store_path,
+                    )
+                    self._replace_entry(current, committed)
+                    committed_generation = _generation(self, ticket._credential_id)
+        except Exception:
+            ticket.state = CredentialReclaimTicketState.ABORTED
+            raise
 
-            ticket._committed_revision = committed_revision
-            ticket._committed_snapshot = _snapshot(committed)
-            ticket._committed_durable = _durable_row(self, ticket._credential_id)
-            ticket.candidate = committed
-            ticket.state = CredentialReclaimTicketState.COMMITTED
-            return committed
+        ticket._committed_revision = committed_revision
+        ticket._committed_generation = committed_generation
+        ticket._committed_snapshot = _snapshot(committed)
+        ticket._committed_durable = committed_durable
+        ticket.candidate = committed
+        ticket.state = CredentialReclaimTicketState.COMMITTED
+        return committed
 
     def _abort_credential_reclaim_ticket(self, ticket: CredentialReclaimTicket) -> None:
-        if ticket._committed_revision is None or ticket._committed_snapshot is None:
+        if (
+            ticket._committed_revision is None
+            or ticket._committed_generation is None
+            or ticket._committed_snapshot is None
+        ):
             return
         from agent.credential_pool import _auth_store_lock
 
-        with _auth_store_lock():
+        with _auth_store_lock(target_path=ticket._store_path):
             with self._lock:
                 current = next(
-                    (item for item in self._entries if item.id == ticket._credential_id), None
+                    (item for item in self._entries if item.id == ticket._credential_id), None,
                 )
-                durable = _durable_row(self, ticket._credential_id)
+                durable = _durable_row(
+                    self, ticket._credential_id, ticket._store_path,
+                )
                 if (
                     current is None
-                    or _revision(current) != ticket._committed_revision
+                    or _generation(self, ticket._credential_id) != ticket._committed_generation
                     or _snapshot(current) != ticket._committed_snapshot
                     or durable != ticket._committed_durable
                 ):
@@ -238,5 +323,10 @@ class CredentialPoolReclaimMixin:
                     extra["failure_reason"] = original_failure_reason
                 extra[_RECLAIM_REVISION_KEY] = ticket._committed_revision + 1
                 compensated = replace(current, extra=extra, **status_values)
+                _write_durable_row(
+                    self,
+                    ticket._credential_id,
+                    compensated,
+                    ticket._store_path,
+                )
                 self._replace_entry(current, compensated)
-                self._persist()

@@ -40,6 +40,83 @@ class _CredentialSwapTarget:
         )
 
 
+@dataclass(frozen=True)
+class _CredentialSwapBasis:
+    """Live ownership identity that must still match when a candidate publishes."""
+
+    client: Any
+    anthropic_client: Any
+    credential_entry_id: Any
+    api_key: Any
+    base_url: Any
+    api_mode: Any
+    client_kwargs: dict[str, Any]
+    anthropic_api_key: Any
+    anthropic_base_url: Any
+    is_anthropic_oauth: Any
+    provider: Any
+    model: Any
+
+
+def _copy_client_kwargs(owner: Any) -> dict[str, Any]:
+    return {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in dict(getattr(owner, "_client_kwargs", {})).items()
+    }
+
+
+def _capture_basis(owner: Any) -> _CredentialSwapBasis:
+    return _CredentialSwapBasis(
+        client=getattr(owner, "client", None),
+        anthropic_client=getattr(owner, "_anthropic_client", None),
+        credential_entry_id=getattr(owner, "_credential_pool_entry_id", None),
+        api_key=getattr(owner, "api_key", None),
+        base_url=getattr(owner, "base_url", None),
+        api_mode=getattr(owner, "api_mode", None),
+        client_kwargs=_copy_client_kwargs(owner),
+        anthropic_api_key=getattr(owner, "_anthropic_api_key", None),
+        anthropic_base_url=getattr(owner, "_anthropic_base_url", None),
+        is_anthropic_oauth=getattr(owner, "_is_anthropic_oauth", None),
+        provider=getattr(owner, "provider", None),
+        model=getattr(owner, "model", None),
+    )
+
+
+def _basis_matches(owner: Any, basis: _CredentialSwapBasis) -> bool:
+    return bool(
+        getattr(owner, "client", None) is basis.client
+        and getattr(owner, "_anthropic_client", None) is basis.anthropic_client
+        and getattr(owner, "_credential_pool_entry_id", None) == basis.credential_entry_id
+        and getattr(owner, "api_key", None) == basis.api_key
+        and getattr(owner, "base_url", None) == basis.base_url
+        and getattr(owner, "api_mode", None) == basis.api_mode
+        and _copy_client_kwargs(owner) == basis.client_kwargs
+        and getattr(owner, "_anthropic_api_key", None) == basis.anthropic_api_key
+        and getattr(owner, "_anthropic_base_url", None) == basis.anthropic_base_url
+        and getattr(owner, "_is_anthropic_oauth", None) == basis.is_anthropic_oauth
+        and getattr(owner, "provider", None) == basis.provider
+        and getattr(owner, "model", None) == basis.model
+    )
+
+
+def _restore_basis(owner: Any, basis: _CredentialSwapBasis) -> None:
+    owner.client = basis.client
+    owner._anthropic_client = basis.anthropic_client
+    owner._credential_pool_entry_id = basis.credential_entry_id
+    owner.api_key = basis.api_key
+    owner.base_url = basis.base_url
+    owner.api_mode = basis.api_mode
+    owner._client_kwargs = dict(basis.client_kwargs)
+    owner._anthropic_api_key = basis.anthropic_api_key
+    owner._anthropic_base_url = basis.anthropic_base_url
+    owner._is_anthropic_oauth = basis.is_anthropic_oauth
+
+
+def _lifecycle_lock(owner: Any):
+    lock_factory = getattr(owner, "_openai_client_lock", None)
+    return lock_factory() if callable(lock_factory) else nullcontext()
+
+
 def _derive_target(owner: Any, entry: Any) -> Optional[_CredentialSwapTarget]:
     runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     runtime_base = (
@@ -134,10 +211,17 @@ def _build_candidate(owner: Any, target: _CredentialSwapTarget) -> tuple[Any, _C
 class CredentialSwapTicket:
     """Replacement client built off to the side and published at commit."""
 
-    def __init__(self, owner: Any, target: _CredentialSwapTarget, resource: Any) -> None:
+    def __init__(
+        self,
+        owner: Any,
+        target: _CredentialSwapTarget,
+        resource: Any,
+        basis: _CredentialSwapBasis,
+    ) -> None:
         self._owner = owner
         self._target = target
         self._candidate_resource = resource
+        self._basis = basis
         self._candidate_closed = False
         self._installed = False
         self.state = CredentialSwapTicketState.PREPARED
@@ -148,35 +232,41 @@ class CredentialSwapTicket:
         _close_candidate(self._owner, self._candidate_resource, self._target.api_mode)
         self._candidate_closed = True
 
+    def _refuse(self) -> bool:
+        self._close_candidate()
+        self.state = CredentialSwapTicketState.ABORTED
+        return False
+
     def commit(self, entry: Any) -> bool:
         if self.state is CredentialSwapTicketState.COMMITTED:
             return True
         if self.state is CredentialSwapTicketState.ABORTED:
             raise RuntimeError("cannot commit an aborted credential swap ticket")
 
-        final_target = _derive_target(self._owner, entry)
+        owner = self._owner
+        with _lifecycle_lock(owner):
+            if not _basis_matches(owner, self._basis):
+                return self._refuse()
+            final_target = _derive_target(owner, entry)
         if final_target is None or final_target.entry_id != self._target.entry_id:
-            return False
+            return self._refuse()
         if final_target.resource_key != self._target.resource_key:
             try:
                 final_resource, final_target = _build_candidate(self._owner, final_target)
             except Exception as exc:
                 logger.warning("Failed to rebuild shared primary client (credential_rotation): %s", exc)
-                self._close_candidate()
-                return False
+                return self._refuse()
             self._close_candidate()
             self._candidate_resource = final_resource
             self._candidate_closed = False
             self._target = final_target
 
-        owner = self._owner
         target = self._target
-        lock_factory = getattr(owner, "_openai_client_lock", None)
-        lock = lock_factory() if callable(lock_factory) else nullcontext()
         try:
-            with lock:
+            with _lifecycle_lock(owner):
+                if not _basis_matches(owner, self._basis):
+                    return self._refuse()
                 if target.api_mode == "anthropic_messages":
-                    original = getattr(owner, "_anthropic_client", None)
                     owner._anthropic_api_key = target.runtime_key
                     owner._anthropic_base_url = target.runtime_base
                     owner._anthropic_client = self._candidate_resource
@@ -184,7 +274,6 @@ class CredentialSwapTicket:
                     owner.api_key = target.runtime_key
                     owner.base_url = target.runtime_base
                 else:
-                    original = getattr(owner, "client", None)
                     owner.api_mode = target.api_mode
                     owner._credential_pool_entry_id = target.entry_id
                     owner.api_key = target.runtime_key
@@ -195,6 +284,8 @@ class CredentialSwapTicket:
                         owner._transport_cache.clear()
                 owner._credential_pool_entry_id = target.entry_id
         except Exception:
+            with suppress(Exception):
+                _restore_basis(owner, self._basis)
             self._close_candidate()
             raise
 
@@ -202,11 +293,11 @@ class CredentialSwapTicket:
         self.state = CredentialSwapTicketState.COMMITTED
         if target.api_mode == "anthropic_messages":
             with suppress(Exception):
-                original.close()
+                self._basis.anthropic_client.close()
         else:
             try:
                 owner._retire_shared_openai_client(
-                    original, reason="replace:credential_rotation",
+                    self._basis.client, reason="replace:credential_rotation",
                 )
             except Exception:
                 logger.debug("Credential replacement retirement failed", exc_info=True)
@@ -220,7 +311,9 @@ class CredentialSwapTicket:
 
 
 def prepare_credential_swap(owner: Any, entry: Any) -> Optional[CredentialSwapTicket]:
-    target = _derive_target(owner, entry)
+    with _lifecycle_lock(owner):
+        basis = _capture_basis(owner)
+        target = _derive_target(owner, entry)
     if target is None:
         return None
     try:
@@ -228,4 +321,4 @@ def prepare_credential_swap(owner: Any, entry: Any) -> Optional[CredentialSwapTi
     except Exception as exc:
         logger.warning("Failed to build replacement client (credential_rotation): %s", exc)
         return None
-    return CredentialSwapTicket(owner, target, resource)
+    return CredentialSwapTicket(owner, target, resource, basis)

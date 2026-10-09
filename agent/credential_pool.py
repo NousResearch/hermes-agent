@@ -986,6 +986,9 @@ class CredentialPool(
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
+        # Owner-local ABA guard. Every in-memory row replacement advances the
+        # generation even when the resulting value equals an earlier snapshot.
+        self._entry_generations: Dict[str, int] = {entry.id: 0 for entry in self._entries}
         self._current_id: Optional[str] = None
         # Ids of rows read via the global-root fallback (single-use OAuth
         # providers only); set by load_pool(), consumed by add_entry().
@@ -1108,6 +1111,10 @@ class CredentialPool(
             for idx, entry in enumerate(self._entries):
                 if entry.id == old.id:
                     self._entries[idx] = new
+                    generations = getattr(self, "_entry_generations", None)
+                    if generations is None:  # compatibility for narrow __new__-constructed test/plugin pools
+                        generations = self._entry_generations = {}
+                    generations[entry.id] = generations.get(entry.id, 0) + 1
                     return
 
     def _persist(

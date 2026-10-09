@@ -7,6 +7,7 @@ for the session that took the rotation, or a long-lived gateway agent bills the 
 its whole life. Credential-only: it must not touch the model/base_url/compressor restore path.
 """
 
+import json
 import logging
 import threading
 import time
@@ -309,6 +310,145 @@ def test_reclaim_swap_build_failure_aborts_only_replacement_resources(tmp_path, 
     assert next(entry for entry in pool.entries() if entry.id == "pref0000").last_status == cp.STATUS_EXHAUSTED
 
 
+def test_reclaim_persist_failure_keeps_live_and_durable_cooldown(tmp_path, monkeypatch):
+    """A durable write failure must not publish the cleared row in memory."""
+    pool = _expired_reclaim_pool(tmp_path, monkeypatch, oauth=False)
+    ticket = pool.prepare_reclaim("pref0000", model="claude-opus-5")
+    assert ticket is not None
+    import hermes_cli.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_save_auth_store",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture persist failed")),
+    )
+
+    with pytest.raises(OSError, match="fixture persist failed"):
+        ticket.commit()
+    ticket.abort()
+
+    live = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    assert live.last_status == cp.STATUS_EXHAUSTED
+    persisted = next(row for row in auth_mod.read_credential_pool("anthropic") if row["id"] == "pref0000")
+    assert persisted["last_status"] == cp.STATUS_EXHAUSTED
+    assert pool.prepare_reclaim("pref0000", model="claude-opus-5") is not None
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+def test_credential_swap_refuses_concurrent_client_replacement(
+    tmp_path, monkeypatch, api_mode,
+):
+    """A prepared ticket owns its original client, never a newer concurrent replacement."""
+    pool = _expired_reclaim_pool(tmp_path, monkeypatch)
+    preferred = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    agent = _LifecycleAgent(pool, api_mode=api_mode)
+    original = agent._anthropic_client if api_mode == "anthropic_messages" else agent.client
+    ticket = agent._prepare_credential_swap(preferred)
+    assert ticket is not None
+    candidate = agent.created_resources[-1]
+    concurrent = _Resource(f"concurrent-{api_mode}")
+    if api_mode == "anthropic_messages":
+        agent._anthropic_client = concurrent
+    else:
+        agent.client = concurrent
+
+    assert ticket.commit(preferred) is False
+    ticket.abort()
+
+    if api_mode == "anthropic_messages":
+        assert agent._anthropic_client is concurrent
+        assert concurrent.close_calls == 0
+        assert original.close_calls == 0
+    else:
+        assert agent.client is concurrent
+        assert concurrent.retire_calls == 0
+        assert original.retire_calls == 0
+    assert candidate.close_calls == 1
+    assert agent._credential_pool_revert_id == "pref0000"
+
+
+def _run_blocked_reclaim_refresh(pool, monkeypatch):
+    """Start a deterministic in-flight Codex refresh and return its controls/results."""
+    import hermes_cli.auth as auth_mod
+
+    started = threading.Event()
+    release = threading.Event()
+    outcome = {"entry": None, "error": None}
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
+
+    def _refresh(_access_token, _refresh_token):
+        started.set()
+        assert release.wait(5), "fixture refresh was never released"
+        return {
+            "access_token": "refreshed-access",
+            "refresh_token": "refreshed-token",
+            "last_refresh": "2099-01-01T00:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _refresh)
+    ticket = pool.prepare_reclaim("pref0000", model="gpt-5.4")
+    assert ticket is not None
+
+    def _commit():
+        try:
+            outcome["entry"] = ticket.commit()
+        except Exception as exc:  # expected by the fixed stale-ticket path
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_commit)
+    thread.start()
+    assert started.wait(5), "fixture refresh never started"
+    return ticket, thread, release, outcome
+
+
+def test_reclaim_refresh_does_not_overwrite_newer_in_memory_cooldown(tmp_path, monkeypatch):
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    ticket, thread, release, outcome = _run_blocked_reclaim_refresh(pool, monkeypatch)
+    live = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    newer_at = time.time() + 60
+    newer = replace(
+        live,
+        last_status=cp.STATUS_EXHAUSTED,
+        last_status_at=newer_at,
+        last_error_reason="newer_concurrent_cooldown",
+        last_error_reset_at=newer_at + 3600,
+    )
+    pool._replace_entry(live, newer)
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+    assert outcome["entry"] is None
+    assert isinstance(outcome["error"], RuntimeError)
+    ticket.abort()
+    surviving = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    assert surviving.last_status == cp.STATUS_EXHAUSTED
+    assert surviving.last_error_reason == "newer_concurrent_cooldown"
+
+
+def test_reclaim_refresh_detects_equal_value_aba(tmp_path, monkeypatch):
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    ticket, thread, release, outcome = _run_blocked_reclaim_refresh(pool, monkeypatch)
+    staged = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    changed = replace(staged, label="temporary-aba-value")
+    pool._replace_entry(staged, changed)
+    pool._replace_entry(changed, staged)
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+    assert outcome["entry"] is None
+    assert isinstance(outcome["error"], RuntimeError)
+    ticket.abort()
+    surviving = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    assert surviving.last_status == cp.STATUS_EXHAUSTED
+    assert surviving.label == "preferred"
+
+
 def test_reclaim_swap_derives_anthropic_oauth_from_candidate_route(tmp_path, monkeypatch):
     """A route change must not classify a third-party endpoint using the old native base URL."""
     pool = _expired_reclaim_pool(tmp_path, monkeypatch, provider="glm")
@@ -326,6 +466,140 @@ def test_reclaim_swap_derives_anthropic_oauth_from_candidate_route(tmp_path, mon
 
     assert agent._anthropic_base_url == third_party_base
     assert agent._is_anthropic_oauth is False
+
+
+def test_borrowed_root_reclaim_serializes_durable_cas_and_write(tmp_path, monkeypatch):
+    """The root owner lock keeps compare+write atomic; a peer root update wins afterward."""
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    import hermes_constants
+    import hermes_cli.auth as auth_mod
+    import agent.credential_pool_reclaim as reclaim_mod
+
+    root_pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="xai-oauth", oauth=True,
+    )
+    root = tmp_path / "hermes"
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    from hermes_cli.profiles import create_profile
+
+    profile = create_profile("worker")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    auth_mod._global_auth_store_cache = None
+    pool = cp.load_pool("xai-oauth")
+    assert pool._borrowed_root_ids == {entry.id for entry in root_pool.entries()}
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: False)
+    ticket = pool.prepare_reclaim("pref0000", model="grok-4")
+    assert ticket is not None
+    lock_targets = []
+    original_pool_lock = cp._auth_store_lock
+
+    def _observed_pool_lock(*args, **kwargs):
+        lock_targets.append(kwargs.get("target_path"))
+        return original_pool_lock(*args, **kwargs)
+
+    monkeypatch.setattr(cp, "_auth_store_lock", _observed_pool_lock)
+
+    compare_seen = threading.Event()
+    peer_done = threading.Event()
+    original_durable_row = reclaim_mod._durable_row
+    reads = 0
+
+    def _observed_durable_row(*args, **kwargs):
+        nonlocal reads
+        row = original_durable_row(*args, **kwargs)
+        reads += 1
+        if reads == 1:
+            compare_seen.set()
+            peer_done.wait(0.25)
+        return row
+
+    monkeypatch.setattr(reclaim_mod, "_durable_row", _observed_durable_row)
+    root_auth = root / "auth.json"
+    newer_at = time.time() + 120
+
+    def _peer_write():
+        assert compare_seen.wait(5)
+        with auth_mod._auth_store_lock(target_path=root_auth):
+            store = auth_mod._load_auth_store(root_auth)
+            row = next(item for item in store["credential_pool"]["xai-oauth"] if item["id"] == "pref0000")
+            row.update({
+                "access_token": "peer-root-access",
+                "refresh_token": "peer-root-refresh",
+                "last_status": cp.STATUS_EXHAUSTED,
+                "last_status_at": newer_at,
+                "last_error_reason": "peer_root_cooldown",
+                "last_error_reset_at": newer_at + 3600,
+            })
+            auth_mod._save_auth_store(store, target_path=root_auth)
+        peer_done.set()
+
+    peer = threading.Thread(target=_peer_write)
+    peer.start()
+    ticket.commit()
+    peer.join(5)
+    assert not peer.is_alive()
+    assert lock_targets[0] == root_auth
+
+    root_store = json.loads(root_auth.read_text(encoding="utf-8"))
+    persisted = next(row for row in root_store["credential_pool"]["xai-oauth"] if row["id"] == "pref0000")
+    assert persisted["access_token"] == "peer-root-access"
+    assert persisted["refresh_token"] == "peer-root-refresh"
+    assert persisted["last_status"] == cp.STATUS_EXHAUSTED
+    assert persisted["last_error_reason"] == "peer_root_cooldown"
+
+
+def test_reclaim_peer_token_adoption_persists_pool_once(tmp_path, monkeypatch):
+    """Adopting a peer-rotated singleton and clearing cooldown is one pool-store write."""
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    preferred = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    seeded = replace(
+        preferred,
+        source="device_code",
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+    )
+    pool._replace_entry(preferred, seeded)
+    pool._persist()
+    import hermes_cli.auth as auth_mod
+
+    auth_file = tmp_path / "hermes" / "auth.json"
+    store = json.loads(auth_file.read_text(encoding="utf-8"))
+    store.setdefault("providers", {})["openai-codex"] = {
+        "tokens": {
+            "access_token": "peer-access",
+            "refresh_token": "peer-refresh",
+        },
+        "last_refresh": "2099-01-01T00:00:00Z",
+    }
+    auth_file.write_text(json.dumps(store), encoding="utf-8")
+    monkeypatch.setattr(cp, "_codex_entry_tracks_singleton", lambda *_args: True)
+    monkeypatch.setattr(
+        cp, "_codex_access_token_is_expiring",
+        lambda token, _skew=0: token == "stale-access",
+    )
+    writes = 0
+    original_save = auth_mod._save_auth_store
+
+    def _tracked_save(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(auth_mod, "_save_auth_store", _tracked_save)
+    ticket = pool.prepare_reclaim("pref0000", model="grok-4")
+    assert ticket is not None
+
+    committed = ticket.commit()
+
+    assert committed.access_token == "peer-access"
+    assert committed.refresh_token == "peer-refresh"
+    assert committed.last_status == cp.STATUS_OK
+    assert writes == 1
 
 
 def test_reclaim_abort_does_not_overwrite_newer_cooldown(tmp_path, monkeypatch):
@@ -366,20 +640,16 @@ def test_reclaim_abort_preserves_single_use_refresh_result(tmp_path, monkeypatch
     )
     monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
 
-    def _single_use_refresh(entry, *, force):
-        assert force is False
-        refreshed = replace(
+    def _single_use_refresh(entry):
+        return replace(
             entry,
             access_token="single-use-access-new",
             refresh_token="single-use-refresh-new",
             expires_at_ms=2**53,
             **cp._MARK_OK,
         )
-        pool._replace_entry(entry, refreshed)
-        pool._persist(status_cleared_ids=[entry.id])
-        return refreshed
 
-    monkeypatch.setattr(pool, "_refresh_entry", _single_use_refresh)
+    monkeypatch.setattr(pool, "_refresh_reclaim_candidate", _single_use_refresh)
     ticket = pool.prepare_reclaim("pref0000", model="gpt-5.4")
     assert ticket is not None
 
@@ -408,16 +678,17 @@ def test_reclaim_commit_clears_once_then_logs_once(tmp_path, monkeypatch, caplog
     original = agent.client
     events = agent.events
     persist_calls = 0
-    original_persist = pool._persist
+    import agent.credential_pool_reclaim as reclaim_mod
+    original_persist = reclaim_mod._write_durable_row
 
-    def _tracked_persist(**kwargs):
+    def _tracked_persist(*args, **kwargs):
         nonlocal persist_calls
         assert agent._credential_pool_revert_id == "pref0000"
         persist_calls += 1
         events.append("pool_commit")
-        return original_persist(**kwargs)
+        return original_persist(*args, **kwargs)
 
-    monkeypatch.setattr(pool, "_persist", _tracked_persist)
+    monkeypatch.setattr(reclaim_mod, "_write_durable_row", _tracked_persist)
     original_info = runtime_helpers.logger.info
 
     def _tracked_info(message, *args, **kwargs):

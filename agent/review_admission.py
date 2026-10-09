@@ -82,6 +82,10 @@ REASON_COMPLETION_ERROR = "review_completion_error"
 # The fork's FIRST provider request was refused by its aggregate input budget: zero provider
 # calls, no writes (the replay is bounded at spawn so this stays a fail-safe, not the norm).
 REASON_INPUT_BUDGET_REFUSED = "review_input_budget_refused"
+# The parent's provider client cannot carry Hermes tool calls back (an agent-as-provider shim
+# declaring ``SUPPORTS_HERMES_TOOL_CALLS = False``) and the review is not routed elsewhere: the
+# fork could write nothing, so it is never spawned.
+REASON_PROVIDER_INCAPABLE = "provider_cannot_emit_tool_calls"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.

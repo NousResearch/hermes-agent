@@ -183,3 +183,54 @@ def test_an_incapable_provider_still_reviews_when_the_review_is_routed_away():
     }
     with patch.object(bg, "_resolve_review_runtime", return_value=routed):
         assert _run(_fake_parent(_IncapableClient())).called
+
+
+def test_incapable_provider_skip_is_owner_tagged_with_a_stable_reason(caplog):
+    """The skip is a review decision like every other: one body-free line with the hashed owner
+    and a stable slug (greppable beside ``live_turn_active`` and friends), the remediation hint
+    on its own line, never the session id."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    with caplog.at_level(logging.WARNING, logger=bg.logger.name):
+        _run(_fake_parent(client))
+
+    decision = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_PROVIDER_INCAPABLE in r.getMessage()
+    ]
+    assert len(decision) == 1, caplog.text
+    assert decision[0].startswith("Background review skipped (owner=")
+    assert review_admission.owner_tag("", "s1") in decision[0]
+    assert "s1" not in decision[0]
+    assert "auxiliary.background_review" in caplog.text
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["refine", "automatic"])
+def test_explicit_refine_on_an_incapable_provider_tells_the_user(explicit):
+    """/refine already reported "reviewing in the background": the skip must reach the user on
+    the review's own channel, with the knob that makes it work. An automatic skip stays silent."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+    printed: list[str] = []
+    published: list[str] = []
+    agent._safe_print = lambda text, *_a, **_k: printed.append(text)
+    agent.background_review_callback = published.append
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("run_agent.AIAgent") as mock_aiagent,
+        patch("tools.terminal_tool.set_approval_callback"),
+    ):
+        bg._run_review_in_thread(
+            agent, [{"role": "user", "content": "hi"}], "review please", explicit=explicit
+        )
+
+    mock_aiagent.assert_not_called()
+    if explicit:
+        assert len(published) == 1 and printed
+        assert "Review skipped" in published[0]
+        assert "auxiliary.background_review" in published[0]
+    else:
+        assert published == [] and printed == []

@@ -451,7 +451,8 @@ hashed owner tag and a stable reason (`live_turn_active`,
 `review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
 `review_lease_renewal_locked`,
 `review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`,
-`review_input_budget_refused`, …), never the session id or any message text.
+`review_input_budget_refused`, `provider_cannot_emit_tool_calls`, …), never the
+session id or any message text.
 
 Same-model reviews replay an ordinary conversation verbatim for prompt-cache
 reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes

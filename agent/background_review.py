@@ -1672,6 +1672,11 @@ _EXPLICIT_REFUSAL_NOTICE = (
     "⚗ Review skipped: this session is busy in another Hermes process — "
     "run /refine again once it is free."
 )
+_PROVIDER_INCAPABLE_NOTICE = (
+    "⚗ Review skipped: this provider cannot emit Hermes tool calls, so the review could not "
+    "write memories or skills — set auxiliary.background_review.{provider,model} to route "
+    "reviews to a normal model."
+)
 
 
 def _publish_review_notice(agent: Any, text: str) -> None:
@@ -1716,12 +1721,23 @@ def _run_review_in_thread(
         # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
         # check first so the normal path never resolves the runtime twice.
         if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
+            from agent.review_admission import REASON_PROVIDER_INCAPABLE
+
+            # The decision line is body-free and owner-tagged like every other skip; the
+            # remediation hint (which names the provider) rides on its own line.
             logger.warning(
-                "Background review skipped: provider %r cannot emit Hermes tool calls, "
-                "so the review fork could not write memories or skills. Set "
-                "auxiliary.background_review.{provider,model} to route the review to a normal model.",
+                "Background review skipped (owner=%s): %s",
+                _review_owner_tag(review_run, None, review_session_id or getattr(agent, "session_id", None)),
+                REASON_PROVIDER_INCAPABLE,
+            )
+            logger.warning(
+                "Provider %r cannot emit Hermes tool calls, so the review fork could not write "
+                "memories or skills. Set auxiliary.background_review.{provider,model} to route "
+                "the review to a normal model.",
                 getattr(agent, "provider", "?"),
             )
+            if explicit:  # /refine was already reported as started by its handler
+                _publish_review_notice(agent, _PROVIDER_INCAPABLE_NOTICE)
             return
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.

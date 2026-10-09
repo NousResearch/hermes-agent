@@ -16,7 +16,7 @@ import shlex
 from contextlib import redirect_stdout
 from io import StringIO
 
-from agent.i18n import t  # noqa: F401  module-global seam: _t/_tn/_gt close over it
+from agent.i18n import t
 
 
 def _cp(*lines: str) -> None:

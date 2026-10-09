@@ -43,7 +43,7 @@ def _pm_package_for_command(command: str) -> str | None:
     package definitions (binary_rel → executable basename) — no restated
     name table, so new pm packages are covered without doctor changes."""
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm import registry, store
         from pm.packages import BinaryPackage
 
@@ -246,7 +246,7 @@ def _check_daytona_backend(issues: list[str]) -> None:
              ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
              "run `hermes setup terminal` (Daytona) to enter it.", issues)
     try:
-        from daytona import Daytona  # noqa: F401 — SDK presence check
+        from daytona import Daytona
         check_ok("daytona SDK", "(installed)")
     except ImportError:
         _fail_and_issue("daytona SDK not installed", "(run hermes setup terminal)", "Run hermes setup terminal and select Daytona, then restart Hermes", issues)

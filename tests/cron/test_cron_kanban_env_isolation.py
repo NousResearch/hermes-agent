@@ -28,6 +28,8 @@ is left completely untouched.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import threading
 
@@ -293,6 +295,78 @@ class TestRunJobKanbanIsolation:
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
         }
         assert after == before
+
+    def test_cli_cron_run_cannot_complete_inherited_parent_task(
+        self, monkeypatch, tmp_path
+    ):
+        """``hermes cron run`` must not grant the cron agent its caller's card.
+
+        This drives the real CLI parser, cronjob tool, manual-run claim, scheduler,
+        and Kanban database. The fake cron agent attempts the exact damaging bare
+        ``kanban_complete`` call; the inherited worker task must stay running.
+        """
+        from cron.jobs import create_job
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        from hermes_cli.cron import cron_command
+        from hermes_cli.subcommands.cron import build_cron_parser
+        from tools import kanban_tools
+
+        board = tmp_path / "board.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(board))
+        kb._INITIALIZED_PATHS.clear()
+        kb.init_db()
+        with kbc.connect(board) as conn:
+            parent_id = kb.create_task(
+                conn, title="parent worker", assignee="test-worker"
+            )
+            kb.claim_task(conn, parent_id)
+            parent_before = kb.get_task(conn, parent_id)
+            assert parent_before is not None
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(parent_before.current_run_id))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "test-board")
+
+        cron_dir = tmp_path / "cron"
+        monkeypatch.setattr("cron.jobs.CRON_DIR", cron_dir)
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", cron_dir / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", cron_dir / "output")
+        job = create_job(prompt="attempt parent completion", schedule="every 1h")
+
+        observed = {}
+
+        class CompletingCronAgent:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_conversation(self, *_args, **_kwargs):
+                observed["completion"] = json.loads(
+                    kanban_tools._handle_complete(
+                        {"summary": "cron incorrectly completed its parent"}
+                    )
+                )
+                return {"final_response": "done", "messages": []}
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+        self._install_stubs(
+            monkeypatch, observed, agent_cls=CompletingCronAgent
+        )
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        args = parser.parse_args(["cron", "run", job["id"]])
+
+        assert args.func(args) == 0
+        assert observed["completion"].get("error")
+        with kbc.connect(board) as conn:
+            parent_after = kb.get_task(conn, parent_id)
+            assert parent_after is not None
+        assert parent_after.status == "running"
+        assert parent_after.current_run_id == parent_before.current_run_id
 
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):

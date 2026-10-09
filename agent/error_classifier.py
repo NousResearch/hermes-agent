@@ -1069,6 +1069,17 @@ def _status_429(c: _Ctx) -> Verdict:
         upstream = _extract_upstream_provider_name(c.body)
         ctx = {"upstream_provider": upstream} if upstream else {}
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
+    # Z.AI provider-specific error codes: classify by code, not message shape.
+    # Code 1308 = "Usage limit reached for N hour" (rolling subscription-window quota, resets on a clock)
+    # Code 1113 = "Insufficient balance or no resource package" (true account-balance problem)
+    # See t_4d90e432: zai error classification by code instead of message shape.
+    if c.provider_slug in {"zai", "glm", "z-ai", "z.ai", "zhipu"}:
+        if c.code == "1308":
+            # Rolling subscription-window quota: transient, rate_limit with rotation
+            return _V_RATE_LIMIT
+        if c.code == "1113":
+            # True balance/credit exhaustion: billing, rotate immediately
+            return _V_BILLING
     # Quota walls as 429 (Anthropic ``usage_limit_reached``, "quota", billing
     # phrases) are billing ONLY when the body is not itself a rate-limit phrase
     # ("Rate limit exceeded" contains "limit exceeded") and carries no reset/

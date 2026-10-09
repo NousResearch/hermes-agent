@@ -548,7 +548,15 @@ _RUN_BACKUP_PREFIX = "hermes-backup-"
 
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
     """Turn ``--output`` (file, directory, or None) into a ``.zip`` path whose parent exists;
-    an unwritable path exits with a one-line error, not a traceback."""
+    an unwritable path exits with a one-line error, not a traceback.
+
+    All backup destinations require the USB backup volume to be mounted (t_e90f982f).
+    If the USB volume is absent, the backup aborts with a clear error instead of
+    silently writing to internal disk.
+    """
+    # Always require USB volume to be mounted (prevents silent fallback to internal disk)
+    usb_backup_root = _require_usb_backup_volume()
+
     out_path = None
     default_name = f"{_RUN_BACKUP_PREFIX}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
@@ -557,10 +565,15 @@ def _resolve_backup_output_path(output: Optional[str]) -> Path:
             if out_path.is_dir():
                 out_path = out_path / default_name
         else:
-            out_path = Path.home() / default_name
+            # Default destination: USB backup volume
+            out_path = usb_backup_root / default_name
         if out_path.suffix.lower() != ".zip":
             out_path = out_path.with_suffix(out_path.suffix + ".zip")
         out_path.parent.mkdir(parents=True, exist_ok=True)
+    except RuntimeError as exc:
+        # USB volume not mounted — surface the guard error, don't fall back
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
     except OSError as exc:
         print(f"Error: cannot write backup to {output or out_path}: {exc}")
         raise SystemExit(1) from exc
@@ -1080,8 +1093,14 @@ _QUICK_DEFAULT_KEEP = 20
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
-    home = hermes_home or get_hermes_home()
-    return home / _QUICK_SNAPSHOTS_DIR
+    """Quick snapshot root — USB backup volume when mounted, loud error otherwise.
+
+    Redirected from <home>/state-snapshots/ to /Volumes/Storage/backups/hermes/state-snapshots/
+    (t_d39dc69f followup). If the USB volume is absent, raise RuntimeError so
+    callers fail loudly instead of silently writing to internal disk.
+    """
+    _ = hermes_home  # signature preserved for call-site compatibility
+    return _require_usb_backup_volume() / _QUICK_SNAPSHOTS_DIR
 
 
 def _newest_first(root: Path, keep_entry) -> list[Path]:
@@ -1125,6 +1144,30 @@ _PRE_MIGRATION_DEFAULT_KEEP = 5
 _INCOMPLETE_ZIP_SUFFIX = ".incomplete.zip"
 
 
+# --- USB backup volume redirect (2026-09-06, t_e90f982f) ---
+# All Hermes backup destinations (dashboard zip, pre-update, pre-migration) are
+# redirected to /Volumes/Storage/backups/hermes/ so backups live on the external
+# USB volume, not the internal disk. If the volume is absent, operations fail
+# loudly instead of silently falling back to internal disk.
+
+_USB_BACKUP_VOLUME = Path("/Volumes/Storage")
+_USB_HERMES_BACKUP_ROOT = _USB_BACKUP_VOLUME / "backups" / "hermes"
+
+
+def _require_usb_backup_volume() -> Path:
+    """Return the USB backup root if mounted; raise RuntimeError otherwise.
+
+    Mount guard: /Volumes/Storage must exist as a directory (not just /Volumes,
+    which always exists). Never create the directory or write elsewhere.
+    """
+    if not _USB_BACKUP_VOLUME.is_dir():
+        raise RuntimeError(
+            f"USB backup volume not mounted at {_USB_BACKUP_VOLUME} — "
+            "backup aborted to prevent silent fallback to internal disk"
+        )
+    return _USB_HERMES_BACKUP_ROOT
+
+
 def _prune_prefixed_zips(backup_dir: Path, prefix: str, keep: int, what: str) -> int:
     """Remove oldest ``<prefix>*.zip`` in *backup_dir* beyond *keep*; return count deleted.
 
@@ -1149,14 +1192,19 @@ def _prune_incomplete_zips(backup_dir: Path, prefix: str, what: str) -> int:
 
 def _create_prefixed_full_backup(
     hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str) -> Optional[Path]:
-    """Write ``<HERMES_HOME>/backups/<prefix><timestamp>.zip`` and prune older same-prefix zips.
-    Returns the path, or ``None`` if nothing to back up, the write failed, or the archive is
-    incomplete (kept as ``<prefix><timestamp>.incomplete.zip``, excluded from retention).
-    Never raises."""
+    """Write ``/Volumes/Storage/backups/hermes/<prefix><timestamp>.zip`` and prune older same-prefix zips.
+
+    Redirected to USB volume (t_e90f982f). If the USB volume is absent, logs a
+    warning and returns None instead of silently writing to internal disk.
+    """
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
         return None
-    backup_dir = hermes_root / _PRE_UPDATE_BACKUPS_DIR
+    try:
+        backup_dir = _require_usb_backup_volume()
+    except RuntimeError as exc:
+        logger.warning("%s backup aborted: %s", what.capitalize(), exc)
+        return None
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

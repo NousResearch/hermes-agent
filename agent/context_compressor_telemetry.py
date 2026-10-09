@@ -36,6 +36,7 @@ class CompressionTelemetryMixin:
         telemetry: dict[str, Any] = {
             "event": "compression_attempt", "attempt_id": attempt_id or uuid.uuid4().hex,
             "session_id": session_id or "", "trigger_source": trigger_source or "unknown",
+            "overflow_reason": seed.get("overflow_reason"),
             "main_provider": self.provider or "", "main_model": self.model or "",
             "main_context_limit": _safe_int(self.context_length),
             "current_estimated_tokens": _safe_int(current_tokens),

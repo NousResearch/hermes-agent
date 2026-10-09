@@ -4010,7 +4010,7 @@ class _Attempt:
 
 def _begin_compression_attempt(
     agent: Any, *, force: bool, defer_notification: bool, trigger: Optional[str] = None,
-    approx_tokens: Optional[int] = None,
+    approx_tokens: Optional[int] = None, overflow_reason: Optional[str] = None,
 ) -> _Attempt:
     """Snapshot + claim the compressor, reset per-attempt agent signals, seed telemetry.
     The claim stops a late-unwinding sibling (stall-fallback overlap) from restoring its snapshot over ours or
@@ -4043,7 +4043,10 @@ def _begin_compression_attempt(
     started_at = time.monotonic()
     attempt_id = uuid.uuid4().hex
     trigger = trigger or ("manual" if force else "auto")
-    seed = {"attempt_id": attempt_id, "session_id": getattr(agent, "session_id", None) or "", "trigger_source": trigger}
+    seed = {
+        "attempt_id": attempt_id, "session_id": getattr(agent, "session_id", None) or "", "trigger_source": trigger,
+        "overflow_reason": overflow_reason,
+    }
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
         # The agent keeps its own copy: a pre-commit restore puts the previous seed back on the compressor.
@@ -4112,6 +4115,7 @@ def compress_context(
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
     trigger: Optional[str] = None, snapshot_is_current: Optional[Callable[[], bool]] = None,
+    overflow_reason: Optional[str] = None,
 ) -> tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -4138,10 +4142,12 @@ def compress_context(
     to manual/auto from ``force``. Feeds attempt telemetry only; shared metrics bucket it coarsely.
     snapshot_is_current: Optional host snapshot validation after durable lease admission. This protects
     edits completed before admission; it is not a substitute for the host's final publication fence.
+    overflow_reason: The error classifier's reason for the provider rejection an ``"overflow"`` attempt
+    recovers from (``"context_overflow"``, ``"payload_too_large"``, ``"long_context_tier"``). Telemetry only.
     """
     attempt = _begin_compression_attempt(
         agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
-        approx_tokens=approx_tokens,
+        approx_tokens=approx_tokens, overflow_reason=overflow_reason,
     )
 
     # Codex owns the real thread; route compaction to its own compact (config

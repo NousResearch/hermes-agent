@@ -392,20 +392,31 @@ def review_budgets(
     aggregate = _review_input_token_budget(task_cfg, agent)
     window = _context_window(agent)
     request_fit = (
-        None if window is None else int(window * _REVIEW_INPUT_CONTEXT_FRACTION) - overhead
+        None
+        if window is None
+        else int(window * _REVIEW_INPUT_CONTEXT_FRACTION) - overhead
     )
     if explicit_review_input_budget(task_cfg) is None:
-        floor = REPLAY_FLOOR_TOKENS if request_fit is None else min(REPLAY_FLOOR_TOKENS, request_fit)
+        floor = (
+            REPLAY_FLOOR_TOKENS
+            if request_fit is None
+            else min(REPLAY_FLOOR_TOKENS, request_fit)
+        )
         if floor > 0:
             aggregate = min(
                 _REVIEW_MAX_INPUT_TOKENS_CAP,
                 max(aggregate, REVIEW_REQUEST_SHARES * (overhead + floor)),
             )
-    replay = min(_replay_ceiling(task_cfg), aggregate // REVIEW_REQUEST_SHARES - overhead)
+    replay = min(
+        _replay_ceiling(task_cfg), aggregate // REVIEW_REQUEST_SHARES - overhead
+    )
     if request_fit is not None:
         replay = min(replay, request_fit)
     return ReviewBudgets(
-        replay=max(1, replay), aggregate=aggregate, overhead=overhead, unfunded=replay < 1
+        replay=max(1, replay),
+        aggregate=aggregate,
+        overhead=overhead,
+        unfunded=replay < 1,
     )
 
 

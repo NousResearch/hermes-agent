@@ -39,6 +39,15 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("path", help="Print config file path")
     config_subparsers.add_parser("env-path", help="Print .env file path")
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
+    config_validate = config_subparsers.add_parser(
+        "validate", help="Validate config.yaml structure"
+    )
+    config_validate.add_argument(
+        "path",
+        nargs="?",
+        help="Path to config.yaml (defaults to the active profile's config.yaml)",
+    )
+
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
     config_parser.set_defaults(func=cmd_config)

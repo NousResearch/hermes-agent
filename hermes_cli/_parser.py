@@ -80,6 +80,11 @@ def command_argv(argv: list[str]) -> list[str]:
     return []
 
 
+def is_config_validate_command(argv: list[str]) -> bool:
+    """Identify validation before startup readers can migrate or back up user files."""
+    return command_argv(argv)[:2] == ["config", "validate"]
+
+
 def _inherited_flag(parser, *args, **kwargs):
     """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_cli.relaunch``."""
     action = parser.add_argument(*args, **kwargs)

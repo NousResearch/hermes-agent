@@ -3,12 +3,7 @@ title: Video Editor (local FFmpeg)
 repo: https://github.com/oliverhees/hermes-video-editor
 sha: 66035165c71e09b7f77a08aecc36e35c0b2dce14
 version: "0.3.0"
-description: >-
-  Local video editor for your own footage: 45 FFmpeg tools for the agent (cut, silence removal, 9:16 reframe,
-  captions, music with ducking, loudness, platform export and checks) plus a visual editor in Hermes Desktop
-  with canvas, any number of tracks for text, shapes, video overlays and music, scenes and an English/German
-  help. 100% local, no API key.
-  Licence: PolyForm Noncommercial 1.0.0.
+description: "Local video editor for your own footage: 45 FFmpeg tools for the agent (cut, silence removal, 9:16 reframe, captions, music with ducking, loudness, platform export and checks) plus a visual editor in Hermes Desktop with canvas, any number of tracks for text, shapes, video overlays and music, scenes and an English/German help. 100% local, no API key. Licence: PolyForm Noncommercial 1.0.0. Disclosure — the Desktop page starts a local web server on 127.0.0.1 (random port, per-run token) that can read and write media and image files anywhere under your home folder (and any VE_EDITOR_ROOTS); preview caches go to the system temp folder. The agent tools run ffmpeg/ffprobe on the input paths the model passes and write media, image or .srt files at the output paths it passes (replacing an existing file only with overwrite: true)."
 maintainer: oliverhees
 category: tools
 tier: community

@@ -193,8 +193,8 @@ A value outside its set reads `other`. `failure_class` uses the
 `hermes.compression.count` classes plus the attempt-only classes (guard exits
 such as `blocked:cooldown`, Codex route exits such as `codex_auto_native`, the
 lease exits `session_ownership_lost`, `session_ownership_unreadable` and
-`cooldown_state_unreadable`, `summary_model_benched`, and the micro-compaction
-outcomes), `none` when there is no class, and `other` for anything else. An
+`cooldown_state_unreadable`, `empty_transcript` (a context engine returned no
+messages), `summary_model_benched`, and the micro-compaction outcomes), `none` when there is no class, and `other` for anything else. An
 automatic caller that passes no trigger label reads `trigger: unknown` with
 `trigger_class: auto`; a record with no trigger at all reads `unknown` for
 both. `in_place` and `session_rotated` are set only when `split_status` is

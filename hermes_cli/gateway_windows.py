@@ -1432,6 +1432,43 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     return drift
 
 
+def scheduled_task_uses_managed_action(task_name: str) -> bool:
+    """Whether the registered action exactly matches our current launcher.
+
+    Update must not infer ownership from a task name. A custom supervisor,
+    extra action, or unreadable definition is left untouched. Older/different
+    launcher arguments are conservatively treated as user-owned as well;
+    explicit gateway installation remains the way to replace them.
+    """
+    registered = _query_scheduled_task_xml(task_name)
+    if registered is None:
+        return False
+    template = _build_scheduled_task_xml(
+        task_name, get_task_script_path().with_suffix(".vbs"), "Author"
+    )
+
+    def action_signature(xml: str):
+        try:
+            root = ElementTree.fromstring(xml)
+        except ElementTree.ParseError:
+            return None
+        actions = [e for e in root if e.tag.rsplit("}", 1)[-1] == "Actions"]
+        if len(actions) != 1 or len(actions[0]) != 1:
+            return None
+        action = actions[0][0]
+        if action.tag.rsplit("}", 1)[-1] != "Exec":
+            return None
+        if any(len(e) for e in action):
+            return None
+        # Strip only surrounding XML whitespace, not whitespace within a
+        # quoted path. Additional Exec fields also make this a custom action.
+        return sorted((e.tag.rsplit("}", 1)[-1], (e.text or "").strip()) for e in action)
+
+    live = action_signature(registered)
+    expected = action_signature(template)
+    return live is not None and expected is not None and live == expected
+
+
 def scheduled_task_drift(task_name: str) -> list[str]:
     """Drift fragments between the registered task and ``_build_scheduled_task_xml``; empty when
     aligned or when the task cannot be queried."""
@@ -1444,7 +1481,8 @@ def scheduled_task_drift(task_name: str) -> list[str]:
 
 def _print_scheduled_task_drift(task_name: str) -> None:
     """Warn when the registered task predates the current template (status is read-only; the
-    repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
+    repair runs from ``start()`` via ``reconcile_scheduled_task``; update
+    preserves registered task definitions)."""
     drift = scheduled_task_drift(task_name)
     if drift:
         print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")

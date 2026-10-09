@@ -1,8 +1,8 @@
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     with pytest.raises(_asyncio.TimeoutError):
         await task
 
-    assert dumps == [("telegram-init", 0.05)]
+    assert dumps == [("telegram", 0.05)]
     hung.cancel()
 
 

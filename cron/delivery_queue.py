@@ -57,7 +57,8 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
                (execution_id, terminal_status, finished_at)
                SELECT execution_id, status, finished_at FROM deliveries
                WHERE status IN ('delivered','failed','unknown','suppressed')
-               ORDER BY finished_at, created_at, execution_id
+               ORDER BY julianday(finished_at), finished_at,
+                        julianday(created_at), created_at, execution_id
                LIMIT ?""",
             (excess,),
         )
@@ -65,15 +66,24 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
             """DELETE FROM deliveries WHERE execution_id IN (
                  SELECT execution_id FROM deliveries
                  WHERE status IN ('delivered','failed','unknown','suppressed')
-                 ORDER BY finished_at, created_at, execution_id
+                 ORDER BY julianday(finished_at), finished_at,
+                          julianday(created_at), created_at, execution_id
                  LIMIT ?
                )""",
             (excess,),
         )
 
 
+def queue_path(home: Optional[Path] = None) -> Path:
+    """The queue file of ``home`` (the active home when None); a test override wins."""
+    if DELIVERY_DB is not None:
+        return DELIVERY_DB
+    root = Path(home) if home is not None else get_hermes_home()
+    return root.resolve() / "cron" / "deliveries.db"
+
+
 def _path() -> Path:
-    return DELIVERY_DB or (get_hermes_home().resolve() / "cron" / "deliveries.db")
+    return queue_path()
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -220,9 +230,10 @@ def claim_next() -> Optional[dict]:
     pid = os.getpid()
     started = _process_start_time(pid)
     with _transaction() as conn:
+        # created_at carries a DST-varying offset: order by instant, not text.
         row = conn.execute(
             "SELECT execution_id FROM deliveries WHERE status='pending' "
-            "ORDER BY created_at, execution_id LIMIT 1"
+            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1"
         ).fetchone()
         if row is None:
             return None

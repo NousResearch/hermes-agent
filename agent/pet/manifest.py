@@ -57,7 +57,7 @@ def prefetch(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
         global _prefetching
         try:
             fetch_manifest(timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - best-effort warm
+        except Exception as exc:
             logger.debug("petdex manifest prefetch failed: %s", exc)
         finally:
             _prefetching = False
@@ -104,10 +104,15 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
     except ImportError as exc:  # pragma: no cover - httpx is a core dep
         raise ManifestError("httpx is required to fetch the petdex manifest") from exc
     try:
-        resp = httpx.get(MANIFEST_URL, timeout=timeout, follow_redirects=True, headers={"User-Agent": "hermes-agent-petdex"})
+        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+        if not is_safe_url(MANIFEST_URL):
+            raise ManifestError(f"Pet manifest URL failed the SSRF safety check: {MANIFEST_URL}")
+        with create_ssrf_safe_client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.get(MANIFEST_URL, headers={"User-Agent": "hermes-agent-petdex"})
         resp.raise_for_status()
         payload = resp.json()
-    except Exception as exc:  # noqa: BLE001 - normalize to one error type
+    except Exception as exc:
         raise ManifestError(f"could not fetch petdex manifest: {exc}") from exc
 
     pets = payload.get("pets") if isinstance(payload, dict) else None

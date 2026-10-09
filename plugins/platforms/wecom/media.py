@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
@@ -34,30 +35,34 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), ((b"GIF87a", b"GIF89a"), ".gif"))
 _MIME_PREFIX_KINDS = (("image/", "image"), ("video/", "video"), ("audio/", "voice"))
-# type -> (max bytes, Chinese label, human cap) for the "downgrade to file" notice
-_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "图片", "10MB"), "video": (VIDEO_MAX_BYTES, "视频", "10MB"), "voice": (VOICE_MAX_BYTES, "语音", "2MB")}
+# type -> (max bytes, catalog key of the kind label, human cap) for the "downgrade to file" notice;
+# the label resolves through ``t()`` at verdict time. Notices shipped in Chinese before i18n
+# (zh.yaml keeps that text).
+_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "platform.wecom.media.kind_image", "10MB"),
+                "video": (VIDEO_MAX_BYTES, "platform.wecom.media.kind_video", "10MB"),
+                "voice": (VOICE_MAX_BYTES, "platform.wecom.media.kind_voice", "2MB")}
 
 
-def _size_verdict(final_type: str, *, reject: Optional[str] = None, downgrade: Optional[str] = None) -> Dict[str, Any]:
+def _size_verdict(final_type: str, *, reject: Optional[str] = None, downgrade: Optional[str] = None) -> dict[str, Any]:
     return {"final_type": final_type, "rejected": reject is not None, "reject_reason": reject, "downgraded": downgrade is not None, "downgrade_note": downgrade}
 
 
-def _dict_at(container: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _dict_at(container: dict[str, Any], key: str) -> dict[str, Any]:
     return container.get(key) if isinstance(container.get(key), dict) else {}
 
 
-def _media_body(media_type: str, media_id: str) -> Dict[str, Any]:
+def _media_body(media_type: str, media_id: str) -> dict[str, Any]:
     return {"msgtype": media_type, media_type: {"media_id": media_id}}
 
 
 class WeComMediaMixin:
     """Media helpers mixed into WeComAdapter (uses its transport, req_id cache and stream registry)."""
 
-    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-        refs: List[Tuple[str, Dict[str, Any]]] = []
+    async def _extract_media(self, body: dict[str, Any]) -> tuple[list[str], list[str]]:
+        refs: list[tuple[str, dict[str, Any]]] = []
         msgtype = str(body.get("msgtype") or "").lower()
 
-        def _ref(kind: str, container: Dict[str, Any]) -> bool:
+        def _ref(kind: str, container: dict[str, Any]) -> bool:
             found = isinstance(container.get(kind), dict)
             if found:
                 refs.append((kind, container[kind]))
@@ -81,7 +86,7 @@ class WeComMediaMixin:
         cached = [c for c in [await self._cache_media(kind, ref) for kind, ref in refs] if c]
         return [c[0] for c in cached], [c[1] for c in cached]
 
-    async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    async def _cache_media(self, kind: str, media: dict[str, Any]) -> Optional[tuple[str, str]]:
         """Cache an inbound image/file reference (inline base64 or URL) to local storage."""
         if media.get("base64"):
             try:
@@ -111,7 +116,7 @@ class WeComMediaMixin:
         image_mime = content_type if content_type.startswith("image/") else ""
         return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
 
-    async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[Tuple[str, str]]:
+    async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[tuple[str, str]]:
         """Cache bytes as an image (``kind == "image"``) or a document; returns (path, mime)."""
         if kind != "image":
             return await cache_document_from_bytes_async(raw, filename), doc_mime
@@ -173,7 +178,7 @@ class WeComMediaMixin:
             raise ValueError("Invalid PKCS#7 padding: padding bytes mismatch")
         return decrypted[:-pad_len]
 
-    async def _download_remote_bytes(self, url: str, max_bytes: int) -> Tuple[bytes, Dict[str, str]]:
+    async def _download_remote_bytes(self, url: str, max_bytes: int) -> tuple[bytes, dict[str, str]]:
         from gateway.platforms.base import _ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from plugins.platforms.wecom import adapter as _adapter_mod
@@ -214,24 +219,25 @@ class WeComMediaMixin:
         return "voice" if mime_type == "application/ogg" else next((kind for prefix, kind in _MIME_PREFIX_KINDS if mime_type.startswith(prefix)), "file")
 
     @staticmethod
-    def _apply_file_size_limits(file_size: int, detected_type: str, content_type: Optional[str] = None) -> Dict[str, Any]:
+    def _apply_file_size_limits(file_size: int, detected_type: str, content_type: Optional[str] = None) -> dict[str, Any]:
         file_size_mb = file_size / (1024 * 1024)
         normalized_type = str(detected_type or "file").lower()
         normalized_content_type = str(content_type or "").strip().lower()
         if file_size > ABSOLUTE_MAX_BYTES:
-            return _size_verdict(normalized_type, reject=(f"文件大小 {file_size_mb:.2f}MB 超过了企业微信允许的最大限制 20MB，无法发送。" "请尝试压缩文件或减小文件大小。"))
+            return _size_verdict(normalized_type, reject=t("platform.wecom.media.file_too_large", size_mb=f"{file_size_mb:.2f}"))
         if normalized_type == "voice" and normalized_content_type and normalized_content_type not in VOICE_SUPPORTED_MIMES:
-            return _size_verdict("file", downgrade=f"语音格式 {normalized_content_type} 不支持，企微仅支持 AMR 格式，已转为文件格式发送")
-        max_bytes, label, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
+            return _size_verdict("file", downgrade=t("platform.wecom.media.voice_format_downgraded", content_type=normalized_content_type))
+        max_bytes, label_key, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
         if max_bytes is not None and file_size > max_bytes:
-            return _size_verdict("file", downgrade=f"{label}大小 {file_size_mb:.2f}MB 超过 {cap} 限制，已转为文件格式发送")
+            return _size_verdict("file", downgrade=t("platform.wecom.media.size_downgraded",
+                                                     label=t(label_key), size_mb=f"{file_size_mb:.2f}", cap=cap))
         return _size_verdict(normalized_type)
 
     @staticmethod
     def _looks_like_url(media_source: str) -> bool:
         return urlparse(str(media_source or "")).scheme in {"http", "https"}
 
-    async def _load_outbound_media(self, media_source: str, file_name: Optional[str] = None) -> Tuple[bytes, str, str]:
+    async def _load_outbound_media(self, media_source: str, file_name: Optional[str] = None) -> tuple[bytes, str, str]:
         source = str(media_source or "").strip()
         if not source:
             raise ValueError("media source is required")
@@ -249,16 +255,16 @@ class WeComMediaMixin:
         resolved_name = file_name or local_path.name
         return local_path.read_bytes(), self._normalize_content_type("", resolved_name), resolved_name
 
-    async def _prepare_outbound_media(self, media_source: str, file_name: Optional[str] = None) -> Dict[str, Any]:
+    async def _prepare_outbound_media(self, media_source: str, file_name: Optional[str] = None) -> dict[str, Any]:
         data, content_type, resolved_name = await self._load_outbound_media(media_source, file_name=file_name)
         detected_type = self._detect_wecom_media_type(content_type)
         return {"data": data, "content_type": content_type, "file_name": resolved_name, "detected_type": detected_type, **self._apply_file_size_limits(len(data), detected_type, content_type)}
 
-    async def _checked_request(self, cmd: str, body: Dict[str, Any], operation: str) -> Dict[str, Any]:
+    async def _checked_request(self, cmd: str, body: dict[str, Any], operation: str) -> dict[str, Any]:
         self._raise_for_wecom_error(response := await self._send_request(cmd, body), operation)
         return response
 
-    async def _upload_media_bytes(self, data: bytes, media_type: str, filename: str) -> Dict[str, Any]:
+    async def _upload_media_bytes(self, data: bytes, media_type: str, filename: str) -> dict[str, Any]:
         if not data:
             raise ValueError("Cannot upload empty media")
         total_size, total_chunks = len(data), (len(data) + UPLOAD_CHUNK_SIZE - 1) // UPLOAD_CHUNK_SIZE
@@ -279,7 +285,7 @@ class WeComMediaMixin:
             raise RuntimeError(f"media upload finish failed: missing media_id in response {finish_response}")
         return {"type": str(finish_body.get("type") or media_type), "media_id": media_id, "created_at": finish_body.get("created_at")}
 
-    async def _send_media_message(self, chat_id: str, media_type: str, media_id: str) -> Dict[str, Any]:
+    async def _send_media_message(self, chat_id: str, media_type: str, media_id: str) -> dict[str, Any]:
         return await self._checked_request(APP_CMD_SEND, {"chatid": chat_id, **_media_body(media_type, media_id)}, "send media message")
 
     async def _send_followup_markdown(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> Optional[SendResult]:
@@ -323,7 +329,7 @@ class WeComMediaMixin:
         except Exception as exc:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
-        raw: Dict[str, Any] = {"upload": upload_result, "media": media_response}
+        raw: dict[str, Any] = {"upload": upload_result, "media": media_response}
         downgrade = self.warning_text(f"ℹ️ {prepared['downgrade_note']}") if prepared["downgraded"] and prepared["downgrade_note"] else None
         for key, text in (("caption", caption), ("downgrade", downgrade or None)):
             followup = await self._send_followup_markdown(chat_id, text, reply_to=reply_to) if text else None
@@ -331,7 +337,7 @@ class WeComMediaMixin:
             raw[f"{key}_error"] = followup.error if followup and not followup.success else None
         return SendResult(success=True, message_id=self._payload_req_id(media_response) or uuid.uuid4().hex[:12], raw_response=raw)
 
-    async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         result = await self._send_media_source(chat_id=chat_id, media_source=image_url, caption=caption, reply_to=reply_to)
         if result.success or not self._looks_like_url(image_url):
             return result

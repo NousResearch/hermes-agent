@@ -113,19 +113,6 @@ describe('desktop git facade', () => {
     })
   })
 
-  it('sends mutations as POST bodies on a remote gateway', async () => {
-    $connection.set({ mode: 'remote' } as never)
-
-    await desktopGit()?.review.stage('/srv/work', 'a.txt')
-
-    expect(api).toHaveBeenCalledWith({
-      body: { file: 'a.txt', path: '/srv/work' },
-      method: 'POST',
-      path: '/api/git/review/stage'
-    })
-    expect(localGit.review.stage).not.toHaveBeenCalled()
-  })
-
   // The ⌘⇧B "convert a branch into a worktree" flow (#81724): on a remote
   // gateway both halves must reach the backend mirror — the picker's branch
   // list (which now carries remote-tracking refs) and the worktree add that

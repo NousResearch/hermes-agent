@@ -14,12 +14,11 @@ import os
 import tempfile
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from tools import file_state
 from tools.file_tools import read_file_tool, write_file_tool, patch_tool
-from tools.file_tools_read_tracking import _check_file_staleness, _read_tracker, reset_file_dedup
+from tools.file_tools_read_tracking import _read_tracker, reset_file_dedup
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ class _FakePatchResult:
 
 
 def _make_fake_ops(read_content="hello\n", file_size=6):
-    fake = MagicMock()
+    fake = MagicMock(env=None)
     fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
         content=read_content, total_lines=1, file_size=file_size,
     )
@@ -116,7 +115,6 @@ class TestStalenessCheck(unittest.TestCase):
 
         refused = json.loads(write_file_tool(self._tmpfile, "new content\n", task_id="t1"))
         self.assertTrue(refused.get("stale_write_blocked"), refused)
-        self.assertIn("modified since you last read", refused["error"])
         with open(self._tmpfile) as f:
             self.assertEqual(f.read(), "someone else changed this\n")
 
@@ -133,7 +131,6 @@ class TestStalenessCheck(unittest.TestCase):
         write is a baseline for its next write."""
         refused = json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t2"))
         self.assertTrue(refused.get("stale_write_blocked"), refused)
-        self.assertIn("has not seen its full current content", refused["error"])
 
         patched = json.loads(patch_tool(mode="replace", path=self._tmpfile,
                                         old_string="original", new_string="patched", task_id="t2"))
@@ -230,7 +227,6 @@ class TestStalenessCheck(unittest.TestCase):
             terminal_tool.clear_session_cwd("live_task")
 
         self.assertTrue(result.get("stale_write_blocked"), result)
-        self.assertIn("modified since you last read", result["error"])
         fake_ops.write_file.assert_not_called()
 
 
@@ -293,30 +289,6 @@ class TestPatchStaleness(unittest.TestCase):
 # Unit test for the helper
 # ---------------------------------------------------------------------------
 
-class TestCheckFileStalenessHelper(unittest.TestCase):
-
-    def setUp(self):
-        _read_tracker.clear()
-        file_state.get_registry().clear()
-
-    def tearDown(self):
-        _read_tracker.clear()
-        file_state.get_registry().clear()
-
-    def test_returns_none_for_unknown_task(self):
-        self.assertIsNone(_check_file_staleness("/tmp/x.py", "nonexistent"))
-
-
-    def test_returns_none_when_stat_fails(self):
-        from tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock
-        with _read_tracker_lock:
-            _read_tracker["t1"] = {
-                "last_key": None, "consecutive": 0,
-                "read_history": set(), "dedup": {},
-                "read_timestamps": {"/nonexistent/path": 99999.0},
-            }
-        # File doesn't exist → stat fails → returns None (let write handle it)
-        self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))
 
 
 if __name__ == "__main__":

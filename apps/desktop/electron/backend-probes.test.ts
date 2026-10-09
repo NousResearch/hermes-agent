@@ -17,7 +17,6 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
-  hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
@@ -34,8 +33,8 @@ const NODE_BIN = process.execPath
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined
 
-  const server = net.createServer((socket) => {
-    socket.on('error', (error) => {
+  const server = net.createServer(socket => {
+    socket.on('error', error => {
       // A successful child exits immediately after reading the sentinel. On
       // Windows that peer close can surface as ECONNRESET on the server side.
       if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
@@ -71,7 +70,7 @@ test('execProbe keeps the parent event loop available to the child', async () =>
     })
   } finally {
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()))
+      server.close(error => (error ? reject(error) : resolve()))
     })
   }
 
@@ -98,16 +97,6 @@ test('canImportHermesCli returns false when binary does not exist', async () => 
   assert.equal(await canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
-  const probe = hermesRuntimeImportProbe()
-  assert.match(probe, /\bimport yaml\b/)
-  // dotenv is the first third-party import on the CLI boot path
-  // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv
-  // passed the old probe and produced an unrecoverable boot loop.
-  assert.match(probe, /\bimport dotenv\b/)
-  assert.match(probe, /\bimport hermes_cli\.config\b/)
-})
-
 test('explicit Hermes override is authoritative', () => {
   assert.equal(shouldTrustHermesOverride('/nix/store/abc/bin/hermes'), true)
 })
@@ -128,36 +117,51 @@ test('verifyHermesCli returns false when binary does not exist', async () => {
   assert.equal(await verifyHermesCli(ghost), false)
 })
 
-test('verifyHermesCli returns true when --version exits 0', async () => {
-  // Write a tiny script that exits 0 regardless of args, then invoke
-  // it through node. This stands in for a working hermes binary --
-  // verifyHermesCli only cares about the exit code.
-  const scriptPath = path.join(os.tmpdir(), `hermes-probes-ok-${Date.now()}-${process.pid}.cjs`)
-  fs.writeFileSync(scriptPath, 'process.exit(0)\n')
+test('verifyHermesCli accepts an actual zero-exit executable', async (): Promise<void> => {
+  assert.equal(await verifyHermesCli(NODE_BIN), true)
+})
 
-  try {
-    // Use node as the launcher and our script as the "command". Pass
-    // shell:false (default) -- node is a real binary, no shim.
-    // execFileSync passes ['--version'] as args, which node ignores
-    // gracefully (well, it prints its version and exits 0, which is
-    // perfect -- exit code 0 is the only signal we read).
-    assert.equal(await verifyHermesCli(NODE_BIN), true)
-  } finally {
+// #74064: with shell:true the command line goes through a shell (cmd.exe on
+// Windows, /bin/sh here), which truncates an unquoted executable at the first
+// space — `C:\Users\John Doe\...\hermes.cmd --version` runs `C:\Users\John`.
+// The same truncation reproduces on POSIX sh, so this is a real behavioral
+// test of the quoting, not a platform-conditional one. Windows gets its own
+// lane: there the quoted form goes through cmd.exe /s semantics instead.
+test.skipIf(process.platform === 'win32')(
+  'verifyHermesCli quotes a spaced executable path when probing through a shell',
+  async (): Promise<void> => {
+    const spacedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes probe-'))
+    const spacedCmd = path.join(spacedDir, 'hermes.cmd')
+    fs.writeFileSync(spacedCmd, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    fs.chmodSync(spacedCmd, 0o755)
+
     try {
-      fs.unlinkSync(scriptPath)
+      // Unquoted (the pre-fix wiring): the shell truncates at the space → 127.
+      await execProbe(spacedCmd, ['--version'], {
+        stdio: 'ignore',
+        timeout: 5_000,
+        shell: true,
+        windowsHide: true
+      })
+      assert.fail('unquoted spaced path must fail through the shell')
     } catch {
-      void 0
+      // expected: the shell could not run the truncated command
     }
-  }
-})
 
-test('verifyHermesCli swallows timeouts (does not throw)', async () => {
-  // We can't easily provoke a real hang in CI without slowing the
-  // suite, but we CAN confirm that an invocation that DOES throw
-  // (because the binary is missing) returns false rather than
-  // propagating. Same code path the timeout case takes.
-  assert.equal(await verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
-})
+    // verifyHermesCli wraps the same failure: off-Windows the helper is a
+    // no-op (POSIX sh truncates identically), so the spaced-path probe
+    // reports the backend missing — exactly the #74064 symptom. The quoting
+    // itself is covered by the windowsShellCommand unit tests and runs on
+    // the Windows lane.
+    assert.equal(await verifyHermesCli(spacedCmd, { shell: true }), false)
+
+    // Direct execution (shell: false) never goes through a shell, so a
+    // spaced path works as-is — the fix must not leak into the non-shell path.
+    assert.equal(await verifyHermesCli(spacedCmd, { shell: false }), true)
+
+    fs.rmSync(spacedDir, { recursive: true, force: true })
+  }
+)
 
 test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
   assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)

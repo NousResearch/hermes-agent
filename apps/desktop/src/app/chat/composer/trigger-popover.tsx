@@ -200,12 +200,7 @@ export function ComposerTriggerPopover({
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
-              <Tip
-                delayDuration={400}
-                label={kind === '/' ? description : undefined}
-                placement="row"
-                sideOffset={4}
-              >
+              <Tip delayDuration={400} label={kind === '/' ? description : undefined} placement="row" sideOffset={4}>
                 <button
                   className={ROW_CLASS}
                   data-highlighted={active ? '' : undefined}

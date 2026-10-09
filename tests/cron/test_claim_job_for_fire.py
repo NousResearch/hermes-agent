@@ -107,7 +107,7 @@ def test_mark_job_run_clears_claim(temp_home):
 def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypatch):
     from datetime import datetime, timedelta
 
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="heartbeat")
     assert jobs.claim_job_for_fire(job["id"]) is True
@@ -135,7 +135,7 @@ def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypat
 def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
     from datetime import datetime, timedelta
 
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="reclaim")
     assert jobs.claim_job_for_fire(job["id"]) is True
@@ -158,7 +158,7 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
 
 
 def test_stale_fire_owner_cannot_mark_replacement_run(temp_home):
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="fenced")
     assert jobs.claim_job_for_fire(job["id"]) is True
@@ -219,7 +219,7 @@ def test_fire_claim_fence_rejects_stale_owner(temp_home):
 
 def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, monkeypatch):
     """A wedged local holder must not indefinitely block another claimant."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-timeout")
     monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
@@ -244,7 +244,7 @@ def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, m
 
 def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     """Nested same-thread callers retain the existing fire fence."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="local-fence-reentrant")
     completed = threading.Event()
@@ -287,7 +287,7 @@ def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
 def test_unclassified_off_tick_claim_does_not_stamp_a_future_occurrence(temp_home, monkeypatch):
     from datetime import datetime, timedelta
 
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="off-tick")
     pending = jobs.get_job(job["id"])["next_run_at"]
@@ -305,8 +305,8 @@ def test_claim_seconds_before_the_slot_owns_it_once(temp_home, monkeypatch):
     slot: it must carry the slot identity so the misfire backstop cannot run the slot again."""
     from datetime import datetime, timedelta, timezone
 
-    import cron.executions as executions
-    import cron.jobs as jobs
+    from cron import executions
+    from cron import jobs
     from cron.occurrences import scheduled_instant
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", temp_home / "cron" / "executions.db")
@@ -377,7 +377,7 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
 def test_heartbeat_does_not_wait_on_the_fence_its_own_run_holds(temp_home, monkeypatch):
     """The run thread holds the per-job fire fence across delivery; the heartbeat thread must
     refresh the claim without taking it, or every long run reads as a false ownership loss."""
-    import cron.jobs as jobs
+    from cron import jobs
 
     job = jobs.create_job(prompt="x", schedule="every 5m", name="long-run")
     assert jobs.claim_job_for_fire(job["id"]) is True

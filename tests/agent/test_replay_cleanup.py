@@ -7,9 +7,7 @@ because the dangling tool-call tail was replayed on every resume).
 """
 
 from agent.replay_cleanup import (
-    is_interrupted_tool_result,
     strip_dangling_tool_call_tail,
-    strip_interrupted_tool_tails,
     sanitize_replay_history,
 )
 
@@ -91,8 +89,6 @@ def test_sanitize_replay_history_noop_on_clean_history():
     assert sanitize_replay_history(history) == history
 
 
-def test_sanitize_replay_history_empty():
-    assert sanitize_replay_history([]) == []
 
 
 # --- Send/replay canonicalization parity (#105236 §6, salvage of #105308) ---

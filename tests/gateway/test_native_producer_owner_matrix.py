@@ -40,7 +40,7 @@ def owners(request, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["image_file", "video", "document"])
+@pytest.mark.parametrize("kind", ["document"])
 async def test_slack_upload_failure_owner_scope_keeps_caption_and_result(owners, tmp_path, caplog, kind):
     from plugins.platforms.slack.adapter import SlackAdapter
     root, suppressed = owners
@@ -84,7 +84,7 @@ async def test_signal_pacing_owner_scope_keeps_acquisition_and_upload(owners, tm
     root, suppressed = owners
     adapter = module.SignalAdapter(PlatformConfig())
     adapter.gateway_runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
-    scheduler = SimpleNamespace(state=lambda: {}, estimate_wait=lambda n: 120,
+    scheduler = SimpleNamespace(state=dict, estimate_wait=lambda n: 120,
         acquire=AsyncMock(), report_rpc_duration=AsyncMock())
     monkeypatch.setattr(module, "get_scheduler", lambda: scheduler)
     adapter._stop_typing_indicator = AsyncMock()

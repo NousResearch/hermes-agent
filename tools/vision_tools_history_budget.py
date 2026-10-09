@@ -8,11 +8,15 @@ may be embedded per session). See #112095: a delegated subagent re-loaded five s
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import json
 import os
+import re
 import threading
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 from tools.registry import tool_error
 
@@ -131,3 +135,46 @@ def release_embed(image_url: str) -> None:
             _repeat_counts[key] = count - 1
         else:
             _repeat_counts.pop(key, None)
+
+
+# Images already riding the ACTIVE user turn as native content parts (#76411). Every surface that
+# attaches natively (gateway, CLI, TUI, delegated children) goes through
+# ``image_routing.build_native_content_parts``, which writes one ``[Image attached at: <path>]`` /
+# ``[Image attached: <url>]`` handle per image into the text part; ``conversation_loop.run_conversation``
+# scopes those handles here for the turn and the tool inherits them through contextvars.
+_NATIVE_HANDLE_RE = re.compile(r"^\[Image attached(?: at)?: (.+?)\]\s*$", re.MULTILINE)
+_native_turn_images: ContextVar[frozenset[str]] = ContextVar("vision_native_turn_images", default=frozenset())
+
+
+def _native_turn_keys(user_message: Any) -> frozenset[str]:
+    if not isinstance(user_message, list) or not any(
+        isinstance(p, dict) and p.get("type") == "image_url" for p in user_message
+    ):
+        return frozenset()
+    text = "\n".join(p.get("text", "") for p in user_message if isinstance(p, dict) and p.get("type") == "text")
+    return frozenset(_image_key(m.strip()) for m in _NATIVE_HANDLE_RE.findall(text) if m.strip())
+
+
+@contextlib.contextmanager
+def native_turn_images(user_message: Any) -> Iterator[None]:
+    """Scope the images natively attached to ``user_message`` to the running turn."""
+    token = _native_turn_images.set(_native_turn_keys(user_message))
+    try:
+        yield
+    finally:
+        _native_turn_images.reset(token)
+
+
+def native_turn_duplicate(image_url: str, region: Optional[list]) -> Optional[str]:
+    """Text tool result when ``image_url`` already rides the active user turn natively, else
+    ``None``. A native re-embed would put the identical pixels into the same request twice
+    (the Telegram case in #76411); a ``region`` crop still embeds because it returns new detail."""
+    if region is not None or _image_key(image_url) not in _native_turn_images.get():
+        return None
+    return json.dumps({
+        "success": True,
+        "already_in_context": True,
+        "message": (
+            "This image is already attached natively to the current user message — you can see it "
+            "now. Answer with your built-in vision; pass a `region` to zoom into part of it."),
+    })

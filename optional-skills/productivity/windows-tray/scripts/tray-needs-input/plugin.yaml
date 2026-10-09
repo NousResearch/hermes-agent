@@ -1,0 +1,11 @@
+name: tray-needs-input
+version: 1.0.0
+description: "Observer-only plugin: mirrors clarify/approval pending state into a JSON marker file so an external Windows tray icon can light 'needs you'. Never blocks, never rewrites args, never raises."
+author: "Raven (yuruiwen) + Hermes Agent"
+license: MIT
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_approval_request
+  - post_approval_response
+  - on_session_end

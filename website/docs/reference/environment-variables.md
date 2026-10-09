@@ -599,7 +599,7 @@ App-only credentials for the Microsoft Graph REST client used by the upcoming Te
 | `MSGRAPH_TENANT_ID` | Azure AD tenant ID (directory GUID) for the Graph app registration. |
 | `MSGRAPH_CLIENT_ID` | Application (client) ID of the Azure app registration. |
 | `MSGRAPH_CLIENT_SECRET` | Client secret value for the app registration. Store in `~/.hermes/.env` with `chmod 600`; rotate periodically via the Azure portal. |
-| `MSGRAPH_SCOPE` | OAuth2 scope for the client-credentials token request (default: `https://graph.microsoft.com/.default`). |
+| `MSGRAPH_SCOPE` | OAuth2 scope for the client-credentials token request (default: `https://graph.microsoft.com/.default`). For national/sovereign clouds use that cloud's Graph resource (e.g. `https://graph.microsoft.us/.default` for GCC High, `https://dod-graph.microsoft.us/.default` for DoD, `https://microsoftgraph.chinacloudapi.cn/.default` for 21Vianet); Graph REST calls go to the same host. |
 | `MSGRAPH_AUTHORITY_URL` | Microsoft identity platform authority (default: `https://login.microsoftonline.com`). Override only for national/sovereign clouds (e.g. `https://login.microsoftonline.us` for GCC High). |
 
 ### Microsoft Graph Webhook Listener

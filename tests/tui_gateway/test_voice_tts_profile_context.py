@@ -22,6 +22,7 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
     monkeypatch.setattr(methods_voice, "queue", queue, raising=False)
     monkeypatch.setattr(methods_voice, "_voice_tts_enabled", lambda: True)
     monkeypatch.setattr(methods_voice, "_tts_stream_stop", lambda *args, **kwargs: None)
+    monkeypatch.setattr(methods_voice, "_tts_stream_state", None)
     monkeypatch.setattr(methods_voice, "_arm_barge_listener_if_enabled", lambda: None)
 
     import tools.tts_tool as tts_tool

@@ -55,9 +55,22 @@ def _same_delegate_route_peer(store, row: dict[str, Any], entry, source, session
     """Match the route's peer, respecting whether its key isolates the participant."""
     if row.get("session_key") != session_key or row.get("source") != source.platform.value:
         return False
-    if any(row.get(column) != getattr(source, column) for column in
-           ("chat_id", "chat_type", "thread_id")):
+    if row.get("chat_id") != source.chat_id:
         return False
+    if (row.get("chat_type"), row.get("thread_id")) != (source.chat_type, source.thread_id):
+        # Discord keys normalize a channel message that will be threaded to its eventual
+        # thread id. Historical rows retain the original group/prospective shape. Verify
+        # that exact prospective id before accepting the continuation as the same peer.
+        if not (source.platform == Platform.DISCORD and row.get("chat_type") == "group" and
+                row.get("thread_id") is None and source.chat_type == "thread" and
+                source.thread_id):
+            return False
+        try:
+            origin = json.loads(row.get("origin_json") or "")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(origin, dict) or origin.get("prospective_thread_id") != source.thread_id:
+            return False
     # The key itself carries the participant only when build_session_key isolates it.
     # Discord threads are shared by default; their next human sender may differ from
     # the user_id last stamped onto the durable row.

@@ -119,6 +119,43 @@ def test_shared_thread_new_sender_recovers_same_route_owner(route):
     assert (verdict.kind, verdict.owner_id) == ("recoverable", owner)
 
 
+def test_prospective_discord_thread_continuation_recovers_owner(route):
+    """The channel initiator and its later thread reply share one canonical route."""
+    store, db, _, _, _ = route
+    initiating = SessionSource(
+        Platform.DISCORD, chat_id="channel-1", chat_type="group", user_id="axl",
+        prospective_thread_id="msg-100", scope_id="guild-1",
+    )
+    follow_up = SessionSource(
+        Platform.DISCORD, chat_id="channel-1", chat_type="thread", user_id="axl",
+        thread_id="msg-100", scope_id="guild-1",
+    )
+    key = store._generate_session_key(initiating)
+    assert key == store._generate_session_key(follow_up)
+    peer = dict(
+        source="discord", session_key=key, user_id=initiating.user_id,
+        chat_id=initiating.chat_id, chat_type=initiating.chat_type,
+        thread_id=initiating.thread_id,
+        origin_json=json.dumps(initiating.to_dict()),
+    )
+    owner = _owner(db, peer)
+    child = _delegate(db, owner, peer)
+    _stamp(db, owner, ended_at=300.0, end_reason="session_switch")
+
+    verdict = store._poisoned_delegate_route_verdict(
+        session_key=key, entry=_entry(key, child, follow_up), source=follow_up, db=db,
+    )
+    assert (verdict.kind, verdict.owner_id) == ("recoverable", owner)
+
+    # Another prospective id must never be accepted as this route's peer.
+    _stamp(db, owner, origin_json=json.dumps({**initiating.to_dict(),
+                                              "prospective_thread_id": "another-thread"}))
+    verdict = store._poisoned_delegate_route_verdict(
+        session_key=key, entry=_entry(key, child, follow_up), source=follow_up, db=db,
+    )
+    assert verdict.kind == "invalid"
+
+
 @pytest.mark.parametrize("tamper", ["no_parent", "different_key", "different_peer"])
 def test_unrelated_ancestor_cannot_be_guessed(route, tamper):
     _, db, _, key, peer = route

@@ -1011,12 +1011,17 @@ class SessionStore(
         """
         db = self._db_for_key(session_key)
         if db is None:
+            if self._routing_db_loaded:
+                raise RuntimeError(
+                    f"Cannot verify session provenance for route {session_key}; retry when state.db is available"
+                )
             return observed
         try:
             routed_row = db.get_session(observed.session_id)
-        except Exception:
-            logger.debug("Delegate provenance lookup failed for route %s", session_key, exc_info=True)
-            return observed
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot verify session provenance for route {session_key}; retry the inbound turn"
+            ) from exc
         if not is_internal_subagent_row(routed_row):
             return observed
 

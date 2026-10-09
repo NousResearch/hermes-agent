@@ -3,6 +3,8 @@
 Regression for the Discord incidents in #131578 and #134522.
 """
 
+import json
+
 import pytest
 
 from gateway.run import GatewayRunner
@@ -84,6 +86,81 @@ def test_inbound_restores_a_poisoned_route_without_waiting_on_the_child_lease(di
     restarted = SessionStore(store.sessions_dir, store.config)
     assert restarted.get_or_create_session(source).session_id == parent.session_id
     assert restarted.lookup_by_session_key(sibling.session_key).session_id == sibling.session_id
+
+
+def test_poisoned_route_waits_for_durable_provenance_after_read_error(discord_store, monkeypatch):
+    """A transient lookup error must not dispatch the inbound turn onto a child."""
+    store, parent, db = discord_store
+    source = parent.origin
+    assert source is not None
+    db.create_session("delegate-child", source="subagent", parent_session_id=parent.session_id)
+    db._write_sql(
+        "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
+        "chat_type = ?, thread_id = ? WHERE id = ?",
+        ("discord", parent.session_key, source.user_id, source.chat_id,
+         source.chat_type, source.thread_id, "delegate-child"),
+    )
+    db.end_session(parent.session_id, "session_switch")
+    with store._lock:
+        store._replace_route_locked(parent.session_key, parent, "delegate-child", parent.updated_at)
+
+    real_get_session = db.get_session
+    failed_once = False
+
+    def transient_get_session(session_id):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise OSError("temporary database read failure")
+        return real_get_session(session_id)
+
+    monkeypatch.setattr(db, "get_session", transient_get_session)
+    with pytest.raises(RuntimeError, match="provenance"):
+        store.get_or_create_session(source)
+    assert store.lookup_by_session_key(parent.session_key).session_id == "delegate-child"
+    assert store.get_or_create_session(source).session_id == parent.session_id
+
+
+def test_loaded_db_route_does_not_fall_back_when_db_handle_disappears(discord_store, monkeypatch):
+    store, parent, _db = discord_store
+    assert store._routing_db_loaded
+    monkeypatch.setattr(store, "_db_for_key", lambda _key: None)
+    with pytest.raises(RuntimeError, match="provenance"):
+        store.get_or_create_session(parent.origin)
+
+
+def test_inbound_thread_reply_recovers_channel_initiator_after_legacy_hijack(discord_store):
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    store, _, _ = discord_store
+    initiating = SessionSource(
+        platform=Platform.DISCORD, chat_id="channel-1", chat_type="group",
+        user_id="person", prospective_thread_id="msg-100",
+    )
+    follow_up = SessionSource(
+        platform=Platform.DISCORD, chat_id="channel-1", chat_type="thread",
+        user_id="person", thread_id="msg-100",
+    )
+    owner = store.get_or_create_session(initiating)
+    assert store._generate_session_key(follow_up) == owner.session_key
+    db = store._db_for_key(owner.session_key)
+    db.create_session("prospective-child", source="subagent", parent_session_id=owner.session_id)
+    db._write_sql(
+        "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
+        "chat_type = ?, thread_id = ?, origin_json = ? WHERE id = ?",
+        ("discord", owner.session_key, initiating.user_id, initiating.chat_id,
+         initiating.chat_type, initiating.thread_id, json.dumps(initiating.to_dict()),
+         "prospective-child"),
+    )
+    db.end_session(owner.session_id, "session_switch")
+    with store._lock:
+        store._replace_route_locked(owner.session_key, owner, "prospective-child", owner.updated_at)
+
+    restored = store.get_or_create_session(follow_up)
+    assert restored.session_id == owner.session_id
+    assert db.get_session(owner.session_id)["end_reason"] is None
+    assert db.get_session("prospective-child")["session_key"] is None
 
 
 def test_unverifiable_poisoned_route_opens_a_fresh_chat_without_ending_child(discord_store):

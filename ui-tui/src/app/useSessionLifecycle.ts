@@ -367,7 +367,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
-      patchOverlayState({ sessions: false })
+      // The /search overlay's Enter rides this same guarded path; a resume
+      // that actually runs must close it, while a refused busy-guard leaves
+      // it open for the user to keep browsing.
+      patchOverlayState({ sessionSearch: false, sessions: false })
       patchUiState({ status: t('session.status.resuming') })
 
       return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {

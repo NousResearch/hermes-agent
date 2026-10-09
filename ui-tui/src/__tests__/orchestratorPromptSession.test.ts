@@ -62,4 +62,24 @@ describe('startPromptLiveSession', () => {
     expect(sid).toBeNull()
     expect(calls).toEqual([])
   })
+
+  it('dispatches a slash command from the New row without creating a junk session', async () => {
+    const calls: string[] = []
+
+    const sid = await startPromptLiveSession({
+      dispatchSubmission: prompt => calls.push(`dispatch:${prompt}`),
+      maybeWarn: () => calls.push('warn'),
+      newLiveSession: async () => {
+        calls.push('new')
+
+        return 'abc123'
+      },
+      prompt: '/search foo',
+      rpc: async () => ({ value: 'unused' }),
+      sys: () => calls.push('sys')
+    })
+
+    expect(sid).toBeNull()
+    expect(calls).toEqual(['dispatch:/search foo'])
+  })
 })

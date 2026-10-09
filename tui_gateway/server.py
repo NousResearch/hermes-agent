@@ -196,6 +196,7 @@ _LONG_HANDLERS = frozenset({
     "session.start_chat",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
+    "session.search",  # FTS over a large state.db is the slowest read; keep it off the RPC reader (#60747)
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -3668,6 +3669,7 @@ from . import (
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_session_search as _methods_session_search,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
@@ -3685,6 +3687,7 @@ for _m in (
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
+    _methods_session_search,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
     _methods_i18n, _methods_shared_metrics, _methods_start_chat):

@@ -81,6 +81,17 @@ def _set_loop(session_key: str, route: dict | None = None):
     LoopManager(session_key).set("reconcile the spec", interval_seconds=1800, route=route)
 
 
+def _set_heartbeat(session_key: str):
+    from hermes_cli.heartbeat import HeartbeatManager
+
+    return HeartbeatManager(session_key).set("check the board", interval_seconds=1800)
+
+
+def _fire_orphan_reap(server, sid):
+    server._schedule_ws_orphan_reap(sid)
+    _Timer.created[-1].callback()
+
+
 def test_orphan_reap_keeps_detached_session_with_active_desktop_loop(server, detached):
     sid, session, popped = detached
     _set_loop(session["session_key"])
@@ -127,3 +138,54 @@ def test_ttl_and_cap_reapers_spare_session_with_active_desktop_loop(server, deta
     assert not server._session_is_reapable(sid, session)
     # An idle looping session must not block a memory trim the way live work does.
     assert server._session_is_lru_evictable(sid, session)
+
+
+def test_settled_client_gone_interrupt_is_collected_despite_active_loop(server, detached, monkeypatch):
+    """A stale detached turn is interrupted at grace; once it settles the session must be collected, not re-armed.
+    Re-arming would leave the interrupt latches set forever: no tick can claim the turn and every reattach is
+    refused with 4009 while the loop never reaches its tick budget."""
+    sid, session, popped = detached
+    _set_loop(session["session_key"])
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)  # every running turn reads as stale
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda *a, **kw: False)
+    session["running"] = True
+
+    _fire_orphan_reap(server, sid)
+    assert session["_client_gone_interrupt_requested"] and server._sessions.get(sid) is session
+
+    session["running"] = False  # the interrupted turn settles
+    _Timer.created[-1].callback()
+
+    assert sid not in server._sessions and popped == [session]
+
+
+def test_orphan_reap_keeps_detached_session_with_active_local_heartbeat(server, detached):
+    sid, session, popped = detached
+    _set_heartbeat(session["session_key"])
+
+    _fire_orphan_reap(server, sid)
+
+    assert server._sessions.get(sid) is session and not popped
+
+
+@pytest.mark.parametrize("release", ["pause", "clear"])
+def test_paused_or_cleared_heartbeat_releases_detached_session(server, detached, release):
+    sid, session, popped = detached
+    from hermes_cli.heartbeat import HeartbeatManager
+
+    _set_heartbeat(session["session_key"])
+    getattr(HeartbeatManager(session["session_key"]), release)()
+
+    _fire_orphan_reap(server, sid)
+
+    assert sid not in server._sessions and popped == [session]
+
+
+def test_gateway_owned_heartbeat_does_not_pin_detached_session(server, detached, monkeypatch):
+    sid, session, popped = detached
+    _set_heartbeat(session["session_key"])
+    monkeypatch.setattr(server, "_notif_gateway_owns_heartbeat", lambda *a: True)
+
+    _fire_orphan_reap(server, sid)
+
+    assert sid not in server._sessions and popped == [session]

@@ -247,12 +247,13 @@ def _session_is_reapable(sid: str, session: dict) -> bool:
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    """TTL eviction: the reap exemptions plus idle-for-TTL AND older-than-TTL."""
-    if not _session_is_reapable(sid, session):
-        return False
+    """TTL eviction: idle-for-TTL AND older-than-TTL, plus the reap exemptions (the cheap clock check first: the
+    exemptions read the session store, and this runs for every session on each reaper pass)."""
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
-    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+    if (now - last_active) <= _SESSION_TTL_S or (now - created_at) <= _SESSION_TTL_S:
+        return False
+    return _session_is_reapable(sid, session)
 
 
 def _reap_idle_sessions() -> None:

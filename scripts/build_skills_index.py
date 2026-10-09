@@ -22,7 +22,7 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # Allow importing from repo root
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -440,7 +440,7 @@ def main():
     # Healthy — only now write the index out for the docs build to consume.
     index = {
         "version": INDEX_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "skill_count": len(deduped),
         "skills": deduped,
     }

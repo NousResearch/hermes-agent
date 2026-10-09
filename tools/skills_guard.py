@@ -13,7 +13,7 @@ import hashlib
 import json
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
@@ -52,7 +52,7 @@ class ScanResult:
     source: str
     trust_level: str    # "builtin" | "trusted" | "community" | "agent-created"
     verdict: str        # "safe" | "caution" | "dangerous"
-    findings: List[Finding] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
@@ -497,7 +497,7 @@ def _statement_owners(lines: list) -> list:
 
 
 def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
-                                 suffix: str) -> Tuple[str, str]:
+                                 suffix: str) -> tuple[str, str]:
     """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
     if pid not in _PATH_REFERENCE_PATTERN_IDS:
         return severity, description
@@ -592,13 +592,13 @@ _FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
 
 
-def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
+def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
     ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
     scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
     mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
     code to EOF (fail-safe)."""
-    out: List[str] = []
+    out: list[str] = []
     fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
         match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
@@ -615,7 +615,7 @@ def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
     rel_path = rel_path or file_path.name
@@ -652,7 +652,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
     always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
     name, trust = skill_path.name, _resolve_trust_level(source)
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     if skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
         findings.extend(_check_structure(skill_path, ignore=ignore))
@@ -662,7 +662,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
     verdict = _determine_verdict(findings)
-    return ScanResult(name, source, trust, verdict, findings, datetime.now(timezone.utc).isoformat(),
+    return ScanResult(name, source, trust, verdict, findings, datetime.now(UTC).isoformat(),
                       _build_summary(name, source, trust, verdict, findings))
 
 
@@ -691,12 +691,12 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> Tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
                 "source_url": source_url}
@@ -721,7 +721,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     return result, provenance
 
 
-def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
+def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool, str]:
     """``(allowed, reason)`` from verdict + trust; *force* overrides every block except a dangerous verdict on
     community/trusted sources. ``allowed`` is None when policy says "ask"."""
     decision = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])[VERDICT_INDEX.get(result.verdict, 2)]
@@ -751,7 +751,7 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 
 
-def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
+def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
     """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks); *ignore(rel) -> bool*
     excludes paths from every count and finding."""
     findings = []
@@ -805,7 +805,7 @@ def _load_skill_ignore(skill_dir: Path):
     lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
     fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
     ``SKILL.md`` never."""
-    patterns: List[str] = []
+    patterns: list[str] = []
     for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
         with suppress(UnicodeDecodeError, OSError):
             if ig.is_file():
@@ -852,13 +852,13 @@ def _resolve_trust_level(source: str) -> str:
     return "trusted" if any(src == t or src.startswith(f"{t}/") for t in TRUSTED_REPOS) else "community"
 
 
-def _determine_verdict(findings: List[Finding]) -> str:
+def _determine_verdict(findings: list[Finding]) -> str:
     """critical → dangerous, high → caution; medium/low alone are informational (safe)."""
     sev = {f.severity for f in findings}
     return "dangerous" if "critical" in sev else "caution" if "high" in sev else "safe"
 
 
-def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:
+def _build_summary(name: str, source: str, trust: str, verdict: str, findings: list[Finding]) -> str:
     if not findings:
         return f"{name}: clean scan, no threats detected"
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted({f.category for f in findings}))}"

@@ -188,13 +188,29 @@ identity should skip destructive mirroring when it is absent.
 
 ### Oversized prefetch results
 
-External `prefetch()` results above the configured spill threshold are written
-to a private spill file and replaced with the configured head/tail preview.
-The preview includes the path so the agent can read the full result when it is
-actually needed. Results at or below the threshold are returned unchanged.
+External `prefetch()` results are returned in full by default, preserving the
+provider's relevance-ranked recall, up to a safety ceiling of 10×
+`hooks.output_spill.max_chars` (at least 100,000 characters) above which they
+still spill. Keep your own recall budget well under that. To opt into spilling oversized results for
+the active profile, set:
 
-This uses the shared `hooks.output_spill` settings (`10,000` characters by
-default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
+```yaml
+memory:
+  prefetch_spill_enabled: true  # default: false
+```
+
+When enabled, results above the shared `hooks.output_spill.max_chars` threshold
+(default `10,000` characters) are written to a private spill file and replaced
+with the configured head/tail preview plus its path. The default preview keeps
+only the first and last `500` characters; the model must read the file to recover
+the middle. Results at or below the threshold remain unchanged.
+
+The shared `hooks.output_spill` preview lengths and directory still apply, and
+`hooks.output_spill.enabled: false` disables spilling even with memory opt-in.
+Both settings are snapshotted when the external provider is registered; restart
+Hermes to apply changes to existing sessions. Built-in memory and normal
+plugin-hook spilling are unaffected. See
+[Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
 
 ## Pre-Compress Checkpoints (fail-closed)
 

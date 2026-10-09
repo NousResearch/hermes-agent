@@ -133,6 +133,11 @@ export const arChat = {
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
+    localSetup: {
+      title: 'يمكن تشغيل هذا على جهازك',
+      text: (model: string) => `${model} يناسب هذا الجهاز. مجاني، وتبقى المحادثات على جهازك.`,
+      action: 'أرني'
+    },
     queueEdit: 'تحرير الرسالة المجدولة',
     queueExpand: 'توسيع',
     queueCollapse: 'طي',
@@ -519,11 +524,6 @@ export const arChat = {
         title: 'يتوفر تحديث للمحرك المحلي',
         text: 'حدّث المحرك الذي يشغّل نماذجك المحلية. قد تنقطع الطلبات المحلية الجارية.',
         action: 'التحديث الآن'
-      },
-      'local-setup': {
-        title: 'هذا الجهاز يمكنه تشغيل النماذج محليًا',
-        text: 'عتادك قادر على تشغيل نموذج محلي. تبقى محادثاتك على جهازك ولا تكلف شيئًا.',
-        action: 'إعداد الآن'
       },
       'right-pane': {
         title: 'لوحة العمل',

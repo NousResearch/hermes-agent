@@ -22,6 +22,7 @@ from agent.context_compressor import (
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+import itertools
 
 _REQ = httpx.Request("POST", "http://x")
 
@@ -3317,7 +3318,7 @@ class TestSummaryPromptBounding:
         assert coverage["sampled_record_count"] == len(shown)
         # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
         assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
-        for a, b in zip(shown, shown[1:]):
+        for a, b in itertools.pairwise(shown):
             if b == a + 1:
                 assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
             else:
@@ -3685,8 +3686,6 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
-
-
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny
@@ -3725,9 +3724,8 @@ class TestPreLlmFeasibilityCheck:
         skip path sets _last_summary_fallback_used, which the boundary
         wrapper (conversation_compression.py) records via
         record_completed_compaction(used_fallback=True) — incrementing
-        _fallback_compression_streak, whose second occurrence blocks
-        automatic compression. Two deliberate skips must NOT trip that
-        breaker."""
+        _fallback_compression_streak. A deliberate skip must not count as
+        a failed summary-model attempt."""
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
@@ -3746,10 +3744,7 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 2
         assert compressor._fallback_compression_streak == 0
-        assert not compressor._automatic_compression_blocked_locally(), (
-            "two deliberate feasibility skips must not disable automatic "
-            "compression via the fallback-streak breaker"
-        )
+        assert not compressor._automatic_compression_blocked_locally()
 
     def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
         """A skip proves nothing about the summary model's health: an

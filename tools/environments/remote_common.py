@@ -35,7 +35,7 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     passthrough_keys: set[str] = set()
     resolve_passthrough_value = None
     multiplex_active = False
-    is_global_env = lambda _name: False  # noqa: E731
+    is_global_env = lambda _name: False
     try:
         from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
         from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active

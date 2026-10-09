@@ -1944,7 +1944,7 @@ class TestHandleProcessRedaction:
         ``output_preview[-200:]`` with no redaction wrap, leaking inline
         secrets (unlike poll/log/wait/kill).
         """
-        pr, sess = self._setup(
+        pr, _sess = self._setup(
             monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
             "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
         )

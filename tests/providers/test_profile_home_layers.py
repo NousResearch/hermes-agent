@@ -63,7 +63,7 @@ def test_secondary_profile_plugin_resolves_for_its_home_only(homes):
     import providers
     from hermes_cli.auth import resolve_provider
 
-    launch, secondary = homes
+    _launch, secondary = homes
     _install(secondary, "scaleup-only")
 
     assert providers.get_provider_profile("scaleup-only") is None  # launch home discovers first

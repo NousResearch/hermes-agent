@@ -181,7 +181,7 @@ def test_verdicts_follow_ownership_deadlines_and_import_execution(tmp_path, caps
 
 
 def test_replay_reports_unmeasured_prs_and_fails(tmp_path, monkeypatch, capsys):
-    repo, base = _repo(tmp_path)
+    repo, _base = _repo(tmp_path)
     head = _commit(repo, {"pkg/b.py": _SWALLOW.replace("other", "fresh")})
 
     def pr(number: int, oid: str) -> dict:

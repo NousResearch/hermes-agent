@@ -52,8 +52,8 @@ _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 def three_source_env(monkeypatch, hub_env):
     """Populate hub/builtin/local skills for source-classification tests."""
     import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    from tools import skills_sync
+    from tools import skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
     monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
@@ -316,6 +316,9 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
             return Response()
 
     class Source:
+        def source_id(self):
+            return "github"
+
         def inspect(self, _identifier):
             hub._guarded_http_get("https://example.com/metadata")
             # The Hermes-index fetch must ride the same pool (no cache → real GET).

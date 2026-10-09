@@ -23,8 +23,8 @@ from gateway.session_identity import replace_source
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -329,7 +329,7 @@ class GatewayTopicThreadsMixin:
             and getattr(source, "delivered_via_upstream_relay", False) is True
         )
 
-    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """(thread_id, initial_name) when the RELAY connector auto-threaded our reply — the title-turn
         sibling of _is_discord_auto_thread_lane (whose markers only exist from turn 2 on; the title
         turn's source is the PARENT channel event).
@@ -357,7 +357,7 @@ class GatewayTopicThreadsMixin:
             return _as_thread_info(info_fn(str(source.chat_id)))
         return None
 
-    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """``_relay_auto_thread_info``, waited out until this turn delivers (the legacy send-result
         path can only answer once the reply is sent; the caller asks at title time, one turn early).
         The timeout is only a backstop for a turn that never sends: the turn's own inactivity limit."""
@@ -377,7 +377,7 @@ class GatewayTopicThreadsMixin:
 
     async def _rename_discord_auto_thread_for_session_title(
         self, source: SessionSource, session_id: str, title: str,
-        relay_info: Optional[Tuple[str, str]] = None,
+        relay_info: Optional[tuple[str, str]] = None,
     ) -> None:
         """Best-effort semantic rename of a newly auto-created Discord thread. ``relay_info`` is the
         connector's (thread_id, initial_name) feedback, supplied on the title turn where the source

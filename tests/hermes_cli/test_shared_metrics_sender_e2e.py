@@ -10,7 +10,7 @@ from __future__ import annotations
 import gzip
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -19,7 +19,7 @@ from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
-NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
 
 class Ingest(BaseHTTPRequestHandler):
@@ -28,7 +28,7 @@ class Ingest(BaseHTTPRequestHandler):
     received: list = []
     script: list = []
 
-    def do_POST(self):  # noqa: N802 - stdlib naming
+    def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         if self.headers.get("Content-Encoding") == "gzip":
@@ -58,7 +58,7 @@ class Ingest(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+    def log_message(self, format, *args):
         pass
 
 
@@ -82,7 +82,7 @@ def store(tmp_path):
     )
     # Open a consent window covering the fixture packages; the interval gate
     # fails closed without one, and this file tests transport, not consent.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from hermes_cli.observability.shared_metrics_sender import (
         reconcile_send_consent,
@@ -92,10 +92,10 @@ def store(tmp_path):
     with built._connection() as connection:
         with write_txn(connection):
             reconcile_send_consent(
-                connection, True, now=datetime(2026, 8, 20, tzinfo=timezone.utc)
+                connection, True, now=datetime(2026, 8, 20, tzinfo=UTC)
             )
             reconcile_send_consent(
-                connection, True, now=datetime(2026, 10, 1, tzinfo=timezone.utc)
+                connection, True, now=datetime(2026, 10, 1, tzinfo=UTC)
             )
     return built
 

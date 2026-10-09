@@ -234,6 +234,43 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         )
 
 
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass
+def test_detached_grandchild_is_killed_by_runner(tmp_path: Path) -> None:
+    """A child in its OWN session (an auto-started ``gateway run``) escapes the process-group
+    kill; the runner still finds it by the attempt's temp root in its environment."""
+    repo_root = _probe_root(tmp_path)
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    handoff = tmp_path / "detached.json"
+    (probe_dir / "test_probe_detached.py").write_text(textwrap.dedent(f"""
+        import json, os, subprocess, sys
+        from pathlib import Path
+
+        def test_spawns_detached_child_and_walks_away():
+            child = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"],
+                start_new_session=True,
+            )
+            Path({str(handoff)!r}).write_text(json.dumps({{"pid": child.pid}}), encoding="utf-8")
+    """).lstrip(), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    pid = json.loads(handoff.read_text(encoding="utf-8-sig"))["pid"]
+    deadline = time.monotonic() + 5.0
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        os.kill(pid, 9)
+        pytest.fail(f"detached child {pid} survived the runner; output:\n{proc.stdout}")
+    assert proc.returncode == 0, proc.stdout
+
 # ── Bare pytest-flag passthrough ─────────────────────────────────────────────
 #
 # The runner routes any token starting with ``-`` that isn't one of its own
@@ -435,6 +472,37 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
                             cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sorted(path.name for path in receipt.iterdir()) == expected
+
+
+@pytest.mark.parametrize("selector", ["files", "discovery"])
+@pytest.mark.parametrize("ignore", ["glob", "glob-spaced", "path"])
+def test_passthrough_ignore_drops_files_the_runner_hands_pytest_explicitly(
+    tmp_path, selector, ignore,
+):
+    """Each file reaches its own pytest as an explicit argument, which pytest's
+    --ignore/--ignore-glob never filter; the runner must apply them itself. The
+    Windows lane's ``--ignore-glob='*test_desktop_update_windows_*.py'`` gate was a
+    no-op, so those files ran (and hit the per-file cap) on PRs it meant to spare."""
+    root = _probe_root(tmp_path)   # relative globs anchor at the repo root (per-file pytest's cwd)
+    probe = root / "tests" / "probe"
+    probe.mkdir(parents=True)
+    receipt = tmp_path / "witnesses"
+    receipt.mkdir()
+    for name in ("keep", "gated_skipme"):
+        (probe / f"test_{name}.py").write_text(
+            f"from pathlib import Path\ndef test_{name}():\n    Path({str(receipt / name)!r}).touch()\n",
+            encoding="utf-8")
+    pick = (["--files", os.pathsep.join(f"tests/probe/test_{n}.py" for n in ("keep", "gated_skipme"))]
+            if selector == "files" else ["--paths", str(probe)])
+    flag = {"glob": ["--ignore-glob=*test_gated_*.py"],
+            "glob-spaced": ["--ignore-glob", "*test_gated_*.py"],
+            "path": ["--ignore=tests/probe/test_gated_skipme.py"]}[ignore]
+    runner = root / "scripts/run_tests_parallel.py"
+    result = subprocess.run([sys.executable, str(runner), *pick, "-j", "1", "--file-timeout", "30", "--", *flag],
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(path.name for path in receipt.iterdir()) == ["keep"], result.stdout
+    assert "excluded 1 test file" in result.stdout, result.stdout
 
 
 

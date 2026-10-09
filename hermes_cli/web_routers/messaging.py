@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -588,7 +588,7 @@ async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
         fields = dict(
             proc=None, mode=mode, allowed_users=allowed_users, session_path=str(session_path),
-            expires_at=datetime.fromtimestamp(expires_at_ts, timezone.utc).isoformat().replace("+00:00", "Z"),
+            expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
             expires_at_ts=expires_at_ts, profile=body.profile,
         )
         already_linked = (session_path / "creds.json").exists()
@@ -670,9 +670,9 @@ _TELEGRAM_INCOMPLETE_RESPONSE = "Telegram setup service returned an incomplete r
 
 def _parse_expiry_ts(value: str) -> float:
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed.timestamp()
     except Exception:
         return time.time() + 600
@@ -954,15 +954,147 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
     return notify_multiplexer_profiles_changed(name) is not None
 
 
+def _gate_env(name: str) -> str:
+    """Per-profile allow/deny gate env read, always stripped (gateway seam)."""
+    from gateway.platforms._shared import platform_gate_env
+
+    return platform_gate_env(name)
+
+
+def _platform_authz_env_names(platform_id: str) -> tuple[str, str]:
+    """``(allowed_users_env, allow_all_env)`` for a platform, honoring plugin registry
+    entries. Empty strings mean "this platform has no per-user authorization surface"
+    (webhook-style trusted inbound or unknown), so no posture is computed for it."""
+    from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
+
+    allowed = _PLATFORM_ALLOWLIST_ENV.get(platform_id, "")
+    allow_all = allowed.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS")
+    if not allowed:
+        with contextlib.suppress(Exception):
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get(platform_id)
+            if entry is not None:
+                if getattr(entry, "trusted_inbound", False) is True:
+                    return "", ""
+                allowed = getattr(entry, "allowed_users_env", "") or ""
+                allow_all = getattr(entry, "allow_all_env", "") or ""
+    return allowed, allow_all
+
+
+def _platform_dm_policy(platform_id: str) -> str:
+    """Effective ``dm_policy`` for the ACTIVE profile's ``platforms.<id>`` config
+    (``open``/``allowlist``/``disabled``/``pairing``). The default here is NOT the adapter
+    default: adapters without a config key never consult ``dm_policy`` in
+    ``_principal_authorized``, so a policy-shaped key only matters where one exists."""
+    with contextlib.suppress(Exception):
+        plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+        if isinstance(plat_cfg, dict):
+            policy = str(plat_cfg.get("extra", {}).get("dm_policy") or "").strip().lower()
+            if policy:
+                return policy
+    return ""
+
+
+def _count_csv(value: str) -> int:
+    return len([part for part in (value or "").split(",") if part.strip()])
+
+
+def _messaging_platform_posture(platform_id: str, entry: dict[str, Any], scoped: bool) -> dict[str, Any] | None:
+    """Auth-posture verdict for a CONNECTED platform (must be called inside the profile
+    scope, after the connectivity chain has already reported ``connected``).
+
+    Mirrors the decision ladder of ``AuthorizationMixin._principal_authorized``
+    (gateway/authz_mixin.py) for the "can any user reach the bot" question, evaluated
+    against the ACTIVE profile's env/config only — never the dashboard process's
+    ``os.environ`` (which carries the ROOT profile's credentials, #66030):
+
+    - allow-all flags: ``{PLATFORM}_ALLOW_ALL_USERS`` then ``GATEWAY_ALLOW_ALL_USERS``
+    - allowlists: the platform's ``{PLATFORM}_ALLOWED_USERS``, ``GATEWAY_ALLOWED_USERS``,
+      plus the Telegram group vars (a group-only grant still authorizes real users)
+    - pairing grants: approved users in the profile's pairing store (the gateway honors
+      the store as a UNION with the allowlists)
+    - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+
+    Everything failing → deny-all: the connection is up but no sender can get through,
+    which the Channels "Test" button must not render as a plain green "connected".
+    Returns ``None`` when the platform has no per-user authorization surface at all.
+    """
+    allowed_env, allow_all_env = _platform_authz_env_names(platform_id)
+    if not allowed_env:
+        return None
+
+    # Same scoped-vs-process split _platform_enablement uses: under a named profile the
+    # process env belongs to the ROOT install and must not authorize anyone here, and a
+    # profile's .env must not borrow the root's allowlists (false green) either.
+    def gate_env(name: str) -> str:
+        if scoped:
+            return load_env().get(name, "")
+        return _gate_env(name)
+
+    if allow_all_env and gate_env(allow_all_env).lower() in ("true", "1", "yes"):
+        return {"posture": "open", "message": f"{entry['name']} is open: {allow_all_env} is set."}
+    if gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes"):
+        return {"posture": "open", "message": "Gateway is open: GATEWAY_ALLOW_ALL_USERS is set."}
+
+    allowlists = {
+        allowed_env: gate_env(allowed_env),
+        "GATEWAY_ALLOWED_USERS": gate_env("GATEWAY_ALLOWED_USERS"),
+        "TELEGRAM_GROUP_ALLOWED_USERS": gate_env("TELEGRAM_GROUP_ALLOWED_USERS") if platform_id == "telegram" else "",
+        "TELEGRAM_GROUP_ALLOWED_CHATS": gate_env("TELEGRAM_GROUP_ALLOWED_CHATS") if platform_id == "telegram" else "",
+    }
+    for env_name, value in allowlists.items():
+        if value.strip():
+            n = _count_csv(value)
+            return {
+                "posture": "allowlist",
+                "message": f"Connected. {n} user{'s' if n != 1 else ''} allowlisted via {env_name}.",
+            }
+
+    if _platform_dm_policy(platform_id) == "allowlist":
+        return {"posture": "allowlist", "message": "Connected. Access restricted by the configured allow_from policy."}
+
+    # Pairing grants: the profile's approved users (the gateway honors the store as a
+    # union with any allowlist, gateway/authz_mixin.py `_pairing_store_for`).
+    approved = pending = 0
+    with contextlib.suppress(Exception):
+        from gateway.pairing import PairingStore
+
+        store = PairingStore()
+        approved = len(store.list_approved(platform_id))
+        pending = len(store.list_pending(platform_id))
+    if approved:
+        return {
+            "posture": "pairing",
+            "message": f"Connected. {approved} user{'s' if approved != 1 else ''} paired.",
+        }
+
+    base = (
+        f"{entry['name']} is connected, but no users are authorized yet — "
+        f"set {allowed_env}, approve a pairing request, or enable pairing for new users."
+    )
+    if pending:
+        base += f" {pending} pairing request{'s' if pending != 1 else ''} pending approval."
+    return {"posture": "deny_all", "message": base}
+
+
 @router.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
 
     def _run():
         with _profile_scope(profile) as scoped_dir:
-            return _platform_payloads(scoped_dir, [entry])[0]
+            payload = _platform_payloads(scoped_dir, [entry])[0]
+            posture = None
+            if payload["state"] == "connected":
+                # Still inside the profile scope: load_env()/load_config()/PairingStore
+                # must resolve the ACTIVE profile's env/config/pairing store, not the
+                # dashboard process's root home.
+                posture = _messaging_platform_posture(platform_id, entry, scoped_dir is not None)
+            return payload, posture
 
-    payload = await asyncio.to_thread(_run)
+    payload, posture = await asyncio.to_thread(_run)
 
     def result(ok: bool, message: str) -> dict[str, Any]:
         return {"ok": ok, "state": payload["state"], "message": message}
@@ -975,7 +1107,17 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
     if not payload["gateway_running"]:
         return result(False, "Gateway is not running. Restart the gateway to connect this platform.")
     if payload["state"] == "connected":
-        return result(True, f"{entry['name']} is connected.")
+        # Non-breaking extension (#66030): keep ok=True (the connection is genuinely up)
+        # but surface the platform's auth posture so the UI can render yellow on
+        # connected-but-unreachable, and say exactly what to configure.
+        if posture is None:
+            return result(True, f"{entry['name']} is connected.")
+        return {
+            "ok": True,
+            "state": payload["state"],
+            "message": posture["message"],
+            "auth_posture": posture["posture"],
+        }
     if payload.get("error_message"):
         return result(False, payload["error_message"])
     return result(False, "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.")

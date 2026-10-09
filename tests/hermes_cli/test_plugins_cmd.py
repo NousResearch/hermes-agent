@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 import hermes_yaml as yaml
 
 from hermes_cli.plugins_cmd import (
@@ -244,7 +244,7 @@ class TestGitPullPluginDirAutostash:
         git(origin, "commit", "-qam", "bump value")
         (checkout / "local_notes.txt").write_text("keep me\n", encoding="utf-8")
 
-        ok, msg = pc._git_pull_plugin_dir(checkout)
+        ok, _msg = pc._git_pull_plugin_dir(checkout)
         assert ok is True
         assert (checkout / "local_notes.txt").read_text(encoding="utf-8") == "keep me\n"
         assert "VALUE = 2" in (checkout / "plugin.py").read_text(encoding="utf-8")
@@ -254,7 +254,7 @@ class TestGitPullPluginDirAutostash:
 
         if not pc._resolve_git_executable():
             pytest.skip("git not available")
-        origin, checkout, git = self._make_repos(tmp_path)
+        _origin, checkout, git = self._make_repos(tmp_path)
 
         ok, msg = pc._git_pull_plugin_dir(checkout)
         assert ok is True
@@ -847,7 +847,7 @@ class TestInstallReadabilityGate:
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
         self._clone_with_unreadable_manifest(monkeypatch, pc)
 
-        target, manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
+        target, _manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
 
         assert name == "badperm"  # manifest read after repair, not the URL fallback
         assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")

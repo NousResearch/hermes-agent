@@ -36,7 +36,7 @@ class _FakeEnv:
         self.cwd = start_cwd
         self.calls: list[dict] = []
 
-    def execute(self, command: str, cwd: str = None, **kwargs) -> dict:
+    def execute(self, command: str, cwd: str | None = None, **kwargs) -> dict:
         import subprocess
         self.calls.append({"command": command, "cwd": cwd})
         # Simulate cd by updating self.cwd (the real env does the same

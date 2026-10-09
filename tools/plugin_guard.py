@@ -11,7 +11,7 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -106,7 +106,7 @@ MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
 
-def _walk(plugin_dir: Path) -> Iterator[Tuple[Path, str]]:
+def _walk(plugin_dir: Path) -> Iterator[tuple[Path, str]]:
     """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
     for f in plugin_dir.rglob("*"):
         try:
@@ -157,7 +157,7 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     return lines
 
 
-def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) -> List[Finding]:
+def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) -> list[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
@@ -166,7 +166,7 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
     doc_prose = is_doc_prose(rel_path) or is_ci_workflow(rel_path)
     locale_catalog = is_locale_catalog(rel_path)
     lines = _file_lines(file_path) if findings else []
-    out: List[Finding] = []
+    out: list[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
@@ -209,7 +209,7 @@ def _comment_severity(f: Finding) -> str:
     return sev if is_agent_facing(f) else STEP_DOWN.get(sev, sev)
 
 
-def _file_lines(file_path: Path) -> List[str]:
+def _file_lines(file_path: Path) -> list[str]:
     """Full source lines (``Finding.match`` is truncated to 120 chars); unreadable → []."""
     try:
         return file_path.read_text(encoding="utf-8-sig").split("\n")
@@ -275,7 +275,7 @@ def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
     return True
 
 
-def _dangerous_findings_summary(findings: List[Finding]) -> str:
+def _dangerous_findings_summary(findings: list[Finding]) -> str:
     """Describe the critical findings that made a plugin install dangerous."""
     critical = [finding for finding in findings if finding.severity == "critical"]
     pattern_ids = sorted({finding.pattern_id for finding in critical})
@@ -283,9 +283,9 @@ def _dangerous_findings_summary(findings: List[Finding]) -> str:
     return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
-def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
+def _check_plugin_structure(plugin_dir: Path) -> list[Finding]:
     """Structural checks sized for plugin repositories."""
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()
@@ -328,7 +328,7 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
 
 def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust."""
-    all_findings: List[Finding] = []
+    all_findings: list[Finding] = []
     if plugin_dir.is_dir():
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
@@ -342,7 +342,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         summary = f"{plugin_dir.name}: clean scan, no threats detected"
     result = ScanResult(
         skill_name=plugin_dir.name, source=source or plugin_dir.name, trust_level="community",
-        verdict=verdict, findings=all_findings, scanned_at=datetime.now(timezone.utc).isoformat(),
+        verdict=verdict, findings=all_findings, scanned_at=datetime.now(UTC).isoformat(),
         summary=summary)
     result.scan_provenance = {
         "scanner_version": PLUGIN_SCANNER_VERSION, "verdict": verdict, "source": result.source}
@@ -350,7 +350,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
 
 
 def should_allow_plugin_install(
-    result: ScanResult, force: bool = False) -> Tuple[Optional[bool], str]:
+    result: ScanResult, force: bool = False) -> tuple[Optional[bool], str]:
     """Map a verdict to ``(allowed, reason)``: True installs, None asks to confirm, False blocks."""
     n = len(result.findings)
     if result.verdict == "safe":
@@ -365,4 +365,8 @@ def should_allow_plugin_install(
 
 
 __all__ = [
-    "scan_plugin", "should_allow_plugin_install", "format_scan_report", "PLUGIN_SCANNER_VERSION"]
+    "PLUGIN_SCANNER_VERSION",
+    "format_scan_report",
+    "scan_plugin",
+    "should_allow_plugin_install",
+]

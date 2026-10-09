@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import json
 import os
 import time
@@ -23,7 +23,7 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     # Model the default gateway's identity, not merely a live pytest PID. The satellite has no lock.
     monkeypatch.setattr(
         "gateway.status.is_gateway_runtime_lock_active",
@@ -168,7 +168,7 @@ def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatc
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
     monkeypatch.setattr("gateway.host_topology.host_gateway_serving", lambda profile_name=None: None)
@@ -205,7 +205,7 @@ def test_in_process_ticker_heartbeat_counts_only_while_its_writer_lives(tmp_path
     (home / "cron").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
     monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
@@ -281,7 +281,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
     else:
         records = jobs.load_jobs()
         delay = timedelta(hours=5) if dispatch == "catch_up" else timedelta(minutes=6)
-        records[0]["next_run_at"] = (datetime.now(timezone.utc) - delay).isoformat()
+        records[0]["next_run_at"] = (datetime.now(UTC) - delay).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])
@@ -300,7 +300,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         assert cron_doctor() == 1
         capsys.readouterr()
         records = jobs.load_jobs()
-        records[0]["next_run_at"] = datetime.now(timezone.utc).isoformat()
+        records[0]["next_run_at"] = datetime.now(UTC).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])

@@ -592,6 +592,17 @@ def _typed_payload(
             # comments, run history, identifiers, and raw host paths.
             return _project_bound_kanban_show(value)
         if generated_context and redact_generated_context:
+            if protected_kanban_context:
+                typed = _segment_protected_context(
+                    value, grant_texts, used_grants, sanitized_cap=sanitized_cap,
+                    allow_line_split=not preserve_segment_boundaries,
+                )
+                spans = typed.segments if isinstance(typed, OutboundText) else (typed,)
+                return OutboundText(tuple(
+                    GeneratedContextSegment(redact_remote_unsafe_text(span.text))
+                    if isinstance(span, SanitizedSegment) else span
+                    for span in spans
+                ))
             return GeneratedContextSegment(redact_remote_unsafe_text(value))
         if protected_kanban_context:
             return _segment_protected_context(
@@ -1021,7 +1032,7 @@ def dispatch_authorized_agent_request(
     return callback(MappingProxyType(authorized))
 
 
-def dispatch_provider_request(agent, request, callback):
+def dispatch_provider_request(agent, request, callback, *, route=None):
     """Apply the exact provider-bound egress policy at a physical call site."""
 
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
@@ -1029,7 +1040,7 @@ def dispatch_provider_request(agent, request, callback):
         return callback(request)
     from agent.llm_egress_runtime import dispatch_authorized_agent_request
 
-    return dispatch_authorized_agent_request(agent, request, callback)
+    return dispatch_authorized_agent_request(agent, request, callback, route=route)
 
 
 

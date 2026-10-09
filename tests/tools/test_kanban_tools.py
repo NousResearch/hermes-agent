@@ -145,7 +145,7 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         a = kb.create_task(conn, title="alpha", assignee="factory", priority=5)
@@ -184,7 +184,7 @@ def test_complete_happy_path(worker_env):
     assert d["task_id"] == worker_env
     # Verify via kernel
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
@@ -424,7 +424,7 @@ def test_block_happy_path(worker_env):
     d = json.loads(out)
     assert d["ok"] is True
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "blocked"
@@ -708,7 +708,7 @@ def test_comment_rejects_caller_supplied_author(worker_env):
     })
     assert "author" in json.loads(out)["error"]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         assert kb.list_comments(conn, worker_env) == []
@@ -732,7 +732,7 @@ def test_create_happy_path(worker_env):
     assert d["status"] == "todo"  # parent isn't done yet
     assert d["gated"] is True and d["gated_by"] == worker_env
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
@@ -799,7 +799,7 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="blocked", assignee="worker")
@@ -891,7 +891,7 @@ def test_worker_lifecycle_through_tools(worker_env):
 
     # Verify final state
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         parent = kb.get_task(conn, worker_env)
@@ -940,7 +940,7 @@ def test_worker_lifecycle_through_tools(worker_env):
 def test_worker_complete_rejects_foreign_task_id(worker_env):
     """A worker cannot complete a task that isn't its own (#19534)."""
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="sibling")
@@ -973,7 +973,7 @@ def test_worker_can_comment_on_foreign_task(worker_env):
     to ``_handle_comment`` would fail CI immediately.
     """
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="sibling")
@@ -1009,7 +1009,7 @@ def test_worker_unblock_rejects_foreign_task_id(worker_env):
     pinning is "worker cannot mutate foreign task via kanban_unblock".
     """
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="blocked sibling", assignee="peer")
@@ -1614,11 +1614,12 @@ def test_create_normalizes_worker_supplied_scratch_path(worker_env):
 
     from hermes_cli import kanban_db as kb
 
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
+    conn = kbc.connect()
     try:
         child = kb.get_task(conn, result["task_id"])
         assert child.workspace_path is None
-        resolved = kb.resolve_workspace(child)
+        resolved = kbw.resolve_workspace(child)
         assert kb._is_managed_scratch_path(resolved)
     finally:
         conn.close()

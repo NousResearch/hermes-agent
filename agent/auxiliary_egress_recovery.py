@@ -122,20 +122,23 @@ def local_fallback_steps(route, step_factory):
             failed_model=route.final_model, local_only=True,
         ),
     )
+    tried_lanes = set()
     for candidate in candidates:
-        client, model, label = candidate()
-        if client is None:
-            continue
-        provider = auxiliary._fallback_provider_from_label(label)
-        destination = classify_destination(
-            provider, str(getattr(client, "base_url", "") or ""), "chat_completions",
-        )
-        if destination not in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
-            continue
-        auxiliary._record_route_info(route.route_info, provider, model)
-        response = yield step_factory("fallback", (client, model, label))
-        if response is not None:
-            return response
+        while True:
+            client, model, label = candidate()
+            if client is None:
+                break
+            lane = (label, model, str(getattr(client, "base_url", "") or ""))
+            if lane in tried_lanes:
+                break
+            tried_lanes.add(lane)
+            provider = auxiliary._fallback_provider_from_label(label)
+            if not is_local_fallback_client(client, provider):
+                continue
+            auxiliary._record_route_info(route.route_info, provider, model)
+            response = yield step_factory("fallback", (client, model, label))
+            if response is not None:
+                return response
     return None
 
 
@@ -231,6 +234,10 @@ def auxiliary_egress_binding(
 
 
 def authorize_auxiliary_request(client: Any, kwargs: dict[str, Any], callback, *, provider: str | None, api_mode: str | None, metadata: dict[str, Any] | None):
+    from agent.auxiliary_client import CodexAuxiliaryClient, AsyncCodexAuxiliaryClient
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        # The adapter translates this request; authorize its final Responses body there.
+        return callback({**kwargs, "_hermes_aux_request_provider": provider})
     binding = auxiliary_egress_binding(
         client, provider=provider, model=kwargs.get("model"), api_mode=api_mode,
     )

@@ -221,7 +221,7 @@ class TestFallbackChainAdvancement:
 
         with (
             patch(
-                "agent.llm_egress_runtime.fallback_entry_unavailable_without_network",
+                "agent.chat_completion_helpers.fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
@@ -257,7 +257,7 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with (
             patch(
-                "agent.llm_egress_runtime.fallback_entry_unavailable_without_network",
+                "agent.chat_completion_helpers.fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
@@ -562,7 +562,7 @@ def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
                 "base_url": "https://chatgpt.com/backend-api/codex",
             },
             {
-                "provider": "ollama-launch",
+                "provider": "custom",
                 "model": "hermes-review-fast:latest",
                 "base_url": "http://127.0.0.1:11434/v1",
             },
@@ -578,7 +578,7 @@ def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
             is True
         )
 
-    assert agent.provider == "ollama-launch"
+    assert agent.provider == "custom"
     assert agent.model == "hermes-review-fast:latest"
     assert agent._fallback_index == 2
     resolve_client.assert_called_once()

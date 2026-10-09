@@ -34,7 +34,6 @@ from agent.cross_process_file_lock import (
 )
 from agent.redact import redact_sensitive_text
 
-
 class DestinationClass(StrEnum):
     """Trust class for an LLM destination."""
 
@@ -42,7 +41,6 @@ class DestinationClass(StrEnum):
     LOOPBACK = "loopback"
     REMOTE = "remote"
     UNKNOWN = "unknown"
-
 
 @dataclass(frozen=True, slots=True)
 class SourceGrant:
@@ -59,13 +57,11 @@ class SourceGrant:
     request_id: str
     policy_digest: str
 
-
 @dataclass(frozen=True, slots=True)
 class LiteralSegment:
     """Application-owned literal text for a typed outbound request."""
 
     text: str
-
 
 @dataclass(frozen=True, slots=True)
 class SanitizedSegment:
@@ -73,13 +69,11 @@ class SanitizedSegment:
 
     text: str
 
-
 @dataclass(frozen=True, slots=True)
 class GeneratedContextSegment:
     """Hermes-generated remote context after unsafe-text redaction."""
 
     text: str
-
 
 @dataclass(frozen=True, slots=True)
 class GeneratedContextKey:
@@ -87,13 +81,11 @@ class GeneratedContextKey:
 
     text: str
 
-
 @dataclass(frozen=True, slots=True)
 class UntrustedProvenanceSegment:
     """Content-free marker for tool bytes with no trusted origin proof."""
 
     content_sha256: str
-
 
 @dataclass(frozen=True, slots=True)
 class ValidatedToolSyntaxSegment:
@@ -102,13 +94,11 @@ class ValidatedToolSyntaxSegment:
     text: str
     syntax_kind: str
 
-
 @dataclass(frozen=True, slots=True)
 class SourceBoundSegment:
     """Opaque reference whose text is loaded only from a verified grant."""
 
     source_grant_digest: str
-
 
 @dataclass(frozen=True, slots=True)
 class SourcePresentationSegment:
@@ -117,7 +107,6 @@ class SourcePresentationSegment:
     source_grant_digest: str
     text: str
     presentation_kind: str
-
 
 @dataclass(frozen=True, slots=True)
 class OutboundText:
@@ -134,7 +123,6 @@ class OutboundText:
         ...,
     ]
 
-
 @dataclass(frozen=True, slots=True)
 class TypedOutboundRequest:
     """Remote request recipe; no independent raw string leaf is permitted."""
@@ -144,7 +132,6 @@ class TypedOutboundRequest:
     turn_id: str
     request_id: str
     policy_digest: str
-
 
 @dataclass(frozen=True, slots=True)
 class EgressDecision:
@@ -168,7 +155,6 @@ class EgressDecision:
     api_mode: str = ""
     grant_digests: tuple[str, ...] = ()
 
-
 class EgressBlocked(RuntimeError):
     """Raised when the final request is not authorized for its destination."""
 
@@ -177,14 +163,12 @@ class EgressBlocked(RuntimeError):
         reasons = ",".join(decision.reason_codes) or "policy_denied"
         super().__init__(f"LLM egress blocked: {reasons}")
 
-
 class SanitizedTextRejected(ValueError):
     """Raised when remote text cannot earn the sanitized segment type."""
 
     def __init__(self, reason_code: str):
         self.reason_code = reason_code
         super().__init__(f"sanitized remote text rejected: {reason_code}")
-
 
 @dataclass(frozen=True, slots=True)
 class AuthorizedEgress:
@@ -220,7 +204,6 @@ class AuthorizedEgress:
                 )
             )
         return self.payload_bytes
-
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.:@/-]{0,256}$")
 _LOCAL_PROCESS_MODES = frozenset({"local_process", "in_process"})
@@ -436,7 +419,6 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
     }
 )
 
-
 def classify_destination(
     provider: str,
     base_url: str | None,
@@ -479,17 +461,14 @@ def classify_destination(
     except (TypeError, ValueError):
         return DestinationClass.UNKNOWN
 
-
 def _route_value(route: Any, name: str, default: Any = None) -> Any:
     if isinstance(route, Mapping):
         return route.get(name, default)
     return getattr(route, name, default)
 
-
 def _request_identity(request: Mapping[str, Any], name: str) -> str:
     value = request.get(name, "")
     return value if isinstance(value, str) else str(value)
-
 
 def _receipt_identifier(value: str) -> str:
     """Keep ordinary correlation IDs while hashing unsafe or sensitive labels."""
@@ -510,7 +489,6 @@ def _receipt_identifier(value: str) -> str:
         safe = False
     return value if safe else f"sha256:{sha256(value.encode('utf-8')).hexdigest()}"
 
-
 def source_grant_digest(grant: SourceGrant) -> str:
     """Return the opaque identity used by a source-segment manifest."""
 
@@ -529,14 +507,12 @@ def source_grant_digest(grant: SourceGrant) -> str:
     encoded = json.dumps(bound_fields, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return sha256(encoded).hexdigest()
 
-
 def static_literal_sha256(text: str) -> str:
     """Hash one exact UTF-8 static literal for a policy allowlist."""
 
     if not isinstance(text, str):
         raise TypeError("static literal must be text")
     return sha256(text.encode("utf-8")).hexdigest()
-
 
 def validate_tool_syntax(text: str, syntax_kind: str) -> str:
     """Revalidate one complete protected tool-result syntax atom."""
@@ -547,7 +523,6 @@ def validate_tool_syntax(text: str, syntax_kind: str) -> str:
     if _contains_secret(text) or _contains_private_absolute_path(text):
         raise ValueError("invalid_tool_syntax_segment")
     return text
-
 
 def _canonical_base64_candidate(candidate: str) -> bool:
     """Recognize bounded canonical encodings without flagging ordinary IDs."""
@@ -599,7 +574,6 @@ def _canonical_base64_candidate(candidate: str) -> bool:
             return True
     return False
 
-
 # GitHub's legacy GraphQL global node id: base64 of a fixed
 # ``<digits>:<TypeName><digits>`` grammar (e.g. "05:Issue160502814" ->
 # "MDU6SXNzdWUxNjA1MDI4MTQ0"). `gh api` / `gh issue|pr list` return these in
@@ -613,7 +587,6 @@ def _canonical_base64_candidate(candidate: str) -> bool:
 # fallback from a local model to a REMOTE one mid-scan, permanently
 # excluding cloud fallback for any GitHub-issue-reading profile.
 _GITHUB_LEGACY_NODE_ID_GRAMMAR = re.compile(r"\A\d{1,3}:[A-Za-z]{2,40}\d{1,20}\Z")
-
 
 def _looks_like_github_legacy_node_id(candidate: str) -> bool:
     unpadded = candidate.rstrip("=")
@@ -629,7 +602,6 @@ def _looks_like_github_legacy_node_id(candidate: str) -> bool:
     except UnicodeDecodeError:
         return False
     return bool(_GITHUB_LEGACY_NODE_ID_GRAMMAR.fullmatch(text))
-
 
 def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> bool:
     if isinstance(value, str):
@@ -653,7 +625,6 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
         seen.add(identity)
         return any(_contains_canonical_base64(item, seen=seen) for item in value)
     return False
-
 
 def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
     """Apply forced redaction semantics independently to every request string."""
@@ -685,7 +656,6 @@ def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
         seen.add(identity)
         return any(_contains_secret(item, seen=seen) for item in value)
     return False
-
 
 def _contains_exact_secret(
     value: Any,
@@ -721,7 +691,6 @@ def _contains_exact_secret(
         )
     return False
 
-
 def _contains_private_absolute_path(value: Any, *, seen: set[int] | None = None) -> bool:
     """Reject common host-private absolute paths without blocking API paths."""
 
@@ -748,7 +717,6 @@ def _contains_private_absolute_path(value: Any, *, seen: set[int] | None = None)
         seen.add(identity)
         return any(_contains_private_absolute_path(item, seen=seen) for item in value)
     return False
-
 
 def redact_remote_unsafe_text(text: str) -> str:
     """Redact non-secret unsafe text in Hermes-generated remote context.
@@ -809,7 +777,6 @@ def redact_remote_unsafe_text(text: str) -> str:
         redacted,
     )
 
-
 def content_free_violation_locations(value: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Return structural indexes and reasons without returning request text."""
 
@@ -848,7 +815,6 @@ def content_free_violation_locations(value: Any) -> tuple[tuple[str, tuple[str, 
     visit(value, "$")
     return tuple(locations)
 
-
 def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
     """Reject source-derived proper substrings in sanitized text.
 
@@ -879,7 +845,6 @@ def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
             ):
                 return True
     return False
-
 
 def validate_sanitized_text(text: str, *, max_bytes: int = 32_768) -> str:
     """Return unchanged bounded remote-safe text or reject it fail-closed.
@@ -914,7 +879,6 @@ def validate_sanitized_text(text: str, *, max_bytes: int = 32_768) -> str:
     except Exception as exc:
         raise SanitizedTextRejected("private_path_scan_failed") from exc
     return text
-
 
 def _is_strict_sanitized_only_payload(
     value: Any,
@@ -977,7 +941,6 @@ def _is_strict_sanitized_only_payload(
             count += item_count
         return True, count
     return False, 0
-
 
 class LLMEgressFirewall:
     """Validate a final LLM request and record a content-free receipt."""
@@ -1316,15 +1279,13 @@ class LLMEgressFirewall:
             if blocked is not None:
                 reasons.append("sensitive_path")
                 continue
+            from agent.source_provenance import SourceProvenanceError, _read_bounded_slice
             try:
-                lines = resolved.read_bytes().splitlines(keepends=True)
-            except OSError:
-                reasons.append("source_unavailable")
+                content = _read_bounded_slice(resolved, grant.line_start, grant.line_end)
+            except SourceProvenanceError as exc:
+                reasons.append("source_range_mismatch" if str(exc) == "line_range_unavailable"
+                               else "source_unavailable")
                 continue
-            if grant.line_end > len(lines):
-                reasons.append("source_range_mismatch")
-                continue
-            content = b"".join(lines[grant.line_start - 1 : grant.line_end])
             if len(content) != grant.byte_count or sha256(content).hexdigest() != grant.content_sha256:
                 reasons.append("source_hash_mismatch")
                 continue
@@ -1693,7 +1654,6 @@ class LLMEgressFirewall:
             finally:
                 os.close(fd)
 
-
 __all__ = [
     "AuthorizedEgress",
     "DestinationClass",
@@ -1717,7 +1677,6 @@ __all__ = [
     "static_literal_sha256",
     "validate_tool_syntax",
 ]
-
 
 def _text_contains_canonical_base64(value: str) -> bool:
     # Fixed Hermes/Nous attribution tags are protocol metadata, not an
@@ -1778,7 +1737,6 @@ def _text_contains_canonical_base64(value: str) -> bool:
             return True
     return False
 
-
 def _strict_sanitized_leaf(value: Any) -> tuple[bool, int] | None:
     if isinstance(value, SanitizedSegment):
         return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
@@ -1799,7 +1757,6 @@ def _strict_sanitized_leaf(value: Any) -> tuple[bool, int] | None:
     if isinstance(value, (SourceBoundSegment, SourcePresentationSegment)):
         return False, 0
     return None
-
 
 def _identity_reasons(destination: DestinationClass, identities: tuple[str, str, str, str], expected_policy_digest: str | None) -> list[str]:
     session_id, turn_id, request_id, policy_digest = identities

@@ -3689,7 +3689,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 self.kwargs = kwargs
                 return _FakeCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(
@@ -3714,7 +3714,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             def create(self, **kwargs):
                 return _SlowAliveCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
@@ -3746,7 +3746,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             def create(self, **kwargs):
                 return _StallingStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
@@ -3874,7 +3874,7 @@ class TestCodexAuxiliaryToolMessageConversion:
                 self.kwargs = kwargs
                 return _FakeCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
         adapter.create(messages=messages, model="gpt-5.5")
         # #93650 routes bulk fields through extra_body; fold them back in so
@@ -3935,7 +3935,7 @@ class TestCodexAuxiliaryToolMessageConversion:
 
     def test_video_input_fails_before_responses_request(self):
         responses = MagicMock()
-        adapter = _CodexCompletionsAdapter(SimpleNamespace(responses=responses), "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=responses), "gpt-5.5")
         messages = [{
             "role": "user",
             "content": [
@@ -3985,7 +3985,7 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
             def create(self, **kwargs):
                 return _NullOutputCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
@@ -4017,7 +4017,7 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
                 assert kwargs["stream"] is True
                 return completed
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.6-terra")
 
         response = adapter.create(
@@ -4042,7 +4042,7 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
             def create(self, **kwargs):
                 return completed
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(messages=[{"role": "user", "content": "x"}])

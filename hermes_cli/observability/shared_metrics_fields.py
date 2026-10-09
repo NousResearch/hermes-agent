@@ -131,8 +131,8 @@ _COMPRESSION_OUTCOMES = {
 }
 
 
-# Attempt-log classes the closed set names under an existing value: a summary model benched after repeated
-# fallbacks is a pre-LLM skip to the deterministic summary, which is what ``feasibility_skip`` counts.
+# On a committed attempt, a benched summary model led to a deterministic summary;
+# the existing ``feasibility_skip`` class counts that fallback.
 _COMPRESSION_FAILURE_CLASS_ALIASES = {"summary_model_benched": "feasibility_skip"}
 
 
@@ -142,9 +142,10 @@ def compression_failure_class(outcome: str, failure_class: Any) -> str:
     through a fallback (``feasibility_skip``, ``summary_generation_failed``, ``aux_model_fallback``, ...),
     which keeps that class so a fallback commit never reads as a clean one."""
     value = _norm(failure_class if isinstance(failure_class, str) else None).split(":", 1)[0]
-    value = _COMPRESSION_FAILURE_CLASS_ALIASES.get(value, value)
-    if outcome == "success" and value in {"", "none"}:
-        return "none"
+    if outcome == "success":
+        value = _COMPRESSION_FAILURE_CLASS_ALIASES.get(value, value)
+        if value in {"", "none"}:
+            return "none"
     if not value:
         return "unknown"
     return value if value in contract.COMPRESSION_FAILURE_CLASSES - {"none", "unknown"} else "other"

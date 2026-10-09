@@ -182,7 +182,7 @@ class TestStepfunMigration:
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text(
-            yaml.safe_dump({"_config_version": 46, "model": model_cfg}), encoding="utf-8")
+            yaml.safe_dump({"_config_version": 50, "model": model_cfg}), encoding="utf-8")
         (home / ".env").write_text(
             "\n".join(f"{k}={v}" for k, v in (env_seed or {}).items()) + "\n", encoding="utf-8")
 

@@ -467,3 +467,49 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
         assert argv[-2:] == ["gateway", "restart"]
+
+
+# ---------------------------------------------------------------------------
+# _child_environment — sibling profile credential scope (#135792)
+# ---------------------------------------------------------------------------
+
+
+def test_child_env_scopes_a_foreign_profile_to_its_own_credentials(monkeypatch, tmp_path):
+    """A sibling restart must not carry the updater's platform tokens.
+
+    The updater already loaded the launch profile's ``.env`` into ``os.environ``,
+    so a profile whose own dotenv declares no ``TELEGRAM_BOT_TOKEN`` used to
+    resolve the ROOT value through ``get_env_value_prefer_dotenv`` and long-poll
+    the root bot while the root gateway read the token as taken (#135792).
+    """
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "api1-home"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "root-discord-token")
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "root-operator")
+
+    env = recovery._child_environment("api1")
+
+    assert "TELEGRAM_BOT_TOKEN" not in env
+    assert "DISCORD_BOT_TOKEN" not in env
+    # The gate scrub (#113270) still applies on this path.
+    assert "GATEWAY_ALLOWED_USERS" not in env
+    assert env["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
+
+
+def test_child_env_keeps_launch_exports_for_its_own_profile(monkeypatch):
+    """Restarting the launch profile keeps an operator's exported credentials."""
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+
+    env = recovery._child_environment(None)
+
+    assert env["TELEGRAM_BOT_TOKEN"] == "root-token"
+
+
+def test_profile_home_resolves_named_and_default(tmp_path):
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    root = tmp_path / "hermes"
+    assert recovery._profile_home("default", root) == root
+    assert recovery._profile_home("api1", root) == root / "profiles" / "api1"

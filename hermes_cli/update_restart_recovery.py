@@ -54,6 +54,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 _RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
@@ -110,6 +111,14 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
     dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
 
+    A foreign-profile child is also credential-scoped (#135792): the launch process has already
+    loaded its own ``.env`` into ``os.environ``, and a sibling profile whose dotenv does not declare
+    ``TELEGRAM_BOT_TOKEN`` would fall back to it through
+    ``get_env_value_prefer_dotenv`` — so an API-only profile claimed the root's bot token and
+    long-polled its bot. ``served_profile_child_env`` drops the launch residue and overlays the
+    TARGET profile's own secrets, which is exactly the env a standalone ``hermes -p <name>``
+    builds for itself.
+
     Restarting the host multiplexer from a named profile does not copy this process's environ: the
     child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
     launching profile's platform credentials never become the primary adapter's.
@@ -119,15 +128,25 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     if target == "default" and launch != "default":
         from tools.environments.local import host_gateway_child_env
         env = host_gateway_child_env()
+    elif target != launch:
+        # Foreign profile: the launch dotenv is residue here, and its platform credentials
+        # are the leak #135792 reports.
+        from hermes_constants import get_default_hermes_root
+        from tools.environments.local import served_profile_child_env
+        env = served_profile_child_env(
+            target_home=_profile_home(target, get_default_hermes_root()),
+            inherit_credentials=True)
     else:
         env = os.environ.copy()
-        if profile is not None and profile != launch:
-            from tools.environments.local_env_policy import strip_profile_gate_env
-            strip_profile_gate_env(env)
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
     return env
+
+
+def _profile_home(profile: str, root: Path) -> Path:
+    """Home dir of *profile*: ``<root>/profiles/<name>``, or *root* for the default profile."""
+    return root if profile == "default" else root / "profiles" / profile
 
 
 def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:

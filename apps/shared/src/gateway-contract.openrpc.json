@@ -35073,6 +35073,77 @@
         "title": "SessionParams",
         "type": "object"
       },
+      "SessionPruneParams": {
+        "additionalProperties": false,
+        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filters"
+          },
+          "never_active_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Never Active Days"
+          }
+        },
+        "title": "SessionPruneParams",
+        "type": "object"
+      },
+      "SessionPruneResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "routing_deleted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing Deleted"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "SessionPruneResult",
+        "type": "object"
+      },
       "SessionReclaimedPayload": {
         "additionalProperties": false,
         "description": "``session_lifecycle._announce_session_reclaimed`` (broadcast).",
@@ -44214,6 +44285,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionMutateResult"
+        }
+      }
+    },
+    {
+      "name": "session.prune",
+      "summary": "Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionPruneParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionPruneResult"
         }
       }
     },

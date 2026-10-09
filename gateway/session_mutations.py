@@ -196,14 +196,20 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'delete':
         # Repeat local retirement on an exact retry too: publication may have
         # failed after the transaction committed. Never repeat the event.
-        store = getattr(authority.runner, 'session_store', None)
-        if store is not None:
-            store.retire_runtime_sessions(result['deleted_ids'])
-        from gateway.session_policy import release_launch_secrets
-        release_launch_secrets(authority, result['deleted_ids'])
-        for sid in result['deleted_ids']:
-            candidate = authority.sessions.pop(sid, None)
-            if candidate is not None:
-                evict = getattr(authority.runner, '_evict_cached_agent', None)
-                if callable(evict):
-                    evict(candidate.route)
+        retire_live_sessions(authority, result['deleted_ids'])
+
+
+def retire_live_sessions(authority, session_ids):
+    """Drop committed deletions from this owner's memory: routes, launch secrets, live sessions
+    and their cached agents. Shared by canonical delete and the owner-run bulk prune."""
+    store = getattr(authority.runner, 'session_store', None)
+    if store is not None:
+        store.retire_runtime_sessions(session_ids)
+    from gateway.session_policy import release_launch_secrets
+    release_launch_secrets(authority, session_ids)
+    for sid in session_ids:
+        candidate = authority.sessions.pop(sid, None)
+        if candidate is not None:
+            evict = getattr(authority.runner, '_evict_cached_agent', None)
+            if callable(evict):
+                evict(candidate.route)

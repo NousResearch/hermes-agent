@@ -182,15 +182,20 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None) 
 
 
 @asynccontextmanager
-async def connect_gateway():
+async def connect_gateway(endpoint=None):
+    """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
+    (maintenance that must never start a gateway); default ensures one, starting it if needed."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
     from urllib.parse import urlsplit
 
-    remote = os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
+    remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     protocols = None
-    if remote:
+    if endpoint is not None:
+        ticket = await asyncio.to_thread(_session_ticket, get_hermes_home().resolve(), endpoint)
+        url, protocols = gateway_ws_target(endpoint, ticket)
+    elif remote:
         parsed = urlsplit(remote)
         if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
             raise GatewayClientError("Invalid explicit gateway WebSocket URL; no local fallback")

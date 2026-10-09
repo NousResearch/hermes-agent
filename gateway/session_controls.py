@@ -96,6 +96,8 @@ class AuthorityConnection:
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
+        from gateway.session_prune import prune
+        handlers['session.prune'] = partial(prune, self)
         return handlers
 
     async def dispatch(self, request):

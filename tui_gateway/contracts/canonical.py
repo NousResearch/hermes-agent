@@ -104,6 +104,25 @@ canonical_method("session.mutate", params=SessionMutateParams, result=SessionMut
                      "delete, rewind, reset, model, compress, import).")
 
 
+class SessionPruneParams(Params):
+    """Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as
+    ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
+
+    filters: dict[str, JsonValue] | None = None
+    never_active_days: float | None = None
+
+
+class SessionPruneResult(Result):
+    deleted: int
+    routing_deleted: int | None = None
+    skipped: int | None = None
+
+
+canonical_method("session.prune", params=SessionPruneParams, result=SessionPruneResult,
+                 doc="Local operator only: the owner deletes the ended sessions `hermes sessions prune` "
+                     "selected, skipping busy sessions and retained reset owners.")
+
+
 class CanonicalSessionInfoParams(Params):
     session_id: str
 
@@ -370,4 +389,4 @@ canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDisc
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections  # noqa: F401,E402
+from . import canonical_sessions, canonical_projections

@@ -4482,6 +4482,16 @@ export interface SessionMutateResult {
   revision?: number | null
   [key: string]: unknown
 }
+/** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
+export interface SessionPruneParams {
+  filters?: Record<string, unknown> | null
+  never_active_days?: number | null
+}
+export interface SessionPruneResult {
+  deleted: number
+  routing_deleted?: number | null
+  skipped?: number | null
+}
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
@@ -6371,6 +6381,8 @@ export interface CanonicalRpcMethods {
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
   /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
+  /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
+  'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
   'session.redirect': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
   'session.resume': { params: CanonicalResumeParams; result: CanonicalSnapshot }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
@@ -6414,6 +6426,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.interrupt',
   'session.list',
   'session.mutate',
+  'session.prune',
   'session.redirect',
   'session.resume',
   'session.steer',

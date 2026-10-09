@@ -665,9 +665,19 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
-    deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
-        older_than_days=days, sessions_dir=_sessions_dir()
-    )
+    owner = getattr(args, "owner_endpoint", None)
+    if owner is not None:
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        try:
+            result = owner_prune(owner, never_active_days=days)
+        except (GatewayClientError, OSError, TimeoutError) as exc:
+            return report_owner_failure(exc)
+        deleted, routing_deleted, skipped = result["deleted"], result["routing_deleted"], result["skipped"]
+    else:
+        deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
+            older_than_days=days, sessions_dir=_sessions_dir()
+        )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
     if skipped:
         print(f"Skipped {skipped} session(s) with a live turn or compression lock.")
@@ -753,7 +763,15 @@ def _cmd_prune_or_archive(db, args, action):
     if not args.yes and not _confirm_prompt(f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] "):
         print("Cancelled.")
         return
-    if prune:
+    if prune and getattr(args, "owner_endpoint", None) is not None:
+        # The live gateway owns the store: it deletes, through the housekeeping retirement path.
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        try:
+            print(f"Pruned {owner_prune(args.owner_endpoint, filters=filters)['deleted']} session(s).")
+        except (GatewayClientError, OSError, TimeoutError) as exc:
+            return report_owner_failure(exc)
+    elif prune:
         print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
@@ -1236,6 +1254,12 @@ def cmd_sessions(args, sessions_parser=None):
         and getattr(args, "format", None) in ("md", "qmd")
     )
     observational = action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+    if action == "prune":
+        # The always-on gateway owns the store: this process only reads the preview, the owner
+        # deletes. No gateway: the local prune below, behind the holder scan, as before.
+        from hermes_cli.sessions_owner import live_owner
+        args.owner_endpoint = live_owner()
+        observational = args.owner_endpoint is not None
     # A served-profile process has no single default home: pass the store path explicitly.
     path = get_hermes_home() / "state.db"
     try:
@@ -1253,7 +1277,8 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
+        if (action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False)
+                and getattr(args, "owner_endpoint", None) is None):
             from hermes_state_holders import held_store_refusal
             # Same path the SessionDB above opened, so the scan never depends on the db object.
             refusal = held_store_refusal(path, command=action)

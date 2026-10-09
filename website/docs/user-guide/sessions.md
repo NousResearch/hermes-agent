@@ -98,9 +98,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
-while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
-first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+VACUUMs the database without touching any session data. With the gateway running, `prune`
+asks the gateway to delete the sessions it selected. `optimize`, and `prune` with no gateway
+running, refuse while another Hermes process (Desktop, dashboard, cron) holds `state.db`. Stop
+it first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
 Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or

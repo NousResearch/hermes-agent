@@ -8,6 +8,8 @@ import subprocess
 import sys
 from io import BytesIO
 
+import pytest
+
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_worker_log
 
@@ -109,3 +111,12 @@ def test_worker_log_wrapper_propagates_child_exit_code(tmp_path):
     )
 
     assert returncode == 23
+
+
+def test_worker_log_wrapper_preserves_unexpected_failure_traceback(tmp_path, monkeypatch):
+    def fail_open(_log_path):
+        raise RuntimeError("unexpected log implementation failure")
+
+    monkeypatch.setattr(kanban_worker_log, "open_worker_log_file", fail_open)
+    with pytest.raises(RuntimeError, match="unexpected log implementation failure"):
+        kanban_worker_log.run_worker_with_redacted_log(tmp_path / "worker.log", [sys.executable])

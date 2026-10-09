@@ -69,11 +69,23 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
-    """Current sticky-target app when it provably differs from *requested_app*: both known and neither a substring
-    of the other ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
+    """Current sticky-target app when it provably differs from *requested_app*. Comparison is identity-aware,
+    not raw-string: the capture records both the caller's label and the resolved process name
+    ('Microsoft Edge' and 'msedge.exe' are one target), and fuzzy variants (spaces/extension stripped) match as
+    substrings ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
     last_app = getattr(backend, "_last_app", None)
-    current, wanted = (last_app or "").strip().lower(), requested_app.strip().lower()
-    return None if not current or not wanted or wanted in current or current in wanted else last_app
+    wanted = _app_match_key(requested_app)
+    if not wanted:
+        return None
+    labels = {last_app or ""} | set(getattr(backend, "_last_app_aliases", set()) or set())
+    if any(_app_match_key(l) and (_app_match_key(l) in wanted or wanted in _app_match_key(l)) for l in labels):
+        return None
+    return last_app or None
+
+def _app_match_key(name: str) -> str:
+    """Normalised app-identity key: lowercase, no spaces/hyphens/underscores, no trailing .exe.
+    'Microsoft Edge' -> 'microsoftedge'; 'msedge.exe' -> 'msedge'."""
+    return re.sub(r"[\s_\-]+", "", str(name or "").strip().lower()).removesuffix(".exe")
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
@@ -305,7 +317,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     start = stop = lambda self: None
     def is_available(self) -> bool: return True
 
-    capture = _noop_stub("capture", "mode", "app", "pid", "window_id", result=lambda kw: CaptureResult(
+    capture = _noop_stub("capture", "mode", "app", "pid", "window_id", "max_elements", "max_depth", result=lambda kw: CaptureResult(
         mode=kw["mode"] or "som", width=1024, height=768, png_b64=None, elements=[], app=kw["app"] or "", window_title=""))
     click, drag, scroll = _noop_stub("click"), _noop_stub("drag"), _noop_stub("scroll")
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
@@ -420,7 +432,8 @@ def _scroll_xy(args: dict[str, Any]) -> dict[str, Any]:
 
 def _do_click(backend, action, args, button=None, count=1, **delivery):
     return backend.click(element=args.get("element"), **_xy(args), button=button or args.get("button") or "left",
-                         click_count=count, modifiers=args.get("modifiers"), **delivery)
+                         click_count=count, modifiers=args.get("modifiers"),
+                         element_token=args.get("element_token"), snapshot_id=args.get("snapshot_id"), **delivery)
 
 def _do_drag(backend, action, args, **delivery):
     src, dst = args.get("from_coordinate"), args.get("to_coordinate")
@@ -432,13 +445,15 @@ def _do_drag(backend, action, args, **delivery):
 
 def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
-                          element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
+                          element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"),
+                          element_token=args.get("element_token"), snapshot_id=args.get("snapshot_id"), **delivery)
 
 def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-    # pid/window_id forwarded only when given so older backends keep their defaults.
-    cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    # pid/window_id/max_elements/max_depth forwarded only when given so older backends keep their defaults.
+    extra = {k: args[k] for k in ("pid", "window_id", "max_elements", "max_depth") if args.get(k) is not None}
+    cap = backend.capture(mode=mode, app=args.get("app"), **extra)
     fence()
     return _capture_response(cap, session_id=session_id)
 
@@ -471,7 +486,8 @@ _ACTIONS: dict[str, _ActionSpec] = {
                   summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),
     "set_value": _input(lambda backend, action, args, **_: (
         json.dumps({"error": "set_value requires `value`"}) if args.get("value") is None
-        else backend.set_value(value=str(args["value"]), element=args.get("element")))),
+        else backend.set_value(value=str(args["value"]), element=args.get("element"),
+                               element_token=args.get("element_token"), snapshot_id=args.get("snapshot_id")))),
     "focus_app": _ActionSpec(lambda backend, action, args, **_: (
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
@@ -526,6 +542,13 @@ def _classify_action_result(res: ActionResult) -> dict[str, Any]:
                 "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
         meta = res.meta if isinstance(res.meta, dict) else {}
+        if res.code in ("stale_snapshot", "snapshot_id_required", "superseded_snapshot"):
+            # Element addressing died on snapshot provenance, NOT on the delivery rung: pixel escalation is
+            # the wrong next step — the element indices themselves moved. One fresh capture re-mints them.
+            return {"decision": "recapture_then_retry", "hint": (
+                "The element handle is from a superseded snapshot. Re-run capture() for the same "
+                "app/pid+window_id, then act on the FRESH element index (or its element_token). "
+                "Do not re-issue the old index and do not climb to pixels because of this code.")}
         delivered, requested = meta.get("delivered_chars"), meta.get("requested_chars")
         if (
             res.action in ("type", "type_text")
@@ -599,21 +622,30 @@ def _bounds_unknown(bounds) -> bool:
 
 def _element_to_dict(e: UIElement) -> dict[str, Any]:
     # A zero rect is "geometry unknown", not a position — null it so no coordinate= is ever derived from it (the index still works).
+    # The snapshot token rides along when the driver minted one: it is the stale-safe handle for element actions.
     return {"index": e.index, "role": e.role, "label": e.label[:_MAX_ELEMENT_LABEL_CHARS],
             "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds), "app": e.app,
+            **({"element_token": e.element_token} if e.element_token else {}),
             **({"label_truncated": True} if len(e.label) > _MAX_ELEMENT_LABEL_CHARS else {})}
 
 def _format_elements(elements: list[UIElement], max_lines: int = 40) -> list[str]:
     out = [f"  #{e.index} {e.role} {e.label.replace(chr(10), ' ')[:60]!r} "
            + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
+           + (f" token={e.element_token}" if e.element_token else "")
            + (f" [{e.app}]" if e.app else "") for e in elements[:max_lines]]
     return out + ([f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)"] if len(elements) > max_lines else [])
 
-def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int) -> tuple[Optional[float], Optional[str]]:
+def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int,
+                  window_frame: Optional[tuple[int, int, int, int]] = None) -> tuple[Optional[float], Optional[str]]:
     """(scale, note) when element bounds live in a different coordinate space than the screenshot, else (None, None).
-    On HiDPI displays AX bounds are native while the screenshot is downscaled, so coordinate= clicks read off the
-    screenshot miss by the scale factor. 5% slack: window chrome can hang a few px past the captured frame without
-    implying a different space. Scale heuristic: larger axis ratio wins."""
+
+    The driver's action contract is fixed: ``coordinate=`` expects WINDOW-LOCAL SCREENSHOT pixels (the space of
+    the returned PNG), while element ``bounds`` are SCREEN-ABSOLUTE NATIVE pixels. On HiDPI / multi-monitor
+    layouts the two differ by the window origin, the image downscale and the display DPI scale, so the note
+    states the transform explicitly instead of letting the model click native coordinates into the pixel lane.
+    The scale comes from the capture's window frame (list_windows bounds) over the image size — never inferred
+    from the largest element bounds, which breaks on any second monitor. ``scale`` is the x-axis screen-px per
+    screenshot-px factor (None when the frame is unknown)."""
     if not elements or image_width <= 0 or image_height <= 0:
         return None, None
     max_x = max_y = 0
@@ -623,12 +655,27 @@ def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int
         except (TypeError, ValueError):
             continue
         max_x, max_y = max(max_x, int(x) + int(w)), max(max_y, int(y) + int(h))
-    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+    if (not window_frame and max_x <= image_width * 1.05 and max_y <= image_height * 1.05):
         return None, None
-    note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks expect the native "
-            "space — derive click points from element bounds, or scale screenshot positions up accordingly")
-    return round(max(max_x / image_width, max_y / image_height), 2), note
+    if window_frame and window_frame[2] > 0 and window_frame[3] > 0:
+        if (window_frame[0] == window_frame[1] == 0
+                and abs(window_frame[2] - image_width) <= image_width * .05
+                and abs(window_frame[3] - image_height) <= image_height * .05):
+            return None, None
+        fx, fy = round(window_frame[2] / image_width, 4), round(window_frame[3] / image_height, 4)
+        note = (f"element bounds are SCREEN-ABSOLUTE native px (window at {window_frame[0]},{window_frame[1]} "
+                f"size {window_frame[2]}x{window_frame[3]}); coordinate= expects WINDOW-LOCAL SCREENSHOT px "
+                f"({image_width}x{image_height}, origin = window top-left); scale {fx} screen px per screenshot px. "
+                "Convert bounds→coordinate as x=(bounds_x - " + str(window_frame[0]) + ")/" + str(fx) +
+                ", y=(bounds_y - " + str(window_frame[1]) + ")/" + str(fy) +
+                " — or click by element= and skip pixel math entirely (bounds alone are NOT click coordinates).")
+        return fx, note
+    # Frame unknown (exact-target capture that skipped list_windows): still never claim pixel clicks take
+    # the bounds' space — say the bounds are screen-absolute and coordinates are window-local.
+    note = (f"element bounds are SCREEN-ABSOLUTE native px (extending to ~{max_x}x{max_y}), while coordinate= "
+            f"expects window-local screenshot pixels ({image_width}x{image_height}). Derive click points from "
+            "element= indices, or re-capture with app=/pid= so the window frame is known for the conversion.")
+    return None, note
 
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
@@ -640,7 +687,7 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     with contextlib.suppress(Exception):  # (width, height) of the inline PNG/JPEG screenshot, else the backend's
         dims = image_dimensions_from_bytes(base64.b64decode(cap.png_b64, validate=False)) if cap.png_b64 else None
     width, height = dims or (cap.width, cap.height)
-    scale, note = _bounds_hints(visible, width, height)
+    scale, note = _bounds_hints(visible, width, height, cap.window_frame)
     # Capped labels / capped element array: spill the complete tree for on-demand reads.
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
@@ -659,8 +706,7 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
     """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
     summary names indices the model can't find."""
     notes = (
-        v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
-                                           f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
+        v.bounds_note,
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
         v.cap.note,
         v.elements_file and (f"{'' if v.ax_capped else 'full '}element tree with untruncated labels "
@@ -670,7 +716,9 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
     )
     return [
         f"capture mode={v.cap.mode} {v.width}x{v.height}"
-        + (f" app={v.cap.app}" if v.cap.app else "") + (f" window={v.cap.window_title!r}" if v.cap.window_title else ""),
+        + (f" app={v.cap.app}" if v.cap.app else "") + (f" window={v.cap.window_title!r}" if v.cap.window_title else "")
+        + (f" snapshot={v.cap.snapshot_id}" if v.cap.snapshot_id else "")
+        + (f" window_frame={list(v.cap.window_frame)} (screen-absolute native px)" if v.cap.window_frame else ""),
         f"{v.total} interactable element(s):",
         *(f"  ({note})" for note in notes if note),
         *_format_elements(v.visible),
@@ -854,7 +902,8 @@ def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
 def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
     """FULL element tree (untruncated labels) in a cache file — the read_file/search_files escape hatch for capped text."""
     payload = {"app": cap.app, "window_title": cap.window_title, "total_elements": len(cap.elements),
-               "elements": [{"index": e.index, "role": e.role, "label": e.label, "bounds": list(e.bounds), "app": e.app}
+               "elements": [{"index": e.index, "role": e.role, "label": e.label, "bounds": list(e.bounds), "app": e.app,
+                             **({"element_token": e.element_token} if e.element_token else {})}
                             for e in cap.elements]}
     return _write_cache_file("element spill", "cache/computer_use", "computer_use_cache", f"elements_{uuid.uuid4().hex}.json",
                              "elements_*.json", _MAX_SPILL_FILES,

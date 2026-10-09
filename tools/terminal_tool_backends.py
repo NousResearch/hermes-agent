@@ -60,6 +60,23 @@ _SSH_KEYS = (("host", "ssh_host", ""), ("user", "ssh_user", ""), ("port", "ssh_p
 _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 5120),
                   ("disk", "container_disk", 51200), ("persistent_filesystem", "container_persistent", True))
 _CONTAINER_KEYS = (
+    ("daytona_create_mode", 'image'),
+    ("daytona_snapshot", ''),
+    ("daytona_language", ''),
+    ("daytona_name_prefix", 'hermes'),
+    ("daytona_name_scope", 'task'),
+    ("daytona_labels", {}),
+    ("daytona_auto_stop_interval", 0),
+    ("daytona_auto_archive_interval", 0),
+    ("daytona_auto_delete_interval", 0),
+    ("daytona_ephemeral", False),
+    ("daytona_env_vars", {}),
+    ("daytona_network_block_all", False),
+    ("daytona_network_allow_list", ''),
+    ("daytona_volume_mounts", []),
+    ("daytona_gpu", 0),
+    ("daytona_sync_cwd", False),
+    ("daytona_sync_cwd_source", ''),
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""), ("vercel_image", ""),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
@@ -180,8 +197,6 @@ def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
 # (daytona/vercel) are imported lazily so they are only required when that backend is selected.
 _SANDBOX_ROWS = {
     "singularity": (lambda: _SingularityEnvironment, True, lambda cc, kw: {}),
-    "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
-                lambda cc, kw: {"cpu": int(kw["cpu"])}),
     "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
                        False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None,
                                        "image": cc.get("vercel_image") or None}),
@@ -197,8 +212,35 @@ def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
 
 
 _build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
-_build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
 _build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
+
+
+def _build_daytona_env(*, image, cwd, timeout, cc, task_id, **_):
+    from tools.environments.daytona import DaytonaEnvironment
+
+    resources = _resources(cc)
+    resources["cpu"] = int(resources["cpu"])
+    return DaytonaEnvironment(
+        image=image, cwd=cwd, timeout=timeout, task_id=task_id,
+        **resources,
+        create_mode=cc.get("daytona_create_mode", "image"),
+        snapshot=cc.get("daytona_snapshot", ""),
+        language=cc.get("daytona_language", ""),
+        name_prefix=cc.get("daytona_name_prefix", "hermes"),
+        name_scope=cc.get("daytona_name_scope", "task"),
+        labels=cc.get("daytona_labels") or None,
+        auto_stop_interval=int(cc.get("daytona_auto_stop_interval", 0)),
+        auto_archive_interval=int(cc.get("daytona_auto_archive_interval", 0)),
+        auto_delete_interval=int(cc.get("daytona_auto_delete_interval", 0)),
+        ephemeral=cc.get("daytona_ephemeral", False),
+        env_vars=cc.get("daytona_env_vars") or None,
+        network_block_all=cc.get("daytona_network_block_all", False),
+        network_allow_list=cc.get("daytona_network_allow_list", ""),
+        volume_mounts=cc.get("daytona_volume_mounts") or None,
+        gpu=int(cc.get("daytona_gpu", 0)),
+        host_cwd=cc.get("daytona_sync_cwd_source") or None,
+        sync_cwd=cc.get("daytona_sync_cwd", False),
+    )
 
 
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):

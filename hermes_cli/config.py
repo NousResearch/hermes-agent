@@ -2112,7 +2112,13 @@ TERMINAL_CONFIG_ENV_MAP = {
         for key in (
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
             "docker_image", "docker_forward_env", "singularity_image", "modal_image",
-            "daytona_image", "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "daytona_image",
+            "daytona_create_mode", "daytona_snapshot", "daytona_language", "daytona_name_prefix",
+            "daytona_name_scope", "daytona_labels", "daytona_auto_stop_interval",
+            "daytona_auto_archive_interval", "daytona_auto_delete_interval", "daytona_ephemeral",
+            "daytona_env_vars", "daytona_network_block_all", "daytona_network_allow_list",
+            "daytona_volume_mounts", "daytona_gpu", "daytona_sync_cwd", "daytona_sync_cwd_source",
+            "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
@@ -3051,7 +3057,10 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
             f"  Modal image:  {terminal.get('modal_image', default_img)}",
             f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],
         'daytona': lambda: [
-            f"  Daytona image: {terminal.get('daytona_image', default_img)}",
+            f"  Mode:         {terminal.get('daytona_create_mode', 'image')}",
+            (f"  Snapshot:     {terminal.get('daytona_snapshot') or '(not set)'}"
+             if terminal.get('daytona_create_mode') == 'snapshot'
+             else f"  Image:        {terminal.get('daytona_image', default_img)}"),
             f"  API key:      {configured('DAYTONA_API_KEY')}"],
         'vercel_sandbox': lambda: [
             f"  Vercel image:   {terminal.get('vercel_runtime') or terminal.get('vercel_image') or _DEFAULT_VERCEL_IMAGE}",

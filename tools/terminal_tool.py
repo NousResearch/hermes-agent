@@ -741,6 +741,31 @@ def _get_env_config() -> dict[str, Any]:
 
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
+    from pathlib import Path
+    from tools.terminal_tool_config import _parse_json_env_var
+
+    if env_type == "daytona":
+        daytona_labels = _parse_json_env_var("TERMINAL_DAYTONA_LABELS", "{}", dict)
+        daytona_env_vars = _parse_json_env_var("TERMINAL_DAYTONA_ENV_VARS", "{}", dict)
+        daytona_volume_mounts = _parse_json_env_var("TERMINAL_DAYTONA_VOLUME_MOUNTS", "[]", list)
+        daytona_sync_cwd_source = _tenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE", "").strip()
+        if daytona_sync_cwd_source:
+            candidate = Path(os.path.expanduser(daytona_sync_cwd_source)).resolve()
+            if candidate == Path.home().resolve():
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it resolves to the operator home", daytona_sync_cwd_source)
+            elif candidate.is_dir():
+                host_cwd = str(candidate)
+                daytona_sync_cwd_source = host_cwd
+            else:
+                logger.warning("Ignoring TERMINAL_DAYTONA_SYNC_CWD_SOURCE=%r because it is not a directory", daytona_sync_cwd_source)
+        if _tenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"} and host_cwd:
+            cwd = "/workspace"
+    else:
+        daytona_labels = {}
+        daytona_env_vars = {}
+        daytona_volume_mounts = []
+        daytona_sync_cwd_source = ""
+
     return {
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(_tenv("TERMINAL_MODAL_MODE", "auto")),
@@ -750,6 +775,23 @@ def _get_env_config() -> dict[str, Any]:
         "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "daytona_create_mode": _tenv("TERMINAL_DAYTONA_CREATE_MODE", "image"),
+        "daytona_snapshot": _tenv("TERMINAL_DAYTONA_SNAPSHOT", ""),
+        "daytona_language": _tenv("TERMINAL_DAYTONA_LANGUAGE", ""),
+        "daytona_name_prefix": _tenv("TERMINAL_DAYTONA_NAME_PREFIX", "hermes"),
+        "daytona_name_scope": _tenv("TERMINAL_DAYTONA_NAME_SCOPE", "task"),
+        "daytona_labels": daytona_labels,
+        "daytona_auto_stop_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "0") if env_type == "daytona" else 0,
+        "daytona_auto_archive_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "0") if env_type == "daytona" else 0,
+        "daytona_auto_delete_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "0") if env_type == "daytona" else 0,
+        "daytona_ephemeral": _tenv("TERMINAL_DAYTONA_EPHEMERAL", "false").lower() in {"true", "1", "yes"},
+        "daytona_env_vars": daytona_env_vars,
+        "daytona_network_block_all": _tenv("TERMINAL_DAYTONA_NETWORK_BLOCK_ALL", "false").lower() in {"true", "1", "yes"},
+        "daytona_network_allow_list": _tenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", ""),
+        "daytona_volume_mounts": daytona_volume_mounts,
+        "daytona_gpu": _parse_env_var("TERMINAL_DAYTONA_GPU", "0") if env_type == "daytona" else 0,
+        "daytona_sync_cwd": _tenv("TERMINAL_DAYTONA_SYNC_CWD", "false").lower() in {"true", "1", "yes"},
+        "daytona_sync_cwd_source": daytona_sync_cwd_source,
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "vercel_image": _tenv("TERMINAL_VERCEL_IMAGE", "").strip(),
         "cwd": cwd,
@@ -1090,7 +1132,10 @@ def _plan_execution(
             f"Invalid command: expected string, got {type(command).__name__}", status="error",
         ))
 
-    config = _get_env_config()
+    try:
+        config = _get_env_config()
+    except ValueError as exc:
+        raise _Rejected(_error_json(str(exc))) from None
     env_type = "local" if _host_local else config["env_type"]
 
     # Fail closed under a refusal scope: the routed profile's terminal

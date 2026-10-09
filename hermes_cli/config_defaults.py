@@ -357,6 +357,23 @@ DEFAULT_CONFIG = {
         "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
         "modal_image": DEFAULT_SANDBOX_IMAGE,
         "daytona_image": DEFAULT_SANDBOX_IMAGE,
+        "daytona_create_mode": 'image',
+        "daytona_snapshot": '',
+        "daytona_language": '',
+        "daytona_name_prefix": 'hermes',
+        "daytona_name_scope": 'task',
+        "daytona_labels": {},
+        "daytona_auto_stop_interval": 0,
+        "daytona_auto_archive_interval": 0,
+        "daytona_auto_delete_interval": 0,
+        "daytona_ephemeral": False,
+        "daytona_env_vars": {},
+        "daytona_network_block_all": False,
+        "daytona_network_allow_list": '',
+        "daytona_volume_mounts": [],
+        "daytona_gpu": 0,
+        "daytona_sync_cwd": False,
+        "daytona_sync_cwd_source": '',
         "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
         "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).

@@ -4235,8 +4235,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
             # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._last_summary_auth_failure = True
-            self._last_attempt_failure_class = "auth"
+            self._record_summary_access_failure(e)
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             _ident_provider, _ident_model, _ident_base_url = self._summary_failure_identity()
             logger.error(

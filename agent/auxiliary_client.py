@@ -7343,7 +7343,7 @@ def _prepare_aux_request(
         )
     _set_relay_auxiliary_route(
         request_provider, final_model, resolved_api_mode,
-        route_callback=route_callback, main_runtime=main_runtime,
+        route_callback=route_callback, route_info=route_info, main_runtime=main_runtime,
     )
     _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:

@@ -70,6 +70,7 @@ def _set_relay_auxiliary_route(
     api_mode: str | None,
     *,
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    route_info: Optional[Dict[str, str]] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> None:
     from agent.auxiliary_client import _extract_url_query_params
@@ -82,6 +83,7 @@ def _set_relay_auxiliary_route(
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
     context["route_callback"] = route_callback
+    context["route_info"] = route_info
     runtime = main_runtime or {}
     runtime_base = str(runtime.get("base_url") or "")
     try:
@@ -152,21 +154,22 @@ def _notify_relay_auxiliary_route(
     if context is None:
         return
     route_callback = context.get("route_callback")
-    if not callable(route_callback):
+    route_info = context.get("route_info")
+    if not callable(route_callback) and route_info is None:
         return
 
     base_url = str(getattr(client, "base_url", "") or "")
     try:
         clean_base, _ = _extract_url_query_params(base_url)
-        route_callback(
-            _wire_provider_name(
-                provider or context.get("provider"),
-                clean_base,
-                context.get("main_runtime"),
-            ),
-            str(kwargs.get("model") or context.get("model") or "") or None,
-            clean_base,
+        wire_provider = _wire_provider_name(
+            provider or context.get("provider"), clean_base, context.get("main_runtime"),
         )
+        wire_model = str(kwargs.get("model") or context.get("model") or "") or None
+        # One publication point for both consumers, after all Relay/rung rewrites.
+        # Updating before the observer also keeps route_info correct if it raises.
+        _record_route_info(route_info, wire_provider, wire_model)
+        if callable(route_callback):
+            route_callback(wire_provider, wire_model, clean_base)
     except Exception:
         logger.debug("route_callback error in auxiliary wire attempt", exc_info=True)
 

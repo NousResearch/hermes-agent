@@ -497,46 +497,52 @@ def test_property_late_arrivals_surface_exactly_once(caplog):
             _property_assert_cursor_bounded()
 
 
+_SETUP_FAILURE_MARKER = "mozi-setup-fail-7c41"
+_SETUP_FAILURE_ERRMARK = "mozi-setup-err-7c41"
+
 _SETUP_FAILURE_PROBE = (
-    "import contextlib, io, sys\n"
+    "import sys\n"
+    "import providers as _p\n"
+    f"_p._record_plugin_failure({_SETUP_FAILURE_MARKER!r}, 'bundled', RuntimeError({_SETUP_FAILURE_ERRMARK!r}))\n"
     "import hermes_logging\n"
     "def _boom(*a, **k):\n"
     "    raise RuntimeError('simulated setup_logging failure')\n"
     "hermes_logging.setup_logging = _boom\n"
-    "buf = io.StringIO()\n"
-    "with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):\n"
-    "    import hermes_cli.main as _m\n"
+    "import hermes_cli.main as _m\n"
     "assert getattr(_m, '_replay_provider_failures', 'MISSING') != 'MISSING', (\n"
     "    'replay name unbound after setup_logging failure (NameError at dispatch)')\n"
-    "assert _m._replay_provider_failures is None or callable(_m._replay_provider_failures)\n"
-    "_m._replay_provider_failures = None\n"
+    "assert callable(_m._replay_provider_failures), (\n"
+    "    f'expected the REAL bound replay, got {_m._replay_provider_failures!r}')\n"
+    "assert _m._replay_provider_failures is _p.replay_provider_load_failures, (\n"
+    "    'dispatch must see the real bound fn, not a None-seeded guard')\n"
     "import logging as _pl\n"
-    "with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):\n"
-    "    try:\n"
-    "        if _m._replay_provider_failures is not None:\n"
-    "            _m._replay_provider_failures()\n"
-    "    except Exception:\n"
-    "        _pl.getLogger('probe-dispatch').exception('buffered provider-failure replay failed')\n"
-    "assert buf.getvalue() == '', f'dispatch replay polluted stderr: {buf.getvalue()[:500]!r}'\n"
+    "assert len(_pl.getLogger().handlers) == 0, 'precondition: root has handlers'\n"
+    "assert len(_pl.getLogger('providers').handlers) == 0, 'precondition: providers logger has handlers'\n"
+    "import hermes_cli.main_provider_replay as _r\n"
+    "if hasattr(_r, 'dispatch_replay_provider_failures'):\n"
+    "    _r.dispatch_replay_provider_failures(_m._replay_provider_failures)\n"
+    "else:\n"
+    "    _m._replay_provider_failures()\n"
+    "assert len(_p.get_provider_load_failures()) >= 1, 'failures must stay buffered'\n"
     "sys.stdout.write('PROBE_OK')\n"
 )
 
 
 def test_setup_failure_still_binds_replay_and_dispatch_stays_quiet():
-    """setup_logging raising must not leave the dispatch replay unbound.
+    """setup_logging raising must not leak buffered failures to raw stderr.
 
-    Regression test for the import-time NameError path: ``setup_logging()``
-    raising used to skip the ``_replay_provider_failures`` binding, so
-    ``main()``'s dispatch replay raised ``NameError`` and ``logger.exception``
-    wrote the traceback to raw stderr via ``logging.lastResort``. The probe
-    below imports ``hermes_cli.main`` fresh in a subprocess with a failing
-    ``setup_logging`` and asserts the name stays bound and the guarded
-    dispatch emits nothing.
+    Regression test for the ``logging.lastResort`` leak: with a failure
+    buffered and ``setup_logging()`` forced to raise, ``hermes_cli.main``
+    binds the REAL ``providers.replay_provider_load_failures`` (no
+    ``None`` seeding — that only probed the guard). The production
+    dispatch path must then stay silent on raw stderr and leave the
+    failure buffered. Pre-fix this fails: the dispatch-shaped call emits
+    the buffered warning with zero handlers attached.
     """
     import pathlib
 
     source = pathlib.Path("hermes_cli/main.py").read_text()
-    assert "if _replay_provider_failures is not None:" in source
+    assert "dispatch_replay_provider_failures" in source
 
     proc = subprocess.run(
         [sys.executable, "-c", _SETUP_FAILURE_PROBE],
@@ -547,3 +553,5 @@ def test_setup_failure_still_binds_replay_and_dispatch_stays_quiet():
     assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
     assert proc.stdout == "PROBE_OK", f"probe output: {proc.stdout!r} {proc.stderr[-2000:]!r}"
     assert proc.stderr == "", f"probe polluted stderr: {proc.stderr[:500]!r}"
+    assert _SETUP_FAILURE_MARKER not in proc.stderr
+    assert _SETUP_FAILURE_ERRMARK not in proc.stderr

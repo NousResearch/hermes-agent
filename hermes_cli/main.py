@@ -3608,12 +3608,11 @@ def main():
     _prepare_agent_startup(args)
 
     # Second provider-failure replay: lazy discovery can buffer load failures
-    # after the import-time replay; flush now that dispatch is ready (idempotent).
-    try:
-        if _replay_provider_failures is not None:
-            _replay_provider_failures()
-    except Exception:
-        logger.exception("buffered provider-failure replay failed")
+    # after the import-time replay; flush only when logging is known ready
+    # (silent otherwise, so a setup failure never leaks via lastResort).
+    from hermes_cli.main_provider_replay import dispatch_replay_provider_failures
+
+    dispatch_replay_provider_failures(_replay_provider_failures)
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)

@@ -3,7 +3,10 @@
 Kept out of the ``hermes_cli.main`` facade (facade line cap): ``main.py``
 calls :func:`early_replay_provider_failures` after ``setup_logging()`` and
 :func:`bind_provider_replay` unconditionally, so the dispatch replay never
-hits ``NameError`` when logging setup fails.
+hits ``NameError`` when logging setup fails. The dispatch site replays via
+:func:`dispatch_replay_provider_failures`, which stays silent until logging
+is known ready (``providers._LOGGING_READY``), so a setup failure never
+leaks buffered warnings through ``logging.lastResort`` raw stderr.
 """
 
 import logging
@@ -41,3 +44,29 @@ def early_replay_provider_failures():
     except Exception:
         logger.debug("early provider-failure replay failed; dispatch will retry", exc_info=True)
     return replay
+
+
+def dispatch_replay_provider_failures(bound=None):
+    """Dispatch-time replay of buffered provider-discovery failures.
+
+    No-op until logging is known ready: ``providers._LOGGING_READY`` flips
+    only inside :func:`replay_provider_load_failures` after ``setup_logging()``
+    ran. The bound replay may still be armed when setup failed (so dispatch
+    never hits ``NameError``), but calling it there would emit
+    ``logger.warning`` with zero handlers attached, falling through to
+    ``logging.lastResort`` raw stderr. Gating here keeps raw stderr clean and
+    leaves failures buffered for a later ready replay. Never raises.
+    """
+    if bound is None:
+        return 0
+    try:
+        from providers import _LOGGING_READY
+    except Exception:
+        return 0
+    if not _LOGGING_READY:
+        return 0
+    try:
+        return bound() or 0
+    except Exception:
+        logger.exception("buffered provider-failure replay failed")
+        return 0

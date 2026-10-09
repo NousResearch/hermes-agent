@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planlanıyor: {task}"
     ack_conversation: "Bu konuşmanın bağlamından plan yapılıyor…"
+  initiate_setup:
+    ack: "Kurulum başlatılıyor…"
   init:
     start_failed: "/init başlatılamadı — lütfen yeniden deneyin."
     ack_update: "AGENTS.md proje taramasıyla güncelleniyor…"
@@ -1556,6 +1558,8 @@ slash:
     description: "Bir istemi bu oturumda yinelenen aralıklarla yeniden çalıştır"
   plan:
     description: ".hermes/plans/ altına hiçbir şey çalıştırmadan markdown uygulama planı yaz"
+  initiate-setup:
+    description: "İlk kurulumu çalıştır: seni tanı ve Hermes'i sana göre ayarla"
   moa:
     description: "Bir istemi varsayılan Mixture of Agents ön ayarıyla çalıştır, sonra modelinize geri dön"
   subgoal:
@@ -2914,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planlanıyor: {task}"
       from_conversation: "📋 Bu konuşmanın bağlamından planlanıyor..."
+    initiate_setup:
+      starting: "🧭 Kurulum başlatılıyor..."
     init:
       updating: "⚡ AGENTS.md proje taramasından güncelleniyor..."
       generating: "⚡ AGENTS.md proje taramasından oluşturuluyor..."

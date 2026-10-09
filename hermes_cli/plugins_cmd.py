@@ -11,44 +11,45 @@ import logging
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
-from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: F401
-from utils import rmtree_readonly  # noqa: F401
+from hermes_cli.secret_prompt import masked_secret_prompt
+from utils import rmtree_readonly
 
 # Topical siblings. The facade re-exports what other modules, tests and the old updater import from
 # ``hermes_cli.plugins_cmd``; sibling bodies read those names back through the facade at call time.
-from hermes_cli.plugins_cmd_capabilities import (  # noqa: F401
+from hermes_cli.plugins_cmd_capabilities import (
     _declared_capabilities_for_key, _declared_capabilities_from_manifest, _resolve_tool_override_grant,
     _run_capability_consent, cmd_capabilities,
 )
-from hermes_cli.plugins_cmd_git import (  # noqa: F401
+from hermes_cli.plugins_cmd_git import (
     _EXACT_COMMIT_RE, _canonical_source, _checkout_exact_revision, _clone_plugin_repo, _git_head_revision,
     _git_or_raise, _git_pull_plugin_dir, _git_resolve_commit, _normalize_exact_revision, _pin_annotation,
     _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _update_install_record,
     _write_install_metadata, pinned_revision,
 )
-from hermes_cli.plugins_cmd_install import (  # noqa: F401
+from hermes_cli.plugins_cmd_install import (
     _check_manifest_version, _consent_python_deps, _display_after_install, _install_plugin_core,
     _install_plugin_python_deps, _prompt_plugin_env_vars, _python_dependency_summary,
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
-from hermes_cli.plugins_cmd_listing import (  # noqa: F401
+from hermes_cli.plugins_cmd_listing import (
     _filter_plugin_entries, cmd_list, cmd_show,
 )
-from hermes_cli.plugins_cmd_remove import (  # noqa: F401
+from hermes_cli.plugins_cmd_remove import (
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
 )
-from hermes_cli.plugins_cmd_toggle import (  # noqa: F401
+from hermes_cli.plugins_cmd_toggle import (
     _discover_context_engines, _persist_plugin_selection, _provider_categories, _run_composite_fallback,
     cmd_toggle,
 )
-from hermes_cli.plugins_cmd_update import (  # noqa: F401
+from hermes_cli.plugins_cmd_update import (
     _clear_plugin_bytecode, cmd_adopt, cmd_check_updates, cmd_trust_update_url, cmd_update,
     dashboard_update_user_plugin,
 )
@@ -117,43 +118,6 @@ def _table(columns, **kwargs):
     for header, style in columns:
         table.add_column(header, style=style)
     return table
-
-
-RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR = (
-    "the messaging gateway is running and its loaded plugin callbacks import from the "
-    "installed checkouts. Run `hermes gateway stop`, apply the change, then `hermes gateway "
-    "start`. To skip this check pass --allow-live-gateway (callbacks may fail until restart)."
-)
-
-
-def _gateway_is_running() -> bool:
-    """Is the active profile's gateway live? Same liveness read as the dashboard status
-    surfaces (``resolve_gateway_liveness``), never mutating the profile's identity files."""
-    from hermes_cli.profiles import _check_gateway_running
-
-    try:
-        return _check_gateway_running(get_hermes_home())
-    except Exception:
-        # A failed probe must not strand an uninstallable plugin (issue #70473's fix may not
-        # become its own lock-out); treat unknown liveness as not running.
-        logger.exception("gateway liveness probe failed; proceeding without the live-gateway guard")
-        return False
-
-
-def _refuse_live_gateway_mutation(action: str, *, allow_live_gateway: bool = False) -> None:
-    """Fail before any mutating git operation on an installed plugin (#70473).
-
-    Pulling, re-cloning or deleting a checkout under a running gateway breaks its
-    already-loaded plugin callbacks (a deferred relative import hits files the
-    operation just removed). *action* names the refusal ("update", "remove", ...).
-    """
-    if allow_live_gateway:
-        return
-    if _gateway_is_running():
-        raise PluginOperationError(
-            f"Cannot {action} plugin files while {RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR}",
-            failure_class="already_installed",
-        )
 
 
 def _is_tty() -> bool:
@@ -489,7 +453,9 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
+        target = _resolved_user_plugin_dir(name)
+        if target is None:
+            _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
 
 
@@ -638,19 +604,32 @@ def _forget_plugin_config(aliases: set) -> dict[str, Any]:
     return result
 
 
+# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
+# thread; without it every thread read the same config version and all but the first commit were
+# refused as stale. The version check in PM stays: it still catches an edit from another process.
+_SELECTION_LOCKS: dict[str, threading.Lock] = {}
+_SELECTION_LOCKS_GUARD = threading.Lock()
+
+
+def _selection_lock() -> threading.Lock:
+    with _SELECTION_LOCKS_GUARD:
+        return _SELECTION_LOCKS.setdefault(hermes_home_key(), threading.Lock())
+
+
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
     """Submit the command's delta with the version of the selection it read."""
     from pm.plugins_state import read_home_selection
 
-    expected_config = _plugin_selection_version()
-    config = read_home_selection(get_hermes_home()) or {}
-    plugins = config.get("plugins") or {}
-    enabled = set(plugins.get("enabled") or ())
-    disabled = set(plugins.get("disabled") or ())
-    _apply_activation(enabled, disabled, name, aliases, enable=enable)
-    _admit_and_save_plugin_sets(enabled, disabled, console=console,
-                               action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                               expected_config=expected_config, plugin=name if enable else None)
+    with _selection_lock():
+        expected_config = _plugin_selection_version()
+        config = read_home_selection(get_hermes_home()) or {}
+        plugins = config.get("plugins") or {}
+        enabled = set(plugins.get("enabled") or ())
+        disabled = set(plugins.get("disabled") or ())
+        _apply_activation(enabled, disabled, name, aliases, enable=enable)
+        _admit_and_save_plugin_sets(enabled, disabled, console=console,
+                                   action=f"{'Enable' if enable else 'Disable'} '{name}'",
+                                   expected_config=expected_config, plugin=name if enable else None)
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -668,22 +647,43 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     return resolved[0] if resolved else None
 
 
+def _catalog_installed_dir(name: str) -> Optional[Path]:
+    """Install dir whose installer-owned record names catalog entry *name* (``hermes-memory-wiki`` is
+    installed as ``plugins/memory-wiki``), else None (also when two dirs claim it). Read through
+    :func:`catalog_install_record` (``.install-metadata.json``), never the tree, so a URL-installed
+    repo cannot claim a catalog entry's name."""
+    from hermes_cli.plugins_cmd_catalog import catalog_install_record
+    try:
+        keys = list(_read_install_metadata())
+    except PluginOperationError:
+        return None
+    hits = [target for key in keys if (target := _plugins_dir() / key).is_dir()
+            and (record := catalog_install_record(target)) and record["catalog_name"] == name]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _find_plugin_entry(name: str) -> Optional[tuple]:
-    """First discovered ``(name, version, description, source, dir_path, key)`` entry whose
-    manifest name or canonical key equals *name*."""
-    return next((entry for entry in _discover_all_plugins() if name in (entry[0], entry[5])), None)
+    """THE plugin name resolver for every verb (enable/disable/show/capabilities/remove/update, the
+    dashboard and the Desktop hub): the discovered ``(name, version, description, source, dir_path, key)``
+    entry for a canonical key or manifest name; else a bare leaf (``langfuse`` ->
+    ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
+    Never guesses between two candidates."""
+    entries = _discover_all_plugins()
+    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    if exact is not None:
+        return exact
+    leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]
+    if leaf_matches:
+        return leaf_matches[0] if len(leaf_matches) == 1 else None
+    target = _catalog_installed_dir(name)
+    return next((entry for entry in entries if target is not None and entry[4] and Path(str(entry[4])) == target),
+                None)
 
 
 def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
-    """Resolve *name* to ``(canonical_key, source)`` or ``None``. Exact key/manifest-name match
-    first; then a bare leaf match (``langfuse`` -> ``observability/langfuse``) only when unique,
-    so a same-named nested plugin is never picked silently."""
-    entries = _discover_all_plugins()
-    for entry in entries:
-        if name in (entry[0], entry[5]):
-            return (entry[5], entry[3])
-    leaf_matches = [(entry[5], entry[3]) for entry in entries if name == entry[5].split("/")[-1]]
-    return leaf_matches[0] if len(leaf_matches) == 1 else None
+    """Resolve *name* to ``(canonical_key, source)`` or ``None`` through :func:`_find_plugin_entry`."""
+    entry = _find_plugin_entry(name)
+    return (entry[5], entry[3]) if entry else None
 
 
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
@@ -717,16 +717,21 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    if _activate_key(key, enable=True, console=console):
+    changed = _activate_key(key, enable=True, console=console)
+    if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+    if source != "bundled":
+        _enable_consent(console, key, allow_tool_override)
+    if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle
+        _toggle_plugin_toolset(key, enable=True)
 
-    # Built-in tool override is a privileged grant; bundled plugins are trusted.
-    if source == "bundled":
-        return
+
+def _enable_consent(console, key: str, allow_tool_override: Optional[bool]) -> None:
+    """Capability consent and the legacy tool-override grant for a non-bundled plugin's enable."""
     # When the manifest declares capabilities the consent screen is the canonical grant path
     # (it covers tools.override too); the legacy prompt then only runs on an explicit flag.
     # See #64228.
@@ -745,9 +750,11 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
+    toolset_key = _saved_list_toolset_key(key)  # resolve while the plugin still loads
     if not _activate_key(key, enable=False, console=console):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
+    _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -939,10 +946,24 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
-def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
-    """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
-    plugin provides no tools)."""
-    toolset_key = _get_plugin_toolset_key(name)
+def _saved_list_toolset_key(name: str) -> Optional[str]:
+    """The plugin's toolset key, or None without loading any plugin when no platform has a SAVED
+    ``platform_toolsets`` list (the only lists :func:`_toggle_plugin_toolset` edits)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    saved = load_config().get("platform_toolsets")
+    if not isinstance(saved, dict) or all(parse_platform_toolsets_value(v) is None for v in saved.values()):
+        return None
+    return _get_plugin_toolset_key(name)
+
+
+def _toggle_plugin_toolset(name: str, *, enable: bool, toolset_key: Optional[str] = None) -> None:
+    """Add/remove a plugin's toolset in every SAVED ``platform_toolsets`` list (no-op when the plugin
+    provides no tools). Platforms with no saved list are left alone: a plugin toolset is already on
+    there by default, and seeding ``[<plugin_ts>]`` would replace the core composite and strip every
+    built-in tool. The key resolves only while the plugin is loaded, so enable calls this after the
+    plugin loads and disable resolves *toolset_key* before the disable is written."""
+    toolset_key = toolset_key or _saved_list_toolset_key(name)
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
@@ -958,10 +979,6 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
             (ts_list.append if enable else ts_list.remove)(toolset_key)
             platform_toolsets[platform] = ts_list
             changed = True
-    # Enabling with no platform lists yet: seed "cli" at minimum.
-    if enable and not changed and not platform_toolsets:
-        platform_toolsets["cli"] = [toolset_key]
-        changed = True
     if changed:
         save_config(config)
 
@@ -976,6 +993,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
     from hermes_cli.plugins_admission import AdmissionRefused
 
+    toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
     except AdmissionRefused as exc:
@@ -986,25 +1004,37 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
             "unchanged": True,
             "restart_required": False,
         }
-    if changed:
-        _toggle_plugin_toolset(key, enable=enabled)
     if changed and enabled:
         # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
         # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now
-        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        result = {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        # Only now is the plugin loaded here, so its toolset key resolves: a backend that scanned
+        # while the plugin was off held a placeholder and the toolset was never re-added.
+        _toggle_plugin_toolset(key, enable=True)
+        return result
+    if changed:
+        _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
     # handlers until restart and every UI says so — #71595/#54941.
     return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
-    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
+    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists, else the user install
+    :func:`_find_plugin_entry` resolves *name* to (its manifest or catalog name)."""
     try:
         target = _sanitize_plugin_name(name, _plugins_dir(), allow_subdir=True)
     except ValueError:
         return None
-    return target if target.is_dir() else None
+    return target if target.is_dir() else _resolved_user_plugin_dir(name)
+
+
+def _resolved_user_plugin_dir(name: str) -> Optional[Path]:
+    """Dir of the user install :func:`_find_plugin_entry` resolves *name* to (manifest or catalog name)."""
+    entry = _find_plugin_entry(name)
+    found = Path(str(entry[4])) if entry and entry[3] in ("user", "git") and entry[4] else None
+    return found if found is not None and found.is_dir() else None
 
 
 def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:
@@ -1040,21 +1070,20 @@ _PLUGIN_ACTIONS = {
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
         no_deps=getattr(args, "no_deps", False),
-        yes_deps=getattr(args, "yes_deps", False),
-        allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+        yes_deps=getattr(args, "yes_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "update": lambda args: cmd_update(args.name),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),
     "check": lambda args: cmd_check_updates(args),
-    "remove": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
-    "rm": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
-    "uninstall": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "remove": lambda args: cmd_remove(args.name),
+    "rm": lambda args: cmd_remove(args.name),
+    "uninstall": lambda args: cmd_remove(args.name),
     "enable": lambda args: cmd_enable(
         args.name,
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),

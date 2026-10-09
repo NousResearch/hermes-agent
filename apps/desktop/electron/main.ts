@@ -22,6 +22,7 @@ import {
   type IpcMainInvokeEvent,
   Menu,
   type MenuItemConstructorOptions,
+  nativeImage,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -17898,8 +17899,8 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
+ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
+  await clipboard.writeText(String(text || ''))
 
   return true
 })
@@ -17924,7 +17925,7 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // navigator.clipboard.readText() throws "Document is not focused" whenever a
 // portaled overlay has focus, and there's no way to route a read through the
 // canvas. The main process has no such gate.
-ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
+ipcMain.handle('hermes:readClipboard', async () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
@@ -18011,10 +18012,28 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+  const items = await clipboard.read()
 
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
+  for (const item of items) {
+    const imageType = item.types.find(type => type.startsWith('image/'))
+
+    if (!imageType) {
+      continue
+    }
+
+    try {
+      // Electron's typings include a bookmark union for the special bookmark
+      // MIME type; this branch only asks for an image MIME type, which is Blob.
+      const imageBlob = (await item.getType(imageType)) as Blob
+      const image = nativeImage.createFromBuffer(Buffer.from(await imageBlob.arrayBuffer()))
+
+      if (!image.isEmpty()) {
+        return writeComposerImage(image.toPNG(), '.png')
+      }
+    } catch {
+      // Keep checking other clipboard entries; one unsupported image format
+      // should not prevent a later PNG entry from being attached.
+    }
   }
 
   // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the

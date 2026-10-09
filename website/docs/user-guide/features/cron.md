@@ -44,6 +44,41 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 
 ## Creating scheduled tasks
 
+### Continue after a background command
+
+A cron agent can request one follow-up turn for a bounded background command:
+
+```json
+{"command": "make build", "background": true, "continue_on_complete": true}
+```
+
+The built-in scheduler picks up the completed result on a later tick, after the
+original cron turn finishes. The follow-up receives the original task and the
+command's exit status and redacted output tail (up to 12,000 characters). Both
+successful commands and commands with a nonzero exit code can trigger it. Normal
+cron model settings, approval policy, execution limits, and delivery targets apply.
+Collection scripts and monitor gates do not run again for the follow-up.
+
+This option is rejected outside the owning cron turn, including delegated children,
+and inside a continuation. It does not enable interactive completion notifications.
+Each process can trigger at most one continuation; the continuation does not consume
+the job's repeat count or move its next scheduled time. Retained, completed one-shot
+jobs can still receive their pending continuation.
+
+Paused, disabled, or deleted jobs are skipped when the scheduler checks the result.
+Cancelled processes and results with unknown exit status do not trigger a follow-up.
+Once skipped, a result is not revived by resuming the job. An already running
+continuation follows the usual cron cancellation behavior.
+
+Completed results awaiting dispatch survive scheduler restarts. Once a result is
+claimed, its continuation is never automatically replayed, even if the scheduler
+crashes before or during execution; the execution ledger records the attempt. A
+normal finite worker stays alive to capture its opted-in background command after
+the agent turn ends. This does not add an independent process supervisor: killing
+that worker or losing its backend before it captures completion can still lose the
+exit status/output. Use this option for commands that terminate. Processing requires
+the built-in cron ticker (or explicit `cron.scheduler.tick()` calls).
+
 ### In chat with `/cron`
 
 ```bash

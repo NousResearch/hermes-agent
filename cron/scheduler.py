@@ -45,6 +45,7 @@ from hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
+from cron.scheduler_session import set_cron_session_title
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
@@ -55,37 +56,6 @@ from agent.turn_failure_copy import is_max_iteration_handoff
 logger = logging.getLogger(__name__)
 
 
-def _set_cron_session_title(session_db, session_id, base_title):
-    """Persist a non-blank, unique title for a finished cron session; returns it (None if unset).
-    Runs BEFORE end_session()/close() so no write races the close. Duplicate title (unique-index
-    ValueError) -> get_next_title_in_lineage(); if unavailable, raise rather than end up untitled.
-
-    Centralizes the title write so the cron finally block can guarantee a non-blank, unique title is
-    persisted before end_session()/close() tear the connection down (issues #50535, #50536, #50537):
-    - #50535: never leaves the session blank. base_title already carries a cron-id fallback for nameless
-    jobs; this also guards a failed write. Recover by appending a #N suffix via get_next_title_in_lineage()
-    when supported, instead of swallowing the error and ending up untitled. - #50536: this runs
-    synchronously in the cron finally block ahead of the session close, so no in-flight title write can race
-    the close.
-    """
-    if not session_db or not session_id:
-        return None
-    title = (base_title or "").strip()
-    if not title:
-        return None
-    try:
-        session_db.set_session_title(session_id, title)
-        return title
-    except ValueError:
-        # Unique-title collision: fall back to the next lineage title (base #2, #3, ...).
-        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
-        if next_title_fn is None:
-            raise
-        deduped = next_title_fn(title)
-        if not deduped or deduped == title:
-            raise
-        session_db.set_session_title(session_id, deduped)
-        return deduped
 
 
 def _job_route_pinned(job: dict) -> bool:
@@ -2137,8 +2107,8 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # the connection down, so the close can never run over an in-flight title write (#50536).
         _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
         _cron_title = f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}"
-        if not _set_cron_session_title(_session_db, _final_cron_session_id, _cron_title):
-            _set_cron_session_title(_session_db, _final_cron_session_id, f"cron {job_id}")
+        if not set_cron_session_title(_session_db, _final_cron_session_id, _cron_title):
+            set_cron_session_title(_session_db, _final_cron_session_id, f"cron {job_id}")
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
         # Never leave the session untitled.
@@ -2147,7 +2117,7 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
             getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
             f"cron {job_id} {_final_cron_session_id[-6:]}"):
             try:
-                if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
+                if set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
                     break
             except (Exception, KeyboardInterrupt):
                 continue
@@ -2362,8 +2332,15 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        self._continuation_token = None
+        self._continuation_context = {
+            "job_id": job_id, "execution_id": execution_id or job.get("execution_id"),
+            "task_id": self.task_id, "continuation": bool(job.get("_process_continuation")),
+        }
 
     def enter(self) -> None:
+        from cron.continuations import run_context
+        self._continuation_token = run_context.set(self._continuation_context)
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
@@ -2374,6 +2351,9 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
+        from cron.continuations import run_context
+        if self._continuation_token is not None:
+            run_context.reset(self._continuation_token)
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
@@ -3080,7 +3060,8 @@ def _save_compose_deliver(
         output_file=output_file, agent_declared=d.agent_declared)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
-    if d.should_deliver and not d.success and job.get("_model_unreachable"):
+    if (d.should_deliver and not d.success and job.get("_model_unreachable")
+            and not job.get("_process_continuation")):
         # The model was never reached and a bounded automatic re-run will be scheduled
         # (cron/unreachable_retry.py): hold the failure notice — the re-run either
         # delivers the real result or, once the ladder is exhausted, the next failure
@@ -3332,7 +3313,7 @@ def _run_one_job_body(
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
         # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
         # fire_due) get at-most-times semantics. See #38758.
-        if not claim_dispatch(job["id"]):
+        if not job.get("_process_continuation") and not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]))
@@ -4242,15 +4223,22 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     try:
-        claimed = claim_job_for_fire(job["id"], return_job=True)
+        if job.get("_process_continuation"):
+            from cron.continuations import claim_job
+            claimed = claim_job(job)
+        else:
+            claimed = claim_job_for_fire(job["id"], return_job=True)
     except OSError as exc:
         store_health.note_unwritable(exc, f"skipped job '{job.get('name') or job['id']}'", "claim", [job])
         settle_unstarted_execution(
             job["execution_id"], job["id"], f"Cron store unwritable; not started: {exc}")
         return False
-    except BaseException as exc:  # settle first, then surface the real error
+    except BaseException as exc:
         settle_unstarted_execution(
             job["execution_id"], job["id"], f"Fire claim failed: {type(exc).__name__}: {exc}")
+        if job.get("_process_continuation") and isinstance(exc, Exception):
+            logger.exception("Continuation claim failed for job %s", job["id"])
+            return False
         raise
     if not claimed:
         finish_execution(
@@ -4283,6 +4271,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         tick (#86522).
         """
         _schedule = job.get("schedule")
+        if job.get("_process_continuation"):
+            return
         if not (isinstance(_schedule, dict) and _schedule.get("kind") == "once"):
             return
         try:
@@ -4320,7 +4310,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     execution = None
     try:
         execution = create_execution(
-            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
+            job_id, source="continuation" if job.get("_process_continuation") else "builtin",
+            scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
         note_cron_execution(dispatched_job)
         _ctx = contextvars.copy_context()

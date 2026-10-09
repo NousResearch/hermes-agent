@@ -250,3 +250,56 @@ describe('dependency chips resolve titles', () => {
     expect(screen.getByText('child')).toBeTruthy()
   })
 })
+
+describe('blocked task recovery', () => {
+  it('shows an Unblock button for blocked tasks and unblocks on click', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, status: 'blocked' }
+    }
+    openDrawer()
+
+    const unblockBtn = await screen.findByRole('button', { name: /Unblock/ })
+    expect(unblockBtn).toBeTruthy()
+
+    fireEvent.click(unblockBtn)
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example', expect.objectContaining({ method: 'PATCH', body: { status: 'ready' } }))
+    )
+  })
+
+  it('renders the comment diagnostic action from blocked-task diagnostics', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: {
+        ...legacyDetail.task,
+        status: 'blocked',
+        diagnostics: [{
+          kind: 'stuck_in_blocked',
+          severity: 'warning',
+          title: 'Task has been blocked for 2h',
+          detail: 'This task is waiting for input.',
+          actions: [
+            { kind: 'comment', label: 'Add a comment / unblock the task', suggested: true },
+            { kind: 'unblock', label: 'Unblock task' }
+          ],
+          count: 1,
+          last_seen_at: 0,
+          data: {}
+        }]
+      }
+    }
+    openDrawer()
+
+    // Wait for diagnostics to render (the section label appears first)
+    await screen.findByText(/blocked for 2h/)
+
+    const commentAction = screen.getByRole('button', { name: /Add a comment/i })
+    expect(commentAction).toBeTruthy()
+    const unblockAction = screen.getByRole('button', { name: 'Unblock task' })
+    expect(unblockAction).toBeTruthy()
+  })
+})

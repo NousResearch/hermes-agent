@@ -164,8 +164,16 @@ def _unique_payload_ids(hits: list[Any], key: str) -> list[str]:
 
 
 def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAction]:
-    """Baseline recovery primitives every diagnostic can fall back on."""
+    """Baseline recovery primitives every diagnostic can fall back on.
+
+    For blocked tasks, an ``unblock`` action is prepended so the operator
+    can re-queue the task directly from the diagnostic — the most common
+    recovery for crash-blocked and stuck-blocked tasks.
+    """
     out: list[DiagnosticAction] = []
+    status = _task_field(task, "status")
+    if status == "blocked":
+        out.append(DiagnosticAction(kind="unblock", label="Unblock task", payload={}))
     if running:
         out.append(DiagnosticAction(kind="reclaim", label="Reclaim task", payload={}))
     out.append(DiagnosticAction(

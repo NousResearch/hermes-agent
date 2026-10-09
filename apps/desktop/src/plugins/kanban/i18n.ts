@@ -146,6 +146,7 @@ type KanbanMessages = {
   deliveredLive: string
   requeueWithNote: string
   notePosted: string
+  unblock: string
   activity: (n: number) => string
   runs: (n: number) => string
   workerLog: string
@@ -367,6 +368,7 @@ export const en: KanbanMessages = {
   deliveredLive: 'Delivered to the running worker within a few seconds.',
   requeueWithNote: 'Requeue with note',
   notePosted: 'Note posted — worker requeued',
+  unblock: 'Unblock',
   activity: n => `Activity · ${n}`,
   runs: n => `Runs · ${n}`,
   workerLog: 'Worker log',
@@ -580,6 +582,7 @@ const ja: KanbanMessages = {
   deliveredLive: '数秒以内に実行中のワーカーへ届きます。',
   requeueWithNote: 'メモを付けて再キュー',
   notePosted: 'メモを投稿しました — ワーカーを再キューしました',
+  unblock: 'ブロック解除',
   activity: n => `アクティビティ・${n}`,
   runs: n => `実行・${n}`,
   workerLog: 'ワーカーログ',
@@ -791,6 +794,7 @@ const zh: KanbanMessages = {
   deliveredLive: '几秒内送达运行中的工作单元。',
   requeueWithNote: '附带备注重新入队',
   notePosted: '备注已发布 — 工作单元已重新入队',
+  unblock: '解除阻塞',
   activity: n => `活动・${n}`,
   runs: n => `运行・${n}`,
   workerLog: '工作单元日志',
@@ -1001,6 +1005,7 @@ const zhHant: KanbanMessages = {
   deliveredLive: '幾秒內送達執行中的工作單元。',
   requeueWithNote: '附上備註重新排入佇列',
   notePosted: '備註已發布 — 工作單元已重新排入佇列',
+  unblock: '解除阻擋',
   activity: n => `活動・${n}`,
   runs: n => `執行・${n}`,
   workerLog: '工作單元日誌',

@@ -230,13 +230,23 @@ function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path:
 
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
- *  the Assignee control in the meta table IS that action, inline. */
-function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () => void }) {
+ *  the Assignee control in the meta table IS that action, inline. `comment`
+ *  scrolls to the comment input; `unblock` calls the unblock handler. */
+function Diagnostics({ items, onReclaim, onUnblock, onComment }: {
+  items: Diagnostic[]
+  onReclaim: () => void
+  onUnblock: () => void
+  onComment: () => void
+}) {
   const k = useKanban()
 
   const act = (action: DiagnosticAction) => {
     if (action.kind === 'reclaim') {
       onReclaim()
+    } else if (action.kind === 'unblock') {
+      onUnblock()
+    } else if (action.kind === 'comment') {
+      onComment()
     } else if (action.kind === 'cli_hint') {
       void navigator.clipboard.writeText(String(action.payload?.command ?? action.label))
       host.notify({ kind: 'info', message: k.commandCopied })
@@ -247,7 +257,8 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
     <div className="flex flex-col gap-2">
       {items.map(diag => {
         const tone = SEVERITY_TONE[diag.severity]
-        const actions = diag.actions.filter(action => action.kind === 'reclaim' || action.kind === 'cli_hint')
+        const actions = diag.actions.filter(action =>
+          action.kind === 'reclaim' || action.kind === 'cli_hint' || action.kind === 'unblock' || action.kind === 'comment')
 
         return (
           <Callout
@@ -377,6 +388,7 @@ function CommentComposer({
       <div className="relative">
         <Textarea
           className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
+          data-kanban-comment-input=""
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -977,6 +989,16 @@ export function TaskDrawer({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
+              {task && task.status === 'blocked' && (
+                <Button
+                  onClick={() => moveMut.mutate('ready')}
+                  size="xs"
+                  variant="outline"
+                >
+                  <Codicon name="debug-restart" size="0.7rem" />
+                  {k.unblock}
+                </Button>
+              )}
               <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
                 <Codicon name="close" />
               </Button>
@@ -1011,6 +1033,14 @@ export function TaskDrawer({
                       <Diagnostics
                         items={task.diagnostics}
                         onReclaim={() => void mutate(() => reclaimTask(task.id))()}
+                        onUnblock={() => moveMut.mutate('ready')}
+                        onComment={() => {
+                          const ta = document.querySelector<HTMLTextAreaElement>('[data-kanban-comment-input]')
+                          if (ta) {
+                            ta.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                            ta.focus()
+                          }
+                        }}
                       />
                     </Section>
                   )}

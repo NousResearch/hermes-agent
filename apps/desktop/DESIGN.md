@@ -383,6 +383,10 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   horizontal code/output boundaries may remain contained. Thinking previews
   follow new tokens only while near the bottom, preserving the user's reading
   position until they scroll back down.
+- Newly attached files and images insert a plain `[filename]` reference at the
+  composer caret. The inline chip uses the shared reference styling; its text
+  round-trips through send, draft restore, and undo. Restore never inserts
+  another reference, and attachment completion never edits a different session.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

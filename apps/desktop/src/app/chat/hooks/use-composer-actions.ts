@@ -1,5 +1,6 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
+import { attachmentReferenceName } from '@/app/chat/composer/attachment-references'
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
@@ -11,6 +12,7 @@ import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desk
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
+  $freshDraftKey,
   addComposerAttachment,
   type ComposerAttachment,
   type ComposerAttachmentPatch,
@@ -409,11 +411,38 @@ export function useComposerActions({
 }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const ownerRef = useRef({ session: activeSessionId, target: scope.target })
+
+  if (ownerRef.current.session !== activeSessionId || ownerRef.current.target !== scope.target) {
+    ownerRef.current = { session: activeSessionId, target: scope.target }
+  }
+
+  useEffect(
+    () => () => {
+      ownerRef.current = { ...ownerRef.current }
+    },
+    []
+  )
+
+  // A picker or clipboard read may finish after this mounted composer switches
+  // sessions. Discard that result rather than attaching into a different draft.
+  const captureOwner = useCallback(() => {
+    const owner = ownerRef.current
+    const freshKey = $freshDraftKey.get()
+
+    return () => ownerRef.current === owner && (owner.session !== null || $freshDraftKey.get() === freshKey)
+  }, [])
 
   /** Add to this scope's composer and focus it. All sidebar/picker/drop
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
+      const referenceName = attachmentReferenceName(attachment)
+
+      if (referenceName) {
+        attachment.referenceName = referenceName
+      }
+
       scope.add(attachment)
       requestComposerFocus(scope.target)
     },
@@ -458,13 +487,15 @@ export function useComposerActions({
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
+      const isCurrent = captureOwner()
+
       const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
         directories: kind === 'folder'
       })
 
-      if (!paths?.length) {
+      if (!paths?.length || !isCurrent()) {
         return
       }
 
@@ -481,7 +512,7 @@ export function useComposerActions({
         })
       }
     },
-    [attachToMain, currentCwd]
+    [attachToMain, captureOwner, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -581,6 +612,8 @@ export function useComposerActions({
 
   const attachImageBlob = useCallback(
     async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      const ownsDraft = captureOwner()
+
       if (blob.size === 0 || !isCurrent()) {
         return false
       }
@@ -592,7 +625,7 @@ export function useComposerActions({
       try {
         const buffer = await blob.arrayBuffer()
 
-        if (!isCurrent()) {
+        if (!isCurrent() || !ownsDraft()) {
           return false
         }
 
@@ -609,17 +642,19 @@ export function useComposerActions({
         // Reuse the in-hand blob for the chip preview — do not re-read the
         // just-written temp file as a data URL. A late component unmount must
         // not leak the attach: attach only while still current.
-        return isCurrent() ? attachImagePath(savedPath, blob) : false
+        return isCurrent() && ownsDraft() ? attachImagePath(savedPath, blob) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
         return false
       }
     },
-    [attachImagePath, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
+    [attachImagePath, captureOwner, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
   )
 
   const pickImages = useCallback(async () => {
+    const isCurrent = captureOwner()
+
     const paths = await selectDesktopPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
@@ -636,14 +671,24 @@ export function useComposerActions({
     }
 
     for (const path of paths) {
+      if (!isCurrent()) {
+        return
+      }
+
       await attachImagePath(path)
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachImagePath, captureOwner, copy.attachImages, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
+      const isCurrent = captureOwner()
+
       try {
         const path = await window.hermesDesktop?.saveClipboardImage()
+
+        if (!isCurrent()) {
+          return false
+        }
 
         if (!path) {
           if (!silent) {
@@ -668,7 +713,7 @@ export function useComposerActions({
         return false
       }
     },
-    [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+    [attachImagePath, captureOwner, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
   )
 
   /**
@@ -681,6 +726,7 @@ export function useComposerActions({
    */
   const attachPastedText = useCallback(
     async (text: string) => {
+      const isCurrent = captureOwner()
       const save = window.hermesDesktop?.savePastedText
 
       if (!text || !save) {
@@ -690,7 +736,7 @@ export function useComposerActions({
       try {
         const savedPath = await save(text)
 
-        if (!savedPath) {
+        if (!savedPath || !isCurrent()) {
           return false
         }
 
@@ -711,7 +757,7 @@ export function useComposerActions({
         return false
       }
     },
-    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
+    [attachToMain, captureOwner, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
   )
 
   const attachContextFolderPath = useCallback(
@@ -736,8 +782,21 @@ export function useComposerActions({
     [attachToMain, currentCwd]
   )
 
+  const attachDroppedImage = useCallback(
+    async (file: File, filePath: string, isCurrent: () => boolean) => {
+      if (await attachImageBlob(file, isCurrent)) {
+        return true
+      }
+
+      return Boolean(isCurrent() && filePath && (await attachImagePath(filePath, file)))
+    },
+    [attachImageBlob, attachImagePath]
+  )
+
   const attachDroppedItems = useCallback(
     async (candidates: DroppedFile[]) => {
+      const isCurrent = captureOwner()
+
       if (candidates.length === 0) {
         return false
       }
@@ -746,6 +805,10 @@ export function useComposerActions({
       let lastFailure: string | null = null
 
       for (const candidate of candidates) {
+        if (!isCurrent()) {
+          return attached
+        }
+
         const { file, isDirectory, path: knownPath } = candidate
 
         // Path-only entry (in-app drag from the file browser tree, etc.).
@@ -800,7 +863,7 @@ export function useComposerActions({
           // submit. attachImageBlob also hands the in-hand blob through for a
           // non-blocking object-URL chip preview (#63682); the native path stays
           // the fallback for shells that cannot save the buffer.
-          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath, file)))) {
+          if (await attachDroppedImage(file, filePath, isCurrent)) {
             attached = true
 
             continue
@@ -820,13 +883,13 @@ export function useComposerActions({
         lastFailure = `Could not attach ${file.name || 'file'}`
       }
 
-      if (!attached && lastFailure) {
+      if (isCurrent() && !attached && lastFailure) {
         notify({ kind: 'warning', title: copy.dropFiles, message: lastFailure })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
+    [attachContextFilePath, attachContextFolderPath, attachDroppedImage, attachImagePath, captureOwner, copy.dropFiles]
   )
 
   const removeAttachment = useCallback(

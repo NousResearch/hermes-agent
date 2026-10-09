@@ -43,6 +43,7 @@ from hermes_cli.plugins_manifest import (
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
+    _delivery_manager,
     discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
     scan_directory,
 )
@@ -1850,24 +1851,6 @@ def get_plugin_toolset_keys_nowait() -> set[str]:
 def get_portable_mcp_server_names_nowait() -> set[str]:
     """Portable MCP server names; same contract as :func:`get_plugin_toolset_keys_nowait`."""
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
-
-
-def _delivery_manager() -> PluginManager:
-    """Active manager, lazily discovering if it never ran — delivery must not depend on WHICH
-    surface imported us (dashboards/TUI/cron never import model_tools). ``getattr`` default
-    ``True`` leaves test doubles untouched.
-
-    Hook/middleware delivery must not depend on WHICH surface imported us: dashboards, TUI slash workers,
-    query mode, and cron delivery paths never import ``model_tools`` (whose import side-effect is the
-    discovery trigger on the interactive CLI path), so hooks registered by user plugins were silently dead
-    on those surfaces (#50776, #67597, #67890, #50937; tracking #64178 — salvaged from PR #64188).
-    """
-    manager = get_plugin_manager()
-    if not getattr(manager, "_discovered", True):
-        from hermes_cli.plugins_discovery import join_background_discovery
-        join_background_discovery()
-        manager.discover_and_load()
-    return manager
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:

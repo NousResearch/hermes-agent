@@ -33,6 +33,13 @@ def _shift(sim: float) -> float:
     return (sim + 1.0) / 2.0
 
 
+# Relevance floor for the pure-vector paths (probe/related/reason). Unrelated phase vectors still
+# average ~0 similarity with noise on the order of 1/sqrt(2*dim) (~0.022 at dim=1024, max ~0.04
+# observed), while a true structural match scores far higher (0.5-0.7). Rows below the floor are
+# dropped so a no-match query cannot return the top slice of the whole store.
+_VECTOR_SIM_FLOOR = 0.1
+
+
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
 
@@ -75,9 +82,11 @@ class FactRetriever:
         return results
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
-        """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist."""
+        """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist
+        or no row clears the relevance floor (the vector ranking then carries no signal to trust)."""
         rows = self._vector_rows(category)
-        return self._rank_by_vector(rows, sim_fn, limit) if rows else self.search(fallback, category=category, limit=limit)
+        ranked = self._rank_by_vector(rows, sim_fn, limit) if rows else []
+        return ranked if ranked else self.search(fallback, category=category, limit=limit)
 
     def probe(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Compositional entity query: unbind bind(entity, ROLE_ENTITY) from the category bank (or each fact vector)
@@ -89,11 +98,17 @@ class FactRetriever:
             bank_row = self.store._conn.execute("SELECT vector FROM memory_banks WHERE bank_name = ?", (f"cat:{category}",)).fetchone()
             if bank_row:
                 extracted = hrr.unbind(self._phases(bank_row["vector"]), probe_key)
-                return self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
-        role_content = self._atom(_ROLE_CONTENT)  # loop-invariant: encode once, not per row
-        # Does unbinding the probe key leave the fact's content signal?
-        return self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
-            hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)))
+                ranked = self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
+                if ranked:  # no survivors -> keep falling through to per-fact vectors, then FTS
+                    return ranked
+        # Unbinding the probe key cancels the fact's bind(entity, ROLE_ENTITY) term to zero phase when the
+        # entity is present; every other term stays key-shifted noise. So the presence test is similarity
+        # of the residual to the zero-phase vector (~1/n_terms for a hit, ~0 noise otherwise), NOT similarity
+        # to a role_content-bound vector — that target is quasi-orthogonal to the residual either way, which
+        # is why probe used to score noise-level even for stored entities.
+        zero = hrr.zero_phase(self.hrr_dim)  # loop-invariant: build once, not per row
+        return self._vector_query(entity, category, limit, lambda _f, fact_vec: hrr.similarity(
+            hrr.unbind(fact_vec, probe_key), zero))
 
     def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Facts structurally connected to an entity (shared context), not just facts *about* it as in probe.
@@ -111,11 +126,13 @@ class FactRetriever:
         Falls back to FTS5 without numpy."""
         if not hrr._HAS_NUMPY or not entities:
             return self.search(" ".join(entities), category=category, limit=limit)
-        role_entity, role_content = self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT)
+        role_entity = self._atom(_ROLE_ENTITY)
         probe_keys = [hrr.bind(self._atom(entity.lower()), role_entity) for entity in entities]
-        # AND semantics via min: high only if EVERY entity is structurally present.
+        zero = hrr.zero_phase(self.hrr_dim)
+        # AND semantics via min: EVERY entity's unbind residual must sit near zero phase
+        # (each entity's ROLE_ENTITY term cancels only in facts that actually encode it).
         return self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
-            hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys))
+            hrr.similarity(hrr.unbind(fact_vec, key), zero) for key in probe_keys))
 
     def contradict(self, category: str | None = None, threshold: float = 0.3, limit: int = 10) -> list[dict]:
         """Pairs of facts sharing entities (same subject) with low content-vector similarity (different claims). Empty without numpy."""
@@ -160,10 +177,17 @@ class FactRetriever:
         return self.store._conn.execute(f"SELECT {columns} FROM facts {where}", [category] if category else []).fetchall()
 
     def _rank_by_vector(self, rows: list, sim_fn: Callable[[dict, object], float], limit: int) -> list[dict]:
-        """Score each row as (sim + 1) / 2 * trust_score (sim shifted to [0, 1]), sorted desc."""
-        scored = [dict(row) for row in rows]
-        for fact in scored:
-            fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
+        """Score each row as (sim + 1) / 2 * trust_score (sim shifted to [0, 1]), sorted desc.
+        Rows whose raw similarity is below _VECTOR_SIM_FLOOR are dropped: unrelated phase vectors still
+        score ~0 similarity, so without a floor `[:limit]` hands back the top slice of the whole store for
+        ANY query — including the empty string — making "no match" and "match everything" indistinguishable."""
+        scored = []
+        for row in rows:
+            fact = dict(row)
+            sim = sim_fn(fact, self._phases(fact.pop("hrr_vector")))
+            if sim >= _VECTOR_SIM_FLOOR:
+                fact["score"] = _shift(sim) * fact["trust_score"]
+                scored.append(fact)
         return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:

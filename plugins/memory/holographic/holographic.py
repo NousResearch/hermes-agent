@@ -62,6 +62,14 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     return float(np.mean(np.cos(a - b)))
 
 
+def zero_phase(dim: int = 1024) -> "np.ndarray":
+    """All-zero phase vector: unbind(bind(a, b), bind(a, b)) cancels to it exactly, so
+    similarity-to-zero-phase is the reference test for 'the unbound term was present
+    in the bundle' (a present term pulls the residual to ~1/n_terms, an absent one leaves noise)."""
+    _require_numpy()
+    return np.zeros(dim)
+
+
 def encode_text(text: str, dim: int = 1024) -> "np.ndarray":
     """Bag-of-words bundle of token atoms; empty text -> encode_atom("__hrr_empty__")."""
     _require_numpy()
@@ -70,8 +78,9 @@ def encode_text(text: str, dim: int = 1024) -> "np.ndarray":
 
 
 def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarray":
-    """bundle(bind(text, ROLE_CONTENT), bind(entity_i, ROLE_ENTITY)...), so
-    unbind(fact, bind(entity, ROLE_ENTITY)) ≈ content_vector."""
+    """bundle(bind(text, ROLE_CONTENT), bind(entity_i, ROLE_ENTITY)...). Unbinding
+    bind(entity, ROLE_ENTITY) from the bundle cancels that entity's term to zero phase;
+    it does NOT recover the content vector (that term stays shifted by the key)."""
     _require_numpy()
     role_content, role_entity = encode_atom(ROLE_CONTENT, dim), encode_atom(ROLE_ENTITY, dim)
     return bundle(bind(encode_text(content, dim), role_content),

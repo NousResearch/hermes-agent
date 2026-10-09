@@ -154,6 +154,25 @@ class RunIdempotencyStore:
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
+    def find_run_by_key(self, scope: str, key: str) -> str | None:
+        """Read-only recovery lookup. Missing or expired keys never reserve/start a run."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT run_id, status_json, updated_at, retention_until, acknowledged_at "
+                "FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key)
+            ).fetchone()
+        if row is None:
+            return None
+        run_id, status_json, updated_at, retention_until, acknowledged_at = row
+        now = time.time()
+        if json.loads(status_json).get("status") in TERMINAL_STATUSES and (
+            (acknowledged_at is not None and acknowledged_at <= now - self.ACKNOWLEDGED_RETENTION_SECONDS)
+            or (retention_until > 0 and retention_until <= now)
+            or (retention_until <= 0 and updated_at < now - self.RETENTION_SECONDS)
+        ):
+            return None
+        return str(run_id)
+
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()

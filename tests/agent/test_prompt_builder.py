@@ -1019,7 +1019,10 @@ class TestContextFileReadTimeout:
         # over: an earlier test re-imports agent.prompt_builder, so the
         # sys.modules entry can be a different module object.
         pb_mod = sys.modules[build_context_files_prompt.__module__]
-        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+        # The slow read below blocks until released, so it times out at any budget; the budget only has to
+        # let the FAST fallback read finish. 0.05 s timed AGENTS.md out too on a loaded runner (main run
+        # 37872484747: both files "read timed out", no project context at all).
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 2.0)
 
         original_read_text = Path.read_text
 

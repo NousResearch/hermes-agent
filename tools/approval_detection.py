@@ -49,6 +49,8 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
 # one whitespace character; keeping that means this fix changes no approval decision.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+# systemctl global options (-l, --user, --no-pager, --unit=x) before the verb; same possessive form as _GLOBAL_FLAGS.
+_SYSTEMCTL_FLAGS = r'(?:-{1,2}\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -241,7 +243,7 @@ GUARDRAIL_PATTERNS = [
      rf'\b(?:cp|mv|install)\b[^;&|\n]*\s["\']?{_GR_ENV}{_GR_END})',
      GUARDRAIL_PREFIX + "clobber Hermes secrets file (.env)"),
     # Approval / security policy changes via the CLI.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+(?:set|unset)\s+["\']?'
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'config\s+(?:set|unset)\s+["\']?'
      r'(?:approvals|security|command_allowlist|yolo|plugins\.(?:entries\.)?hermes-jev)\b',
      GUARDRAIL_PREFIX + "change Hermes approval/security config"),
     # Writes to config.yaml that touch approval/security keys (sed -i, redirect, tee, python dump).
@@ -251,9 +253,9 @@ GUARDRAIL_PATTERNS = [
      r'approval_prefilter|\bmode:\s*["\']?(?:off|yolo)\b))',
      GUARDRAIL_PREFIX + "edit approval/security keys in Hermes config"),
     # Stop / disable the gateway (restart stays a normal flagged command).
-    (r'\bsystemctl\s+(?:-{1,2}\S+\s+)*(?:stop|disable|mask|kill)\b[^;&|\n]*\bhermes-gateway\b|'
+    (r'\bsystemctl\s+' + _SYSTEMCTL_FLAGS + r'(?:stop|disable|mask|kill)\b[^;&|\n]*\bhermes-gateway\b|'
      r'\b(?:pkill|killall)\b[^;&|\n]*(?:\bhermes(?![\w-])|\bhermes-gateway\b|\bgateway\b)|'
-     r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(?:stop|uninstall)\b',
+     r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(?:stop|uninstall)\b',
      GUARDRAIL_PREFIX + "stop or disable the Hermes gateway"),
     # Replace or remove the crontab (anything other than listing / interactive edit).
     (rf'{_GR_CMD}crontab(?:\s+-u\s+\S+)?(?:\s+(?!-l\b|-e\b)\S|\s*(?:$|[;&|)\n"\']))',

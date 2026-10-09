@@ -120,6 +120,10 @@ def collect_acceptance(contract: str, published_pr: str | None,
             return receipt
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
+        from hermes_cli.kanban_named_acceptance import collect_named, policy_for
+        policy = policy_for(repo)
+        if policy is not None:
+            return collect_named(repo, number, policy, receipt, _api)
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]

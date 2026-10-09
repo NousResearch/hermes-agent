@@ -211,6 +211,11 @@ class BaseWebSearchProvider(WebSearchProvider):
     KEY_ENV: str = ""
     EXTRACT: bool = False
     KEYLESS: bool = False
+    # Flipped to False by marker providers that only rewire the transport when
+    # explicitly configured: their is_available() reflects some other capability's
+    # credentials, so the registry's automatic walks must not read it as "the one
+    # provider the user configured for search".
+    AUTO_SELECTABLE: bool = True
 
     name = property(lambda self: self.NAME)
     display_name = property(lambda self: self.DISPLAY_NAME)

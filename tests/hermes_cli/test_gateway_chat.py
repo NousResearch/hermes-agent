@@ -183,3 +183,12 @@ def test_every_relocation_hint_names_a_command_that_parses():
     for hint in gateway_chat._RELOCATED.values():
         for command in re.findall(r"`(hermes [^`]*)`", hint):
             parser.parse_args([arg for arg in shlex.split(command)[1:] if not arg.startswith("<")])
+
+
+def test_one_letter_alias_refusal_names_a_flag_the_user_can_type(monkeypatch, capsys):
+    """`cli.main(w=True)` (`python cli.py -w`) is refused as `-w`; `--w` is not an option anywhere."""
+    from hermes_cli import gateway_chat
+    monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
+    assert gateway_chat.launch_from_args(argparse.Namespace(w=True)) == 2
+    err = capsys.readouterr().err
+    assert "options: -w." in err and "\n  -w: use `hermes --tui -w`" in err and "--w" not in err

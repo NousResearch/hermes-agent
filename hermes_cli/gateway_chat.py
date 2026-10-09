@@ -59,8 +59,10 @@ def validate_options(args):
     if getattr(args, "create_if_missing", False) and not continue_title(args):
         unsupported.append("create-if-missing without -c <name>")
     if unsupported:
-        flags = ", ".join("--" + name.replace("_", "-") for name in unsupported)
-        where = "".join(f"\n  --{name.replace('_', '-')}: use {_RELOCATED[name]}" for name in unsupported)
+        # A one-letter alias (``cli.main(w=True)``) is spelled ``-w``, never the nonexistent ``--w``.
+        spell = {name: ("-" if len(name) == 1 else "--") + name.replace("_", "-") for name in unsupported}
+        flags = ", ".join(spell[name] for name in unsupported)
+        where = "".join(f"\n  {spell[name]}: use {_RELOCATED[name]}" for name in unsupported)
         raise GatewayClientError(
             f"Unsupported gateway CLI options: {flags}. No local fallback or policy changes were made.{where}")
     # Creation flags repeated on resume are checked against the frozen route once the snapshot is

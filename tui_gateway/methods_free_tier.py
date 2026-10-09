@@ -1,8 +1,9 @@
-"""Nous free-tier JSON-RPC handlers: a renderer reads the profile's local auth state (pull); nothing
-is pushed except the boot bootstrap's one ``setup.ready`` event. ``free_tier.status`` answers from the
+"""Nous free-tier JSON-RPC handlers. ``free_tier.status`` answers from the
 auth store with zero network and zero side effects; ``free_tier.provision`` is the explicit retry when
 the boot bootstrap could not create the identity (desktop-only entry); ``free_tier.ack_notice``
 persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
+``free_tier.challenge_result`` records a presentation hint for the pending attempt; the
+backend still exchanges with the portal to determine whether the credential is cleared.
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """
 
@@ -24,6 +25,8 @@ def _(rid, params: dict) -> dict:
     when nothing else carries inference) is there for this install. Whether inference actually runs
     on it is a ROUTE question answered by ``setup.runtime_check.free_tier``, never by this flag.
     ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity.
+    ``nudge_due_in``: seconds until the sign-in offer after a finished task is due (install-wide,
+    ``hermes_cli.free_tier_offer``); absent when none is pending.
 
     A pure read. The identity is created by the boot bootstrap (``free_tier_bootstrap``), never as
     a side effect of a client polling this method (NS-845 Q1.2)."""
@@ -35,10 +38,19 @@ def _(rid, params: dict) -> dict:
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
             "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL}
+        from hermes_cli import free_tier_offer
+        if (nudge_due_in := free_tier_offer.offer_due_in()) is not None:
+            payload["nudge_due_in"] = nudge_due_in
         if enabled and not has_guest:
             # Why there is no identity, when the last attempt to make one failed:
             # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
             payload.update(anon_auth.last_mint_failure() or {})
+        # A browser challenge the account service is waiting on (``anon_challenge``): the same
+        # payload the ``free_tier.challenge`` event carried, for a client that connected after it.
+        from hermes_cli import anon_challenge
+        challenge = anon_challenge.pending_challenge()
+        if challenge:
+            payload["challenge"] = challenge
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
@@ -86,6 +98,26 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"acked": bool(anon_auth.mark_guest_notice_shown())})
     except Exception as e:
         return _err(rid, 5091, str(e))
+
+
+@method("free_tier.claim_nudge")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Claim the due sign-in offer. Claim before showing, so two windows never both show it:
+    ``claimed`` is true for exactly one caller each time an offer comes due."""
+    try:
+        from hermes_cli import free_tier_offer
+        return _ok(rid, {"claimed": bool(free_tier_offer.claim_offer())})
+    except Exception as e:  # the RPC boundary: report it, never crash the dispatcher
+        logger.warning("free_tier.claim_nudge failed", exc_info=True)
+        return _err(rid, 5093, str(e))
+
+
+@method("free_tier.challenge_result")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    from hermes_cli.anon_challenge import record_host_outcome
+    return _ok(rid, {"accepted": record_host_outcome(params["url"], params.get("attempt", 0), params["outcome"])})
 
 
 def register(server) -> None:

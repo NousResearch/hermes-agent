@@ -1,7 +1,8 @@
 """Voice Mode -- push-to-talk recording and playback for the CLI.
 
 Capture via sounddevice, WAV via stdlib wave, STT via tools.transcription_tools,
-playback via sounddevice or system players. Optional deps: ``uv sync --extra voice``.
+playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``stt-whisper``
+extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
 import logging
@@ -23,8 +24,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 from hermes_constants import is_termux as _is_termux_environment
+from hermes_platform.host.runtime import is_wsl
+from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -41,7 +43,19 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # WSL, no PortAudio).
 
 def _import_audio():
-    """Lazy-import (sounddevice, numpy); raises ImportError/OSError when unavailable."""
+    """Lazy-import (sounddevice, numpy), enabling the ``audio-io`` extra through PM first.
+
+    Raises ImportError when the extra cannot be enabled here (lazy installs off, platform
+    gate, or installed-but-needs-restart) and OSError when PortAudio's shared library is
+    missing — pip can't fix that one, so it is reported separately.
+    """
+    import pm
+
+    if not pm.available("audio-io"):
+        try:
+            pm.ensure_import("audio-io")
+        except pm.InstallError as exc:
+            raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
     return sd, np
@@ -89,6 +103,16 @@ def _unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def _audio_unavailable_reason() -> str:
+    try:
+        _import_audio()
+    except ImportError as exc:
+        return _voice_capture_install_hint(exc)
+    except OSError:
+        return _portaudio_missing_message().splitlines()[0]
+    return ""
+
+
 def _audio_available() -> bool:
     try:
         _import_audio()
@@ -107,24 +131,18 @@ def _default_input_samplerate(sd) -> int:
         info = sd.query_devices(None, "input")
         rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
         if isinstance(rate, (int, float)) and rate > 0:
-            return int(round(rate))
+            return round(rate)
     return SAMPLE_RATE
 
 
 # ── Environment detection ──
-def _voice_capture_install_hint() -> str:
-    # sounddevice imports but PortAudio's shared library is missing — a pip install can't fix that; point at
-    # the system package instead of misreporting missing Python packages (#18432).
+def _voice_capture_install_hint(error: BaseException | None = None) -> str:
+    """Why audio capture is unavailable. ``_import_audio`` already tried to enable the
+    ``audio-io`` extra through PM, so the ImportError it raised IS the remediation."""
+    # On Termux PortAudio is a system package a pip install can't provide (#18432).
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    # Inside a venv a bare `pip install` may hit whichever Python the shell
-    # resolves first (macOS: often a Rosetta system Python) — use the venv's pip.
-    with suppress(Exception):
-        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
-            if pip_in_venv.exists():
-                return f"{pip_in_venv} install sounddevice numpy"
-    return "pip install sounddevice numpy"
+    return str(error) if error else "audio-io extra unavailable"
 
 
 def _portaudio_missing_message() -> str:
@@ -143,7 +161,7 @@ def _termux_microphone_command() -> Optional[str]:
     return shutil.which("termux-microphone-record") if _is_termux_environment() else None
 
 
-def _run_quiet(cmd: List[str], *, timeout: float, check: bool) -> subprocess.CompletedProcess:
+def _run_quiet(cmd: list[str], *, timeout: float, check: bool) -> subprocess.CompletedProcess:
     """subprocess.run with captured, utf-8-decoded output and no stdin."""
     return subprocess.run(
         cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -192,7 +210,7 @@ def _termux_voice_capture_available() -> bool:
     return _termux_microphone_command() is not None and _termux_api_app_installed()
 
 
-def _pulse_socket_candidates() -> List[str]:
+def _pulse_socket_candidates() -> list[str]:
     """Socket paths a PulseAudio/PipeWire client would try by default."""
     env = os.environ.get
     # PULSE_SERVER may be "unix:/path", "unix:/path;..." or a bare path.
@@ -230,7 +248,7 @@ def _pulse_socket_reachable() -> bool:
     return False
 
 
-def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwarded_audio: bool,
+def _probe_audio_libraries(warnings: list[str], notices: list[str], *, has_forwarded_audio: bool,
                            termux_mic_cmd: Optional[str], termux_app_installed: bool) -> None:
     """Import sounddevice and query devices; append the outcome to warnings/notices.
 
@@ -251,9 +269,9 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
 
     try:
         sd, _ = _import_audio()
-    except ImportError:
+    except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
-                       f"Audio libraries not installed ({_voice_capture_install_hint()})", import_failed=True)
+                       f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)
     except OSError:
         return outcome("Termux:API microphone recording available (PortAudio not required)",
                        _portaudio_missing_message(), import_failed=True)
@@ -310,7 +328,7 @@ def detect_audio_environment() -> dict:
     # WSL: the PowerShell/Media.SoundPlayer fallback only covers OUTPUT, so when
     # it is all that's available downgrade to a notice (recording guidance stays
     # visible, TTS-only usage isn't blocked).
-    if _is_wsl2_env():
+    if is_wsl():
         if has_forwarded_audio:
             notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
         elif _wsl_powershell_tts_available():
@@ -505,12 +523,55 @@ def _new_recording_path(ext: str) -> str:
     return os.path.join(_TEMP_DIR, f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
 
 
+# WAV path -> live STT session that heard the same take (``stt.streaming``). transcribe_recording
+# pops it, so every consumer of a recorder's WAV gets the live transcript with no call-site change.
+_LIVE_SESSIONS: dict[str, Any] = {}
+_LIVE_SESSIONS_MAX = 8
+_LIVE_LOCK = threading.Lock()
+
+
+def _park_live_session(wav_path: Optional[str], session: Any) -> None:
+    if session is None:
+        return
+    if not wav_path:
+        session.cancel()
+        return
+    session.end_audio()  # the provider flushes while the caller is still handling the WAV
+    with _LIVE_LOCK:
+        _LIVE_SESSIONS[wav_path] = session
+        while len(_LIVE_SESSIONS) > _LIVE_SESSIONS_MAX:
+            _LIVE_SESSIONS.pop(next(iter(_LIVE_SESSIONS))).cancel()
+
+
+def _take_live_session(wav_path: str) -> Any:
+    with _LIVE_LOCK:
+        return _LIVE_SESSIONS.pop(wav_path, None)
+
+
 class _RecorderBase:
     """Lock, recording flag, start time and live RMS shared by both recorder backends."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._recording, self._start_time, self._current_rms = False, 0.0, 0
+        # Live STT (``stt.streaming``): hosts set ``on_live_partial`` to render partial text.
+        self.on_live_partial: Optional[Callable[[str], None]] = None
+        self._live: Any = None
+
+    def _open_live_session(self, sample_rate: int) -> None:
+        from tools.transcription_streaming import open_streaming_session
+        try:
+            self._live = open_streaming_session(on_partial=self.on_live_partial)
+        except Exception:
+            logger.debug("Live STT session did not open", exc_info=True)
+            self._live = None
+        if self._live is not None:
+            self._live.set_input_rate(sample_rate)
+            logger.info("Live STT streaming (%s)", self._live.provider)
+
+    def _detach_live(self) -> Any:
+        live, self._live = self._live, None
+        return live
 
     @property
     def is_recording(self) -> bool:
@@ -610,7 +671,7 @@ class AudioRecorder(_RecorderBase):
     def __init__(self) -> None:
         super().__init__()
         self._stream: Any = None
-        self._frames: List[Any] = []
+        self._frames: list[Any] = []
         self._sample_rate: int = SAMPLE_RATE
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
@@ -705,6 +766,9 @@ class AudioRecorder(_RecorderBase):
 
     def _on_audio_block(self, np, indata) -> None:
         self._frames.append(indata.copy())
+        live = self._live
+        if live is not None:
+            live.push_audio(indata.tobytes())
         rms = int(_rms(np, indata))
         self._current_rms = rms
         self._peak_rms = max(self._peak_rms, rms)
@@ -716,13 +780,27 @@ class AudioRecorder(_RecorderBase):
             self._fire_silence_callback()
 
     def _ensure_stream(self) -> None:
-        """Create the InputStream once and keep it alive (between recordings the callback
-        discards chunks): re-opening an InputStream hangs on macOS CoreAudio."""
+        """Create the audio InputStream and keep it alive while usable.
+
+        The stream stays open for the lifetime of the recorder.  Between
+        recordings the callback simply discards audio chunks (``_recording``
+        is ``False``).  This avoids the CoreAudio bug where closing and
+        re-opening an ``InputStream`` hangs indefinitely on macOS. CoreAudio
+        can still deactivate the stream when another input stream opens; in
+        that case the dead object must be closed and rebuilt before capture.
+        """
         if self._stream is not None:
-            return
+            try:
+                if self._stream.active:
+                    return
+            except Exception:
+                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+
+            logger.debug("Rebuilding inactive audio input stream")
+            self._close_stream_with_timeout()
         sd, np = _import_audio()
 
-        def _callback(indata, frames, time_info, status):  # noqa: ARG001
+        def _callback(indata, frames, time_info, status):
             if status:
                 logger.debug("sounddevice status: %s", status)
             if self._recording:
@@ -758,9 +836,7 @@ class AudioRecorder(_RecorderBase):
         except OSError as e:
             raise RuntimeError(_portaudio_missing_message()) from e
         except ImportError as e:
-            raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy") from e
+            raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
             if self._recording:
                 return
@@ -772,6 +848,7 @@ class AudioRecorder(_RecorderBase):
             self._on_silence_stop = on_silence_stop
         self._sample_rate = _default_input_samplerate(sd)
         self._ensure_stream()
+        self._open_live_session(self._sample_rate)
         with self._lock:
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
@@ -785,6 +862,7 @@ class AudioRecorder(_RecorderBase):
         def _do_close():
             with suppress(Exception):
                 stream.stop()
+            with suppress(Exception):
                 stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
@@ -798,6 +876,11 @@ class AudioRecorder(_RecorderBase):
 
     def stop(self) -> Optional[str]:
         """Stop recording (stream stays alive) and return the WAV path, or None if unusable."""
+        wav_path = self._stop_capture()
+        _park_live_session(wav_path, self._detach_live())
+        return wav_path
+
+    def _stop_capture(self) -> Optional[str]:
         with self._lock:
             if not self._recording:
                 return None
@@ -812,16 +895,22 @@ class AudioRecorder(_RecorderBase):
             if len(audio_data) < int(self._sample_rate * 0.3):
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
-            # Peak RMS, not the average (which trailing silence dilutes).
-            if self._peak_rms < SILENCE_RMS_THRESHOLD:
+            # Peak RMS, not the average (which trailing silence dilutes). Same
+            # configured floor as the VAD above — the hardcoded module default
+            # here discarded valid speech on low-threshold setups (mic peaking
+            # at RMS ~160 with voice.silence_threshold: 80, #84046).
+            if self._peak_rms < self._silence_threshold:
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
-                            self._peak_rms, SILENCE_RMS_THRESHOLD)
+                            self._peak_rms, self._silence_threshold)
                 return None
             return self._write_wav(audio_data, sample_rate=self._sample_rate)
 
     def _discard(self) -> None:
         with self._lock:
             self._recording, self._frames, self._on_silence_stop, self._current_rms = False, [], None, 0
+        live = self._detach_live()
+        if live is not None:
+            live.cancel()
 
     def cancel(self) -> None:
         """Stop recording and discard all captured audio (stream stays alive)."""
@@ -849,17 +938,31 @@ def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
 
 
 # ── STT dispatch ──
-def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def _live_result(wav_path: str) -> Optional[dict[str, Any]]:
+    """The live session's transcript for this take, or None to transcribe the WAV instead.
+
+    A failed or empty live result falls back to the file: an empty live transcript over a take the
+    recorder accepted as speech is more likely a dropped socket than silence."""
+    session = _take_live_session(wav_path)
+    if session is None:
+        return None
+    result = session.finalize()
+    if result.get("success") and (result.get("transcript") or "").strip():
+        return result
+    logger.info("Live STT gave no transcript (%s); transcribing the recording",
+                result.get("error") or "empty")
+    return None
+
+
+def transcribe_recording(wav_path: str, model: Optional[str] = None) -> dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
-    from tools.transcription_common import MAX_FILE_SIZE
     from tools.transcription_tools import transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model, source="voice_mode")
-    # Only chunk when the provider itself reports "File too large" — local
-    # providers have no upload cap and never return this error.
-    if not result.get("success") and "File too large" in result.get("error", ""):
-        result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
+    result = _live_result(wav_path)
+    if result is None:
+        # transcribe_audio fits oversized recordings under the provider's upload cap itself.
+        result = transcribe_audio(wav_path, model=model, source="voice_mode")
     # A configured stop phrase always survives: "bye"/"okay" overlap the
     # hallucination blocklist, and swallowing them would make "bye" fail to end the chat.
     if result.get("success"):
@@ -872,67 +975,6 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if result.get("no_speech"):
         return {"success": True, "transcript": "", "no_speech": True}
     return result
-
-
-def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_size: int) -> Dict[str, Any]:
-    """Split an oversized WAV into provider-sized chunks and join transcripts."""
-    from tools.transcription_tools import transcribe_audio
-
-    chunk_paths, transcripts = [], []
-    try:
-        chunk_paths = _split_wav_for_transcription(wav_path, max_file_size=max_file_size)
-        if not chunk_paths:
-            return {"success": False, "transcript": "", "error": "No audio chunks were created"}
-        logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
-        for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
-            if not result.get("success"):
-                error = result.get("error", "Unknown transcription error")
-                return {"success": False, "transcript": "",
-                        "error": f"Chunk {index}/{len(chunk_paths)} failed: {error}"}
-            transcript = result.get("transcript", "").strip()
-            if transcript and not is_whisper_hallucination(transcript):
-                transcripts.append(transcript)
-        return {"success": True, "transcript": " ".join(transcripts).strip(),
-                "provider": result.get("provider"), "chunks": len(chunk_paths)}
-    except Exception as e:
-        logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Chunked transcription failed: {e}"}
-    finally:
-        for chunk_path in chunk_paths:
-            _unlink_quietly(chunk_path)
-
-
-def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
-    """Write WAV chunks small enough to pass the shared STT file-size gate."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
-    chunk_paths: List[str] = []
-    with wave.open(wav_path, "rb") as source:
-        params = source.getparams()
-        block_align = max(1, params.nchannels * params.sampwidth)
-        max_data_bytes = max_file_size - 64 * 1024  # header reserve
-        if max_data_bytes < block_align:
-            raise ValueError("STT max_file_size is too small for WAV chunking")
-        frames_per_chunk = max(1, max_data_bytes // block_align)
-        index = 0
-        while True:
-            frames = source.readframes(frames_per_chunk)
-            if not frames:
-                break
-            index += 1
-            with tempfile.NamedTemporaryFile(
-                    prefix=f"{os.path.splitext(os.path.basename(wav_path))[0]}_chunk{index:03d}_",
-                    suffix=".wav", dir=_TEMP_DIR, delete=False) as temp:
-                chunk_path = temp.name
-            try:
-                with wave.open(chunk_path, "wb") as chunk:
-                    chunk.setparams(params._replace(nframes=0))
-                    chunk.writeframes(frames)
-                chunk_paths.append(chunk_path)
-            except Exception:
-                _unlink_quietly(chunk_path)
-                raise
-    return chunk_paths
 
 
 # ── Audio playback (interruptable) ──
@@ -961,20 +1003,10 @@ def stop_playback() -> None:
         sd.stop()
 
 
-def _is_wsl2_env() -> bool:
-    """True inside WSL (Microsoft kernel signature in /proc/version); False on any error.
-    Module-level so tests can patch it instead of ``builtins.open``."""
-    try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
-            return "microsoft" in _fv.read().lower()
-    except OSError:
-        return False
-
-
 def _wsl_powershell_tts_available() -> bool:
     """WSL2 PowerShell TTS fallback usable. OUTPUT only (Media.SoundPlayer on the host) —
     recording still needs a PulseAudio bridge, so callers keep surfacing that guidance."""
-    return bool(_is_wsl2_env() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
+    return bool(is_wsl() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -1000,7 +1032,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         # ~100 ms to stabilise and the small default blocksize worsens
         # clock-adjustment jitter (microsoft/wslg#1257).
         blocksize = 0  # default (auto)
-        if _is_wsl2_env():
+        if is_wsl():
             fade_samples = int(0.1 * sample_rate)
             audio_float = audio_data.astype(np.float64)
             audio_float[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
@@ -1018,12 +1050,12 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         return False
 
 
-def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
+def _wsl_powershell_player_cmd(file_path: str) -> Optional[list[str]]:
     """WSL2 PowerShell fallback player command, or None. Without a PulseAudio bridge
     ffplay/aplay have no device, but Media.SoundPlayer on the host does: convert to a
     uniquely-named WAV in Windows %TEMP% (concurrent TTS must not collide), play, always
     delete, and re-raise the ORIGINAL exit status past the cleanup (rm -f exits 0)."""
-    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and _is_wsl2_env()):
+    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and is_wsl()):
         return None
     try:
         import uuid
@@ -1050,10 +1082,10 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
         return None  # WSL path resolution failed; fall through to ffplay/aplay
 
 
-def _system_player_candidates(file_path: str) -> List[List[str]]:
+def _system_player_candidates(file_path: str) -> list[list[str]]:
     """Ordered system-player commands for this platform."""
     system = platform.system()
-    players: List[List[str]] = [["afplay", file_path]] if system == "Darwin" else []
+    players: list[list[str]] = [["afplay", file_path]] if system == "Darwin" else []
     ps_cmd = _wsl_powershell_player_cmd(file_path) if system == "Linux" else None
     if ps_cmd:
         players.append(ps_cmd)
@@ -1063,7 +1095,7 @@ def _system_player_candidates(file_path: str) -> List[List[str]]:
     return players
 
 
-def _run_system_player(cmd: List[str]) -> bool:
+def _run_system_player(cmd: list[str]) -> bool:
     """Run one player to completion (interruptible via stop_playback)."""
     proc = None
     try:
@@ -1251,7 +1283,7 @@ def listen_for_speech(
 
                 # Keep rolling until the user goes quiet. Playback is stopped
                 # now, so plain silence endpointing (recorder threshold) works.
-                frames: List[Any] = list(pre_roll)
+                frames: list[Any] = list(pre_roll)
                 quiet = 0
                 for _ in range(max_blocks):
                     data, _ = stream.read(block)
@@ -1289,7 +1321,7 @@ def _vad_log(msg: str) -> None:
 def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write
     pre-roll + capture to a WAV. Playback was cut by the trigger, so silence endpointing works."""
-    frames: List[Any] = list(pre_roll)
+    frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
         data, _ = stream.read(block)
@@ -1305,7 +1337,7 @@ class _BargeDetector:
 
     def __init__(self, np, *, mult: float, calib_blocks: int, trip_blocks: int, grace_blocks: int) -> None:
         self._np, self.mult, self.calib_blocks, self.grace_blocks = np, mult, calib_blocks, grace_blocks
-        self.trip_needed = max(1, int(round(trip_blocks * 0.8)))
+        self.trip_needed = max(1, round(trip_blocks * 0.8))
         self.ambient: deque = deque(maxlen=100)  # ~3s of quiet-phase RMS
         self.recent_above: deque = deque(maxlen=trip_blocks)
         self.quiet_floor = float(SILENCE_RMS_THRESHOLD)
@@ -1440,12 +1472,12 @@ def _check_plugin_stt_provider(provider: str) -> bool:
             # one refresh after plugins or configuration change.
             _ensure_plugins_discovered(force=True)
             plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 - discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("STT plugin requirements check skipped for '%s': %s", key, exc)
         return False
     try:
         return plugin_provider is not None and bool(plugin_provider.is_available())
-    except Exception as exc:  # noqa: BLE001 - plugins must not break status
+    except Exception as exc:
         logger.warning(
             "STT plugin provider '%s' is_available() raised during requirements "
             "check: %s - treating as unavailable", key, exc, exc_info=True)
@@ -1461,10 +1493,11 @@ _NATIVE_STT_LABELS = {
     "mistral": "Mistral Voxtral",
     "xai": "xAI Grok STT",
     "elevenlabs": "ElevenLabs Scribe",
+    "deepinfra": "DeepInfra",
 }
 
 
-def check_voice_requirements() -> Dict[str, Any]:
+def check_voice_requirements() -> dict[str, Any]:
     """Check voice mode requirements: ``{available, audio_available, stt_available,
     missing_packages, details, environment}``."""
     from tools.transcription_tools import (
@@ -1487,12 +1520,11 @@ def check_voice_requirements() -> Dict[str, Any]:
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio
-        else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
+        else f"Audio capture: MISSING ({_audio_unavailable_reason()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
-        else ("STT provider: MISSING (uv pip install faster-whisper — "
-              "`pip install faster-whisper` also works if pip is on PATH, "
-              "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"),
+        else ("STT provider: MISSING (run `hermes tools` and configure "
+              "Speech-to-Text: Local Whisper or a cloud provider)"),
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]
     details += [f"Environment: {n}" for n in env_check.get("notices", [])]
@@ -1521,61 +1553,3 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)
     return deleted
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import difflib  # noqa: F401,E402
-import re  # noqa: F401,E402
-
-WHISPER_HALLUCINATIONS = {
-    "thank you.",
-    "thank you",
-    "thanks for watching.",
-    "thanks for watching",
-    "subscribe to my channel.",
-    "subscribe to my channel",
-    "like and subscribe.",
-    "like and subscribe",
-    "please subscribe.",
-    "please subscribe",
-    "thank you for watching.",
-    "thank you for watching",
-    "bye.",
-    "bye",
-    "you",
-    "the end.",
-    "the end",
-    # Non-English hallucinations (common on silence)
-    "продолжение следует",
-    "продолжение следует...",
-    "sous-titres",
-    "sous-titres réalisés par la communauté d'amara.org",
-    "sottotitoli creati dalla comunità amara.org",
-    "untertitel von stephanie geiges",
-    "amara.org",
-    "www.mooji.org",
-    "ご視聴ありがとうございました",
-}
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD': ('tools.voice_mode_transcript', 'DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD'),
-    'DEFAULT_VOICE_STOP_PHRASES': ('tools.voice_mode_transcript', 'DEFAULT_VOICE_STOP_PHRASES'),
-    'MIN_FRAGMENT_LENGTH_FOR_ECHO': ('tools.voice_mode_transcript', 'MIN_FRAGMENT_LENGTH_FOR_ECHO'),
-    'is_tts_echo': ('tools.voice_mode_transcript', 'is_tts_echo'),
-    'voice_stop_hint': ('tools.voice_mode_transcript', 'voice_stop_hint'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

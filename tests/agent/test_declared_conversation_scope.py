@@ -774,7 +774,7 @@ class TestSourceOverrideDomain:
     """The scope is memoized immediately, so the source must be right first.
 
     ``_agent_source`` used ``agent.platform`` before the row landed while
-    persistence uses ``_session_source_for_agent``, which honors
+    persistence uses ``session_source_for``, which honors
     ``HERMES_SESSION_SOURCE``. Under an override both sides of a ``/new``
     queried the platform domain, missed the boundary stored under the
     override, and hashed the same scope (@andrexibiza on #98811).

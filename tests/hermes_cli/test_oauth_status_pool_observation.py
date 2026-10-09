@@ -13,6 +13,8 @@ import base64
 import json
 import time
 
+import pytest
+
 from agent import credential_pool
 from agent.credential_pool import load_pool
 from hermes_cli.auth import AuthError, DEFAULT_CODEX_BASE_URL, get_codex_auth_status
@@ -28,8 +30,8 @@ def _jwt_with_exp(offset_seconds: int) -> str:
 def _pool_only_codex_home(tmp_path, monkeypatch, *, access_tokens: list):
     """HERMES_HOME whose only Codex credentials live in ``credential_pool.openai-codex``; the token
     endpoint is a transient failure (the credential itself is still good)."""
-    import hermes_cli.auth as auth
-    import hermes_cli.codex_models as codex_models
+    from hermes_cli import auth
+    from hermes_cli import codex_models
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -94,6 +96,43 @@ def test_status_snapshot_leaves_round_robin_order_and_counts_untouched(tmp_path,
     assert _persisted_pool(home) != before
 
 
+def test_read_only_resolver_never_probes_or_mutates_an_exhausted_pool(tmp_path, monkeypatch):
+    from hermes_cli import auth_codex
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    home, _ = _pool_only_codex_home(
+        tmp_path, monkeypatch, access_tokens=[_jwt_with_exp(-3600)])
+    payload = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["openai-codex"][0]
+    entry.update({
+        "last_status": "exhausted",
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit_reached",
+        "last_error_reset_at": time.time() + 3600,
+    })
+    (home / "auth.json").write_text(json.dumps(payload), encoding="utf-8")
+    before = (home / "auth.json").read_bytes()
+    calls = []
+
+    monkeypatch.setattr(
+        auth_codex,
+        "_probe_codex_pool_entry_quota_restored",
+        lambda _entry: calls.append("probe") or True,
+    )
+    monkeypatch.setattr(
+        auth_codex,
+        "clear_codex_pool_quota_cooldowns",
+        lambda: calls.append("clear") or 1,
+    )
+
+    with pytest.raises(AuthError):
+        resolve_codex_runtime_credentials(read_only=True)
+
+    assert calls == []
+    assert (home / "auth.json").read_bytes() == before
+    assert not (home / "auth.lock").exists()
+
+
 def _singleton_only_codex_home(tmp_path, monkeypatch, *, tokens: dict, codex_cli_tokens: dict):
     """HERMES_HOME whose Codex credentials are the ``providers.openai-codex`` singleton only, with a
     valid Codex CLI login sitting beside it in ``CODEX_HOME``."""
@@ -139,7 +178,7 @@ def test_status_snapshot_never_refreshes_an_expired_singleton(tmp_path, monkeypa
     The token is already expired (not merely expiring): ``load_pool`` mirrors the singleton as a
     ``device_code`` pool entry and ``pool.peek`` would answer for a still-valid token, so only an
     expired one drives ``get_codex_auth_status()`` down to the singleton resolver under test."""
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
     from hermes_cli.auth import resolve_codex_runtime_credentials
 
     expired = {"access_token": _jwt_with_exp(-60), "refresh_token": "singleton-refresh"}
@@ -190,8 +229,8 @@ def test_status_snapshot_leaves_the_auth_store_manifest_byte_identical(tmp_path,
 def test_model_picker_catalog_never_refreshes_the_stored_codex_login(tmp_path, monkeypatch):
     """#68004: ``/model`` reports the stored login as-is — an expired token means the hardcoded
     catalog, not a spent refresh token."""
-    import hermes_cli.auth as auth
-    import hermes_cli.codex_models as codex_models
+    from hermes_cli import auth
+    from hermes_cli import codex_models
     from hermes_cli.models import _codex_catalog
 
     expired = {"access_token": _jwt_with_exp(-60), "refresh_token": "singleton-refresh"}

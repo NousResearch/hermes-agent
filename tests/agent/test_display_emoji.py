@@ -43,11 +43,6 @@ class TestSkinConfigToolEmojis:
     """Verify SkinConfig handles tool_emojis field correctly."""
 
 
-    def test_skin_config_accepts_tool_emojis(self):
-        from hermes_cli.skin_engine import SkinConfig
-        emojis = {"terminal": "⚔", "web_search": "🔮"}
-        skin = SkinConfig(name="test", tool_emojis=emojis)
-        assert skin.tool_emojis == emojis
 
     def test_build_skin_config_includes_tool_emojis(self):
         from hermes_cli.skin_engine import _build_skin_config

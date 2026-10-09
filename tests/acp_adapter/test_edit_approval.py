@@ -9,6 +9,7 @@ from pathlib import Path
 from acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
+    build_edit_proposal,
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
@@ -121,3 +122,51 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def test_multifile_v4a_patch_checks_every_real_path_not_the_joined_display_string(tmp_path):
+    """Multi-file V4A proposals carry a comma-joined ``path`` for the dialog; the auto-approve
+    checks must run per real target so a sensitive or escaping file cannot hide in the join (#115213)."""
+    hidden_env = "*** Update File: .env\n@@\n+SECRET=x\n*** Update File: src/ok.py\n@@\n+ok\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": hidden_env})
+    assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+    # Escape target sits outside BOTH allowed roots (tempdir + session cwd).
+    escape = Path.home() / ".hermes-acp-escape-test.txt"
+    hidden_escape = f"*** Update File: {tmp_path}/src/ok.py\n@@\n+ok\n*** Update File: {escape}\n@@\n+evil\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": hidden_escape})
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+    # Control: every target inside the workspace still auto-approves.
+    all_safe = f"*** Update File: {tmp_path}/a.py\n@@\n+a\n*** Update File: {tmp_path}/b.py\n@@\n+b\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": all_safe})
+    assert should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_multifile_v4a_env_write_reaches_permission_prompt_e2e(tmp_path):
+    """Pre-fix, ``session`` policy auto-approved the ``.env`` hidden in the join."""
+    env_target = tmp_path / ".env"
+    ok_target = tmp_path / "ok.py"
+    patch = (
+        f"*** Update File: {env_target}\n@@\n+SECRET=x\n"
+        f"*** Update File: {ok_target}\n@@\n+ok\n"
+    )
+
+    prompted = []
+
+    def requester(proposal):
+        if should_auto_approve_edit(proposal, "session", str(tmp_path)):
+            return True
+        prompted.append(proposal.path)
+        return False
+
+    set_edit_approval_requester(requester)
+    result = json.loads(
+        handle_function_call("patch", {"mode": "patch", "patch": patch}, task_id="acp-v4a-e2e")
+    )
+
+    assert prompted, "multi-file .env patch must reach the prompt, not auto-approve"
+    assert "denied" in result["error"].lower()
+    assert not env_target.exists()
+    assert not ok_target.exists()

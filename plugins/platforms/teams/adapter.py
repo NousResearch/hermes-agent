@@ -57,8 +57,8 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
-from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
+from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
+from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -189,7 +189,7 @@ def _env_enablement() -> dict | None:
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None, media_files: Optional[list] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Acquire a Bot Framework bearer token and POST a single message activity; used by
     ``send_message_tool._send_via_adapter`` when the gateway runner is not in this process
     (``hermes cron``). ``TEAMS_SERVICE_URL`` is allowlisted and ``chat_id`` charset-checked
@@ -285,9 +285,16 @@ def _suppress_third_party_dotenv() -> Iterator[None]:
 
 
 def check_teams_requirements() -> bool:
-    """ACTIVE lazy-installer (registry ``ensure_deps_fn``): install the SDK on first use and rebind
-    the module-level SDK globals. Gate on ``App is not None`` — ``TEAMS_SDK_AVAILABLE`` is only a
-    find_spec probe and can be True before any import ran."""
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``pm.ensure_import("teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+
+    ``App is not None`` means symbols are already bound — ``TEAMS_SDK_AVAILABLE``
+    alone can be True from ``find_spec`` without an import having run yet.
+    """
     if App is not None and AIOHTTP_AVAILABLE:
         return True
 
@@ -305,8 +312,9 @@ def check_teams_requirements() -> bool:
         bindings["TEAMS_SDK_AVAILABLE"] = True
         return bindings
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
+    from pm.extras import ensure_and_bind
+
+    return ensure_and_bind("teams", _import, globals())
 
 
 _CHAT_TYPES = {"personal": "dm", "groupChat": "group", "channel": "channel"}
@@ -316,8 +324,10 @@ _MEDIA_KIND_PRECEDENCE = (
     ("document", MessageType.DOCUMENT), ("image", MessageType.PHOTO),
     ("video", MessageType.VIDEO), ("audio", MessageType.AUDIO))
 _APPROVAL_CHOICES = {"approve_once": "once", "approve_session": "session", "approve_always": "always", "deny": "deny"}
-_APPROVAL_LABELS = {
-    "once": "✅ Allowed (once)", "session": "✅ Allowed (session)", "always": "✅ Always allowed", "deny": "❌ Denied",
+# choice → catalog key of the card footer; resolved through ``t()`` at click time, never at import.
+_APPROVAL_LABEL_KEYS = {
+    "once": "platform.teams.approval.resolved_once", "session": "platform.teams.approval.resolved_session",
+    "always": "platform.teams.approval.resolved_always", "deny": "platform.teams.approval.resolved_deny",
 }
 
 
@@ -329,10 +339,10 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
     if cmd or always:
-        body.append(TextBlock(text=f"⚠️ {EA_HEADER_TEXT}", wrap=True, weight="Bolder"))
+        body.append(TextBlock(text=f"⚠️ {t('gateway.exec_approval.header')}", wrap=True, weight="Bolder"))
         body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
     if desc or always:
-        body.append(TextBlock(text=f"{EA_REASON_LABEL_TEXT}: {desc}", wrap=True, isSubtle=True))
+        body.append(TextBlock(text=f"{t('gateway.exec_approval.reason_label')}: {desc}", wrap=True, isSubtle=True))
     return body
 
 
@@ -347,7 +357,7 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
-        self._extra: Dict[str, Any] = config.extra or {}
+        self._extra: dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
@@ -360,7 +370,7 @@ class TeamsAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
-        self._conv_refs: Dict[str, Any] = {}
+        self._conv_refs: dict[str, Any] = {}
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
@@ -631,18 +641,18 @@ class TeamsAdapter(BasePlatformAdapter):
         hermes_action = data.get("hermes_action", "")
         session_key = data.get("session_key", "")
         if not hermes_action or not session_key:
-            return self._invoke_message("Unknown action.")
+            return self._invoke_message(t("platform.teams.approval.unknown_action"))
         denied = self._card_action_denied(ctx.activity.from_)
         if denied:
             return self._invoke_message(denied)
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
-            return self._invoke_message("Unknown action.")
+            return self._invoke_message(t("platform.teams.approval.unknown_action"))
         if not has_blocking_approval(session_key):
-            return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
+            return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         resolve_gateway_approval(session_key, choice)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
-        body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
+        body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
 
     @staticmethod
@@ -658,12 +668,12 @@ class TeamsAdapter(BasePlatformAdapter):
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "
                 "and TEAMS_ALLOW_ALL_USERS not set — default deny")
-            return "⛔ Approval buttons require TEAMS_ALLOWED_USERS to be configured."
+            return t("platform.teams.approval.requires_allowlist")
         clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         if "*" not in allowed_ids and clicker_id not in allowed_ids:
             logger.warning("[teams] Unauthorized card action by %s — ignoring", clicker_id)
-            return "⛔ Not authorized."
+            return t("platform.shared.not_authorized")
         return None
 
     _EA_CMD_BUDGET = 2000
@@ -695,7 +705,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
@@ -717,7 +727,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
@@ -753,7 +763,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_media_attachment(chat_id, image_url, "image/png", caption=caption, media_label="image")
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -761,15 +771,15 @@ class TeamsAdapter(BasePlatformAdapter):
         return await self.send_image(chat_id=chat_id, image_url=image_path, caption=caption, reply_to=reply_to)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(chat_id, video_path, "video/mp4", caption=caption, media_label="video")
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(chat_id, audio_path, "audio/mpeg", caption=caption, media_label="voice")
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
-                            reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                            reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(
             chat_id, file_path, "application/octet-stream", caption=caption, media_label="document")
 
@@ -821,16 +831,8 @@ def interactive_setup() -> None:
 
 
 def _install_hint() -> str:
-    """Install hint derived from the LAZY_DEPS pins (aiohttp is CVE-pinned, so bumps happen);
-    ``venv_pip=True`` targets the real Hermes venv, sidestepping PEP 668 on Ubuntu 24.04."""
-    try:
-        from tools.lazy_deps import feature_install_command
-        cmd = feature_install_command("platform.teams", venv_pip=True)
-    except Exception:  # pragma: no cover — defensive
-        cmd = None
-    if not cmd:
-        cmd = f"{sys.executable} -m pip install microsoft-teams-apps aiohttp"
-    return f"Teams SDK missing — restart the gateway to auto-install, or run: {cmd}"
+    """Point to the setup flow that requests PM's declared Teams extra."""
+    return "Teams SDK missing — run `hermes setup`, configure Teams, then restart the gateway"
 
 
 def register(ctx) -> None:
@@ -852,27 +854,3 @@ def register(ctx) -> None:
             "markdown — bold (**text**), italic (*text*), and inline code "
             "(`code`) work, but complex tables or raw HTML do not. Keep "
             "responses clear and professional."))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import html  # noqa: F401,E402
-from urllib.parse import quote  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'TeamsSummaryWriter': ('plugins.platforms.teams.summary_writer', 'TeamsSummaryWriter'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

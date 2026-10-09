@@ -15,19 +15,37 @@ from typing import Any, Optional, Tuple
 
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
-# The [vertex] extra is not in [all]; install google-auth on demand, else fall through to the ImportError below.
-try:
-    from tools.lazy_deps import ensure as _lazy_ensure
-    _lazy_ensure("provider.vertex", prompt=False)
-except Exception:
-    pass
-
 try:
     import google.auth
     import google.auth.transport.requests
     from google.oauth2 import service_account
 except ImportError:
     google = None  # type: ignore[assignment]
+
+
+def _ensure_google_auth() -> bool:
+    """Bind ``google.auth`` on first use, installing the [vertex] extra through PM if needed.
+
+    The extra left [all] under the lazy-install policy (2026-05-12) so a plain ``hermes-agent``
+    install still reaches Vertex after selecting a Gemini model. This runs at the first
+    credential request, never at import: an import-time sync would rebuild the dependency
+    environment of whatever process happens to import this module.
+    """
+    global google, service_account
+    if google is not None:
+        return True
+    try:
+        from pm import ensure_import
+        ensure_import("vertex")
+        import google.auth as _auth
+        import google.auth.transport.requests
+        from google.oauth2 import service_account as _service_account
+    except Exception as exc:
+        logger.warning("google-auth package not installed (%s). Cannot use Vertex AI.", exc)
+        return False
+    import google as _google
+    google, service_account = _google, _service_account
+    return True
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +93,7 @@ def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
     return None
 
 
-def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[Any, ...]]:
+def _sa_snapshot(resolved_path: Optional[str]) -> tuple[Optional[bytes], tuple[Any, ...]]:
     """Resolve (bytes-or-None, cache key) for one credential attempt.
 
     - No path (ADC): (None, ("__adc__",)) sentinel key.
@@ -97,7 +115,7 @@ def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[A
     return raw, (resolved_path, hashlib.sha256(raw).hexdigest())
 
 
-def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[Tuple[Any, Optional[str]]]:
+def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[tuple[Any, Optional[str]]]:
     """Build (credentials, project_id) for a cache miss; None when ADC must be refused."""
     if resolved_path:
         if sa_raw is not None:
@@ -127,10 +145,9 @@ def _needs_refresh(creds) -> bool:
     )
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
-    if google is None:
-        logger.warning("google-auth package not installed. Cannot use Vertex AI.")
+    if not _ensure_google_auth():
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)
@@ -172,7 +189,7 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 def get_vertex_config(
     credentials_path: Optional[str] = None, region: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
     token, project_id = get_vertex_credentials(credentials_path)
     if not token or not project_id:

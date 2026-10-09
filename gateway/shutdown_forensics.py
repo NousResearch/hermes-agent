@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
 import contextlib
 
-_SIGNAL_NAME_BY_NUM: Dict[int, str] = {
+_SIGNAL_NAME_BY_NUM: dict[int, str] = {
     int(getattr(signal, _name)): _name
     for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2")
     if getattr(signal, _name, None) is not None
@@ -48,10 +48,10 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
     return None
 
 
-def _proc_summary(pid: int) -> Dict[str, Any]:
+def _proc_summary(pid: int) -> dict[str, Any]:
     """Compact /proc/<pid> identity (pid, name, state, ppid, uid). Never reads cmdline/argv —
     those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays)."""
-    summary: Dict[str, Any] = {"pid": pid}
+    summary: dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
     for out_key, proc_key in (("name", "Name"), ("state", "State")):
@@ -68,17 +68,17 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
 def _read_marker(path: Path) -> Optional[str]:
     """Return the marker file's text, or None if absent/unreadable."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
 
 
-def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
+def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down: signal name/number, own + parent
     /proc summaries, systemd parentage, takeover/planned-stop markers, TracerPid, 1-min load,
     timestamps. Pure stdlib, never raises, never blocks."""
     pid, ppid = os.getpid(), os.getppid()
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "ts": time.time(), "ts_monotonic": time.monotonic(),
         "signal": _signal_name(received_signal),
         "signal_num": int(received_signal) if received_signal is not None else None,
@@ -101,7 +101,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # Race hint: a takeover marker on disk that does NOT name us is a smoking gun for "another
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
-    with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
+    with contextlib.suppress(Exception):
         hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
         if hermes_home_str:
             raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
@@ -169,11 +169,11 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
             os.close(fd)
 
 
-def format_context_for_log(ctx: Dict[str, Any]) -> str:
+def format_context_for_log(ctx: dict[str, Any]) -> str:
     """Render a shutdown context dict as one scannable log line (parent identity, never argv)."""
     parent = ctx.get("parent") or {}
     load_str = f"{load:.2f}" if isinstance(load := ctx.get("loadavg_1m"), (int, float)) else "?"
-    extras: List[str] = []
+    extras: list[str] = []
     if ctx.get("takeover_marker") is not None:
         who = 'self' if ctx.get('takeover_marker_for_self') else 'other'
         extras.append(f"takeover_marker_present={who}")
@@ -189,7 +189,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     )
 
 
-def context_as_json(ctx: Dict[str, Any]) -> str:
+def context_as_json(ctx: dict[str, Any]) -> str:
     """JSON-serialise a context dict for structured ingestion.  Never raises."""
     try:
         return json.dumps(ctx, default=str, sort_keys=True)
@@ -199,7 +199,7 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
 
 def check_systemd_timing_alignment(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
     (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
     budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the

@@ -20,6 +20,24 @@ _ATTRIBUTION_HEADERS = {
 }
 
 
+# OpenCode's relay answers its own upstream failure (an upstream body it could not parse) with
+# HTTP 403, ``error.code=server_error`` and an "Upstream request failed:" wrapper (#117869). The key
+# is healthy, so the built-in 403 auth default would bench it; this is a transient outage. Both the
+# explicitly written code and the wrapper are required: ``error_code`` falls back to ``error.type``,
+# and a bare ``type=server_error`` or the code on any other 403 is not proof of a relay failure.
+_RELAY_UPSTREAM_FAILURE_MARKER = "upstream request failed"
+
+
+def _classify_relay_upstream_failure(error: Any, *, status_code: int | None, message: str, body: Any,
+                                     **_: Any) -> dict[str, str] | None:
+    # The SDK hands over the inner error object; a raw response body nests it under ``error``.
+    payload = body.get("error", body) if isinstance(body, dict) else None
+    code = payload.get("code") if isinstance(payload, dict) else None
+    relay_failure = (status_code == 403 and isinstance(code, str) and code.strip().lower() == "server_error"
+                     and _RELAY_UPSTREAM_FAILURE_MARKER in message)
+    return {"reason": "overloaded"} if relay_failure else None
+
+
 def _flat_model_name(model: str | None) -> str:
     """Bare OpenCode model ID, tolerating aggregator prefixes."""
     return (model or "").strip().rsplit("/", 1)[-1].lower()
@@ -118,13 +136,13 @@ class OpenCodeZenProfile(ProviderProfile):
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="gemini-3-flash",
+    default_aux_model="gemini-3-flash", classify_api_error=_classify_relay_upstream_failure,
 )
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="glm-5",
+    default_aux_model="glm-5", classify_api_error=_classify_relay_upstream_failure,
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),

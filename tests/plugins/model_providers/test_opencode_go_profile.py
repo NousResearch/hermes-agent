@@ -309,3 +309,41 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
+
+
+_RELAY_WRAPPER = "Upstream request failed: [server_error] Upstream response was not valid JSON"
+
+
+@pytest.mark.parametrize("provider, error_obj, expected", [
+    pytest.param("opencode-go", {"type": "server_error", "code": "server_error", "message": _RELAY_WRAPPER},
+                 "overloaded", id="relay-failure-is-transient"),
+    pytest.param("opencode_go", {"type": "server_error", "code": "server_error", "message": _RELAY_WRAPPER},
+                 "overloaded", id="declared-alias-resolves"),
+    pytest.param("opencode-zen", {"type": "server_error", "code": "server_error", "message": _RELAY_WRAPPER},
+                 "overloaded", id="zen-relay-same-contract"),
+    pytest.param("anthropic", {"type": "server_error", "code": "server_error", "message": _RELAY_WRAPPER},
+                 "auth", id="other-provider-keeps-its-verdict"),
+    pytest.param("opencode-go", {"type": "server_error", "message": _RELAY_WRAPPER},
+                 "auth", id="type-without-code-is-not-proof"),
+    pytest.param("opencode-go", {"code": "server_error", "message": "Permission denied"},
+                 "auth", id="code-without-wrapper-stays-auth"),
+    pytest.param("opencode-go", {"code": "server_error", "message": "Insufficient credits"},
+                 "billing", id="billing-keeps-its-verdict"),
+    pytest.param("opencode-go", {"code": "server_error", "message": "Attention Required! | Cloudflare"},
+                 "upstream_blocked", id="waf-keeps-its-verdict"),
+])
+def test_relay_403_server_error_is_an_upstream_outage_on_opencode_routes(provider, error_obj, expected):
+    """OpenCode's relay wraps its own upstream failure in HTTP 403 + ``error.code=server_error``
+    (#117869). Only that envelope on an OpenCode route is transient; everything else keeps the
+    built-in 403 reading. Errors are built as the OpenAI SDK raises them (``body`` = inner error)."""
+    import httpx
+    import openai
+
+    from agent.error_classifier import classify_api_error
+
+    response = httpx.Response(403, json={"error": error_obj},
+                              request=httpx.Request("POST", "https://opencode.ai/zen/go/v1/chat/completions"))
+    error = openai.PermissionDeniedError("Error code: 403", response=response, body=error_obj)
+    verdict = classify_api_error(error, provider=provider, model="deepseek-v4.1-flash")
+    assert verdict.reason.value == expected
+    assert verdict.should_rotate_credential is (expected == "billing")

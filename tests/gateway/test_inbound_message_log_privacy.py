@@ -6,11 +6,13 @@ rotated logs.
 """
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.helpers import hash_for_log
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session import SessionSource
 
@@ -18,8 +20,7 @@ _TEXT = "my order 4471 for Jane Doe"
 
 
 class _Runner(GatewayTurnMixin):
-    async def _hmwa_resolve_session(self, event, source):
-        return None  # stop right after the inbound log lines
+    pass
 
 
 def _event(**kwargs):
@@ -35,7 +36,13 @@ def _event(**kwargs):
 
 async def _inbound_records(caplog, level, **kwargs):
     event = _event(**kwargs)
-    with caplog.at_level(level, logger="gateway.run"):
+    with (
+        caplog.at_level(level, logger="gateway.run"),
+        patch(
+            "gateway.run_turn_setup_guard.run_preagent_setup",
+            new=AsyncMock(return_value=(None, None)),
+        ),
+    ):
         await _Runner()._handle_message_with_agent(event, event.source, "q", 1)
     return [r for r in caplog.records if r.getMessage().startswith("inbound message")]
 
@@ -45,8 +52,11 @@ async def test_info_line_has_metadata_and_no_text(caplog):
     records = await _inbound_records(caplog, logging.INFO)
     assert [r.levelno for r in records] == [logging.INFO]
     line = records[0].getMessage()
-    assert "platform=telegram chat=-1001 message_id=msg-42" in line
-    assert f"chars={len(_TEXT)}" in line
+    assert (
+        f"platform=telegram user={hash_for_log('12345')} chat={hash_for_log('-1001')}"
+        " message_id=msg-42" in line
+    )
+    assert f"msg_len={len(_TEXT)}" in line
     assert "4471" not in line and "Jane" not in line
 
 

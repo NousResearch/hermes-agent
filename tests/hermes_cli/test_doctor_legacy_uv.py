@@ -87,6 +87,7 @@ def test_doctor_names_the_update_prerequisite_before_offering_fix(home, monkeypa
     assert (home / "bin" / "uv").is_file(), "a report must never delete"
 
 
+@pytest.mark.platforms("posix")
 def test_doctor_keeps_an_unprobeable_uv_unresolved(home, monkeypatch):
     """A file disappearing between discovery and sizing must not abort or look clean."""
     _uv_binary(home / "bin" / "uv")
@@ -105,6 +106,30 @@ def test_doctor_keeps_an_unprobeable_uv_unresolved(home, monkeypatch):
     # ``_fail_and_issue`` records the FIX instruction, not the headline text.
     assert finding.issues
     assert "inaccessible" in finding.issues[0]
+
+
+@pytest.mark.platforms("windows")
+def test_doctor_keeps_an_unprobeable_uv_manual_on_windows(home, monkeypatch):
+    """The same race on a fail-closed platform: automatic_cleanup() is POSIX-only,
+    so a retry-``--fix`` hint would be advice no run can satisfy — the finding
+    lands in the manual bucket that survives --fix instead."""
+    _uv_binary(home / "bin" / "uv")
+    real_lstat = os.lstat
+
+    def refuse_lstat(path, *args, **kwargs):
+        if Path(path).name == "uv":
+            raise PermissionError("raced with cleanup")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", refuse_lstat)
+
+    finding = doctor_state._check_legacy_uv_shadow(False)
+
+    assert finding.fixed == 0
+    assert finding.manual_issues, "the manual step must survive a --fix run"
+    assert "not performed on this platform" in finding.manual_issues[0]
+    assert "manually" in finding.manual_issues[0]
+    assert not finding.issues, "nothing here is auto-fixable on Windows"
 
 
 @pytest.mark.platforms("posix")
@@ -664,6 +689,50 @@ def test_open_verified_refuses_the_descriptor_of_a_replacement(tmp_path):
     fd = legacy_uv._open_verified(leaf, leaf.stat())
     assert fd is not None
     os.close(fd)
+
+
+@pytest.mark.platforms("windows")
+def test_open_verified_accepts_a_stationary_exe(tmp_path):
+    """A readable ``.exe`` fixture whose descriptor and path stats report
+    different mode bits must still be inspected and classified.
+
+    Windows' path-based stat synthesizes execute bits for an ``.exe`` name that
+    the descriptor's stat omits, so comparing the full ``st_mode`` would send a
+    valid legacy ``uv.exe`` to ``UNPROBEABLE`` and hide the report-only doctor's
+    real provenance diagnostic."""
+    from hermes_cli import legacy_uv
+
+    exe = tmp_path / "uv.exe"
+    exe.write_bytes(b"MZ" + b"\0" * (2 << 20) + b"UV_CACHE_DIR")
+
+    fd = legacy_uv._open_verified(exe, os.stat(exe))
+    assert fd is not None, "an unchanged .exe must not be rejected by mode bits"
+    os.close(fd)
+    # The report-only path must reach the provenance verdict, not UNPROBEABLE.
+    assert legacy_uv.classify_leftover(exe) == legacy_uv.REMOVABLE
+
+
+def test_open_verified_rejects_a_type_shifted_descriptor(tmp_path, monkeypatch):
+    """A descriptor whose type bits differ from the gated stat is a swap, not
+    the object the caller proved regular: same device/inode/size must not be
+    enough when the leaf became a symlink/dir/device at the name."""
+    from hermes_cli import legacy_uv
+
+    leaf = tmp_path / "uv"
+    leaf.write_bytes(b"a" * 16)
+    st = leaf.stat()
+    real_fstat = os.fstat
+
+    def type_shifted_fstat(fd):
+        real = real_fstat(fd)
+        return os.stat_result((
+            stat.S_IFLNK | (real.st_mode & 0o7777),
+            real.st_ino, real.st_dev, real.st_nlink, real.st_uid, real.st_gid,
+            real.st_size, real.st_atime, real.st_mtime, real.st_ctime,
+        ))
+
+    monkeypatch.setattr(legacy_uv.os, "fstat", type_shifted_fstat)
+    assert legacy_uv._open_verified(leaf, st) is None
 
 
 @pytest.mark.platforms("posix")

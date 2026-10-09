@@ -52,22 +52,32 @@ def fresh_home(tmp_path, monkeypatch):
 
 
 def _seed_board_db(slug: str, *, tasks: int, schema_only: bool = False) -> Path:
-    """Create ``boards/<slug>/`` holding only a kanban.db (no board.json) —
-    the on-disk shape a pre-metadata-era hermes left behind."""
+    """Create ``boards/<slug>/`` holding only a kanban.db (no board.json).
+
+    ``tasks > 0``            → pre-metadata-era board: schema + task rows.
+    ``schema_only=True``     → #43243 stub: schema, zero tasks.
+    default (``tasks == 0``) → true 0-byte stub: an empty file, never opened.
+    """
     d = kb.board_dir(slug)
     d.mkdir(parents=True, exist_ok=True)
     db = d / "kanban.db"
-    if not schema_only:
-        db.touch()  # 0-byte shape; schema is added below when tasks >= 0
-    conn = sqlite3.connect(db)
-    conn.executescript(kb.SCHEMA_SQL)
-    for i in range(tasks):
-        conn.execute(
-            "INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)",
-            (f"t-legacy-{i}", f"Legacy task {i}", "todo", 1_700_000_000),
-        )
-    conn.commit()
-    conn.close()
+    if schema_only:
+        conn = sqlite3.connect(db)
+        conn.executescript(kb.SCHEMA_SQL)
+        conn.commit()
+        conn.close()
+    elif tasks > 0:
+        conn = sqlite3.connect(db)
+        conn.executescript(kb.SCHEMA_SQL)
+        for i in range(tasks):
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)",
+                (f"t-legacy-{i}", f"Legacy task {i}", "todo", 1_700_000_000),
+            )
+        conn.commit()
+        conn.close()
+    else:
+        db.touch()  # true 0-byte shape: stays byte-identical to an unopened stub
     return d
 
 

@@ -11,6 +11,7 @@ import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -812,3 +813,314 @@ def test_reclaim_commit_clears_once_then_logs_once(tmp_path, monkeypatch, caplog
     assert original.retire_calls == 1
     assert agent.created_resources[0].close_calls == 0
     assert caplog.text.count("available again — reverted pool rotation") == 1
+
+
+def test_reclaim_and_normal_persist_share_pool_then_auth_lock_order(tmp_path, monkeypatch):
+    """Normal persistence and reclaim both finish with the normal write as CAS winner."""
+    import agent.credential_pool_reclaim as reclaim_mod
+    import hermes_cli.auth as auth_mod
+
+    pool = _expired_reclaim_pool(tmp_path, monkeypatch, oauth=False)
+    ticket = pool.prepare_reclaim("pref0000", model="claude-opus-5")
+    assert ticket is not None
+
+    refresh_ready = threading.Event()
+    allow_refresh = threading.Event()
+    normal_holds_pool = threading.Event()
+    reclaim_waiting_for_pool = threading.Event()
+    base_pool_lock = pool._lock
+
+    class _ObservedRLock:
+        def acquire(self, *args, **kwargs):
+            if (
+                threading.current_thread().name == "reclaim-commit"
+                and normal_holds_pool.is_set()
+            ):
+                reclaim_waiting_for_pool.set()
+            return base_pool_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return base_pool_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc):
+            self.release()
+
+    pool._lock = _ObservedRLock()
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
+
+    def _paused_refresh(entry):
+        refresh_ready.set()
+        assert allow_refresh.wait(5), "normal persist never took the pool lock"
+        return entry
+
+    monkeypatch.setattr(pool, "_refresh_reclaim_candidate", _paused_refresh)
+
+    auth_lock = threading.RLock()
+
+    @contextmanager
+    def _bounded_auth_lock(*_args, **_kwargs):
+        if not auth_lock.acquire(timeout=0.25):
+            raise TimeoutError("lock-order inversion")
+        try:
+            yield
+        finally:
+            auth_lock.release()
+
+    monkeypatch.setattr(cp, "_auth_store_lock", _bounded_auth_lock)
+    monkeypatch.setattr(auth_mod, "_auth_store_lock", _bounded_auth_lock)
+    outcomes = {"persist_error": None, "reclaim_error": None}
+
+    def _reclaim():
+        try:
+            ticket.commit()
+        except Exception as exc:
+            outcomes["reclaim_error"] = exc
+
+    def _normal_persist():
+        assert refresh_ready.wait(5), "reclaim never reached its refresh boundary"
+        try:
+            with pool._lock:
+                normal_holds_pool.set()
+                allow_refresh.set()
+                assert reclaim_waiting_for_pool.wait(5), "reclaim never attempted its transaction"
+                current = next(entry for entry in pool._entries if entry.id == "pref0000")
+                newer_at = time.time() + 60
+                winner = replace(
+                    current,
+                    last_status=cp.STATUS_EXHAUSTED,
+                    last_status_at=newer_at,
+                    last_error_reason="normal_persist_winner",
+                    last_error_reset_at=newer_at + 3600,
+                )
+                pool._replace_entry(current, winner)
+                pool._persist()
+        except Exception as exc:
+            outcomes["persist_error"] = exc
+
+    reclaim_thread = threading.Thread(target=_reclaim, name="reclaim-commit")
+    persist_thread = threading.Thread(target=_normal_persist, name="normal-persist")
+    reclaim_thread.start()
+    persist_thread.start()
+    reclaim_thread.join(5)
+    persist_thread.join(5)
+
+    assert not reclaim_thread.is_alive()
+    assert not persist_thread.is_alive()
+    assert outcomes["persist_error"] is None
+    assert isinstance(outcomes["reclaim_error"], RuntimeError)
+    assert "stale credential reclaim ticket" in str(outcomes["reclaim_error"])
+    live = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    durable = reclaim_mod._durable_row(pool, "pref0000", ticket._store_path)
+    assert live.last_error_reason == "normal_persist_winner"
+    assert durable["last_error_reason"] == "normal_persist_winner"
+
+
+def test_borrowed_anthropic_reclaim_locks_source_before_owner_store(
+    tmp_path, monkeypatch,
+):
+    """Anthropic keeps the source singleton ahead of its root pool row."""
+    import hermes_cli.auth as auth_mod
+
+    pool = _expired_reclaim_pool(tmp_path, monkeypatch)
+    current = next(entry for entry in pool._entries if entry.id == "pref0000")
+    source_entry = replace(current, source="claude_code")
+    pool._replace_entry(current, source_entry)
+    pool._borrowed_root_ids = {source_entry.id}
+    ticket = pool.prepare_reclaim(source_entry.id, model="claude-opus-5")
+    assert ticket is not None
+
+    events = []
+    base_pool_lock = pool._lock
+
+    class _RecordedPoolLock:
+        def __enter__(self):
+            base_pool_lock.acquire()
+            events.append("pool+")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append("pool-")
+            base_pool_lock.release()
+
+    @contextmanager
+    def _recorded_auth_lock(*_args, target_path=None, **_kwargs):
+        label = "owner" if target_path is not None else "active"
+        events.append(f"{label}+")
+        try:
+            yield
+        finally:
+            events.append(f"{label}-")
+
+    @contextmanager
+    def _recorded_source_lock():
+        events.append("source+")
+        try:
+            yield
+        finally:
+            events.append("source-")
+
+    pool._lock = _RecordedPoolLock()
+    monkeypatch.setattr(auth_mod, "_auth_store_lock", _recorded_auth_lock)
+    monkeypatch.setattr(auth_mod, "_same_path", lambda _left, _right: False)
+    monkeypatch.setattr(pool, "_claude_code_credentials_lock", _recorded_source_lock)
+
+    with pool._borrowed_reclaim_transaction(ticket, source_entry):
+        events.append("body")
+
+    assert events == [
+        "pool+", "active+", "source+", "owner+", "body",
+        "owner-", "source-", "active-", "pool-",
+    ]
+
+
+def test_borrowed_root_single_use_reclaim_refreshes_once_and_loser_adopts(
+    tmp_path, monkeypatch,
+):
+    """Two profiles sharing one root grant consume one token and converge on its rotation."""
+    import hermes_constants
+    import hermes_cli.auth as auth_mod
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    expired_at = time.time() - EXHAUSTED_TTL_429_SECONDS - 120
+    root_store = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "root-access-0",
+                    "refresh_token": "root-refresh-0",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "shared-codex",
+                    "label": "shared root grant",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "device_code",
+                    "access_token": "root-access-0",
+                    "refresh_token": "root-refresh-0",
+                    "last_status": cp.STATUS_EXHAUSTED,
+                    "last_status_at": expired_at,
+                    "last_error_code": 429,
+                    "last_error_reason": "rate_limit",
+                    "last_error_reset_at": expired_at + 30,
+                },
+            ],
+        },
+    }
+    (root / "auth.json").write_text(json.dumps(root_store), encoding="utf-8")
+    profiles = [root / "profiles" / name for name in ("alpha", "beta")]
+    for profile in profiles:
+        profile.mkdir(parents=True)
+        (profile / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}}), encoding="utf-8",
+        )
+
+    def _under_profile(profile, callback):
+        token = set_hermes_home_override(profile)
+        try:
+            auth_mod._global_auth_store_cache = None
+            return callback()
+        finally:
+            reset_hermes_home_override(token)
+
+    pools = [_under_profile(profile, lambda: cp.load_pool("openai-codex")) for profile in profiles]
+    assert all(pool._borrowed_root_ids == {"shared-codex"} for pool in pools)
+    tickets = [
+        _under_profile(
+            profile,
+            lambda pool=pool: pool.prepare_reclaim("shared-codex", model="gpt-5.4"),
+        )
+        for profile, pool in zip(profiles, pools)
+    ]
+    assert all(ticket is not None for ticket in tickets)
+
+    monkeypatch.setattr(
+        cp,
+        "_codex_access_token_is_expiring",
+        lambda access_token, _skew: access_token == "root-access-0",
+    )
+    posts = []
+    rotations = []
+    post_lock = threading.Lock()
+    second_post = threading.Event()
+
+    def _single_use_refresh(_access_token, refresh_token):
+        with post_lock:
+            sequence = len(posts) + 1
+            posts.append(refresh_token)
+        if sequence == 1:
+            second_post.wait(0.5)
+        else:
+            second_post.set()
+        rotated = {
+            "access_token": f"root-access-{sequence}",
+            "refresh_token": f"root-refresh-{sequence}",
+            "last_refresh": f"2099-01-01T00:00:0{sequence}Z",
+        }
+        with post_lock:
+            rotations.append((rotated["access_token"], rotated["refresh_token"]))
+        return rotated
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _single_use_refresh)
+    start = threading.Barrier(3)
+    results = [None, None]
+    errors = [None, None]
+
+    def _commit(index):
+        token = set_hermes_home_override(profiles[index])
+        try:
+            start.wait()
+            results[index] = tickets[index].commit()
+        except Exception as exc:
+            errors[index] = exc
+        finally:
+            reset_hermes_home_override(token)
+
+    threads = [
+        threading.Thread(target=_commit, args=(index,), name=f"borrower-{index}")
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == [None, None]
+    assert posts == ["root-refresh-0"]
+    assert rotations == [("root-access-1", "root-refresh-1")]
+    assert {
+        (result.access_token, result.refresh_token) for result in results
+    } == {("root-access-1", "root-refresh-1")}
+    persisted = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    provider_tokens = persisted["providers"]["openai-codex"]["tokens"]
+    pool_row = persisted["credential_pool"]["openai-codex"][0]
+    assert (provider_tokens["access_token"], provider_tokens["refresh_token"]) == (
+        "root-access-1", "root-refresh-1",
+    )
+    assert (pool_row["access_token"], pool_row["refresh_token"]) == (
+        "root-access-1", "root-refresh-1",
+    )
+    assert all(
+        "openai-codex"
+        not in json.loads((profile / "auth.json").read_text(encoding="utf-8")).get(
+            "credential_pool", {}
+        )
+        for profile in profiles
+    )

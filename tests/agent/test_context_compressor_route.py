@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -179,8 +180,8 @@ def test_abort_after_commit_restores_exact_live_and_durable_snapshot(tmp_path):
         db.close()
 
 
-def test_abort_does_not_overwrite_newer_commit_from_another_instance(tmp_path):
-    """Compensation must use durable CAS, not only the owner's local generation."""
+def test_abort_after_concurrent_winner_preserves_live_and_durable_winner(tmp_path):
+    """A lost durable CAS must not roll the local owner back to its old route."""
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         older = _new_compressor()
@@ -216,11 +217,14 @@ def test_abort_does_not_overwrite_newer_commit_from_another_instance(tmp_path):
         )
         newer_ticket.commit()
         durable_after_newer_commit = _durable_snapshot(db, session_id)
+        older_live_after_own_commit = _live_snapshot(older)
+        newer_live_after_winner = _live_snapshot(newer)
 
         older_ticket.abort()
 
         assert _durable_snapshot(db, session_id) == durable_after_newer_commit
-        assert older.model == "primary/model"
+        assert _live_snapshot(older) == older_live_after_own_commit
+        assert _live_snapshot(newer) == newer_live_after_winner
     finally:
         db.close()
 
@@ -367,6 +371,82 @@ def test_stale_compressor_ticket_is_rejected_before_commit(tmp_path):
         assert atomic_reset.call_count == 1
         assert _live_snapshot(compressor) == live_after_winner
         assert _durable_snapshot(db, "STALE_TICKET") == durable_after_winner
+    finally:
+        db.close()
+
+
+def test_concurrent_generation_zero_commits_allow_exactly_one_write(tmp_path):
+    """Two same-owner generation-zero tickets serialize before any publication.
+
+    The reset barrier forces both unfixed commits past generation validation.  A
+    fixed owner lock keeps the second commit outside the boundary until the
+    first publishes generation one, so only the first reset reaches SQLite.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        compressor = _new_compressor()
+        session_id = "CONCURRENT_GENERATION_ZERO"
+        _seed_bound_route_state(db, compressor, session_id)
+        tickets = [
+            compressor.prepare_route_update(
+                "candidate/a", 80_000, provider="candidate-a", max_tokens=4_000,
+            ),
+            compressor.prepare_route_update(
+                "candidate/b", 96_000, provider="candidate-b", max_tokens=6_000,
+            ),
+        ]
+        assert {ticket._owner_generation for ticket in tickets} == {0}
+
+        original_reset = db.apply_compressor_route_reset
+        reset_barrier = threading.Barrier(2)
+        reset_calls = []
+        reset_calls_lock = threading.Lock()
+
+        def _barrier_reset(*args, **kwargs):
+            with reset_calls_lock:
+                reset_calls.append(threading.current_thread().name)
+            try:
+                reset_barrier.wait(timeout=0.25)
+            except threading.BrokenBarrierError:
+                # With the owner lock, the first call intentionally has no peer:
+                # the second ticket cannot reach the reset until generation one
+                # has been published.
+                pass
+            return original_reset(*args, **kwargs)
+
+        db.apply_compressor_route_reset = _barrier_reset
+        start = threading.Barrier(3)
+        outcomes = [{"error": None}, {"error": None}]
+
+        def _commit(index):
+            start.wait()
+            try:
+                tickets[index].commit()
+            except Exception as exc:  # one deterministic stale-ticket loser
+                outcomes[index]["error"] = exc
+
+        threads = [
+            threading.Thread(target=_commit, args=(index,), name=f"route-{index}")
+            for index in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(5)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(reset_calls) == 1
+        assert sum(outcome["error"] is None for outcome in outcomes) == 1
+        loser_error = next(outcome["error"] for outcome in outcomes if outcome["error"])
+        assert isinstance(loser_error, RuntimeError)
+        assert "stale compressor route ticket" in str(loser_error)
+        winner_index = next(
+            index for index, outcome in enumerate(outcomes) if outcome["error"] is None
+        )
+        assert compressor.model == f"candidate/{'a' if winner_index == 0 else 'b'}"
+        durable = _durable_snapshot(db, session_id)
+        assert json.loads(durable["model_config"])["_compressor_route_revision"] == 1
     finally:
         db.close()
 

@@ -121,23 +121,24 @@ class ContextCompressorRouteMixin:
         *,
         require_atomic: bool,
     ) -> CompressorRouteTicket:
-        target = self._build_compressor_route_target(
-            model, context_length, base_url, api_key, provider, api_mode, max_tokens
-        )
-        owner_values = vars(self)
-        live_snapshot = _LiveRouteSnapshot(tuple(
-            (name, name in owner_values, getattr(self, name, None))
-            for name, _value in target.live_values
-        ))
-        return CompressorRouteTicket(
-            self,
-            target,
-            live_snapshot,
-            int(getattr(self, "_route_generation", 0)),
-            getattr(self, "_session_db", None),
-            getattr(self, "_session_id", "") or "",
-            require_atomic=require_atomic,
-        )
+        with self._route_lock:
+            target = self._build_compressor_route_target(
+                model, context_length, base_url, api_key, provider, api_mode, max_tokens
+            )
+            owner_values = vars(self)
+            live_snapshot = _LiveRouteSnapshot(tuple(
+                (name, name in owner_values, getattr(self, name, None))
+                for name, _value in target.live_values
+            ))
+            return CompressorRouteTicket(
+                self,
+                target,
+                live_snapshot,
+                int(getattr(self, "_route_generation", 0)),
+                getattr(self, "_session_db", None),
+                getattr(self, "_session_id", "") or "",
+                require_atomic=require_atomic,
+            )
 
     @staticmethod
     def _snapshot_from_reset_predecessor(
@@ -256,68 +257,80 @@ class ContextCompressorRouteMixin:
         )
 
     def _commit_compressor_route_ticket(self, ticket: CompressorRouteTicket) -> None:
-        if int(getattr(self, "_route_generation", 0)) != ticket._owner_generation:
-            raise RuntimeError("stale compressor route ticket")
-        if (
-            getattr(self, "_session_db", None) is not ticket._store
-            or (getattr(self, "_session_id", "") or "") != ticket._session_id
-        ):
-            raise RuntimeError("stale compressor route ticket: session binding changed")
+        with self._route_lock:
+            if int(getattr(self, "_route_generation", 0)) != ticket._owner_generation:
+                raise RuntimeError("stale compressor route ticket")
+            if (
+                getattr(self, "_session_db", None) is not ticket._store
+                or (getattr(self, "_session_id", "") or "") != ticket._session_id
+            ):
+                raise RuntimeError("stale compressor route ticket: session binding changed")
 
-        atomic_reset = getattr(ticket._store, "apply_compressor_route_reset", None)
-        bound = ticket._store is not None and bool(ticket._session_id)
-        if bound and ticket._require_atomic and not callable(atomic_reset):
-            raise RuntimeError("bound durable store lacks atomic compressor route reset")
+            atomic_reset = getattr(ticket._store, "apply_compressor_route_reset", None)
+            bound = ticket._store is not None and bool(ticket._session_id)
+            if bound and ticket._require_atomic and not callable(atomic_reset):
+                raise RuntimeError("bound durable store lacks atomic compressor route reset")
 
-        ticket._commit_started = True
-        try:
-            for name, value in ticket.target.live_values:
-                setattr(self, name, value)
-            if bound and callable(atomic_reset):
-                reset_result = atomic_reset(
-                    ticket._session_id,
-                    ineffective_count=0,
-                    fallback_streak=0 if ticket.target.runtime_changed else None,
-                    clear_failure_cooldown=ticket.target.runtime_changed,
-                    clear_proactive_prune_rearm=True,
-                    advance_route_revision=True,
-                    return_route_predecessor=True,
-                )
-                if not isinstance(reset_result, tuple) or len(reset_result) != 2:
-                    raise RuntimeError("atomic compressor route reset did not return predecessor")
-                route_revision, predecessor = reset_result
-                if type(route_revision) is not int:
-                    raise RuntimeError("atomic compressor route reset did not advance revision")
-                ticket._durable_snapshot = self._snapshot_from_reset_predecessor(
-                    ticket._store, ticket._session_id, predecessor
-                )
-                if ticket._durable_snapshot is None:
-                    raise RuntimeError("atomic compressor route reset returned invalid predecessor")
-                ticket._committed_durable_snapshot = self._derive_committed_durable_snapshot(
-                    ticket._durable_snapshot,
-                    runtime_changed=ticket.target.runtime_changed,
-                    route_revision=route_revision,
-                )
-            elif bound:
-                self._apply_legacy_route_reset(ticket)
-        except Exception:
-            self._restore_live_route_snapshot(ticket._live_snapshot)
-            ticket.state = CompressorRouteTicketState.ABORTED
-            raise
+            ticket._commit_started = True
+            try:
+                for name, value in ticket.target.live_values:
+                    setattr(self, name, value)
+                if bound and callable(atomic_reset):
+                    reset_result = atomic_reset(
+                        ticket._session_id,
+                        ineffective_count=0,
+                        fallback_streak=0 if ticket.target.runtime_changed else None,
+                        clear_failure_cooldown=ticket.target.runtime_changed,
+                        clear_proactive_prune_rearm=True,
+                        advance_route_revision=True,
+                        return_route_predecessor=True,
+                    )
+                    if not isinstance(reset_result, tuple) or len(reset_result) != 2:
+                        raise RuntimeError("atomic compressor route reset did not return predecessor")
+                    route_revision, predecessor = reset_result
+                    if type(route_revision) is not int:
+                        raise RuntimeError("atomic compressor route reset did not advance revision")
+                    ticket._durable_snapshot = self._snapshot_from_reset_predecessor(
+                        ticket._store, ticket._session_id, predecessor
+                    )
+                    if ticket._durable_snapshot is None:
+                        raise RuntimeError("atomic compressor route reset returned invalid predecessor")
+                    ticket._committed_durable_snapshot = self._derive_committed_durable_snapshot(
+                        ticket._durable_snapshot,
+                        runtime_changed=ticket.target.runtime_changed,
+                        route_revision=route_revision,
+                    )
+                elif bound:
+                    self._apply_legacy_route_reset(ticket)
+            except Exception:
+                self._restore_live_route_snapshot(ticket._live_snapshot)
+                ticket.state = CompressorRouteTicketState.ABORTED
+                raise
 
-        committed_generation = ticket._owner_generation + 1
-        self._route_generation = committed_generation
-        ticket._committed_generation = committed_generation
-        ticket.state = CompressorRouteTicketState.COMMITTED
+            committed_generation = ticket._owner_generation + 1
+            self._route_generation = committed_generation
+            ticket._committed_generation = committed_generation
+            ticket.state = CompressorRouteTicketState.COMMITTED
 
     def _abort_compressor_route_ticket(self, ticket: CompressorRouteTicket) -> None:
-        if ticket._committed_generation is None:
+        with self._route_lock:
+            if ticket._committed_generation is None:
+                self._restore_live_route_snapshot(ticket._live_snapshot)
+                return
+            if int(getattr(self, "_route_generation", 0)) != ticket._committed_generation:
+                return
+            if (
+                getattr(self, "_session_db", None) is not ticket._store
+                or (getattr(self, "_session_id", "") or "") != ticket._session_id
+            ):
+                return
+            has_durable_commit = (
+                ticket._durable_snapshot is not None
+                and ticket._committed_durable_snapshot is not None
+            )
+            if has_durable_commit and not self._restore_durable_route_snapshot(
+                ticket._durable_snapshot, ticket._committed_durable_snapshot
+            ):
+                return
             self._restore_live_route_snapshot(ticket._live_snapshot)
-            return
-        if int(getattr(self, "_route_generation", 0)) != ticket._committed_generation:
-            return
-        self._restore_durable_route_snapshot(
-            ticket._durable_snapshot, ticket._committed_durable_snapshot
-        )
-        self._restore_live_route_snapshot(ticket._live_snapshot)
-        self._route_generation = ticket._committed_generation + 1
+            self._route_generation = ticket._committed_generation + 1

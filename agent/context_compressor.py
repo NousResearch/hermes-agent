@@ -9,6 +9,7 @@ import json
 import logging
 import sqlite3
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -2731,6 +2732,7 @@ class ContextCompressor(
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self._route_lock = threading.RLock()
         self._route_generation = 0
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"

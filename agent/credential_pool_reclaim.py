@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from pathlib import Path
@@ -40,6 +41,14 @@ class _CredentialReclaimRefreshOutcome:
     @property
     def terminal(self) -> bool:
         return self.terminal_entry is not None or self.terminal_removed
+
+
+def _refresh_outcome(raw: Any) -> _CredentialReclaimRefreshOutcome:
+    return (
+        raw
+        if isinstance(raw, _CredentialReclaimRefreshOutcome)
+        else _CredentialReclaimRefreshOutcome(candidate=raw)
+    )
 
 
 def _snapshot(entry: Any) -> dict[str, Any]:
@@ -285,6 +294,172 @@ class CredentialPoolReclaimMixin:
             return _CredentialReclaimRefreshOutcome(terminal_entry=current)
         return _CredentialReclaimRefreshOutcome()
 
+    def _is_borrowed_single_use_reclaim(self, ticket: CredentialReclaimTicket) -> bool:
+        from agent.credential_pool import SINGLE_USE_REFRESH_POOL_PROVIDERS
+
+        return (
+            self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+            and ticket._credential_id in getattr(self, "_borrowed_root_ids", ())
+        )
+
+    @contextmanager
+    def _borrowed_reclaim_transaction(
+        self,
+        ticket: CredentialReclaimTicket,
+        entry: Any,
+    ):
+        """Hold pool -> active auth -> credential source for a borrowed refresh.
+
+        Codex/xAI provider state can fall back from a named profile to the
+        global root, so their canonical transaction discovers and locks the
+        source in active-then-source order.  Anthropic pool rows use the exact
+        owner auth store plus their source-specific singleton lock.  The pool
+        lock stays outermost so normal ``_persist()`` cannot invert this path.
+        """
+        import hermes_cli.auth as auth_mod
+        from agent.credential_pool import _singleton_target_for_entry
+
+        timeout = self._single_use_refresh_lock_timeout()
+        with self._lock:
+            if self.provider in ("openai-codex", "xai-oauth"):
+                with auth_mod._provider_state_transaction(
+                    self.provider, timeout,
+                ):
+                    # A manual/root pool row can be authoritative even when no
+                    # singleton provider block exists.  Keep its exact store in
+                    # the same active -> source transaction.
+                    with auth_mod._auth_store_lock(
+                        timeout_seconds=timeout,
+                        target_path=ticket._store_path,
+                    ):
+                        yield
+                return
+
+            with auth_mod._auth_store_lock(timeout_seconds=timeout):
+                with ExitStack() as stack:
+                    if self.provider == "anthropic":
+                        if entry.source == "claude_code":
+                            stack.enter_context(self._claude_code_credentials_lock())
+                        elif entry.source == "hermes_pkce":
+                            singleton_path = _singleton_target_for_entry(self, entry)
+                            if singleton_path is None:
+                                from agent.anthropic_credentials import _get_hermes_oauth_file
+
+                                singleton_path = _get_hermes_oauth_file()
+                            stack.enter_context(auth_mod._auth_store_lock(
+                                timeout_seconds=timeout,
+                                target_path=singleton_path,
+                            ))
+                    active_path = auth_mod._auth_file_path()
+                    if not auth_mod._same_path(active_path, ticket._store_path):
+                        stack.enter_context(auth_mod._auth_store_lock(
+                            timeout_seconds=timeout,
+                            target_path=ticket._store_path,
+                        ))
+                    yield
+
+    def _adopt_peer_reclaim_winner(
+        self,
+        ticket: CredentialReclaimTicket,
+        current: Any,
+        durable: Optional[dict[str, Any]],
+    ) -> Optional[Any]:
+        """Adopt a healthy newer root-row winner without claiming its write."""
+        from agent.credential_pool import PooledCredential, STATUS_OK
+
+        if not self._is_borrowed_single_use_reclaim(ticket) or not isinstance(durable, dict):
+            return None
+        peer = PooledCredential.from_dict(self.provider, durable)
+        if (
+            peer.id != ticket._credential_id
+            or peer.last_status != STATUS_OK
+            or _revision(peer) <= ticket._prepared_revision
+            or not (peer.access_token or "").strip()
+            or not (peer.refresh_token or "").strip()
+        ):
+            return None
+        self._replace_entry(current, peer)
+        ticket.candidate = peer
+        ticket.state = CredentialReclaimTicketState.COMMITTED
+        return peer
+
+    @staticmethod
+    def _record_reclaim_commit(
+        ticket: CredentialReclaimTicket,
+        committed: Any,
+        committed_durable: dict[str, Any],
+        committed_revision: int,
+        committed_generation: int,
+        committed_mutation_epoch: int,
+    ) -> Any:
+        ticket._committed_revision = committed_revision
+        ticket._committed_generation = committed_generation
+        ticket._committed_mutation_epoch = committed_mutation_epoch
+        ticket._committed_snapshot = _snapshot(committed)
+        ticket._committed_durable = committed_durable
+        ticket.candidate = committed
+        ticket.state = CredentialReclaimTicketState.COMMITTED
+        return committed
+
+    def _commit_borrowed_single_use_reclaim(
+        self,
+        ticket: CredentialReclaimTicket,
+        entry: Any,
+    ) -> Any:
+        """Refresh and CAS-publish one borrowed grant under its source lock."""
+        from agent.credential_pool import STATUS_OK, _CLEAR_STATUS
+
+        with self._borrowed_reclaim_transaction(ticket, entry):
+            current = self._validate_reclaim_basis(ticket)
+            durable = _durable_row(self, ticket._credential_id, ticket._store_path)
+            if durable != ticket._durable_basis:
+                peer = self._adopt_peer_reclaim_winner(ticket, current, durable)
+                if peer is not None:
+                    return peer
+                raise RuntimeError("stale credential reclaim ticket: durable row changed")
+
+            outcome = _refresh_outcome(self._refresh_reclaim_candidate(current))
+            if outcome.terminal:
+                self._publish_terminal_reclaim_outcome(ticket, outcome)
+                raise RuntimeError("credential reclaim refresh reached terminal state")
+            refreshed = outcome.candidate
+            if refreshed is None:
+                raise RuntimeError("credential reclaim refresh failed")
+            committed_revision = ticket._prepared_revision + 1
+            committed = _with_revision(
+                replace(refreshed, **{**_CLEAR_STATUS, "last_status": STATUS_OK}),
+                committed_revision,
+            )
+
+            # Refresh can call source-specific helpers.  Revalidate the live
+            # owner and durable basis after every relevant lock is held and
+            # before publishing either side.
+            current = self._validate_reclaim_basis(ticket)
+            durable = _durable_row(self, ticket._credential_id, ticket._store_path)
+            if durable != ticket._durable_basis:
+                peer = self._adopt_peer_reclaim_winner(ticket, current, durable)
+                if peer is not None:
+                    return peer
+                raise RuntimeError("stale credential reclaim ticket: durable row changed")
+            committed_durable = _write_durable_row(
+                self,
+                ticket._credential_id,
+                committed,
+                ticket._store_path,
+            )
+            self._replace_entry(current, committed)
+            committed_generation = _generation(self, ticket._credential_id)
+            committed_mutation_epoch = _mutation_epoch(self)
+
+        return self._record_reclaim_commit(
+            ticket,
+            committed,
+            committed_durable,
+            committed_revision,
+            committed_generation,
+            committed_mutation_epoch,
+        )
+
     def _publish_terminal_reclaim_outcome(
         self,
         ticket: CredentialReclaimTicket,
@@ -293,8 +468,8 @@ class CredentialPoolReclaimMixin:
         """CAS-publish a terminal DEAD/removal verdict to the live and owning stores."""
         from agent.credential_pool import _auth_store_lock
 
-        with _auth_store_lock(target_path=ticket._store_path):
-            with self._lock:
+        with self._lock:
+            with _auth_store_lock(target_path=ticket._store_path):
                 current = self._validate_reclaim_basis(ticket)
                 durable = _durable_row(
                     self, ticket._credential_id, ticket._store_path,
@@ -349,15 +524,13 @@ class CredentialPoolReclaimMixin:
                 current = self._validate_reclaim_basis(ticket)
                 needs_refresh = self._entry_needs_refresh(current)
 
-            raw_outcome = (
+            if needs_refresh and self._is_borrowed_single_use_reclaim(ticket):
+                return self._commit_borrowed_single_use_reclaim(ticket, current)
+
+            outcome = _refresh_outcome(
                 self._refresh_reclaim_candidate(current)
                 if needs_refresh
-                else _CredentialReclaimRefreshOutcome(candidate=current)
-            )
-            outcome = (
-                raw_outcome
-                if isinstance(raw_outcome, _CredentialReclaimRefreshOutcome)
-                else _CredentialReclaimRefreshOutcome(candidate=raw_outcome)
+                else current
             )
             if outcome.terminal:
                 self._publish_terminal_reclaim_outcome(ticket, outcome)
@@ -371,8 +544,8 @@ class CredentialPoolReclaimMixin:
                 committed_revision,
             )
 
-            with _auth_store_lock(target_path=ticket._store_path):
-                with self._lock:
+            with self._lock:
+                with _auth_store_lock(target_path=ticket._store_path):
                     current = self._validate_reclaim_basis(ticket)
                     durable = _durable_row(
                         self, ticket._credential_id, ticket._store_path,
@@ -392,14 +565,14 @@ class CredentialPoolReclaimMixin:
             ticket.state = CredentialReclaimTicketState.ABORTED
             raise
 
-        ticket._committed_revision = committed_revision
-        ticket._committed_generation = committed_generation
-        ticket._committed_mutation_epoch = committed_mutation_epoch
-        ticket._committed_snapshot = _snapshot(committed)
-        ticket._committed_durable = committed_durable
-        ticket.candidate = committed
-        ticket.state = CredentialReclaimTicketState.COMMITTED
-        return committed
+        return self._record_reclaim_commit(
+            ticket,
+            committed,
+            committed_durable,
+            committed_revision,
+            committed_generation,
+            committed_mutation_epoch,
+        )
 
     def _abort_credential_reclaim_ticket(self, ticket: CredentialReclaimTicket) -> None:
         if (
@@ -411,8 +584,8 @@ class CredentialPoolReclaimMixin:
             return
         from agent.credential_pool import _auth_store_lock
 
-        with _auth_store_lock(target_path=ticket._store_path):
-            with self._lock:
+        with self._lock:
+            with _auth_store_lock(target_path=ticket._store_path):
                 current = next(
                     (item for item in self._entries if item.id == ticket._credential_id), None,
                 )

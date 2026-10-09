@@ -12,7 +12,6 @@ Run with:  python -m pytest tests/test_code_execution.py -v
    or:     python tests/test_code_execution.py
 """
 
-import base64
 import fnmatch
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
@@ -21,6 +20,7 @@ import json
 import os
 import shlex
 import socket
+import subprocess
 import tempfile
 import time
 from typing import Any, Callable, cast
@@ -846,7 +846,18 @@ class _FakeFileRpcEnvironment:
     def __init__(self, rpc_dir):
         self.rpc_dir = rpc_dir
 
-    def execute(self, command, cwd=None, timeout=None):
+    def execute(self, command, cwd=None, timeout=None, *, stdin_data=None):
+        if stdin_data is not None:
+            result = subprocess.run(
+                ["bash", "-c", command],
+                input=stdin_data,
+                text=True,
+                capture_output=True,
+                cwd=cwd,
+                timeout=timeout,
+            )
+            return {"output": result.stdout, "returncode": result.returncode}
+
         parts = shlex.split(command)
         if parts[:2] == ["ls", "-1"]:
             pattern = os.path.normpath(parts[2])
@@ -867,16 +878,6 @@ class _FakeFileRpcEnvironment:
                 os.unlink(parts[2])
             except FileNotFoundError:
                 pass
-            return {"output": ""}
-
-        if parts[0] == "echo" and "base64" in parts:
-            redirect_index = parts.index(">")
-            move_index = parts.index("mv")
-            temporary_path = parts[redirect_index + 1]
-            response_path = parts[move_index + 2]
-            with open(temporary_path, "wb") as response_file:
-                response_file.write(base64.b64decode(parts[1]))
-            os.replace(temporary_path, response_path)
             return {"output": ""}
 
         raise AssertionError(f"Unexpected fake remote command: {command}")

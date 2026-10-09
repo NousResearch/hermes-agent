@@ -43,6 +43,30 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def normalize_telegram_rich_messages(value: Any) -> str:
+    """Resolve the shared Telegram delivery/prompt policy without enabling it by default.
+
+    YAML booleans and the previously supported string boolean tokens remain
+    compatible. Invalid modes must not silently disable an operator's preference.
+    """
+    if value is None:
+        return "never"
+    if isinstance(value, bool):
+        return "auto" if value else "never"
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return "auto" if value else "never"
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in {"always", "auto", "never"}:
+            return mode
+        parsed = _bool_token(mode)
+        if parsed is not None:
+            return "auto" if parsed else "never"
+    raise ValueError(
+        "telegram.extra.rich_messages must be always, auto, never, or a boolean"
+    )
+
+
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 

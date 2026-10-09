@@ -85,7 +85,7 @@ async def _members(adapter, group_code: str) -> list:
     return raw.get("members", [])
 
 
-async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> Tuple[str, str]:
+async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> tuple[str, str]:
     """Resolve ``name`` to (user_id, nickname) via the group member list; >1 partial match raises
     with ``candidates`` for disambiguation instead of guessing."""
     if not group_code:

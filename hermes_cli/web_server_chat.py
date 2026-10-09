@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pathlib import Path
-from typing import Optional  # noqa: F811 — historical duplicate import kept
+from typing import Optional
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
@@ -183,10 +183,13 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
-    parsed = urllib.parse.urlparse(origin)
-    if parsed.scheme not in {"http", "https"}:
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
+        parsed = None
+    if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
-    if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -233,7 +236,7 @@ def _ws_request_view(ws: "WebSocket") -> "Request":
     return Request({
         "type": "http",
         "headers": [(k.lower().encode("latin-1"), v.encode("latin-1"))
-                    for k, v in getattr(ws.headers, "items", lambda: {})()],
+                    for k, v in getattr(ws.headers, "items", dict)()],
         "client": (ws.client.host, 0) if ws.client else None,
         "server": None,
         "scheme": "ws",

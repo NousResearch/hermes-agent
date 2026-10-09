@@ -69,7 +69,7 @@ def _fake_pool_store(monkeypatch):
     other's persisted writes (exactly what the real cross-process recovery
     path depends on), without touching the real filesystem.
     """
-    store: Dict[str, list] = {}
+    store: dict[str, list] = {}
 
     def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None, preserve_disk_order=False, metadata_bases=None):
         store[provider] = list(entries)

@@ -13,8 +13,12 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 """
 
 import importlib
+import itertools
 import json
+import os
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +49,19 @@ def _load_lib():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+_CALL_IDS = itertools.count(1)
+
+
+def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
+    """The real hook order: pre_tool_call snapshot, the call's side effect, post_tool_call — both
+    hooks carry the same identity fields, as the dispatcher sends them."""
+    call_id = f"call-{next(_CALL_IDS)}"
+    pi._on_pre_tool_call(tool_name=tool_name, args=args, tool_call_id=call_id, **ids)
+    if create is not None:
+        create()
+    pi._on_post_tool_call(tool_name=tool_name, args=args, result=result, tool_call_id=call_id, **ids)
 
 
 def _load_plugin_init():
@@ -83,9 +100,75 @@ class TestIsSafePath:
         p.write_text("x")
         assert dg.is_safe_path(p) is True
 
+    @pytest.mark.platforms("macos")
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
+
     def test_rejects_outside_hermes_home(self, _isolate_env):
         dg = _load_lib()
         assert dg.is_safe_path(Path("/etc/passwd")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path contract")
+    def test_rejects_tmp_traversal_and_near_prefixes(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/tmp/hermes-safe/../not-hermes/file")) is False
+        assert dg.is_safe_path(Path("/tmp-near/hermes-safe/file")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_rejects_final_and_nested_symlink_escapes(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="disk-cleanup-outside-", dir="/tmp"))
+        outside_file = outside_dir / "file.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        try:
+            final_link = temporary / "final-link"
+            final_link.symlink_to(outside_file)
+            nested_link = temporary / "nested-link"
+            nested_link.symlink_to(outside_dir, target_is_directory=True)
+
+            assert dg.is_safe_path(final_link) is False
+            assert dg.is_safe_path(nested_link / outside_file.name) is False
+        finally:
+            shutil.rmtree(temporary)
+            shutil.rmtree(outside_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_symlink_loop_fails_closed(self, _isolate_env, monkeypatch, tmp_path):
+        """Resolution failures must fail closed, never raise into the caller.
+
+        Non-strict ``Path.resolve()`` does not raise on a symlink loop on
+        every platform (ELOOP only surfaces under strict=True), so the loop
+        itself may resolve to a best-effort path. The fail-closed contract
+        added with #98854 is about resolution *errors*: when resolve()
+        raises OSError/RuntimeError, is_safe_path rejects and track()
+        declines without propagating.
+        """
+        dg = _load_lib()
+        loop_root = tmp_path / "loop"
+        loop_root.mkdir()
+        first = loop_root / "first"
+        second = loop_root / "second"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        # Baseline: a loop resolves without raising, so both calls return a
+        # bool — never an exception into the plugin hook.
+        assert isinstance(dg.is_safe_path(first), bool)
+        assert isinstance(dg.track(str(first), "temp", silent=True), bool)
+
+        # Resolution errors are rejected fail-closed.
+        def _raise_resolve(self):
+            raise OSError("ELOOP: too many levels of symbolic links")
+
+        monkeypatch.setattr(Path, "resolve", _raise_resolve)
+        assert dg.is_safe_path(first) is False
+        assert dg.track(str(first), "temp", silent=True) is False
 
 
 class TestGuessCategory:
@@ -157,18 +240,12 @@ class TestProfileUserTreesNeverCleaned:
         dg = _load_lib()
         keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
         keep.parent.mkdir(parents=True)
-        keep.write_text("x")
         scratch = _isolate_env / "tmp_scratch.py"
-        scratch.write_text("x")
+        for p in (keep, scratch):
+            _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                      create=lambda p=p: p.write_text("x"), task_id="t_ws", session_id="s_ws")
         assert dg.guess_category(keep) is None
         assert dg.guess_category(scratch) == "test"
-        for p in (keep, scratch):
-            pi._on_post_tool_call(
-                tool_name="write_file",
-                args={"path": str(p), "content": "x"},
-                result="OK",
-                task_id="t_ws", session_id="s_ws",
-            )
         pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
         assert keep.exists(), "session-end cleanup must not touch workspace project files"
         assert not scratch.exists(), "root-level scratch files are still cleaned up"
@@ -225,16 +302,18 @@ class TestProtectedDirsNeverRmtreed:
         # A stale pre-fix entry must be dropped by re-validation instead of deleted.
         dg.save_tracked([{"path": str(att), "category": "test",
                           "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
-        pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
-                              result="OK", task_id="t1", session_id="s_kb")
+        # A kanban file the call itself CREATES must not be tracked either.
+        new_att = att.with_name("test_new.sh")
+        _run_tool(pi, "write_file", {"path": str(new_att), "content": "x"},
+                  create=lambda: new_att.write_text("y"), task_id="t1", session_id="s_kb")
         scratch = _isolate_env / "test_scratch.py"
-        scratch.write_text("x")
-        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
-                              result="OK", task_id="t1", session_id="s_kb")
+        _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
+                  create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_kb")
 
         pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
 
         assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert new_att.exists(), "kanban files a call created are never tracked or deleted"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
 
@@ -469,7 +548,7 @@ class TestDryRun:
         big.write_bytes(b"z" * 10)
         dg.track(str(test_f), "test", silent=True)
         dg.track(str(big), "other", silent=True)
-        auto, prompt = dg.dry_run()
+        auto, _prompt = dg.dry_run()
         # test → auto, other → neither (doesn't hit any rule)
         assert any(i["path"] == str(test_f) for i in auto)
 
@@ -482,13 +561,8 @@ class TestPostToolCallHook:
     def test_write_file_test_pattern_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_created.py"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="write_file",
-            args={"path": str(p), "content": "x"},
-            result="OK",
-            task_id="t1", session_id="s1",
-        )
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="t1", session_id="s1")
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert len(data) == 1
@@ -498,13 +572,8 @@ class TestPostToolCallHook:
     def test_terminal_command_picks_up_paths(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "tmp_created.log"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="terminal",
-            args={"command": f"touch {p}"},
-            result=f"created {p}\n",
-            task_id="t3", session_id="s3",
-        )
+        _run_tool(pi, "terminal", {"command": f"touch {p}"}, create=lambda: p.write_text("x"),
+                  result=f"created {p}\n", task_id="t3", session_id="s3")
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
@@ -522,17 +591,59 @@ class TestPostToolCallHook:
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
 
+    def test_paths_the_call_did_not_create_are_never_tracked(self, _isolate_env):
+        """'test' items are deleted at age 0 when the turn ends (rmtree for dirs), so only what a
+        call CREATED may be tracked. A user's cron script the agent patched, and a hook dir it
+        merely listed (by argument or in `find` output), must survive the turn."""
+        pi = _load_plugin_init()
+        script = _isolate_env / "scripts" / "test_uptime.py"
+        script.parent.mkdir()
+        script.write_text("print('up')\n")
+        hook_dir = _isolate_env / "hooks" / "test_notify"
+        hook_dir.mkdir(parents=True)
+        old = 1_700_000_000
+        os.utime(script, (old, old))
+        os.utime(hook_dir, (old, old))
+
+        _run_tool(pi, "patch", {"path": str(script), "old_string": "up", "new_string": "ok"},
+                  create=lambda: script.write_text("print('ok')\n"), session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"ls -la {hook_dir}"}, result="total 0\n",
+                  session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"find {_isolate_env} -name 'test_*'"},
+                  result=f"{script}\n{hook_dir}\n", session_id="s_keep")
+        pi._on_session_end(session_id="s_keep", completed=True, interrupted=False)
+
+        assert script.exists() and hook_dir.is_dir()
+
+    def test_a_call_never_uses_another_sessions_snapshot(self, _isolate_env):
+        """tool_call_id is not unique: llama.cpp sends one constant id for every call. Session A
+        patching the user's test_user.py must not consume session B's snapshot of a new file under
+        that id, or the user's file reads as created and is deleted when the turn ends; B's own
+        created file is still tracked and cleaned up."""
+        pi = _load_plugin_init()
+        user_file = _isolate_env / "test_user.py"
+        user_file.write_text("keep")
+        new_file = _isolate_env / "test_new.py"
+        a = {"tool_call_id": "call_0", "task_id": "sA", "session_id": "sA"}
+        b = {"tool_call_id": "call_0", "task_id": "sB", "session_id": "sB"}
+
+        pi._on_pre_tool_call(tool_name="patch", args={"path": str(user_file)}, **a)
+        pi._on_pre_tool_call(tool_name="write_file", args={"path": str(new_file)}, **b)
+        new_file.write_text("x")
+        pi._on_post_tool_call(tool_name="patch", args={"path": str(user_file)}, result="OK", **a)
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(new_file)}, result="OK", **b)
+        pi._on_session_end(session_id="sA", completed=True, interrupted=False)
+
+        assert user_file.read_text() == "keep"
+        assert not new_file.exists()
+
+
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_cleanup.py"
-        p.write_text("x")
-        pi._on_post_tool_call(
-            tool_name="write_file",
-            args={"path": str(p), "content": "x"},
-            result="OK",
-            task_id="", session_id="s1",
-        )
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="", session_id="s1")
         assert p.exists()
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"

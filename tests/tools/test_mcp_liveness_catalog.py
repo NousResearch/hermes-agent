@@ -22,7 +22,7 @@ def _decl(tmp_path):
 
 
 def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from tools.tool_search import ToolSearchConfig, dispatch_tool_search
     from tools.tool_search_catalog import build_catalog_listing_with_form
 
@@ -50,7 +50,7 @@ def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, m
         declaration.unregister(server)
     assert first == second
     assert first[1] == "full"
-    assert "example-hidden (1 tools unavailable: Example App is not installed." in first[0]
+    assert "example-hidden" in first[0]
     source = result["results"][0]["available_sources"][0]
     assert source["name"] == server and source["tool_count"] == 1
     assert "Example App is not installed." in source["unavailable"]

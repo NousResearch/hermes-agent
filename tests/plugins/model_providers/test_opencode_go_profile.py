@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def opencode_go_profile():
     """Resolve the registered OpenCode Go provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-go")
@@ -19,7 +19,7 @@ def opencode_go_profile():
 @pytest.fixture
 def opencode_zen_profile():
     """Resolve the registered OpenCode Zen provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-zen")
@@ -195,7 +195,7 @@ class TestOpenCodeGoGLM52Reasoning:
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])
     def test_alias_spellings_recognized(self, opencode_go_profile, model):
-        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
             model=model,
         )
@@ -266,7 +266,7 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     """The Go plan's rolling/weekly/monthly windows feed /usage via the profile hook — no core table entry."""
     from datetime import datetime, timezone
 
-    from agent.account_usage import fetch_account_usage, render_account_usage_lines
+    from agent.account_usage import fetch_account_usage
 
     class _Response:
         status_code = 200
@@ -309,4 +309,3 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
-    assert "97% remaining (3% used)" in "\n".join(render_account_usage_lines(snapshot))

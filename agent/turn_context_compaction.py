@@ -27,9 +27,9 @@ logger = logging.getLogger("agent.turn_context")
 class CompactionOutcome:
     """Locals rebuilt by turn-start compaction (``build_turn_context`` reads them back)."""
 
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Optional[str]
-    conversation_history: Optional[List[Dict[str, Any]]]
+    conversation_history: Optional[list[dict[str, Any]]]
     current_turn_user_idx: int
     # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
     compressed: bool = False
@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke
@@ -112,7 +113,7 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
     return api_call_count
 
 
-def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
+def _reanchor(agent: Any, messages: list[Any], user_message: Any) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
     from agent.turn_context import reanchor_current_turn_user_idx
@@ -126,8 +127,8 @@ def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
 
 
 def run_turn_start_compaction(
-    agent: Any, *, messages: List[Dict[str, Any]], system_message: Optional[str],
-    active_system_prompt: Optional[str], conversation_history: Optional[List[Dict[str, Any]]],
+    agent: Any, *, messages: list[dict[str, Any]], system_message: Optional[str],
+    active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
 ) -> CompactionOutcome:
     """Idle compaction, then preflight compression (or the uncompressed guard)."""
@@ -470,7 +471,7 @@ def _engine_preflight_maintenance(
 
 
 def _rearm_uncompressed_overflow_warn(
-    agent: Any, messages: List[Any], active_system_prompt: Optional[str]
+    agent: Any, messages: list[Any], active_system_prompt: Optional[str]
 ) -> None:
     """Uncompressed session guard: the warning fires from the loop's pre-API site;
     here we only RE-ARM the dedup once back under the window."""

@@ -862,7 +862,7 @@ def _wizard_install_service(backend: str) -> None:
                 force=False, enable_on_startup=start_on_login
             )
         elif backend == "launchd":
-            _gw().launchd_install(force=False)
+            _gw().launchd_install(force=False, start_now=start_now)
         else:
             _gw()._gw_windows().install(force=False, start_now=start_now, start_on_login=start_on_login)
             return
@@ -871,6 +871,11 @@ def _wizard_install_service(backend: str) -> None:
             _gw()._setup_service_action("start", failed_label="Start failed", system=installed_scope == "system")
     except subprocess.CalledProcessError as e:
         _gw().print_error(f"  Install failed: {e}")
+        _gw().print_info("  You can try manually: hermes gateway install")
+    except SystemExit:
+        # The backend installers exit non-zero on a refused write (a unit pinning another home);
+        # setup reports it and goes on rather than ending the wizard.
+        _gw().print_warning("  Gateway service install did not complete.")
         _gw().print_info("  You can try manually: hermes gateway install")
 
 

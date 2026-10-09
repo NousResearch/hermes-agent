@@ -48,9 +48,9 @@ _ALLOW_BOTS_ENV = {
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
-from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
-from gateway.platforms._shared import extra_or_secret as _extra_or_secret  # noqa: E402
-from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
+from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret
+from gateway.platforms._shared import platform_gate_env as _auth_env
 
 
 def _env_truthy(name: str) -> bool:
@@ -159,8 +159,6 @@ def _normalize_nostr_allow_entries(entries: set) -> set:
 def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool:
     """Whether *user_id* (under any platform-specific alias) is in *allowed_ids*."""
     check_ids = {user_id}
-    if "@" in user_id:
-        check_ids.add(user_id.split("@")[0])
 
     # WhatsApp (Baileys + Cloud): phone<->LID / JID aliases match the same principal.
     if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
@@ -171,9 +169,9 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
             check_ids.add(normalized_user_id)
 
     platform_value = source.platform.value if source.platform is not None else None
-    # SimpleX: user_id is the numeric contactId but the UI only shows display names.
-    if platform_value == "simplex" and source.user_name:
-        check_ids.add(source.user_name)
+    # SimpleX: SIMPLEX_ALLOWED_USERS matches only the stable numeric contactId (user_id).
+    # The display name (user_name) is attacker-controlled — any contact can adopt another
+    # contact's display name, so matching it would bypass the allowlist (#44729).
     # Buzz: allowlist may hold npub or hex; inbound pubkeys are hex.
     if platform_value == "buzz":
         # Buzz (Nostr-based): BUZZ_ALLOWED_USERS accepts npub or hex, but inbound event pubkeys are always
@@ -630,8 +628,9 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
-        # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
+        # service its adapter authenticated to (no human sender to allowlist).
+        if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)

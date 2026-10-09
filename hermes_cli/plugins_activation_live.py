@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
+def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Connect every portable MCP server ``activation`` defers, under the caller's profile scope.
+    ``portable`` is the manager's portable server configs, read together with ``activation``.
 
     Returns ``[{name, connected, tools, error?}]``, one row per server; a server that fails to
     connect is reported, never retried. Never raises."""
@@ -26,11 +27,9 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not names:
         return []
     try:
-        from hermes_cli.plugins import get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config
         from tools.mcp_tool_discovery import register_mcp_servers
         configured = _load_mcp_config()
-        portable = get_plugin_manager().get_portable_mcp_servers()
     except Exception as exc:
         logger.warning("plugin MCP activation could not read server config: %s", exc)
         return [{"name": n, "connected": False, "tools": [], "error": str(exc)} for n in names]
@@ -53,7 +52,7 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
         # but no domain tools. They are still connected and usable even though
         # those wrappers are intentionally omitted from the user-facing list.
         connected = bool(registered)
-        row: Dict[str, Any] = {"name": name, "connected": connected, "tools": tools}
+        row: dict[str, Any] = {"name": name, "connected": connected, "tools": tools}
         if not connected:
             row["error"] = _server_error(name) or "the server did not connect"
         rows.append(row)
@@ -78,7 +77,7 @@ def _server_error(name: str) -> Optional[str]:
     return None
 
 
-def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
+def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
     """``[{name, description}]`` for the skills ``plugin_key`` registered (qualified ``<ns>:<skill>``)."""
     try:
         from hermes_cli.plugins import get_plugin_manager
@@ -89,7 +88,7 @@ def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
             for qualified, entry in sorted(skills.items()) if entry.get("plugin_key") == plugin_key]
 
 
-def live_notice(activation: Dict[str, Any]) -> str:
+def live_notice(activation: dict[str, Any]) -> str:
     """The note an open chat gets on its next turn: connected MCP servers with their tools, skills,
     and what waits for the next session. Empty when nothing became usable."""
     live = activation.get("live_now") or {}
@@ -119,7 +118,7 @@ def live_notice(activation: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _tool_listing(names: List[str]) -> str:
+def _tool_listing(names: list[str]) -> str:
     """``name: first sentence`` per tool."""
     try:
         from tools.registry import registry

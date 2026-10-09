@@ -37,7 +37,7 @@ import threading
 from typing import Optional
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import agent.auxiliary_client as aux
 
@@ -389,7 +389,6 @@ def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
     def _no_chain(first_err, route):
         hermetic.append(first_err)
         yield from ()
-        return None
 
     monkeypatch.setattr(aux, "_ladder_provider_fallback", _no_chain)
     failure = _credit_error()

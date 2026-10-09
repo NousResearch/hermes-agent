@@ -76,6 +76,10 @@ export function toggleSimpleMode() {
 
 /** What a policy may look at when its answer depends on the install. */
 export interface ModeContext {
+  connectionCount: number
+  /** A signed-out free-tier user with no setup in progress: the statusbar's
+   *  Sign in chip is their standing way to sign in. */
+  freeTierSignInOpen: boolean
   profileCount: number
 }
 
@@ -102,16 +106,17 @@ const SIMPLE_POLICY: PolicyTable = {
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
-  // Hide a door only when there is somewhere else to go: with the statusbar
-  // (and its fallback profile dropdown) gone, a second profile makes the rail
-  // the only way to switch, so it stays for multi-profile installs.
-  profileRailVisible: context => context.profileCount > 1,
+  // Without the statusbar, multi-gateway installs still need the rail even
+  // when the active gateway has only one profile.
+  profileRailVisible: context => context.profileCount > 1 || context.connectionCount > 1,
   // A quiet "Thought for Ns" row instead of a live reasoning stream.
   reasoningCollapsedByDefault: true,
   reviewOpen: false,
   // What was said and when — cost, tokens, PR and profile chips are readouts.
   sidebarRowMeta: ['preview', 'updated'],
-  statusbarVisible: false,
+  // The bar carries the free tier's Sign in chip, the one standing way in to a
+  // sign-in. It rests hidden for everyone else and goes away once they sign in.
+  statusbarVisible: context => context.freeTierSignInOpen,
   terminalOpen: false,
   // Product summaries; the technical payload view is the instrumentation itself.
   toolViewMode: 'product'
@@ -127,10 +132,14 @@ const POLICY: Record<InterfaceMode, PolicyTable> = {
 /** Does this mode have an opinion about the surface at all? */
 const shadows = (key: ModePolicyKey, mode: InterfaceMode) => key in POLICY[mode]
 
-// The install facts a policy may consult. Fed by the app shell (profile roster),
+// The install facts a policy may consult. Fed by the app shell (profiles, gateways, free tier),
 // kept off this module's imports so preference stores can depend on it without
 // dragging the session graph in.
-export const $modeContext = atom<ModeContext>({ profileCount: 1 })
+export const $modeContext = atom<ModeContext>({
+  connectionCount: 1,
+  freeTierSignInOpen: false,
+  profileCount: 1
+})
 
 export function setModeContext(patch: Partial<ModeContext>) {
   $modeContext.set({ ...$modeContext.get(), ...patch })

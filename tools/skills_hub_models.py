@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from urllib.parse import unquote, urlsplit
 
 import httpx
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger("tools.skills_hub")
 
@@ -33,32 +33,32 @@ class SkillMeta:
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
     path: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class SkillBundle:
     """A downloaded skill ready for quarantine/scanning/installation."""
     name: str
-    files: Dict[str, Union[str, bytes]]   # relative_path -> file content
+    files: dict[str, Union[str, bytes]]   # relative_path -> file content
     source: str
     identifier: str
     trust_level: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _skill_meta_to_dict(meta: SkillMeta) -> dict:
     return dict(vars(meta))
 
 
-def _cached_metas(key: str) -> Optional[List[SkillMeta]]:
+def _cached_metas(key: str) -> Optional[list[SkillMeta]]:
     """SkillMeta list from the shared index cache, or None on miss/expiry."""
     cached = hub()._read_index_cache(key)
     return None if cached is None else [SkillMeta(**item) for item in cached]
 
 
-def _cache_metas(key: str, metas: List[SkillMeta]) -> None:
+def _cache_metas(key: str, metas: list[SkillMeta]) -> None:
     hub()._write_index_cache(key, [_skill_meta_to_dict(m) for m in metas])
 
 
@@ -99,9 +99,9 @@ def _matches_query(query_lower: str, *fields: Any) -> bool:
 
 
 def _first_matching(query_lower: str, items: Iterable[Any], fields_of: Callable[[Any], tuple],
-                    to_meta: Callable[[Any], Optional[SkillMeta]], limit: int) -> List[SkillMeta]:
+                    to_meta: Callable[[Any], Optional[SkillMeta]], limit: int) -> list[SkillMeta]:
     """Substring-search ``items`` in order, converting hits with ``to_meta`` until ``limit``."""
-    results: List[SkillMeta] = []
+    results: list[SkillMeta] = []
     for item in items:
         if _matches_query(query_lower, *fields_of(item)) and (meta := to_meta(item)):
             results.append(meta)
@@ -113,10 +113,10 @@ def _first_matching(query_lower: str, items: Iterable[Any], fields_of: Callable[
 TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
 
 
-def _dedupe_by_trust(results: Iterable[SkillMeta]) -> List[SkillMeta]:
+def _dedupe_by_trust(results: Iterable[SkillMeta]) -> list[SkillMeta]:
     """Dedupe by identifier, keeping the higher-trust copy (first wins on ties). identifier is unique per
     skill; name is not — two taps can publish same-named skills, and browse-sh reuses task names across sites."""
-    seen: Dict[str, SkillMeta] = {}
+    seen: dict[str, SkillMeta] = {}
     for r in results:
         kept = seen.get(r.identifier)
         if kept is None or TRUST_RANK.get(r.trust_level, 0) > TRUST_RANK.get(kept.trust_level, 0):
@@ -134,7 +134,7 @@ class SkillSource(ABC):
     CATALOG_PAGE_RETRIES = 5
 
     @abstractmethod
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         """Search for skills matching a query string."""
 
     @abstractmethod

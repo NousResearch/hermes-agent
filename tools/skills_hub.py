@@ -118,14 +118,14 @@ def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
 
 
 def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                        headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+                        headers: Optional[dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     with skills_hub_http_session():
         return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers)
 
 
 def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                      headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
+                      headers: Optional[dict[str, str]] = None) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
 
     *headers* are plain request headers (no credentials) and are sent on every hop."""
@@ -170,7 +170,7 @@ def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
 def _guarded_http_stream(
     url: str,
     *,
-    params: Optional[Dict[str, str]] = None,
+    params: Optional[dict[str, str]] = None,
     timeout: int = _DEFAULT_HTTP_TIMEOUT,
 ) -> Iterator[Optional[httpx.Response]]:
     """Stream one response with bounded, policy-checked redirects."""
@@ -239,7 +239,7 @@ def _read_json_if_fresh(path: Path, ttl: float) -> Optional[Any]:
     try:
         if time.time() - path.stat().st_mtime > ttl:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -283,7 +283,7 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             return json.loads(json.dumps(self.EMPTY))
 
@@ -313,9 +313,9 @@ class HubLockFile(_JsonStateFile):
         scan_verdict: str,
         skill_hash: str,
         install_path: str,
-        files: List[str],
-        metadata: Optional[Dict[str, Any]] = None,
-        scan_provenance: Optional[Dict[str, Any]] = None,
+        files: list[str],
+        metadata: Optional[dict[str, Any]] = None,
+        scan_provenance: Optional[dict[str, Any]] = None,
     ) -> None:
         # Validate name and install-path SHAPE at write time: a poisoned lock
         # entry is the precondition for the uninstall_skill rmtree-escape.
@@ -346,7 +346,7 @@ class HubLockFile(_JsonStateFile):
     def get_installed(self, name: str) -> Optional[dict]:
         return self.load()["installed"].get(name)
 
-    def list_installed(self) -> List[dict]:
+    def list_installed(self) -> list[dict]:
         return [{"name": name, **entry} for name, entry in self.load()["installed"].items()]
 
 
@@ -356,10 +356,10 @@ class TapsManager(_JsonStateFile):
     EMPTY = {"taps": []}
     DEFAULT_PATH = staticmethod(_taps_file)
 
-    def load(self) -> List[dict]:
+    def load(self) -> list[dict]:
         return self._read().get("taps", [])
 
-    def save(self, taps: List[dict]) -> None:
+    def save(self, taps: list[dict]) -> None:
         self._write({"taps": taps})
 
     def add(self, repo: str, path: str = "skills/") -> bool:
@@ -415,75 +415,3 @@ def ensure_hub_dirs() -> None:
     ):
         if not path.exists():
             path.write_text(initial, encoding="utf-8")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from abc import ABC  # noqa: F401,E402
-from pathlib import PurePosixPath  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-from typing import Union  # noqa: F401,E402
-from abc import abstractmethod  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import os  # noqa: F401,E402
-from urllib.parse import quote  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-from urllib.parse import unquote  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-from urllib.parse import urlsplit  # noqa: F401,E402
-from urllib.parse import urlunparse  # noqa: F401,E402
-import yaml  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BrowseShSource': ('tools.skills_hub_sources', 'BrowseShSource'),
-    'ClawHubSource': ('tools.skills_hub_clawhub', 'ClawHubSource'),
-    'GITHUB_TAP_PROVIDERS': ('tools.skills_hub_github', 'GITHUB_TAP_PROVIDERS'),
-    'GitHubAuth': ('tools.skills_hub_github', 'GitHubAuth'),
-    'GitHubSource': ('tools.skills_hub_github', 'GitHubSource'),
-    'HERMES_INDEX_TTL': ('tools.skills_hub_search', 'HERMES_INDEX_TTL'),
-    'HERMES_INDEX_URL': ('tools.skills_hub_search', 'HERMES_INDEX_URL'),
-    'HermesIndexSource': ('tools.skills_hub_official', 'HermesIndexSource'),
-    'LobeHubSource': ('tools.skills_hub_sources', 'LobeHubSource'),
-    'OptionalSkillSource': ('tools.skills_hub_official', 'OptionalSkillSource'),
-    'ScanResult': ('tools.skills_guard', 'ScanResult'),
-    'SkillBundle': ('tools.skills_hub_models', 'SkillBundle'),
-    'SkillMeta': ('tools.skills_hub_models', 'SkillMeta'),
-    'SkillSource': ('tools.skills_hub_models', 'SkillSource'),
-    'SkillsShSource': ('tools.skills_hub_skillssh', 'SkillsShSource'),
-    'TRUSTED_REPOS': ('tools.skills_guard', 'TRUSTED_REPOS'),
-    'UrlSource': ('tools.skills_hub_sources', 'UrlSource'),
-    'WellKnownSkillSource': ('tools.skills_hub_sources', 'WellKnownSkillSource'),
-    'bundle_content_hash': ('tools.skills_hub_install', 'bundle_content_hash'),
-    'check_for_skill_updates': ('tools.skills_hub_install', 'check_for_skill_updates'),
-    'content_hash': ('tools.skills_guard', 'content_hash'),
-    'create_source_router': ('tools.skills_hub_search', 'create_source_router'),
-    'github_provider_for': ('tools.skills_hub_github', 'github_provider_for'),
-    'install_from_quarantine': ('tools.skills_hub_install', 'install_from_quarantine'),
-    'is_excluded_skill_path': ('agent.skill_utils', 'is_excluded_skill_path'),
-    'parallel_search_sources': ('tools.skills_hub_search', 'parallel_search_sources'),
-    'quarantine_bundle': ('tools.skills_hub_install', 'quarantine_bundle'),
-    'source_url_for_bundle': ('tools.skills_hub_models', 'source_url_for_bundle'),
-    'unified_search': ('tools.skills_hub_search', 'unified_search'),
-    'uninstall_skill': ('tools.skills_hub_install', 'uninstall_skill'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-_plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

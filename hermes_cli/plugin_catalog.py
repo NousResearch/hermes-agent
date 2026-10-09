@@ -8,12 +8,13 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. Any fetch failure falls back to the
-in-tree copy silently.
+an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,7 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
-# Past this age an offline cache no longer supplies PINS (the in-tree catalog does); its removals
-# still count — a kill-list entry never expires.
+# Offline pins expire, but cached removals remain a permanent kill list.
 LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
@@ -65,10 +65,10 @@ class RemovedEntry:
 
 @dataclass
 class CatalogCapabilities:
-    provides_tools: List[str] = field(default_factory=list)
-    provides_hooks: List[str] = field(default_factory=list)
-    provides_middleware: List[str] = field(default_factory=list)
-    requires_env: List[str] = field(default_factory=list)
+    provides_tools: list[str] = field(default_factory=list)
+    provides_hooks: list[str] = field(default_factory=list)
+    provides_middleware: list[str] = field(default_factory=list)
+    requires_env: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -85,17 +85,20 @@ class PluginCatalogEntry:
     docs_url: str = ""
     version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
     image: str = ""              # https image URL on a GitHub host; shown on catalog cards
-    screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
+    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
-    platforms: List[str] = field(default_factory=list)  # empty = all OSes
+    platforms: list[str] = field(default_factory=list)  # empty = all OSes
+    title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
+    onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
+    known_issues: list[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
     @property
     def install_identifier(self) -> str:
         """``_install_plugin_core`` identifier (``repo#subdir`` for monorepo entries)."""
         return f"{self.repo}#{self.subdir}" if self.subdir else self.repo
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         caps = self.capabilities
         return {
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
@@ -103,11 +106,12 @@ class PluginCatalogEntry:
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
-            "platforms": list(self.platforms),
+            "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
             },
+            "known_issues": list(self.known_issues),
         }
 
 
@@ -118,7 +122,7 @@ def get_catalog_dir() -> Path:
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
 
-def _str_list(raw: Any) -> List[str]:
+def _str_list(raw: Any) -> list[str]:
     return [str(x) for x in raw if isinstance(x, (str, int, float))] if isinstance(raw, list) else []
 
 
@@ -144,7 +148,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         logger.warning("Plugin catalog: %s: %s", label, problem)
         return None
     caps_raw = data.get("capabilities")
-    caps: Dict[str, Any] = caps_raw if isinstance(caps_raw, dict) else {}
+    caps: dict[str, Any] = caps_raw if isinstance(caps_raw, dict) else {}
     version = str(data.get("version") or "").strip()
     if version and not _VERSION_RE.match(version):
         logger.warning("Plugin catalog: %s: ignoring version %r (max 32 chars of [A-Za-z0-9._+-])", label, version)
@@ -164,6 +168,8 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -173,13 +179,13 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception as exc:
         logger.warning("Plugin catalog: failed to read %s: %s", path, exc)
         return None
 
 
-def _removed_from_list(raw_list: Any) -> List[RemovedEntry]:
+def _removed_from_list(raw_list: Any) -> list[RemovedEntry]:
     if not isinstance(raw_list, list):
         return []
     return [
@@ -190,7 +196,7 @@ def _removed_from_list(raw_list: Any) -> List[RemovedEntry]:
 
 # ── In-tree catalog ──────────────────────────────────────────────────────────
 
-def load_catalog(catalog_dir: Optional[Path] = None) -> List[PluginCatalogEntry]:
+def load_catalog(catalog_dir: Optional[Path] = None) -> list[PluginCatalogEntry]:
     """Every valid ``*.yaml`` entry in the catalog dir (``removed.yaml`` excluded), sorted by file name.
     Malformed entries are skipped with a warning — never raises."""
     root = catalog_dir or get_catalog_dir()
@@ -207,7 +213,7 @@ def load_catalog(catalog_dir: Optional[Path] = None) -> List[PluginCatalogEntry]
     return entries
 
 
-def load_removed_list(catalog_dir: Optional[Path] = None) -> List[RemovedEntry]:
+def load_removed_list(catalog_dir: Optional[Path] = None) -> list[RemovedEntry]:
     """``removed.yaml``'s ``removed:`` list; missing/malformed → empty."""
     path = (catalog_dir or get_catalog_dir()) / "removed.yaml"
     data = _read_yaml(path) if path.is_file() else None
@@ -218,7 +224,7 @@ def get_catalog_entry(name: str, catalog_dir: Optional[Path] = None) -> Optional
     return next((e for e in load_catalog(catalog_dir) if e.name == name), None)
 
 
-def filter_entries(entries: List[PluginCatalogEntry], query: str) -> List[PluginCatalogEntry]:
+def filter_entries(entries: list[PluginCatalogEntry], query: str) -> list[PluginCatalogEntry]:
     """Case-insensitive substring match over name, description and declared tools; empty query = all."""
     q = (query or "").strip().lower()
     if not q:
@@ -227,7 +233,7 @@ def filter_entries(entries: List[PluginCatalogEntry], query: str) -> List[Plugin
             if any(q in h.lower() for h in (e.name, e.description, *e.capabilities.provides_tools))]
 
 
-def search_catalog(query: str) -> List[PluginCatalogEntry]:
+def search_catalog(query: str) -> list[PluginCatalogEntry]:
     return filter_entries(load_catalog(), query)
 
 
@@ -269,14 +275,14 @@ def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optio
     return match_removed(name_or_repo, entries)
 
 
-def resolved_removed_entries() -> List[RemovedEntry]:
+def resolved_removed_entries() -> list[RemovedEntry]:
     """The full kill list (in-tree UNION live) in one resolution. Callers that match many candidates
     — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
     of paying a live-catalog fetch per candidate."""
     return load_removed_list() + live_removed_list()
 
 
-def cached_removed_entries() -> List[RemovedEntry]:
+def cached_removed_entries() -> list[RemovedEntry]:
     """In-tree list UNION the last fetched live copy, with NO network round-trip — for the load-time and
     ``enable`` checks that run in every process and must never block on a dead catalog host."""
     cached = _stale_live_cache(_live_cache_path()) or {}
@@ -284,7 +290,7 @@ def cached_removed_entries() -> List[RemovedEntry]:
 
 
 def match_removed(
-    candidate: str, entries: List[RemovedEntry]
+    candidate: str, entries: list[RemovedEntry]
 ) -> Optional[RemovedEntry]:
     """One candidate against a pre-resolved kill list: exact name or normalized repo URL match."""
     if not candidate:
@@ -306,13 +312,29 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+def invalidate_live_cache_for_home(home: Path) -> None:
+    """Best-effort removal of the cached live catalog under *home* (any profile's home).
+
+    ``hermes update`` drops it for every profile after the checkout changes: a snapshot fetched
+    before the bump would otherwise out-vote the newer in-tree catalog (pins the update just
+    changed, entries it just added) for the rest of :data:`LIVE_CATALOG_TTL_SECONDS` (#119340).
+    The next :func:`fetch_live_catalog` re-fetches the published doc, or falls back to the
+    in-tree catalog while the network is down — both newer than what was deleted. Safe when the
+    cache is absent (first run, other profiles that never opened the plugins hub).
+    """
+    try:
+        (Path(home) / "cache" / "plugin-catalog.json").unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Plugin catalog: could not drop the live cache under %s: %s", home, exc)
+
+
 # Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
 # full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
 # installed plugin), so the dashboard event loop stalled for minutes.
 _live_fetch_failed_until = 0.0
 
 
-def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
+def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
     """A previously fetched copy still beats the in-tree one when the network is down — for
     :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
     (a 90-day-old cache outranked a freshly updated in-tree pin), so the entries are dropped and the
@@ -320,7 +342,7 @@ def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
     try:
         if not cache.is_file():
             return None
-        data = json.loads(cache.read_text(encoding="utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8-sig"))
         if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
             data = {**data, "entries": []}
         return data
@@ -328,7 +350,7 @@ def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
+def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
     back to the in-tree catalog. A failed network attempt is remembered for
@@ -338,7 +360,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8"))
+            return json.loads(cache.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:
@@ -366,13 +388,15 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return _stale_live_cache(cache)
 
 
-_in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = no git checkout
+_in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = no usable in-tree time
 
 
 def in_tree_catalog_time() -> Optional[float]:
     """Commit time (epoch) of the last change to this checkout's ``plugin-catalog/``, or ``None`` when
     the install is not a git checkout (a release/pip install cannot be newer than the published doc).
-    Resolved once per process."""
+    On a git checkout whose path history is unreadable without network — the treeless ``tree:0`` layout
+    ``hermes update`` produces — the newest checked-out catalog file's mtime stands in for it, so a
+    freshly updated checkout still outranks a doc fetched before the bump. Resolved once per process."""
     global _in_tree_catalog_time
     if _in_tree_catalog_time != -1.0:
         return _in_tree_catalog_time
@@ -380,17 +404,39 @@ def in_tree_catalog_time() -> Optional[float]:
     resolved: Optional[float] = None
     if (root / ".git").exists():
         try:
-            import subprocess
-            out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
-            resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+            from hermes_cli._subprocess_compat import bounded_git_probe
+
+            # Path history needs missing trees on tree:0 clones. The shared probe disables
+            # lazy fetch only for its child and bounds timeout cleanup on every platform.
+            out = bounded_git_probe(
+                ["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
+                timeout=10,
+            )
+            resolved = float(out) if out else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
+        if resolved is None:
+            # "History unreadable without network" must not collapse into "not a git checkout":
+            # ``None`` feeds the frozen-copy rule that defers to the live doc, which would let a
+            # cache fetched before ``hermes update`` re-pin the old sha on exactly the installs
+            # that just bumped it. A treeless clone still has its checked-out files — only the
+            # historical trees are missing — and their mtime dates the checkout that wrote them.
+            resolved = _catalog_worktree_mtime()
     _in_tree_catalog_time = resolved
     return resolved
 
 
-def _live_generated_time(data: Dict[str, Any]) -> Optional[float]:
+def _catalog_worktree_mtime() -> Optional[float]:
+    """Newest mtime under the checkout's ``plugin-catalog/``: a no-network freshness signal for clones
+    whose path history is unreachable (treeless or offline). ``None`` when nothing is checked out."""
+    try:
+        times = [p.stat().st_mtime for p in get_catalog_dir().rglob("*") if p.is_file()]
+    except OSError:
+        return None
+    return max(times) if times else None
+
+
+def _live_generated_time(data: dict[str, Any]) -> Optional[float]:
     raw = data.get("generated_at")
     if not isinstance(raw, str) or not raw:
         return None
@@ -420,7 +466,7 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
     return False
 
 
-def load_catalog_live() -> List[PluginCatalogEntry]:
+def load_catalog_live() -> list[PluginCatalogEntry]:
     """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
     different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
     a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
@@ -434,11 +480,27 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
     in_tree = {e.name: e for e in load_catalog()}
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
+    raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
+    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
             for e in entries]
 
 
-def live_removed_list() -> List[RemovedEntry]:
+# Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
+# docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
+# the field; a doc that has the key (even ``false``) decides.
+_CURATED_FIELDS = ("onboarding", "title")
+
+
+def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: dict[str, Any]
+                         ) -> PluginCatalogEntry:
+    if tree is None or tree.sha != live.sha:
+        return live
+    missing = {key: getattr(tree, key) for key in _CURATED_FIELDS if key not in raw}
+    return dataclasses.replace(live, **missing) if missing else live
+
+
+def live_removed_list() -> list[RemovedEntry]:
     data = fetch_live_catalog()
     return _removed_from_list(data.get("removed")) if data else []
 
@@ -463,4 +525,9 @@ def entry_capability_summary(entry: PluginCatalogEntry) -> str:
         bits.append(f"Platforms: {', '.join(entry.platforms)}.")
     if entry.requires_hermes:
         bits.append(f"Requires Hermes {entry.requires_hermes}.")
+    if entry.known_issues:
+        # #124058: informational — the catalog documents traps (unsupported
+        # install-method/mode combinations); surface them at install prompts
+        # without blocking the install.
+        bits.append(f"Known issues: {'; '.join(entry.known_issues)}.")
     return " ".join(bits)

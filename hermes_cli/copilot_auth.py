@@ -268,7 +268,7 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
             logger.debug("Persisted Copilot JWT store exceeds %d bytes; ignoring",
                          _JWT_DISK_MAX_BYTES)
             return None
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
         return loaded if isinstance(loaded, dict) else None
     except Exception as exc:
         logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
@@ -391,7 +391,7 @@ def _fetch_exchange_with_retry(req, timeout: float, fp: str) -> dict:
                 data = json.loads(resp.read().decode())
             _exchange_failure_cache.pop(fp, None)
             return data
-        except Exception as exc:  # noqa: BLE001 — retry all, re-raise below
+        except Exception as exc:
             last_exc = exc
             status = getattr(exc, "code", None) or getattr(exc, "status", None)
             permanent_failure = status in _EXCHANGE_PERMANENT_HTTP_STATUSES

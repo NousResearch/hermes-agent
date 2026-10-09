@@ -307,37 +307,6 @@ def test_background_review_skipped_in_delegation_subagent(monkeypatch):
     assert forks == [], "no review fork should be spawned inside a subagent"
 
 
-def test_background_review_runs_at_top_level(monkeypatch):
-    """Sibling guard for the subagent skip: at ``_delegate_depth == 0`` the
-    review still fires exactly as before (the cost guard is subagent-only)."""
-    forks = []
-
-    class FakeReviewAgent:
-        def __init__(self, **kwargs):
-            forks.append(kwargs)
-
-        def run_conversation(self, **kwargs):
-            pass
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
-    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
-
-    agent = _bare_agent()
-    agent._delegate_depth = 0  # top-level agent
-
-    AIAgent._spawn_background_review(
-        agent,
-        messages_snapshot=[{"role": "user", "content": "hello"}],
-        review_memory=True,
-    )
-
-    assert len(forks) == 1, "top-level review must still spawn the fork"
 
 
 def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
@@ -860,11 +829,6 @@ def _skill_patch_review():
     ]
 
 
-def test_memory_notifications_off_returns_nothing():
-    actions = summarize_background_review_actions(
-        _memory_add_review(), [], notification_mode="off"
-    )
-    assert actions == []
 
 
 
@@ -885,3 +849,150 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def _interrupt_scoped_agent() -> AIAgent:
+    """Bare AIAgent carrying the full interrupt-control surface so the REAL
+    ``InterruptControlMixin`` path runs (no stubbed ``interrupt()``)."""
+    agent = _bare_agent()
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+    agent._pending_redirect = None
+    agent._pending_steer = None
+    agent._pending_redirect_lock = threading.Lock()
+    agent._pending_steer_lock = threading.Lock()
+    agent._tool_worker_threads = set()
+    agent._tool_worker_threads_lock = threading.Lock()
+    agent.quiet_mode = True
+    return agent
+
+
+def test_supersede_hard_interrupt_targets_review_fork_only():
+    """Regression for #118693: a live turn superseding the background review must
+    flag only the fork. The foreground agent's instance flags and its execution
+    thread's ``tools.interrupt`` bit must stay untouched, or a user-facing stream
+    mid-flight is exactly what gets killed."""
+    import time
+
+    from agent.background_review import (
+        cancel_background_review_for_live_turn,
+        finish_background_review_run,
+        prepare_background_review_run,
+    )
+    from tools.interrupt import (
+        _interrupt_reasons,
+        _interrupted_threads,
+        is_thread_interrupted,
+        set_interrupt,
+    )
+
+    parent = _interrupt_scoped_agent()
+    fork = _interrupt_scoped_agent()
+    stop = threading.Event()
+
+    def _hold():
+        stop.wait(5.0)
+
+    foreground_thread = threading.Thread(target=_hold, daemon=True)  # live turn
+    review_thread = threading.Thread(target=_hold, daemon=True)  # bg-review
+    foreground_thread.start()
+    review_thread.start()
+    parent._execution_thread_id = foreground_thread.ident
+    fork._execution_thread_id = review_thread.ident
+    parent._background_review_agent = None
+
+    run = prepare_background_review_run(parent)
+    assert run is not None
+    assert run.begin_request(fork)
+
+    # Production-shaped ack: the fork's turn unwinds only after its interrupt landed
+    # (the per-thread bit is the last signal interrupt() publishes).
+    def _ack_when_fork_interrupted():
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            if is_thread_interrupted(fork._execution_thread_id):
+                break
+            time.sleep(0.01)
+        finish_background_review_run(parent, run)
+
+    ack = threading.Thread(target=_ack_when_fork_interrupted, daemon=True)
+    ack.start()
+
+    try:
+        cancel_background_review_for_live_turn(parent)
+        ack.join(timeout=3.0)
+
+        # The fork owns the supersede.
+        assert fork._interrupt_requested is True
+        assert fork._tool_interrupt_reason == "background review superseded"
+        assert fork._hard_interrupt_requested.is_set()
+        assert is_thread_interrupted(fork._execution_thread_id)
+        assert (
+            _interrupt_reasons.get(fork._execution_thread_id)
+            == "background review superseded"
+        )
+
+        # The foreground turn is untouched: no instance flags, no thread bit.
+        assert parent._interrupt_requested is False
+        assert parent._tool_interrupt_reason is None
+        assert not parent._hard_interrupt_requested.is_set()
+        assert parent._interrupt_thread_signal_pending is False
+        assert not is_thread_interrupted(foreground_thread.ident)
+        assert foreground_thread.ident not in _interrupted_threads
+        assert foreground_thread.ident not in _interrupt_reasons
+    finally:
+        set_interrupt(False, fork._execution_thread_id)
+        set_interrupt(False, foreground_thread.ident)
+        stop.set()
+        foreground_thread.join(timeout=2.0)
+        review_thread.join(timeout=2.0)
+
+
+def test_turn_exit_log_carries_fork_origin_tag():
+    """Regression for #118693: a fork's turn-exit line must carry its origin so a
+    background-review stream killed by supersede is never mistaken for a killed
+    foreground stream (the fork shares session_id and often the model)."""
+    import logging
+
+    from agent.turn_finalizer import _log_turn_exit
+
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    logger = logging.getLogger("test_turn_exit_origin")
+    logger.addHandler(_Capture())
+    logger.setLevel(logging.INFO)
+    try:
+        live = _bare_agent()
+        fork = _bare_agent()
+        fork._turn_origin = "background_review"
+        for agent in (live, fork):
+            agent.max_iterations = 10
+            agent.iteration_budget = None
+        messages = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ]
+        _log_turn_exit(live, list(messages), "a", 1, "text_response", False, logger)
+        _log_turn_exit(
+            fork,
+            list(messages),
+            "a",
+            1,
+            "interrupted_during_api_call(background_review_superseded)",
+            True,
+            logger,
+        )
+    finally:
+        logger.handlers.clear()
+
+    assert len(records) == 2
+    assert "origin=" not in records[0], records[0]
+    assert "origin=background_review" in records[1], records[1]

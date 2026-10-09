@@ -55,8 +55,10 @@ class ServiceManager(Protocol):
 def detect_service_manager() -> ServiceManagerKind:
     """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
 
-    Does NOT replace ``supports_systemd_services()`` for host call sites; it exists for
-    backend-agnostic code (profile hooks, the s6 dispatch in ``hermes gateway``).
+    This function does NOT replace ``supports_systemd_services()`` —
+    host call sites continue to use that. It exists for new backend-
+    agnostic code (profile create/delete hooks, the s6 dispatch path
+    in ``hermes gateway start/stop/restart``).
     """
     # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
@@ -256,7 +258,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         if not profile_dir.exists():
             return
         try:
-            data = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            data = json.loads(state_file.read_text(encoding="utf-8-sig")) if state_file.exists() else {}
             if not isinstance(data, dict):
                 data = {}
         except (OSError, json.JSONDecodeError):
@@ -444,7 +446,6 @@ class S6ServiceManager:
             "set -e",
             "export HOME=/opt/data",
             "cd /opt/data",
-            ". /opt/hermes/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
@@ -548,16 +549,27 @@ class S6ServiceManager:
         self._run_svc("-u", "start", name)
         _write_gateway_desired_state(name, "running")
 
-    def _supervised_pid(self, name: str) -> int | None:
-        """PID of the supervised gateway per ``s6-svstat``, or None on any failure."""
-        try:
-            result = _s6_run("s6-svstat", str(self.scandir / name))
-        except (OSError, subprocess.SubprocessError):
-            return None
+    def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
+        """``s6-svstat -o <fields>`` values for ``name``, or None on a nonzero rc or a count mismatch.
+
+        Never parse the human status line: s6 2.15 prints ``up (pid N pgid N) Ss``, which the old
+        ``(pid N)`` regex never matched, so the planned-stop marker was silently skipped.
+        """
+        result = _s6_run("s6-svstat", "-o", ",".join(fields), str(self.scandir / name))
         if result.returncode != 0:
             return None
-        m = re.search(r"\(pid (\d+)\)", result.stdout)
-        return int(m.group(1)) if m else None
+        values = result.stdout.split()
+        return values if len(values) == len(fields) else None
+
+    def _supervised_pid(self, name: str) -> int | None:
+        """PID of the supervised gateway per ``s6-svstat -o pid`` (``-1`` when down), or None on any
+        failure."""
+        try:
+            values = self._svstat_fields(name, "pid")
+            pid = int(values[0]) if values else 0
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        return pid if pid > 0 else None
 
     def stop(self, name: str) -> None:
         """``s6-svc -d``, after writing a planned-stop marker for the supervised PID so the gateway's
@@ -579,8 +591,8 @@ class S6ServiceManager:
         _write_gateway_desired_state(name, "running")
 
     def is_running(self, name: str) -> bool:
-        result = _s6_run("s6-svstat", str(self.scandir / name))
-        return result.returncode == 0 and "up " in result.stdout
+        values = self._svstat_fields(name, "up")
+        return values == ["true"]
 
     # -- runtime registration ---------------------------------------------
 

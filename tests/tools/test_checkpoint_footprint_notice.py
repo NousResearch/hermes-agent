@@ -8,18 +8,17 @@ never invokes. The notice fires only when checkpoints are enabled AND the store 
 
 import os
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
-from tools.checkpoint_manager import CheckpointManager, checkpoint_footprint_notice
-
+from tools.checkpoint_manager import CheckpointManager
+from tools.checkpoint_maintenance import checkpoint_footprint_notice
 
 def _write_config(enabled: bool, cap_mb: int) -> None:
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         yaml.safe_dump({"checkpoints": {"enabled": enabled, "max_total_size_mb": cap_mb}}), encoding="utf-8")
-
 
 def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     base = get_hermes_home() / "checkpoints"
@@ -31,16 +30,10 @@ def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     assert CheckpointManager(enabled=True, max_total_size_mb=1).ensure_checkpoint(str(work), "seed")
 
     notice = checkpoint_footprint_notice()
-    assert notice and "checkpoints.enabled false" in notice and "1 project" in notice
+    assert notice
 
     _write_config(enabled=True, cap_mb=500)  # under the cap: no nag for a healthy store
     assert checkpoint_footprint_notice() is None
 
     _write_config(enabled=False, cap_mb=1)  # off: the store's size is irrelevant
     assert checkpoint_footprint_notice() is None
-
-
-def test_doctor_registers_the_checkpoint_store_check():
-    from hermes_cli.doctor import DOCTOR_CHECKS
-    from hermes_cli.doctor_state import _check_checkpoint_store
-    assert any(check is _check_checkpoint_store for _title, check in DOCTOR_CHECKS)

@@ -30,6 +30,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import (
@@ -206,6 +207,24 @@ class TimelinePayload(TypedDict, total=False):
     latest_age_human: str
     events: List[TimelineEvent]
     source_file: str
+
+
+class DispatchThreadMeta(TypedDict, total=False):
+    thread_id: str
+    subject: str
+    status: str
+    created_at: str
+    updated_at: str
+    message_count: int
+    last_snippet: Optional[str]
+
+
+class DispatchMessageRecord(TypedDict):
+    id: str
+    thread_id: str
+    sender: str
+    timestamp: str
+    body: str
 
 
 # ==============================================================================
@@ -1240,6 +1259,258 @@ def command_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def get_threads_dir(override: Optional[str] = None) -> Optional[Path]:
+    for directory in icloud_directories(override):
+        cand = directory / "threads"
+        if cand.is_dir():
+            return cand
+    dirs = icloud_directories(override)
+    if dirs:
+        cand = dirs[0] / "threads"
+        cand.mkdir(parents=True, exist_ok=True)
+        return cand
+    return None
+
+
+def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
+    if not threads_dir.is_dir():
+        return []
+    results: List[DispatchThreadMeta] = []
+    for entry in threads_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        meta_file = entry / "meta.json"
+        if meta_file.is_file():
+            try:
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+                results.append(cast(DispatchThreadMeta, data))
+            except Exception:
+                continue
+    return sorted(results, key=lambda t: str(t.get("updated_at", "")), reverse=True)
+
+
+def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMessageRecord]:
+    thread_folder = threads_dir / thread_id
+    msgs_dir = thread_folder / "messages"
+    if not msgs_dir.is_dir():
+        return []
+    messages: List[DispatchMessageRecord] = []
+    for file in sorted(msgs_dir.glob("*.json")):
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+            messages.append(cast(DispatchMessageRecord, data))
+        except Exception:
+            continue
+    return sorted(messages, key=lambda m: str(m.get("timestamp", "")))
+
+
+def create_dispatch_thread(
+    threads_dir: Path,
+    subject: str,
+    initial_body: str,
+    sender: str = "agent",
+    now: Optional[datetime] = None,
+) -> DispatchThreadMeta:
+    moment = now or utcnow()
+    timestamp_str = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_part = moment.strftime("%Y%m%d%H%M%S")
+    rand_part = uuid.uuid4().hex[:6]
+    thread_id = f"th_{date_part}_{rand_part}"
+    thread_folder = threads_dir / thread_id
+    thread_folder.mkdir(parents=True, exist_ok=True)
+    msgs_dir = thread_folder / "messages"
+    msgs_dir.mkdir(parents=True, exist_ok=True)
+
+    meta: DispatchThreadMeta = {
+        "thread_id": thread_id,
+        "subject": subject,
+        "status": "replied" if sender == "agent" else "pending_agent",
+        "created_at": timestamp_str,
+        "updated_at": timestamp_str,
+        "message_count": 1,
+        "last_snippet": initial_body[:120],
+    }
+
+    meta_file = thread_folder / "meta.json"
+    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+    msg_filename = f"001_{sender}_{date_part}_{msg_id}.json"
+    message: DispatchMessageRecord = {
+        "id": msg_id,
+        "thread_id": thread_id,
+        "sender": sender,
+        "timestamp": timestamp_str,
+        "body": initial_body,
+    }
+    (msgs_dir / msg_filename).write_text(json.dumps(message, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return meta
+
+
+def reply_to_thread(
+    threads_dir: Path,
+    thread_id: str,
+    body: str,
+    sender: str = "agent",
+    now: Optional[datetime] = None,
+) -> Optional[DispatchMessageRecord]:
+    thread_folder = threads_dir / thread_id
+    meta_file = thread_folder / "meta.json"
+    if not meta_file.is_file():
+        return None
+    try:
+        meta = cast(DispatchThreadMeta, json.loads(meta_file.read_text(encoding="utf-8")))
+    except Exception:
+        return None
+
+    moment = now or utcnow()
+    timestamp_str = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    seq = meta.get("message_count", 0) + 1
+    msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+    date_part = moment.strftime("%Y%m%d%H%M%S")
+    filename = f"{seq:03d}_{sender}_{date_part}_{msg_id}.json"
+
+    message: DispatchMessageRecord = {
+        "id": msg_id,
+        "thread_id": thread_id,
+        "sender": sender,
+        "timestamp": timestamp_str,
+        "body": body,
+    }
+
+    msgs_dir = thread_folder / "messages"
+    msgs_dir.mkdir(parents=True, exist_ok=True)
+    msg_file = msgs_dir / filename
+    msg_file.write_text(json.dumps(message, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    meta["message_count"] = seq
+    meta["status"] = "replied" if sender == "agent" else "pending_agent"
+    meta["updated_at"] = timestamp_str
+    meta["last_snippet"] = body[:120]
+    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return message
+
+
+def command_threads(args: argparse.Namespace) -> int:
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir or not threads_dir.is_dir():
+        log("WARN", "threads directory is not in the iCloud container yet")
+        if args.json:
+            print("[]")
+        else:
+            print("No dispatch threads found in iCloud container.")
+        return 0
+
+    threads = list_dispatch_threads(threads_dir)
+    if args.pending:
+        threads = [t for t in threads if t.get("status") == "pending_agent"]
+
+    if args.json:
+        print(json.dumps(threads, indent=2, ensure_ascii=False))
+        return 0
+
+    if not threads:
+        print("No dispatch threads found.")
+        return 0
+
+    print("facts_only: reply in the user's language; do not quote this block")
+    print(f"thread_count: {len(threads)}")
+    print("threads:")
+    for t in threads:
+        status_label = "Awaiting Agent" if t.get("status") == "pending_agent" else str(t.get("status", "unknown"))
+        count = t.get("message_count", 0)
+        memo_str = "1 memo" if count == 1 else f"{count} memos"
+        print(f"• [{t.get('thread_id', '?')}] {t.get('subject', 'Untitled')} ({status_label}, {memo_str})")
+        if t.get("last_snippet"):
+            print(f"  snippet: {t['last_snippet']}")
+        print(f"  updated_at: {t.get('updated_at', 'unknown')}")
+    return 0
+
+
+def command_thread_detail(args: argparse.Namespace) -> int:
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir:
+        log("ERROR", "cannot resolve iCloud threads directory")
+        return 1
+
+    thread_id = args.thread
+    thread_folder = threads_dir / thread_id
+    meta_file = thread_folder / "meta.json"
+    if not meta_file.is_file():
+        log("ERROR", f"thread {thread_id} not found")
+        return 1
+
+    try:
+        meta = cast(DispatchThreadMeta, json.loads(meta_file.read_text(encoding="utf-8")))
+    except Exception as exc:
+        log("ERROR", f"failed to parse thread meta: {exc}")
+        return 1
+
+    messages = list_thread_messages(threads_dir, thread_id)
+    if args.json:
+        payload = {"meta": meta, "messages": messages}
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("facts_only: reply in the user's language; do not quote this block")
+    print(f"thread_id: {meta.get('thread_id')}")
+    print(f"subject: {meta.get('subject')}")
+    print(f"status: {meta.get('status')}")
+    print(f"created_at: {meta.get('created_at')}")
+    print(f"updated_at: {meta.get('updated_at')}")
+    print(f"message_count: {len(messages)}")
+    print("chronology:")
+    for m in messages:
+        sender_label = "User" if m.get("sender") == "user" else "Hermes Agent"
+        print(f"\n--- [{m.get('timestamp')}] {sender_label} ({m.get('id')}) ---")
+        print(m.get("body", ""))
+    return 0
+
+
+def command_reply(args: argparse.Namespace, now: datetime) -> int:
+    if not args.message:
+        log("ERROR", "--reply requires --message")
+        return 2
+
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir:
+        log("ERROR", "cannot resolve iCloud threads directory")
+        return 1
+
+    msg = reply_to_thread(threads_dir, args.reply, args.message, sender="agent", now=now)
+    if not msg:
+        log("ERROR", f"failed to append reply to thread {args.reply}")
+        return 1
+
+    if args.json:
+        print(json.dumps(msg, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"Replied to thread [{args.reply}] ({msg['id']}) at {msg['timestamp']}")
+    return 0
+
+
+def command_new_thread(args: argparse.Namespace, now: datetime) -> int:
+    if not args.subject or not args.message:
+        log("ERROR", "--new-thread requires --subject and --message")
+        return 2
+
+    threads_dir = get_threads_dir(args.icloud_dir)
+    if not threads_dir:
+        log("ERROR", "cannot resolve iCloud threads directory")
+        return 1
+
+    thread = create_dispatch_thread(threads_dir, args.subject, args.message, sender="agent", now=now)
+    if args.json:
+        print(json.dumps(thread, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"Created thread [{thread['thread_id']}] '{thread['subject']}'")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read Hermes Companion location and health from iCloud")
     parser.add_argument("--json", action="store_true", help="Print the raw facts as JSON")
@@ -1252,6 +1523,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list", action="store_true", help="List known places")
     parser.add_argument("--add", action="store_true", help="Save a known place")
     parser.add_argument("--remove", metavar="ID", help="Remove a place by id or name")
+    parser.add_argument("--threads", action="store_true", help="List asynchronous dispatch threads")
+    parser.add_argument("--pending", action="store_true", help="Filter dispatch threads awaiting agent reply")
+    parser.add_argument("--thread", metavar="ID", help="Read full messages in a dispatch thread")
+    parser.add_argument("--reply", metavar="ID", help="Post an agent reply to a dispatch thread")
+    parser.add_argument("--new-thread", action="store_true", help="Create a new dispatch thread")
+    parser.add_argument("--subject", help="Subject for new dispatch thread")
+    parser.add_argument("--message", help="Message body for reply or new thread")
     parser.add_argument("--places", type=Path, help="Places JSON file")
     parser.add_argument("--icloud-dir", help="Directory that contains the latest_*.json files")
     parser.add_argument("--name")
@@ -1271,6 +1549,14 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
     else:
         args.places = expand(str(args.places))
     moment = now or utcnow()
+    if args.threads:
+        return command_threads(args)
+    if args.thread:
+        return command_thread_detail(args)
+    if args.reply:
+        return command_reply(args, moment)
+    if args.new_thread:
+        return command_new_thread(args, moment)
     if args.add:
         return command_add(args)
     if args.remove:

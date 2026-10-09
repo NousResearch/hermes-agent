@@ -72,6 +72,23 @@ Categories: `home`, `work`, `gym`, `cafe`, `outdoors`, `general`.
 
 Save a place only when the user asks, using the coordinates from the latest script output.
 
+Asynchronous dispatches and threads (memos synchronized privately via iCloud):
+
+```bash
+# List all threads or filter those awaiting agent response
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads --pending
+
+# Read full chronological messages in a thread
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --thread <thread_id>
+
+# Post an agent reply to a thread
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --reply <thread_id> --message "..."
+
+# Create a new dispatch thread
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --subject "..." --message "..."
+```
+
 ## Quick Reference
 
 | Question | Command | Fields to trust |
@@ -82,6 +99,8 @@ Save a place only when the user asks, using the coordinates from the latest scri
 | How long in this place? | `companion.py` | `dwell_time`, `arrived_at`, `minutes_since_last_move` |
 | Sleep, workout, recovery | `companion.py --health` | `sleep_duration`, `sleep_quality`, `workout_type`, `recovery_status` |
 | Both | `companion.py --context` | the two blocks together |
+| Check dispatches | `companion.py --threads --pending` | `thread_count`, `thread_id`, `subject`, `status` |
+| Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
 
 `movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.
 

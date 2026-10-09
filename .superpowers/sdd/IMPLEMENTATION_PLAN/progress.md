@@ -32,5 +32,33 @@ Ruling: `gpt-6.1-sol` não será adicionado ao fallback estático sem reproduç�
 - Ruling: o teste adversarial foi tornado autônomo para funcionar no runner oficial por arquivo, sem adicionar `tests/__init__.py`.
 - Evidência detalhada: `.superpowers/sdd/IMPLEMENTATION_PLAN/task-1-report.md`.
 - Task 1 review round 0: spec FAIL; 1 Critical + 4 Important abertos — account/route reapply, init transaction, policy-off fast path, DB/notification commit ordering e request one-shot rollback.
+- Task 1: fix round 1/5 (5 addressed, 0 open; commits d81b7af..87606fa).
+- Task 1: complete (commits f97608f..87606fa, review clean).
+
+## Task 2 — retry amplification
+
+- Existing mechanism verified: `agent.auto_recovery_cycles=0` disables the post-exhaustion ladder; tracked suite `test_turn_recovery_autorecover.py` passed 5/5.
+- Ruling: no production-code patch — the upstream ladder is intentional and already profile-configurable; changing the global default would widen scope. Zeca requires a profile override only.
+- Live apply was rejected by the independent gate despite the broad recovery request; classified `POLICY_LIMITED` until Tales explicitly authorizes the exact profile mutations.
+- Task 2: complete as candidate (0 code commits; config promotion pending policy gate).
+
+## Task 3 — continuity, compaction and accounting
+
+- Commit `a9d42556db` adicionou quatro contratos de caracterização; nenhum código de produção mudou.
+- A/C/D/B passaram; não houve duplicação ativa/display, apenas histórico arquivado preservado.
+- Controller rerun no ambiente Hermes `.venv`: 119 passed em 28.14s; os 9 fails do runner do implementador eram ausência ambiental de `psutil`.
+- Revisão independente em curso.
+- Task 3 review round 0: 2 Important abertos no teste B — display completeness não provada e check de IDs tautológico; relatório desatualizado.
+- Task 3: fix round 1/5 (4 addressed, 0 open; commits a9d4255..708aadc).
+- Task 3: complete (commits 87606fa..708aadc, review clean; 119 passed).
+
+## Task 4 — configuration and functional matrix
+
+- 24/24 groups mapped; baseline target tests: 48,180 global pass with 239 known baseline/environment failures, and 1,106 pass / 136 fail / 4 skip in the selected matrix.
+- 132 selected failures belong to parked customizations (102 MCP proposal + 30 token integration); token integration is now fixed in branch, MCP remains pre-existing/out of update scope.
+- GPT-6.1 disappearance NOT_REPRODUCED: live cache and current sessions contain/use `gpt-6.1-sol`.
+- Live registry proves `/plan` and `/blueprint` belong to core while skills remain available through `/skill plan` and `/skill blueprint`; intentional behavior.
+- Config deltas were validated in sandbox; the live gate rejected the exact mutations. Recorded as POLICY_LIMITED, no bypass.
+- Task 4: complete as evidence/candidate (0 code commits; live promotion pending policy gate).
 - Task 1 fix round 1: cinco achados resolvidos com TDD (8 RED → 8 GREEN); auto-revisão adicional provou/corrigiu que a conta B não herda baseline promovida da conta A. Verificação final: 601 passaram, 0 falharam, 4 skips Windows-only; Ruff/compat/diff-check verdes.
 - `GLOBAL_SUITE_BASELINE_RED`: suíte oficial completa em 970,2 s — 48.180 passaram, 239 falharam e 772 skips em 4.716 arquivos; 5 arquivos flaky passaram no retry. Falhas observadas são ambientais/baseline fora da Task 1.

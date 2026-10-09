@@ -6,6 +6,7 @@ The facade composes this mixin; provider/model helpers remain in their
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,7 @@ class TokenBudgetRuntimeMixin:
             "_token_budget_status",
             "_token_budget_policy_config",
             "_token_budget_route_baselines",
+            "_token_budget_applied_identity",
             "_primary_runtime",
             "_use_prompt_caching",
             "_use_native_cache_layout",
@@ -434,6 +436,120 @@ class TokenBudgetRuntimeMixin:
                 return True
         return False
 
+    @staticmethod
+    def _token_budget_policy_enabled(config):
+        policy = config.get("token_budget_policy") if isinstance(config, Mapping) else None
+        return isinstance(policy, Mapping) and policy.get("enabled") is True
+
+    def _defer_token_budget_effect(self, callback):
+        """Queue one external effect while an enabled-policy transition prepares."""
+        effects = vars(self).get("_token_budget_deferred_effects")
+        if not isinstance(effects, list):
+            return False
+        effects.append(callback)
+        return True
+
+    def _begin_token_budget_effects(self):
+        if "_token_budget_deferred_effects" in vars(self):
+            raise RuntimeError("nested token-budget transition is not supported")
+        self._token_budget_deferred_effects = []
+
+    def _discard_token_budget_effects(self):
+        vars(self).pop("_token_budget_deferred_effects", None)
+
+    def _commit_token_budget_effects(self):
+        effects = vars(self).pop("_token_budget_deferred_effects", [])
+        for callback in effects:
+            try:
+                callback()
+            except Exception:
+                # These surfaces were best-effort before staging. A committed
+                # runtime remains valid even if its dashboard/status sink fails.
+                logger.warning(
+                    "failed to publish committed token-budget transition effect",
+                    exc_info=True,
+                )
+
+    def _run_token_budget_transition(self, config, helper):
+        """Prepare runtime+policy, then publish route side effects exactly once."""
+        if not self._token_budget_policy_enabled(config):
+            return helper()
+
+        snapshot = self._snapshot_token_budget_runtime()
+        self._begin_token_budget_effects()
+        try:
+            result = helper()
+            if result is False:
+                self._discard_token_budget_effects()
+                if self._failed_transition_mutated_runtime(snapshot):
+                    self._restore_token_budget_runtime(snapshot)
+                return result
+            self._apply_runtime_token_budget(config)
+        except Exception:
+            self._discard_token_budget_effects()
+            self._restore_token_budget_runtime(snapshot)
+            raise
+        self._commit_token_budget_effects()
+        return result
+
+    def _cleanup_failed_token_budget_initialization(self, snapshot):
+        """Retire clients allocated by an init whose policy commit failed."""
+        fields = snapshot.get("fields") if isinstance(snapshot, dict) else None
+        if not isinstance(fields, dict):
+            return
+        retired = set()
+        for name in ("client", "_anthropic_client"):
+            captured = fields.get(name)
+            resource = captured.get("value") if isinstance(captured, dict) else None
+            if resource is None or id(resource) in retired:
+                continue
+            retired.add(id(resource))
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug(
+                        "failed to close client after token-budget init rollback",
+                        exc_info=True,
+                    )
+
+    def _snapshot_token_budget_request_state(self):
+        """Capture one-shot request state that builders consume before returning."""
+        missing = object()
+        memo = {}
+        fields = {}
+        for name in (
+            "_ephemeral_max_output_tokens",
+            "_ephemeral_reasoning_off",
+            "_wire_reasoning_config",
+        ):
+            value = vars(self).get(name, missing)
+            fields[name] = {
+                "present": value is not missing,
+                "value": value,
+                "state": (
+                    self._snapshot_token_budget_runtime_value(value, memo)
+                    if value is not missing
+                    else None
+                ),
+            }
+        return {"fields": fields}
+
+    def _restore_token_budget_request_state(self, snapshot):
+        fields = snapshot.get("fields") if isinstance(snapshot, dict) else None
+        if not isinstance(fields, dict):
+            return
+        restored = set()
+        for name, captured in fields.items():
+            if captured.get("present"):
+                setattr(self, name, captured.get("value"))
+                self._restore_token_budget_runtime_value(
+                    captured.get("state"), restored
+                )
+            else:
+                vars(self).pop(name, None)
+
     def _synchronize_token_budget_compressor_derivatives(self, engine, resolution):
         """Recompute compressor-owned values invalidated by a soft-cap override."""
         # ContextCompressor exposes an invalidating private cache and a
@@ -461,10 +577,14 @@ class TokenBudgetRuntimeMixin:
         if config is None:
             config = self._load_preflight_token_budget_config()
 
-        from agent.token_budget_policy import apply_runtime_token_budget
+        from agent.token_budget_policy import (
+            _runtime_route_identity,
+            apply_runtime_token_budget,
+        )
 
         resolution = apply_runtime_token_budget(self, config)
         if resolution is None:
+            self._token_budget_applied_identity = _runtime_route_identity(self)
             return None
 
         engine = getattr(self, "context_compressor", None)
@@ -514,6 +634,7 @@ class TokenBudgetRuntimeMixin:
         status["runtime_output_reserve"] = (
             resolution.effective_context - resolution.soft_budget
         )
+        self._token_budget_applied_identity = _runtime_route_identity(self)
 
         return resolution
 
@@ -530,69 +651,62 @@ class TokenBudgetRuntimeMixin:
         from agent.agent_runtime_helpers import switch_model
 
         config = self._load_preflight_token_budget_config()
-        snapshot = self._snapshot_token_budget_runtime()
-        try:
+        def transition():
             args = (self, new_model, new_provider, api_key, base_url, api_mode)
-            result = (
+            return (
                 switch_model(*args)
                 if capabilities is None
                 else switch_model(*args, capabilities=capabilities)
             )
-            if result is False:
-                if self._failed_transition_mutated_runtime(snapshot):
-                    self._restore_token_budget_runtime(snapshot)
-                return result
-            self._apply_runtime_token_budget(config)
-            return result
-        except Exception:
-            self._restore_token_budget_runtime(snapshot)
-            raise
+
+        return self._run_token_budget_transition(config, transition)
 
     def _try_activate_fallback(self, reason=None, reset_at=None):
         """Activate fallback only after policy validation, rolling back failures."""
         from agent.chat_completion_helpers import try_activate_fallback
 
         config = self._load_preflight_token_budget_config()
-        snapshot = self._snapshot_token_budget_runtime()
-        try:
+        def transition():
             if reset_at is None:
-                activated = try_activate_fallback(self, reason)
-            else:
-                activated = try_activate_fallback(self, reason, reset_at=reset_at)
-            if not activated:
-                if self._failed_transition_mutated_runtime(snapshot):
-                    self._restore_token_budget_runtime(snapshot)
-                return activated
-            self._apply_runtime_token_budget(config)
-            return activated
-        except Exception:
-            self._restore_token_budget_runtime(snapshot)
-            raise
+                return try_activate_fallback(self, reason)
+            return try_activate_fallback(self, reason, reset_at=reset_at)
+
+        return self._run_token_budget_transition(config, transition)
 
     def _restore_primary_runtime(self):
         """Restore primary only after policy validation, rolling back failures."""
         from agent.agent_runtime_helpers import restore_primary_runtime
 
         config = self._load_preflight_token_budget_config()
-        snapshot = self._snapshot_token_budget_runtime()
-        try:
-            restored = restore_primary_runtime(self)
-            if not restored:
-                if self._failed_transition_mutated_runtime(snapshot):
-                    self._restore_token_budget_runtime(snapshot)
-                return restored
-            self._apply_runtime_token_budget(config)
-            return restored
-        except Exception:
-            self._restore_token_budget_runtime(snapshot)
-            raise
+        return self._run_token_budget_transition(
+            config, lambda: restore_primary_runtime(self)
+        )
 
     def _build_api_kwargs(self, api_messages, tools_for_api=None):
         """Build request kwargs while preserving explicit one-shot output caps."""
         from agent.chat_completion_helpers import build_api_kwargs
+        from agent.token_budget_policy import _runtime_route_identity
+
+        policy_config = getattr(self, "_token_budget_policy_config", {}) or {}
+        if self._token_budget_policy_enabled(policy_config) and (
+            getattr(self, "_token_budget_applied_identity", None)
+            != _runtime_route_identity(self)
+        ):
+            config = self._load_preflight_token_budget_config()
+            snapshot = self._snapshot_token_budget_runtime()
+            try:
+                self._apply_runtime_token_budget(config)
+            except Exception:
+                self._restore_token_budget_runtime(snapshot)
+                raise
 
         ephemeral_output = getattr(self, "_ephemeral_max_output_tokens", None)
-        kwargs = build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
+        request_snapshot = self._snapshot_token_budget_request_state()
+        try:
+            kwargs = build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
+        except Exception:
+            self._restore_token_budget_request_state(request_snapshot)
+            raise
         policy_status = getattr(self, "_token_budget_status", None)
         if (
             ephemeral_output is None

@@ -308,11 +308,18 @@ class AIAgent(
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
+        token_budget_config = self._load_preflight_token_budget_config()
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
         # Runtime budgets are applied only after provider/client/compressor
         # initialization, keeping prompt construction and its cache stable.
-        self._apply_runtime_token_budget()
+        token_budget_snapshot = self._snapshot_token_budget_runtime()
+        try:
+            self._apply_runtime_token_budget(token_budget_config)
+        except Exception:
+            self._restore_token_budget_runtime(token_budget_snapshot)
+            self._cleanup_failed_token_budget_initialization(token_budget_snapshot)
+            raise
 
     def _get_session_db_for_recall(self):
         """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the

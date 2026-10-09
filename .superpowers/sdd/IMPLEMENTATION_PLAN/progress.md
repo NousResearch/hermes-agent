@@ -31,4 +31,6 @@ Ruling: `gpt-6.1-sol` não será adicionado ao fallback estático sem reproduç�
 - Ruling: argumentos opcionais `capabilities`/`reset_at` só são encaminhados quando presentes, preservando compatibilidade de callers e mocks legados.
 - Ruling: o teste adversarial foi tornado autônomo para funcionar no runner oficial por arquivo, sem adicionar `tests/__init__.py`.
 - Evidência detalhada: `.superpowers/sdd/IMPLEMENTATION_PLAN/task-1-report.md`.
+- Task 1 review round 0: spec FAIL; 1 Critical + 4 Important abertos — account/route reapply, init transaction, policy-off fast path, DB/notification commit ordering e request one-shot rollback.
+- Task 1 fix round 1: cinco achados resolvidos com TDD (8 RED → 8 GREEN); auto-revisão adicional provou/corrigiu que a conta B não herda baseline promovida da conta A. Verificação final: 601 passaram, 0 falharam, 4 skips Windows-only; Ruff/compat/diff-check verdes.
 - `GLOBAL_SUITE_BASELINE_RED`: suíte oficial completa em 970,2 s — 48.180 passaram, 239 falharam e 772 skips em 4.716 arquivos; 5 arquivos flaky passaram no retry. Falhas observadas são ambientais/baseline fora da Task 1.

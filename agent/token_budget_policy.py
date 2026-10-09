@@ -525,13 +525,33 @@ def resolve_runtime_token_budget(
     )
 
 
-def _runtime_route_identity(agent: Any) -> tuple[str, str, str, str]:
-    """Return the exact live route identity used for reversible budgets."""
+def _runtime_account_identity(agent: Any) -> str:
+    """Return a stable, non-secret identity for the active credential/account."""
+    entry_id = str(getattr(agent, "_credential_pool_entry_id", "") or "").strip()
+    if entry_id:
+        return entry_id
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is not None:
+        try:
+            entry_id = str(getattr(pool.current(), "id", "") or "").strip()
+        except Exception:
+            entry_id = ""
+        if entry_id:
+            return entry_id
+    raw_key = getattr(agent, "api_key", "")
+    if isinstance(raw_key, str) and raw_key:
+        return "credential-fingerprint-" + _account_fingerprint(raw_key)
+    return ""
+
+
+def _runtime_route_identity(agent: Any) -> tuple[str, str, str, str, str]:
+    """Return the exact live route+account identity used for reversible budgets."""
     return (
         str(getattr(agent, "provider", "") or "").strip().lower(),
         str(getattr(agent, "model", "") or "").strip(),
         str(getattr(agent, "base_url", "") or "").strip(),
         str(getattr(agent, "api_mode", "") or "").strip().lower(),
+        _runtime_account_identity(agent),
     )
 
 
@@ -573,7 +593,9 @@ def _restore_compressor_state(compressor: Any, state: dict[str, Any] | None) -> 
     values.update(_copy_runtime_value(state))
 
 
-def _capture_route_baseline(agent: Any, route: tuple[str, str, str, str]) -> None:
+def _capture_route_baseline(
+    agent: Any, route: tuple[str, str, str, str, str]
+) -> None:
     """Record pre-policy runtime state once, never replacing an active baseline."""
     baselines = getattr(agent, "_token_budget_route_baselines", None)
     if not isinstance(baselines, dict):
@@ -582,6 +604,24 @@ def _capture_route_baseline(agent: Any, route: tuple[str, str, str, str]) -> Non
     if route in baselines:
         return
     compressor = getattr(agent, "context_compressor", None)
+    # An in-place credential rotation keeps the same physical runtime and
+    # compressor. Reuse that route's original pre-policy baseline; capturing
+    # the current state here would record account A's policy-mutated window as
+    # account B's provider default and could resurrect it after policy removal.
+    physical_route = route[:-1]
+    for existing_route, existing in tuple(baselines.items()):
+        if (
+            isinstance(existing_route, tuple)
+            and existing_route[:-1] == physical_route
+            and isinstance(existing, Mapping)
+            and existing.get("compressor_object") is compressor
+        ):
+            baselines[route] = {
+                "max_tokens": existing.get("max_tokens"),
+                "compressor": _copy_runtime_value(existing.get("compressor")),
+                "compressor_object": compressor,
+            }
+            return
     baselines[route] = {
         "max_tokens": getattr(agent, "max_tokens", None),
         "compressor": _snapshot_compressor_state(compressor),
@@ -589,7 +629,9 @@ def _capture_route_baseline(agent: Any, route: tuple[str, str, str, str]) -> Non
     }
 
 
-def _restore_route_baseline(agent: Any, route: tuple[str, str, str, str]) -> bool:
+def _restore_route_baseline(
+    agent: Any, route: tuple[str, str, str, str, str]
+) -> bool:
     """Restore and retire the exact route's pre-policy state, if available."""
     baselines = getattr(agent, "_token_budget_route_baselines", None)
     if not isinstance(baselines, dict):
@@ -619,14 +661,7 @@ def apply_runtime_token_budget(
     # This keeps lifecycle preflight and direct callers equally fail-closed.
     validate_token_budget_policy_config(config)
     route = _runtime_route_identity(agent)
-    account_key = ""
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is not None:
-        try:
-            entry = pool.current()
-            account_key = str(getattr(entry, "id", "") or "")
-        except Exception:
-            account_key = ""
+    account_key = route[-1]
     raw_key = getattr(agent, "api_key", "")
     api_key = raw_key if isinstance(raw_key, str) else ""
     policy_cfg = (

@@ -42,3 +42,19 @@ The Task 1 contract is implemented and its focal and adjacent verification is gr
 
 - `GLOBAL_SUITE_BASELINE_RED`: the repository-wide suite completed but is not a clean task-specific signal in this checkout. Its 239 failures include missing optional `acp` and `anthropic` packages plus unrelated existing gateway/compression/provider failures; five additional files were flaky and passed on retry. None touched the Task 1 files, and the focused/adjacent suite is clean.
 - No live configuration, runtime service, network, credential, or launchd state was changed.
+
+## Fix round 1 — reviewer findings
+
+- **Account/route request boundary:** route baselines now include a non-secret account identity (pool entry ID or credential fingerprint). A request detects account/base-url identity drift and transactionally reapplies policy before building payloads. Same physical-route accounts inherit the original pre-policy compressor baseline, never another account's promoted state.
+- **Transactional initialization:** policy validation now runs before `init_agent`; post-init policy/compressor failures restore the initialized baseline and close allocated clients.
+- **Policy-off fast path:** switch/fallback/restore call the 0.21.5 helper directly when policy is absent or disabled, preserving legitimate upstream bookkeeping on `False`.
+- **Prepare/commit side effects:** billing-route writes and fallback/restore notifications are staged while an enabled-policy transition is prepared, committed only after policy success, and discarded on rollback.
+- **Request one-shots:** failed request construction restores `_ephemeral_max_output_tokens`, `_ephemeral_reasoning_off`, and `_wire_reasoning_config`, including mutable identity/state.
+
+### Fix-round TDD evidence
+
+1. Added eight reviewer-regression cases and observed **0 passed / 8 failed** before production changes.
+2. Applied the five fixes and observed **8 passed / 0 failed** on the same selection.
+3. Self-review added the cross-account baseline-removal invariant; it failed with a leaked 500K promoted baseline, then passed after physical-route baseline inheritance was implemented.
+4. Final combined focal+adjacent suite: **601 passed / 0 failed / 4 skipped** (Windows-only).
+5. Ruff, compatibility-pointer validation, and `git diff --check`: **passed**.

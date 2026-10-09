@@ -1,5 +1,6 @@
 """Production AIAgent integration for route-scoped token budgets."""
 import copy
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -949,3 +950,252 @@ def test_policy_failure_restores_current_switch_side_effects(monkeypatch):
     assert agent._last_feasibility_notice == "primary notice"
     assert agent._compression_warning == "primary warning"
     assert agent._consecutive_stale_streams == 2
+
+
+def test_request_reapplies_policy_after_same_route_account_rotation(monkeypatch):
+    """A promoted account must not lend its baseline/evidence to a rotated account."""
+    config = _policy_config()
+    config["token_budget_policy"]["approved_stage"] = 500_000
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+
+    class Pool:
+        entry_id = "account-a"
+
+        def current(self):
+            return SimpleNamespace(id=self.entry_id)
+
+    pool = Pool()
+
+    def evidence(**kwargs):
+        if kwargs["account_key"] != "account-a":
+            return None
+        return token_budget_policy.ProviderContextEvidence(
+            provider=kwargs["provider"],
+            model=kwargs["model"],
+            observed_context=500_000,
+            observed_at=datetime.now(timezone.utc),
+            source="codex_oauth_catalog",
+            account_key=kwargs["account_key"],
+            route_key="chatgpt.com/backend-api/codex",
+        )
+
+    monkeypatch.setattr(
+        "agent.token_budget_policy.detect_provider_context_evidence", evidence
+    )
+    agent = object.__new__(AIAgent)
+    compressor = _Compressor()
+    _install_runtime(agent, compressor)
+    agent._credential_pool = pool
+    agent._credential_pool_entry_id = "account-a"
+    AIAgent._apply_runtime_token_budget(agent)
+    assert compressor.context_length == 500_000
+
+    pool.entry_id = "account-b"
+    agent._credential_pool_entry_id = "account-b"
+    agent.api_key = "test-only-account-b-token"
+    observed = {}
+
+    def build(runtime, *_args, **_kwargs):
+        observed.update(
+            max_tokens=runtime.max_tokens,
+            context_length=runtime.context_compressor.context_length,
+        )
+        return {"max_output_tokens": runtime.max_tokens}
+
+    monkeypatch.setattr("agent.chat_completion_helpers.build_api_kwargs", build)
+    agent._build_api_kwargs([])
+
+    assert observed == {"max_tokens": 81_600, "context_length": 272_000}
+    assert len(agent._token_budget_route_baselines) == 2
+    account_keys = {route[-1] for route in agent._token_budget_route_baselines}
+    assert account_keys == {"account-a", "account-b"}
+
+    assert AIAgent._apply_runtime_token_budget(agent, {}) is None
+    assert compressor.context_length == 872_000
+    assert compressor.threshold_tokens == 697_600
+    assert compressor.route_only_state == {"origin": "initial"}
+
+
+def test_invalid_policy_preflights_before_agent_initialization(monkeypatch):
+    """Malformed policy must fail before init allocates any runtime resources."""
+    invalid = _policy_config()
+    del invalid["token_budget_policy"]["providers"]["openai-codex"]["models"][
+        "gpt-5.6-luna"
+    ]
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: invalid)
+    calls = []
+
+    def fake_init(agent, **_kwargs):
+        calls.append(agent)
+        _install_runtime(agent, _Compressor())
+
+    monkeypatch.setattr("agent.agent_init.init_agent", fake_init)
+
+    with pytest.raises(token_budget_policy.TokenBudgetPolicyError, match="exactly"):
+        AIAgent(model="gpt-6-astra", provider="openai-codex")
+    assert calls == []
+
+
+def test_initial_policy_apply_failure_rolls_back_and_closes_initialized_client(
+    monkeypatch,
+):
+    """A compressor failure during init restores its baseline and retires resources."""
+    _patch_policy(monkeypatch)
+    holder = {}
+
+    class Client:
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class ExplodingCompressor(_Compressor):
+        def update_model(self, *, max_tokens=None, **kwargs):
+            super().update_model(max_tokens=max_tokens, **kwargs)
+            self.route_only_state["origin"] = "failed-policy-apply"
+            raise RuntimeError("compressor update failed")
+
+    def fake_init(agent, **_kwargs):
+        compressor = ExplodingCompressor()
+        _install_runtime(agent, compressor)
+        agent.client = Client()
+        holder["agent"] = agent
+        holder["client"] = agent.client
+        holder["compressor"] = compressor
+        holder["baseline"] = copy.deepcopy(vars(compressor))
+
+    monkeypatch.setattr("agent.agent_init.init_agent", fake_init)
+
+    with pytest.raises(RuntimeError, match="compressor update failed"):
+        AIAgent(model="gpt-6-astra", provider="openai-codex")
+
+    assert holder["agent"].max_tokens == 128_000
+    assert vars(holder["compressor"]) == holder["baseline"]
+    assert holder["client"].close_calls == 1
+
+
+@pytest.mark.parametrize("operation", ("fallback", "restore"))
+def test_policy_off_false_transition_preserves_upstream_bookkeeping(
+    monkeypatch, operation
+):
+    """Disabled policy is an integral fast-path, including legitimate False mutations."""
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    agent._fallback_index = 0
+
+    def record(runtime, *_args, **_kwargs):
+        runtime._fallback_index = 7
+        runtime._credential_pool_entry_id = "upstream-bookkeeping"
+        return False
+
+    if operation == "fallback":
+        monkeypatch.setattr(
+            "agent.chat_completion_helpers.try_activate_fallback", record
+        )
+        result = agent._try_activate_fallback()
+    else:
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers.restore_primary_runtime", record
+        )
+        result = agent._restore_primary_runtime()
+
+    assert result is False
+    assert agent._fallback_index == 7
+    assert agent._credential_pool_entry_id == "upstream-bookkeeping"
+
+
+def test_policy_failure_discards_staged_billing_route_write(monkeypatch):
+    """The durable billing route is published only after policy commit."""
+    _patch_policy(monkeypatch)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+
+    class SessionDB:
+        def __init__(self):
+            self.writes = []
+
+        def update_session_billing_route(self, *args, **kwargs):
+            self.writes.append((args, kwargs))
+
+    session_db = SessionDB()
+    agent._session_db = session_db
+    agent.session_id = "session-1"
+
+    def switch(runtime, *_args):
+        runtime.provider = "anthropic"
+        runtime.model = "claude-fallback"
+        runtime.base_url = "https://api.anthropic.com"
+        runtime.api_mode = "anthropic_messages"
+        from agent.agent_runtime_helpers import _persist_switch_billing_route
+
+        _persist_switch_billing_route(runtime)
+        return "switched"
+
+    monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", switch)
+    monkeypatch.setattr(
+        AIAgent,
+        "_apply_runtime_token_budget",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("policy sync failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="policy sync failed"):
+        agent.switch_model("claude-fallback", "anthropic")
+    assert session_db.writes == []
+
+
+def test_policy_failure_discards_staged_fallback_notification(monkeypatch):
+    """A failed policy commit must not publish a fallback that was rolled back."""
+    _patch_policy(monkeypatch)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    notifications = []
+    agent._buffer_diagnostic_status = notifications.append
+
+    def fallback(runtime, *_args):
+        runtime.provider = "anthropic"
+        runtime.model = "claude-fallback"
+        from agent.chat_completion_helpers import _buffer_fallback_notice
+
+        _buffer_fallback_notice(runtime, "fallback activated")
+        return True
+
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.try_activate_fallback", fallback
+    )
+    monkeypatch.setattr(
+        AIAgent,
+        "_apply_runtime_token_budget",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("policy sync failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="policy sync failed"):
+        agent._try_activate_fallback()
+    assert notifications == []
+
+
+def test_request_build_failure_restores_consumed_one_shot_state(monkeypatch):
+    """A builder exception cannot consume continuation output/reasoning state."""
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    wire_reasoning = {"enabled": True, "effort": "high"}
+    agent._ephemeral_max_output_tokens = 32_768
+    agent._ephemeral_reasoning_off = True
+    agent._wire_reasoning_config = wire_reasoning
+
+    def fail_after_consumption(runtime, *_args, **_kwargs):
+        runtime._ephemeral_max_output_tokens = None
+        runtime._ephemeral_reasoning_off = False
+        runtime._wire_reasoning_config = {"enabled": False, "effort": "none"}
+        raise RuntimeError("request build failed")
+
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.build_api_kwargs", fail_after_consumption
+    )
+
+    with pytest.raises(RuntimeError, match="request build failed"):
+        agent._build_api_kwargs([])
+    assert agent._ephemeral_max_output_tokens == 32_768
+    assert agent._ephemeral_reasoning_off is True
+    assert agent._wire_reasoning_config is wire_reasoning

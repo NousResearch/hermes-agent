@@ -1,5 +1,6 @@
 """Skills Hub GitHub adapter: API auth, tap providers, and the Contents/Trees source."""
 
+import contextlib
 import json
 import logging
 import subprocess
@@ -562,7 +563,18 @@ class GitHubSource(SkillSource):
 
     def _fetch_file_bytes(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[bytes]:
         """Fetch exact file bytes. ``ref`` pins to a tree SHA (see ``fetch`` on
-        the TOCTOU); None keeps the legacy unpinned behavior."""
+        the TOCTOU); None keeps the legacy unpinned behavior. A pinned file comes from
+        raw.githubusercontent.com first: the same bytes at the same commit, outside the REST rate
+        limit. Through the Contents API every file in a skill folder cost one call, so an anonymous
+        user (60/h) could never install a skill with more than ~58 files. A private repo or a raw
+        miss falls back to the API."""
+        if ref:
+            with contextlib.suppress(httpx.HTTPError):
+                raw = hub()._skills_hub_http_get(
+                    f"https://raw.githubusercontent.com/{repo}/{ref}/{quote(path, safe='/')}",
+                    timeout=15.0, follow_redirects=False)
+                if raw.status_code == 200:
+                    return raw.content
         resp = self._github_get(
             f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},

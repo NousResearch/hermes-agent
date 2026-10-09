@@ -7,9 +7,11 @@ closed for them without mutating the process-global environment.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
@@ -109,56 +111,169 @@ def is_delegated_child_process_context() -> bool:
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
 
 
-def _fenced_kanban_root() -> str:
-    """The board root this process's Kanban lineage lives under (``kanban_home()``); ``"1"`` when it
-    cannot be resolved, which readers treat as "fence every board" (the pre-path marker)."""
+def _find_board_for_task(task_id: str) -> str | None:
+    """Find the directory of the named board that contains task_id."""
+    import sqlite3
+    from hermes_cli.kanban_db import (
+        DEFAULT_BOARD,
+        board_dir,
+        kanban_db_path,
+        list_boards,
+    )
+
+    for entry in list_boards(include_archived=True):
+        slug = entry.get("slug")
+        if not slug or slug == DEFAULT_BOARD:
+            continue
+        b_db = kanban_db_path(slug)
+        if not b_db.exists():
+            continue
+        with contextlib.suppress(sqlite3.Error, OSError):
+            conn = sqlite3.connect(f"file:{b_db.resolve()}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+                if row:
+                    return str(board_dir(slug).resolve())
+            finally:
+                conn.close()
+    return None
+
+
+def _fenced_kanban_root(env: Mapping[str, str] | None = None) -> str:
+    """The board root this process's Kanban lineage lives under; ``"1"`` when
+    it cannot be resolved, which readers treat as "fence every board" (the
+    pre-path marker)."""
     try:
-        from hermes_cli.kanban_db import kanban_home
-        return str(kanban_home())
-    except Exception:
+        from hermes_cli.kanban_db import (
+            DEFAULT_BOARD,
+            _normalize_board_slug,
+            board_dir,
+            boards_root,
+            kanban_db_path,
+            kanban_home,
+        )
+
+        def _get(key: str) -> str:
+            if env is not None and key in env:
+                return str(env[key]).strip()
+            return os.environ.get(key, "").strip()
+
+        board_val = _get("HERMES_KANBAN_BOARD")
+        if board_val:
+            with contextlib.suppress(ValueError):
+                slug = _normalize_board_slug(board_val)
+                if slug and slug != DEFAULT_BOARD:
+                    return str(board_dir(slug).resolve())
+                if slug == DEFAULT_BOARD:
+                    return str(kanban_home().resolve())
+
+        db_val = _get("HERMES_KANBAN_DB")
+        if db_val:
+            db_path = Path(db_val).expanduser().resolve()
+            b_root = boards_root().resolve()
+            with contextlib.suppress(ValueError):
+                rel = db_path.relative_to(b_root)
+                if rel.parts:
+                    slug = _normalize_board_slug(rel.parts[0])
+                    if slug and slug != DEFAULT_BOARD:
+                        return str(board_dir(slug).resolve())
+            kh = kanban_home().resolve()
+            with contextlib.suppress(OSError):
+                if (
+                    db_path == kanban_db_path(DEFAULT_BOARD).resolve()
+                    or db_path.parent == kh
+                ):
+                    return str(kh)
+            return str(db_path.parent)
+
+        task_val = _get("HERMES_KANBAN_TASK")
+        if task_val:
+            found = _find_board_for_task(task_val)
+            if found:
+                return found
+
+        return str(kanban_home().resolve())
+    except (OSError, ValueError):
+        return "1"
+    except Exception:  # health: allow BLE001 -- fallback boundary
         return "1"
 
 
-def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
-    """Remove worker identity, retaining board/location and an inherited write fence.
+def scrub_kanban_env(
+    env: Mapping[str, str] | MutableMapping[str, str],
+) -> dict[str, str]:
+    """Remove worker identity, retaining board/location and an inherited fence.
 
-    TASK absence alone would promote a descendant to an orchestrator. The marker
-    survives later execs, including scripts that remove TASK themselves. This is
-    cooperative runtime scoping, not confinement of code with direct SQLite access.
+    TASK absence alone would promote a descendant to an orchestrator. The
+    marker survives later execs, including scripts that remove TASK themselves.
+    This is cooperative runtime scoping, not confinement of code with direct
+    SQLite access.
 
-    The marker's value is the fenced board ROOT, so the fence applies to the lineage's
-    board and not to every Kanban DB the descendant touches: a child running a repro
-    against a temp ``HERMES_HOME`` got a silently read-only board there. An inherited
-    path-valued marker is kept (a grandchild that moved HERMES_HOME must not re-fence
-    onto its scratch root and unfence the real one).
+    The marker's value is the fenced board ROOT, so the fence applies to the
+    lineage's board and not to every Kanban DB the descendant touches: a child
+    running a repro against a temp ``HERMES_HOME`` got a silently read-only
+    board there. An inherited path-valued marker is kept (a grandchild that
+    moved HERMES_HOME must not re-fence onto its scratch root and unfence the
+    real one).
     """
     cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
     inherited = str(env.get(DELEGATED_CHILD_ENV_MARKER) or "")
-    cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_kanban_root()
+    cleaned[DELEGATED_CHILD_ENV_MARKER] = (
+        inherited
+        if inherited and inherited != "1"
+        else _fenced_kanban_root(env)
+    )
     return cleaned
 
 
 def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
-    """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
-    process: always for an in-process delegate child (the parent's own board); for a spawned
-    descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the
-    fenced root the marker carries. A legacy ``"1"`` marker fences everything."""
-    if _DELEGATED_CHILD_CONTEXT.get():
-        return True
+    """Whether Kanban mutations at *path* (a board DB or board-metadata root)
+    are denied for this process: always for an in-process delegate child (the
+    parent's own board); for a spawned descendant only when *path* is the
+    dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the fenced root the
+    marker carries. A legacy ``"1"`` marker fences everything."""
     marker = os.environ.get(DELEGATED_CHILD_ENV_MARKER, "")
+    if _DELEGATED_CHILD_CONTEXT.get():
+        marker = marker or _fenced_kanban_root()
     if not marker:
         return False
     if marker == "1":
         return True
-    from pathlib import Path
+
     target = Path(path).expanduser().resolve()
     pinned = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if pinned and target == Path(pinned).expanduser().resolve():
         return True
+    marker_path = Path(marker).expanduser().resolve()
+
+    from hermes_cli.kanban_db import (
+        DEFAULT_BOARD,
+        board_dir,
+        boards_root,
+        kanban_home,
+    )
+
     try:
-        target.relative_to(Path(marker).expanduser().resolve())
+        target.relative_to(marker_path)
     except ValueError:
+        with contextlib.suppress(OSError, ValueError):
+            if target == kanban_home().resolve():
+                marker_path.relative_to(target)
+                return True
         return False
+
+    with contextlib.suppress(OSError, ValueError):
+        if marker_path == kanban_home().resolve():
+            b_root = boards_root().resolve()
+            target.relative_to(b_root)
+            default_dir = board_dir(DEFAULT_BOARD).resolve()
+            try:
+                target.relative_to(default_dir)
+                return True
+            except ValueError:
+                return False
     return True
 
 

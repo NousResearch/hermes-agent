@@ -667,3 +667,112 @@ def test_store_swapped_after_validation_is_not_followed(db, tmp_path, monkeypatc
         monkeypatch.setattr(hermes_state_media._open_store, "__enter__", swap_and_hide)
         loaded = db.get_messages_as_conversation("vision", repair_alternation=True)[0]["content"]
         assert DATA_URL not in json.dumps(loaded)
+
+
+@pytest.mark.platforms("posix")
+def test_writerless_fifo_falls_back_instead_of_blocking(tmp_path):
+    """A digest-named FIFO must be rejected, not block the read open (child-bounded)."""
+    import multiprocessing
+    from hermes_state_media import _get
+
+    store = tmp_path / "cache" / "transcript_media"
+    store.mkdir(parents=True)
+    os.mkfifo(store / ("0" * 64))
+    ctx = multiprocessing.get_context("spawn")
+    child = ctx.Process(target=_expect_oserror, args=(store, "0" * 64))
+    child.start()
+    child.join(10)
+    try:
+        assert not child.is_alive(), "reading a writerless FIFO blocked"
+        assert child.exitcode == 0
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join()
+
+
+def _expect_oserror(store, digest):
+    from hermes_state_media import _get
+    try:
+        _get(store, digest)
+    except OSError:
+        raise SystemExit(0)
+    raise SystemExit(1)
+
+
+def test_corrupt_existing_copy_is_replaced_not_reused(db, tmp_path):
+    """Dedupe reuses only verified bytes, so a move cannot succeed onto a damaged destination file."""
+    from hermes_state_media import prepare_media_content
+
+    content = _history("user")[0]["content"]
+    _flush(db, [{"role": "user", "content": content}])
+    path, = (tmp_path / "cache/transcript_media").iterdir()
+    path.write_bytes(b"damaged")
+    assert prepare_media_content(db.db_path, _history("user")[0]["content"])[1]
+    assert path.read_bytes() == IMAGE
+
+
+def test_blank_assistant_repair_clears_the_old_image_reference(db):
+    """Filling an image-only (text-blank) assistant row with text must not leave its sidecar to rehydrate."""
+    db.append_message("vision", "user", "Draw")
+    db.append_message("vision", "assistant", _history("user")[0]["content"][1:])
+    row = db.get_messages("vision")[-1]
+    assert row["media_content"]
+    # The interrupted-stream repair: a row-addressed live dict fills the flushed blank row.
+    db.append_messages_batch("vision", [{"role": "assistant", "content": "A recovered answer", "_row_id": row["id"]}])
+    assert db.get_messages("vision")[-1]["media_content"] is None
+    assert db.get_messages_as_conversation("vision", repair_alternation=True)[-1]["content"] == "A recovered answer"
+
+
+def test_foreign_history_import_keeps_media_io_outside_the_write_transaction(db, monkeypatch):
+    import hermes_state_media
+
+    in_write = []
+    original_write = db._execute_write
+    def tracked_write(fn, *args, **kwargs):
+        def run(conn):
+            in_write.append(True)
+            try:
+                return fn(conn)
+            finally:
+                in_write.pop()
+        return original_write(run, *args, **kwargs)
+    monkeypatch.setattr(db, "_execute_write", tracked_write)
+    real_put = hermes_state_media._put
+    def guarded(*args):
+        assert not in_write, "_put ran inside the SQLite write transaction"
+        return real_put(*args)
+    monkeypatch.setattr(hermes_state_media, "_put", guarded)
+    turns = [{"role": "user", "content": _history("user")[0]["content"]}, {"role": "assistant", "content": "Seen"}]
+    result = db.import_foreign_history({"tool": "codex", "path": "x.jsonl"}, turns, title="Imported", cwd=None,
+                                       profile="default")
+    loaded = db.get_messages_as_conversation(result["session_id"], repair_alternation=True)
+    assert DATA_URL in json.dumps(loaded)
+
+
+def test_two_profile_homes_a_b_a_keep_their_own_media(tmp_path, monkeypatch):
+    """Profile scope A->B->A with real homes: each DB writes, reloads and sweeps only its own store."""
+    from hermes_state_media import sweep_transcript_media
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    dbs = {}
+    for name, home in homes.items():
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        dbs[name] = SessionDB(db_path=home / "state.db")
+        dbs[name].create_session("vision", "cli")
+    try:
+        other = _history("user")[0]["content"]
+        other[1]["image_url"]["url"] = "data:image/png;base64," + base64.b64encode(b"profile b").decode()
+        for name, content in (("a", _history("user")[0]["content"]), ("b", other), ("a", None)):
+            monkeypatch.setenv("HERMES_HOME", str(homes[name]))
+            if content is not None:
+                _flush(dbs[name], [{"role": "user", "content": content}])
+            assert sweep_transcript_media(dbs[name]) == 0
+        for name, image in (("a", IMAGE), ("b", b"profile b")):
+            store = homes[name] / "cache/transcript_media"
+            assert [p.read_bytes() for p in store.iterdir()] == [image]
+            loaded = dbs[name].get_messages_as_conversation("vision", repair_alternation=True)
+            assert base64.b64encode(image).decode() in json.dumps(loaded)
+    finally:
+        for store in dbs.values():
+            store.close()

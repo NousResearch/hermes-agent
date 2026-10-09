@@ -177,7 +177,13 @@ class SessionPortabilityMixin:
                          (json.dumps({"imported_from": origin}), profile, session_id))
             return {"session_id": session_id, "already_imported": False}
 
-        return self._execute_write(_do)
+        from hermes_state_media import drop_prepared, prepare_rows
+        rows = normalized[0]["messages"]
+        prepare_rows(self.db_path, rows)  # image file I/O before the write lock, as import_sessions does
+        try:
+            return self._execute_write(_do)
+        finally:
+            drop_prepared(rows)
 
     @classmethod
     def _compact_session_cols(cls) -> str:

@@ -69,7 +69,7 @@ def try_sweep_transcript_media(db, *, enabled: bool = True) -> None:
     try:
         sweep_transcript_media(db)
     except Exception:
-        logger.debug("Cannot sweep transcript media", exc_info=True)
+        logger.warning("Cannot sweep transcript media", exc_info=True)
 
 
 def clear_inactive_media(conn, *, enabled: bool = True) -> None:
@@ -149,10 +149,11 @@ def _put(root: Path, data: bytes) -> str:
     with _open_store(root, create=True) as (base, dir_fd):
         target = os.path.join(base, digest)
         try:
-            if stat.S_ISREG(os.stat(target, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+            # Reuse only verified bytes: a corrupt copy is replaced, so a profile move cannot land on it.
+            if _read(base, dir_fd, digest) == data:
                 os.utime(target, dir_fd=dir_fd, **_UTIME_NOFOLLOW)
                 return digest
-        except FileNotFoundError:  # absent, or a sweep won before we renewed the lease
+        except OSError:  # absent, unreadable, or a sweep won before the lease renewal
             pass
         name = os.path.join(base, f".write-{os.urandom(8).hex()}")
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | getattr(os, "O_BINARY", 0),
@@ -177,16 +178,22 @@ def _put(root: Path, data: bytes) -> str:
     return digest
 
 
+def _read(base: str, dir_fd: int | None, digest: str) -> bytes:
+    """A link or a non-regular file must not block replay or escape the store."""
+    # O_NONBLOCK: a writerless FIFO would otherwise block the open before the fstat below.
+    fd = os.open(os.path.join(base, digest),
+                 os.O_RDONLY | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0), dir_fd=dir_fd)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError("transcript media is not a regular file")
+        return stream.read()
+
+
 def _get(root: Path, digest: str) -> bytes:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("invalid transcript media digest")
     with _open_store(root, create=False) as (base, dir_fd):
-        # A link or a non-regular file must not block replay or escape the store.
-        fd = os.open(os.path.join(base, digest), os.O_RDONLY | _NOFOLLOW | getattr(os, "O_BINARY", 0), dir_fd=dir_fd)
-        with os.fdopen(fd, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise OSError("transcript media is not a regular file")
-            data = stream.read()
+        data = _read(base, dir_fd, digest)
     if hashlib.sha256(data).hexdigest() != digest:
         raise ValueError("transcript media checksum mismatch")
     return data
@@ -254,7 +261,7 @@ def prepare_media_content(db_path, content: Any, media_content: Any = None, *, d
         skeleton = _externalize(original, _media_root(db_path), refs)
         return text, json.dumps({"version": 1, "text": text, "content": skeleton, "images": refs, "display": display})
     except (OSError, ValueError, TypeError):
-        logger.debug("Cannot persist transcript media; keeping text projection", exc_info=True)
+        logger.warning("Cannot persist transcript media; keeping text projection", exc_info=True)
         return text, None
 
 
@@ -284,7 +291,7 @@ def restore_media_content(db_path, sidecar: Any, fallback: Any, *, model: bool =
     except (OSError, ValueError, TypeError, KeyError, IndexError):
         if strict:
             raise
-        logger.debug("Cannot restore transcript media; keeping text projection", exc_info=True)
+        logger.warning("Cannot restore transcript media; keeping text projection", exc_info=True)
         return fallback
 
 

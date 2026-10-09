@@ -211,6 +211,35 @@ describe('session tile after a source round-trip', () => {
     expect(transcriptText(sessionStateByRuntimeIdRef.current.get(runtimeId))).toContain(FINAL)
   })
 
+  it('shows the persisted reply when the resume reattaches the same parked runtime, now idle', async () => {
+    openStreamingTile()
+    const { sessionStateByRuntimeIdRef } = mountDelegate()
+
+    // The backend kept the detached runtime parked instead of reaping it, so
+    // the resume hands back the very id this cache holds a frozen
+    // half-streamed snapshot for.
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile, method) =>
+      method === 'session.resume'
+        ? ({ session_id: STALE_RUNTIME, resumed: STORED_ID, info: { running: false } } as never)
+        : ({} as never)
+    )
+
+    wipeSessionListsForGatewaySwitch()
+    $connection.set(REMOTE)
+    wipeSessionListsForGatewaySwitch()
+    $connection.set(LOCAL)
+    setSessions([row])
+
+    const runtimeId = await resumeSwappedInTile()
+
+    expect(runtimeId).toBe(STALE_RUNTIME)
+
+    const shown = sessionStateByRuntimeIdRef.current.get(runtimeId)
+    expect(transcriptText(shown)).toContain(FINAL)
+    expect(transcriptText(shown)).not.toContain('partial tool commentary')
+    expect(shown?.busy).toBe(false)
+  })
+
   it('never re-binds a runtime the gateway declared gone', async () => {
     openStreamingTile()
     const { sessionStateByRuntimeIdRef } = mountDelegate()

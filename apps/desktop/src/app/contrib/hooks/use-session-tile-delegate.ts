@@ -54,6 +54,33 @@ import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
+/** The transcript a tile shows once `session.resume` binds `runtimeId`.
+ *
+ *  A resume can hand back a runtime this cache already holds — the backend
+ *  kept it parked after its socket closed. If that runtime is idle, its cached
+ *  messages are only what the tile painted before the socket went away: the
+ *  turn's remaining deltas and `message.complete` were never delivered, so a
+ *  frozen half-streamed reply would win over the persisted transcript that
+ *  holds the real answer. The REST read is authoritative for an idle runtime.
+ *  Only a turn still running keeps the cache, whose deltas are newer than any
+ *  REST read. */
+function resumedTileTranscript(
+  cached: ChatMessage[],
+  running: boolean,
+  prefetch: Awaited<ReturnType<typeof getLatestSessionMessages>> | null,
+  resumed: SessionResumeResult | undefined
+): ChatMessage[] {
+  if (!cached.length) {
+    return toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+  }
+
+  if (running) {
+    return cached
+  }
+
+  return mergeTileTranscript(cached, toChatMessages(prefetch?.messages ?? []))
+}
+
 function mergeTileTranscript(
   previous: ChatMessage[],
   prefetched: ChatMessage[],
@@ -476,8 +503,7 @@ export function useSessionTileDelegate({
               ? { reasoningEffortWire: info.reasoning_effort_wire }
               : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+            messages: resumedTileTranscript(state.messages, Boolean(info?.running), prefetch, resumed)
           }),
           storedSessionId
         )

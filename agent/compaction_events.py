@@ -49,12 +49,13 @@ _SPLIT_STATUSES = frozenset({
     "not_applicable", "in_place_committed", "rotated_committed", "failed_not_indexed", "aborted",
 })
 _TOKEN_COUNT_METHODS = frozenset({"estimate_rough"})
-# Attempt classes beyond the shared-metrics closed set: guards, Codex route exits, lease races, and the
-# micro-compaction pass outcomes.
+# Attempt classes beyond the shared-metrics closed set: guards, Codex route exits, lease races, an engine's
+# empty transcript, and the micro-compaction pass outcomes.
 _EXTRA_FAILURE_CLASSES = frozenset({
     "blocked:cooldown", "blocked:structural_backoff", "blocked:ineffective", "blocked:unknown",
     "codex_auto_native", "codex_auto_off", "codex_no_thread", "codex_compaction_failed",
-    "session_ownership_lost", "session_ownership_unreadable", "cooldown_state_unreadable", "summary_model_benched",
+    "session_ownership_lost", "session_ownership_unreadable", "cooldown_state_unreadable", "empty_transcript",
+    "summary_model_benched",
     "summarize_failed", "exchange_skipped", "defrag_failed", "stale_generation", "watermark_unavailable",
 })
 # An aborted attempt the compressor ran but deliberately did not commit; other aborts are failures.

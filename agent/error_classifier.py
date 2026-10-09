@@ -194,10 +194,15 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # maximum allowed (M, from `StreamReadConstraints.getMaxStringLength()`)"). Only an inline
 # image reaches those sizes, so shrinking is the recovery; the method-scoped Jackson token
 # is used because the bare class name also appears when Jackson caps a *token* length.
+# Ollama Cloud drops the connection after its body cap, surfacing as a 400
+# "failed to read request body" with no size vocabulary at all (#124833). Same reasoning:
+# only an inline image makes a request large enough to hit that cap, so the shrink pass
+# finds parts and runs; with no image part it returns False and the original error stands.
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
     "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
+    "failed to read request body",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings

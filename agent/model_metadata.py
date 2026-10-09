@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -416,9 +417,29 @@ _CONTEXT_LENGTH_KEYS = (
     "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
 )
 _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_tokens")
-_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+_DEFAULT_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+_LOCAL_HOSTS = _DEFAULT_LOCAL_HOSTS
 # Docker / Podman / Lima DNS names that resolve to the host machine
 _CONTAINER_LOCAL_SUFFIXES = (".docker.internal", ".containers.internal", ".lima.internal")
+
+
+def _configured_local_hosts() -> tuple[str, ...]:
+    """Default loopback hosts merged with any explicitly configured local hosts
+    via HERMES_LOCAL_HOSTS env var (comma-separated) or agent.local_hosts in config.yaml."""
+    extra: list[str] = []
+    env_hosts = os.environ.get("HERMES_LOCAL_HOSTS", "")
+    if env_hosts:
+        extra.extend(h.strip().lower() for h in env_hosts.split(",") if h.strip())
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        cfg_hosts = agent_cfg.get("local_hosts") if isinstance(agent_cfg, dict) else None
+        if isinstance(cfg_hosts, (list, tuple)):
+            extra.extend(str(h).strip().lower() for h in cfg_hosts if h)
+        elif isinstance(cfg_hosts, str):
+            extra.extend(h.strip().lower() for h in cfg_hosts.split(",") if h.strip())
+    return _DEFAULT_LOCAL_HOSTS + tuple(extra)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -686,7 +707,7 @@ def is_local_endpoint(base_url: str) -> bool:
     # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
     # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
     # they are excluded here and classified by scope below (a global address is not local).
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
+    if host in _configured_local_hosts() or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
         return True
     try:
         addr = ipaddress.ip_address(host)

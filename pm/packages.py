@@ -502,10 +502,18 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
 
     deb_package = "nodejs"
 
+    # Termux is a separate supplier and currently lags nodejs.org. As with
+    # Python, preserve its explicit artifact instead of inventing a desktop
+    # version's .deb URL during a lock bump. Its security updates remain due
+    # when Termux publishes them; this does not make the older build current.
+    _BIONIC_URL = (
+        "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/"
+        "nodejs_26.4.0-1_aarch64.deb"
+    )
+
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            # termux's deb carries a -1 revision after the upstream version
-            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
+            return self._BIONIC_URL
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
         base = (
@@ -516,7 +524,10 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Keep one Node version across targets. If unofficial musl publication
+        # Bionic remains a manual pin from a separate supplier.
+        if target == "linux-arm64-bionic":
+            return []
+        # Keep one Node version across the other targets. If unofficial musl publication
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()

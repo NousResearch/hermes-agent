@@ -12,3 +12,13 @@ def test_node_candidates_exclude_prereleases(monkeypatch):
     versions = get_package("node").latest_versions("linux-x64")
     assert versions == ["26.7.0", "24.20.0"]
     assert get_package("termux-docker").latest_versions("linux-arm64-bionic") == []
+
+
+def test_node_bionic_candidates_do_not_use_desktop_supplier(monkeypatch):
+    from pm.registry import get_package
+
+    def no_desktop_index(url):
+        raise AssertionError("Termux versions must not be inferred from nodejs.org")
+
+    monkeypatch.setattr(update, "_get_json", no_desktop_index)
+    assert get_package("node").latest_versions("linux-arm64-bionic", "26.7.0") == []

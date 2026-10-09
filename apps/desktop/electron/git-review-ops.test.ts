@@ -115,6 +115,24 @@ test('gitFor accepts trusted custom binaries without replacing console.warn', ()
   assert.deepEqual(warnings, [['unrelated warning']])
 })
 
+test.skipIf(process.platform === 'win32')('gitFor executes a trusted binary under a spaced path', async () => {
+  const dir = makeRepo()
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes git binary '))
+
+  tempDirs.push(binDir)
+  const gitBin = path.join(binDir, 'git')
+  const installedGit = (process.env.PATH || '').split(path.delimiter)
+    .map(dir => path.join(dir, 'git'))
+    .find(candidate => fs.existsSync(candidate))
+
+  assert.ok(installedGit)
+  fs.symlinkSync(installedGit, gitBin)
+
+  const status = await gitFor(dir, gitBin).status()
+
+  assert.equal(status.isClean(), true)
+})
+
 test('resolveRenamePath: simple rename resolves to the new path', () => {
   assert.equal(resolveRenamePath('old.ts => new.ts'), 'new.ts')
 })

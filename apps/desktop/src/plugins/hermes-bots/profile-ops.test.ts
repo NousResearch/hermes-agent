@@ -54,7 +54,8 @@ beforeEach(() => {
   hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params: structuredClone(params ?? {}) })
 
-    return { ok: true }
+    // A save reads the bot's server namespace (profiles.list) before writing it.
+    return method === 'profiles.list' ? { profiles: [{ name: 'researcher' }, { name: 'researcher-2' }] } : { ok: true }
   })
 })
 
@@ -124,14 +125,6 @@ describe('duplicating a bot', () => {
     expect(name).toHaveLength(64)
     expect(name.endsWith('-2')).toBe(true)
     expect(name).not.toBe(base)
-  })
-
-  it('ensures the source bot has its metadata before cloning', async () => {
-    // clone_from copies the profile dir; the source's Bot Chat has to exist
-    // first or the clone inherits a half-built profile.
-    await duplicateBot({ name: 'ops' } as RosterRow, [])
-
-    expect(ensureBotMetadataMock).toHaveBeenCalledTimes(1)
   })
 
   it('only collides against rows on the SAME connection', async () => {

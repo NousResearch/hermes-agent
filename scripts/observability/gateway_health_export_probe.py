@@ -77,7 +77,7 @@ def main() -> None:
     emitter.get_emitter().flush(timeout=2.0)
 
     log_path = Path(args.log)
-    rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     paths = {row["path"] for row in rows}
     print(json.dumps({"hermes_home": str(hermes_home), "requests": len(rows), "paths": sorted(paths)}, indent=2))
     if "/v1/traces" not in paths:

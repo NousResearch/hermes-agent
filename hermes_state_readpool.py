@@ -163,10 +163,18 @@ class _PathReadBudget:
             # Only writable handles carry the cost the warning names (writer connection, write
             # lock, close-time checkpoint). Read-only attaches (dashboard routers, status/lookup
             # one-shots) open per request by design and must not trip it.
-            handles = sum(1 for member in self._members if not member.read_only)
+            handles = sum(
+                1 for member in self._members
+                if not member.read_only and member._conn is not None
+            )
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True
+                # Same population as `handles`: the read-only attaches the count skips
+                # must not reappear in the list, or the list no longer explains the number.
+                creation_sites = ", ".join(sorted(
+                    member._creation_site for member in self._members if not member.read_only
+                ))
         if warn:
             # Writer connections cannot be capped; the only bound is not opening
             # redundant handles, so make the duplicate visible before it's an incident.
@@ -177,9 +185,15 @@ class _PathReadBudget:
                 # one.
                 "%d live SessionDB handles on %s in this process; each holds "
                 "its own writer connection (read connections are capped at %d "
-                "for the file). A long-lived process should share one handle per path.",
-                handles, db.db_path, _READ_POOL_MAX,
+                "for the file). A long-lived process should share one handle per path. "
+                "Created at: %s",
+                handles, db.db_path, _READ_POOL_MAX, creation_sites,
             )
+
+    def unregister(self, db: "SessionDB") -> None:
+        """Remove a closed writer from duplicate-handle diagnostics immediately."""
+        with self._lock:
+            self._members.discard(db)
 
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse (caller degrades to the

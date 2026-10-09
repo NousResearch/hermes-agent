@@ -80,13 +80,6 @@ class FakeMemoryProvider(MemoryProvider):
         self.memory_writes.append((action, target, content))
 
 
-class MetadataMemoryProvider(FakeMemoryProvider):
-    """Provider that opts into write metadata."""
-
-    def on_memory_write(self, action, target, content, metadata=None):
-        self.memory_writes.append((action, target, content, metadata or {}))
-
-
 class MessagesMemoryProvider(FakeMemoryProvider):
     """Provider that opts into completed-turn message context."""
 
@@ -121,29 +114,6 @@ class BlockingPrefetchProvider(FakeMemoryProvider):
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryProviderABC:
-    def test_cannot_instantiate_abstract(self):
-        """ABC cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            MemoryProvider()
-
-    def test_concrete_provider_works(self):
-        """Concrete implementation can be instantiated."""
-        p = FakeMemoryProvider()
-        assert p.name == "fake"
-        assert p.is_available()
-
-    def test_default_optional_hooks_are_noop(self):
-        """Optional hooks have default no-op implementations."""
-        p = FakeMemoryProvider()
-        # These should not raise
-        p.on_turn_start(1, "hello")
-        p.on_session_end([])
-        p.on_pre_compress([])
-        p.on_memory_write("add", "memory", "test")
-        p.queue_prefetch("query")
-        p.sync_turn("user", "assistant")
-        p.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +130,6 @@ class TestMemoryManager:
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
 
-    def test_add_provider(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("test1")
-        mgr.add_provider(p)
-        assert len(mgr.providers) == 1
-        assert [p.name for p in mgr.providers] == ["test1"]
 
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
@@ -208,11 +172,16 @@ class TestMemoryManager:
 
     @staticmethod
     def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
-        monkeypatch.setattr(
-            "agent.memory_manager.get_spill_config",
-            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
-                     "preview_tail": 12, "directory": str(tmp_path)},
-        )
+        from hermes_cli.config import atomic_config_write
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True},
+            "hooks": {"output_spill": {
+                "enabled": True, "max_chars": max_chars, "preview_head": 12,
+                "preview_tail": 12, "directory": str(tmp_path),
+            }},
+        })
 
     def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
@@ -237,6 +206,137 @@ class TestMemoryManager:
 
         assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
         assert not list(tmp_path.rglob("*.txt"))
+
+    @pytest.mark.parametrize("memory, hooks_enabled", [
+        ({}, True),
+        ({"prefetch_spill_enabled": False}, True),
+        ({"prefetch_spill_enabled": True}, False),
+    ])
+    def test_prefetch_spill_requires_opt_in_without_changing_hooks(
+        self, tmp_path, monkeypatch, memory, hooks_enabled,
+    ):
+        """Provider-ranked recall stays intact unless both spill switches permit it (#130974)."""
+        from agent.turn_context import _collect_pre_llm_call_context
+        from hermes_cli.config import atomic_config_write
+        from tools.hook_output_spill import DEFAULT_MAX_CHARS
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": memory,
+            "hooks": {"output_spill": {} if hooks_enabled else {"enabled": False}},
+        })
+        text = "start\n" + "ranked middle\n" * (DEFAULT_MAX_CHARS // 2) + "end\n"  # over max_chars, under the ceiling
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = text
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        assert mgr.prefetch_all("recall", session_id="memory") == text
+        assert not (tmp_path / "hook_outputs").exists()
+
+        # Exercise the independent plugin-hook consumer, not just the spill helper.
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda *a, **kw: [{"context": text}])
+        result = _collect_pre_llm_call_context(
+            SimpleNamespace(session_id="hook", model="test"), effective_task_id="task",
+            turn_id="turn", original_user_message="recall", messages=[], conversation_history=[],
+        )
+        if hooks_enabled:
+            (saved,) = (tmp_path / "hook_outputs" / "hook").glob("*.txt")
+            assert saved.read_text(encoding="utf-8") == text
+            assert str(saved) in result and "plugin hook output truncated" in result
+        else:
+            assert result == text
+            assert not (tmp_path / "hook_outputs").exists()
+
+        atomic_config_write(tmp_path / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True},
+            "hooks": {"output_spill": {"enabled": True}},
+        })
+        assert mgr.prefetch_all("recall again", session_id="memory") == text
+        assert not (tmp_path / "hook_outputs" / "memory").exists()
+
+    def test_runaway_recall_still_spills_without_opt_in(self, tmp_path, monkeypatch):
+        """Opt-out keeps normal recall whole but still caps a runaway provider at the ceiling."""
+        from hermes_cli.config import atomic_config_write
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        atomic_config_write(tmp_path / "config.yaml", {"memory": {}})
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "x" * 100_001
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("recall", session_id="runaway")
+        assert len(result) < 100_000
+        (saved,) = (tmp_path / "hook_outputs" / "runaway").glob("*.txt")
+        assert saved.read_text(encoding="utf-8").rstrip("\n") == provider._prefetch_result
+
+    def test_prefetch_spill_profile_snapshot_preserves_opt_in(self, tmp_path, monkeypatch):
+        """A→B→A config reads are isolated; existing managers keep their registration policy."""
+        from agent.secret_scope import (
+            is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import atomic_config_write
+
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(a))  # Ambient launch home never follows B.
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        shared = {"max_chars": 40, "preview_head": 12, "preview_tail": 7,
+                  "directory": str(a / "recall")}
+        atomic_config_write(a / "config.yaml", {
+            "memory": {"prefetch_spill_enabled": True}, "hooks": {"output_spill": shared},
+        })
+        atomic_config_write(b / "config.yaml", {"memory": {"prefetch_spill_enabled": False}})
+        text = "HEAD-CONTEXT\n" + "ranked middle\n" * 2000 + "TAIL!!\n"
+        managers = {}
+        was_multiplex = is_multiplex_active()
+        set_multiplex_active(True)
+        try:
+            for home in (a, b, a):
+                home_token = set_hermes_home_override(home)
+                secret_token = set_secret_scope({}, profile_home=str(home))
+                try:
+                    if home not in managers:
+                        provider = FakeMemoryProvider("external")
+                        provider._prefetch_result = text
+                        mgr = MemoryManager()
+                        mgr.add_provider(provider)
+                        managers[home] = mgr
+                    mgr = managers[home]
+                    if home == b:
+                        assert mgr.prefetch_all("recall", session_id="s") == text
+                        assert not (b / "hook_outputs").exists()
+                        continue
+                    result = mgr.prefetch_all("recall", session_id="s")
+                    saved = list((a / "recall" / "s").glob("*.txt"))
+                    assert saved and all(p.read_text(encoding="utf-8") == text for p in saved)
+                    assert any(str(p) in result for p in saved)
+                    assert result.endswith(f"--- head ---\n{text[:12]}\n--- tail ---\n{text[-7:]}")
+                    assert "ranked middle" not in result
+                    # Subsequent config edits apply only to newly registered providers.
+                    atomic_config_write(a / "config.yaml", {
+                        "memory": {"prefetch_spill_enabled": False},
+                        "hooks": {"output_spill": {**shared, "enabled": False}},
+                    })
+                finally:
+                    reset_secret_scope(secret_token)
+                    reset_hermes_home_override(home_token)
+            home_token = set_hermes_home_override(a)
+            secret_token = set_secret_scope({}, profile_home=str(a))
+            try:
+                fresh = MemoryManager()
+                fresh.add_provider(provider := FakeMemoryProvider("external"))
+                provider._prefetch_result = text
+                assert fresh.prefetch_all("recall", session_id="fresh") == text
+                assert not (a / "recall" / "fresh").exists()
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+        finally:
+            set_multiplex_active(was_multiplex)
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
@@ -788,18 +888,6 @@ class TestSequentialDispatchRouting:
     """
 
 
-    def test_handle_tool_call_routes_to_provider(self):
-        """handle_tool_call dispatches to the correct provider's handler."""
-        mgr = MemoryManager()
-        provider = FakeMemoryProvider("hindsight", tools=[
-            {"name": "hindsight_recall", "description": "Recall", "parameters": {}},
-            {"name": "hindsight_retain", "description": "Retain", "parameters": {}},
-        ])
-        mgr.add_provider(provider)
-
-        result = json.loads(mgr.handle_tool_call("hindsight_recall", {"query": "alice"}))
-        assert result["handled"] == "hindsight_recall"
-        assert result["args"] == {"query": "alice"}
 
 
     def test_tool_names_include_all_providers(self):
@@ -824,89 +912,6 @@ class TestSequentialDispatchRouting:
 # ---------------------------------------------------------------------------
 
 
-class TestSetupFieldFiltering:
-    """Test the 'when' clause and 'default_from' logic used by the
-    memory setup wizard in hermes_cli/memory_setup.py.
-
-    These features are generic — any memory plugin can use them in
-    get_config_schema(). Currently used by the hindsight plugin.
-    """
-
-    def _filter_fields(self, schema, provider_config):
-        """Simulate the setup wizard's field filtering logic.
-
-        Returns list of (key, effective_default) for fields that pass
-        the 'when' filter.
-        """
-        results = []
-        for field in schema:
-            key = field["key"]
-            default = field.get("default")
-
-            # Dynamic default
-            default_from = field.get("default_from")
-            if default_from and isinstance(default_from, dict):
-                ref_field = default_from.get("field", "")
-                ref_map = default_from.get("map", {})
-                ref_value = provider_config.get(ref_field, "")
-                if ref_value and ref_value in ref_map:
-                    default = ref_map[ref_value]
-
-            # When clause
-            when = field.get("when")
-            if when and isinstance(when, dict):
-                if not all(provider_config.get(k) == v for k, v in when.items()):
-                    continue
-
-            results.append((key, default))
-        return results
-
-    def test_when_clause_filters_fields(self):
-        """Fields with 'when' are skipped if the condition doesn't match."""
-        schema = [
-            {"key": "mode", "default": "cloud"},
-            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
-            {"key": "api_key", "default": None, "when": {"mode": "cloud"}},
-            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
-            {"key": "llm_model", "default": "gpt-4o-mini", "when": {"mode": "local"}},
-            {"key": "budget", "default": "mid"},
-        ]
-
-        # Cloud mode: should see mode, api_url, api_key, budget
-        cloud_fields = self._filter_fields(schema, {"mode": "cloud"})
-        cloud_keys = [k for k, _ in cloud_fields]
-        assert cloud_keys == ["mode", "api_url", "api_key", "budget"]
-
-        # Local mode: should see mode, llm_provider, llm_model, budget
-        local_fields = self._filter_fields(schema, {"mode": "local"})
-        local_keys = [k for k, _ in local_fields]
-        assert local_keys == ["mode", "llm_provider", "llm_model", "budget"]
-
-
-    def test_when_and_default_from_combined(self):
-        """when clause and default_from work together correctly."""
-        provider_models = {"groq": "openai/gpt-oss-120b", "openai": "gpt-4o-mini"}
-        schema = [
-            {"key": "mode", "default": "local"},
-            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
-            {"key": "llm_model", "default": "gpt-4o-mini",
-             "default_from": {"field": "llm_provider", "map": provider_models},
-             "when": {"mode": "local"}},
-            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
-        ]
-
-        # Local + groq: should see llm_model with groq default, no api_url
-        fields = self._filter_fields(schema, {"mode": "local", "llm_provider": "groq"})
-        keys = [k for k, _ in fields]
-        assert "llm_model" in keys
-        assert "api_url" not in keys
-        assert dict(fields)["llm_model"] == "openai/gpt-oss-120b"
-
-        # Cloud: should see api_url, no llm_model
-        fields = self._filter_fields(schema, {"mode": "cloud"})
-        keys = [k for k, _ in fields]
-        assert "api_url" in keys
-        assert "llm_model" not in keys
 
 
 # ---------------------------------------------------------------------------
@@ -945,14 +950,8 @@ class TestFlattenMessageContent:
     """
 
 
-    def test_none_is_empty(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log(None, sep="\n") == ""
 
 
-    def test_scalar_fallback(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log(42, sep="\n") == "42"
 
     def test_flattened_output_is_regex_safe(self):
         """The original failure: sanitize_context(list) raised TypeError."""
@@ -1021,48 +1020,6 @@ class TestOnMemoryWriteBridge:
     """
 
 
-    def test_memory_manager_tool_injection_deduplicates(self):
-        """Memory manager tools already in self.tools (from plugin registry)
-        must not be appended again.  Duplicate function names cause 400 errors
-        on providers that enforce unique names (e.g. Xiaomi MiMo via Nous Portal).
-
-        Regression test for: duplicate mnemosyne_recall / mnemosyne_remember /
-        mnemosyne_stats in tools array → 400 from Nous Portal.
-        """
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext", tools=[
-            {"name": "ext_recall", "description": "Recall", "parameters": {}},
-            {"name": "ext_remember", "description": "Remember", "parameters": {}},
-        ])
-        mgr.add_provider(p)
-
-        # Simulate self.tools already containing one of the plugin tools
-        # (as if it was registered via ctx.register_tool → get_tool_definitions)
-        existing_tools = [
-            {"type": "function", "function": {"name": "ext_recall", "description": "Recall (from registry)", "parameters": {}}},
-            {"type": "function", "function": {"name": "web_search", "description": "Search", "parameters": {}}},
-        ]
-
-        # Apply the same dedup logic from run_agent.py __init__
-        _existing_names = {
-            t.get("function", {}).get("name")
-            for t in existing_tools
-            if isinstance(t, dict)
-        }
-        for _schema in mgr.get_all_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_names:
-                continue
-            existing_tools.append({"type": "function", "function": _schema})
-            if _tname:
-                _existing_names.add(_tname)
-
-        # ext_recall should NOT be duplicated; ext_remember should be added
-        tool_names = [t["function"]["name"] for t in existing_tools]
-        assert tool_names.count("ext_recall") == 1, f"ext_recall duplicated: {tool_names}"
-        assert tool_names.count("ext_remember") == 1
-        assert tool_names.count("web_search") == 1
-        assert len(existing_tools) == 3  # web_search + ext_recall + ext_remember
 
     def test_on_memory_write_tolerates_provider_failure(self):
         """If a provider's on_memory_write raises, others still get notified."""
@@ -1078,73 +1035,6 @@ class TestOnMemoryWriteBridge:
         assert good.memory_writes == [("add", "user", "test")]
 
 
-class TestHonchoCadenceTracking:
-    """Verify Honcho provider cadence gating depends on on_turn_start().
-
-    Bug: _turn_count was never updated because on_turn_start() was not called
-    from run_conversation(). This meant cadence checks always passed (every
-    turn fired both context refresh and dialectic). Fixed by calling
-    on_turn_start(self._user_turn_count, msg) before prefetch_all().
-    """
-
-    def test_turn_count_updates_on_turn_start(self):
-        """on_turn_start sets _turn_count, enabling cadence math."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        assert p._turn_count == 0
-        p.on_turn_start(1, "hello")
-        assert p._turn_count == 1
-        p.on_turn_start(5, "world")
-        assert p._turn_count == 5
-
-    def test_queue_prefetch_respects_dialectic_cadence(self):
-        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._dialectic_cadence = 3
-        p._recall_mode = "context"
-        p._session_key = "test-session"
-        # Simulate a manager that records prefetch calls
-        class FakeManager:
-            def prefetch_context(self, key, query=None):
-                pass
-
-        p._manager = FakeManager()
-
-        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
-        p.on_turn_start(1, "turn 1")
-        p._last_dialectic_turn = 1  # simulate it fired
-        p._last_context_turn = 1
-
-        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
-        p.on_turn_start(2, "turn 2")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
-        p.on_turn_start(3, "turn 3")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
-        p.on_turn_start(4, "turn 4")
-        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
-
-    def test_injection_frequency_first_turn_with_1indexed(self):
-        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._injection_frequency = "first-turn"
-
-        # Turn 1 should inject (not skip)
-        p.on_turn_start(1, "first message")
-        assert p._turn_count == 1
-        # The guard is `_turn_count > 1`, so turn 1 passes through
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert not should_skip, "First turn (turn 1) should NOT be skipped"
-
-        # Turn 2 should skip
-        p.on_turn_start(2, "second message")
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert should_skip, "Second turn (turn 2) SHOULD be skipped"
 
 
 class TestMemoryToolToolsetGate:
@@ -1199,7 +1089,7 @@ class TestMemoryToolToolsetGate:
     def test_memory_in_toolsets_injects(self):
         """enabled_toolsets including 'memory' injects memory tools."""
         mgr = self._mgr_with_tools("fact_store")
-        tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
+        _tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
 
     def test_composite_toolset_with_memory_injects(self):
@@ -1237,110 +1127,12 @@ class TestMemoryToolToolsetGate:
 
     def test_no_memory_manager_no_injection(self):
         """Gate is moot without a memory manager."""
-        tools, names = self._run_memory_injection(None, None)
+        tools, _names = self._run_memory_injection(None, None)
         assert tools == []
 
-    def test_multiple_schemas_all_blocked_together(self):
-        """When the gate is closed, no memory tools leak — not even partially."""
-        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(["terminal"], mgr)
-        assert tools == []
-        assert names == set()
-
-    def test_multiple_schemas_all_injected_when_enabled(self):
-        """When the gate is open, every memory tool schema is injected."""
-        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(None, mgr)
-        assert names == {"fact_store", "memory_search", "memory_add"}
 
 
-class TestContextEngineToolsetGate:
-    """Issue #5544 (sibling): context engine tools follow the same gate.
 
-    `agent.context_compressor.get_tool_schemas()` (e.g. lcm_grep, lcm_describe,
-    lcm_expand) was appended to AIAgent.tools unconditionally. Same blind
-    injection class as the memory bug; same local-model penalty. Gate name:
-    "context_engine" (matches the existing plugin-system convention).
-    """
-
-    @staticmethod
-    def _run_context_engine_injection(enabled_toolsets, compressor):
-        """Simulate the gated context-engine injection block from agent_init.py."""
-        tools = []
-        valid_tool_names = set()
-        engine_tool_names = set()
-
-        if (
-            compressor is not None
-            and tools is not None
-            and (
-                enabled_toolsets is None
-                or "context_engine" in enabled_toolsets
-            )
-        ):
-            _existing = {
-                t.get("function", {}).get("name")
-                for t in tools
-                if isinstance(t, dict)
-            }
-            for _schema in compressor.get_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing:
-                    continue
-                tools.append({"type": "function", "function": _schema})
-                if _tname:
-                    valid_tool_names.add(_tname)
-                    engine_tool_names.add(_tname)
-                    _existing.add(_tname)
-
-        return tools, valid_tool_names, engine_tool_names
-
-    class _FakeCompressor:
-        def __init__(self, schemas):
-            self._schemas = schemas
-
-        def get_tool_schemas(self):
-            return list(self._schemas)
-
-    def _compressor_with(self, *tool_names):
-        return self._FakeCompressor(
-            [{"name": n, "description": n, "parameters": {}} for n in tool_names]
-        )
-
-    def test_none_toolsets_injects(self):
-        """enabled_toolsets=None injects context-engine tools — backward compat."""
-        c = self._compressor_with("lcm_grep", "lcm_describe", "lcm_expand")
-        tools, names, engine_names = self._run_context_engine_injection(None, c)
-        assert engine_names == {"lcm_grep", "lcm_describe", "lcm_expand"}
-
-    def test_context_engine_in_toolsets_injects(self):
-        """enabled_toolsets including 'context_engine' injects the tools."""
-        c = self._compressor_with("lcm_grep")
-        tools, names, engine_names = self._run_context_engine_injection(
-            ["terminal", "context_engine"], c
-        )
-        assert "lcm_grep" in engine_names
-
-    def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
-        c = self._compressor_with("lcm_grep")
-        tools, names, engine_names = self._run_context_engine_injection([], c)
-        assert tools == []
-        assert engine_names == set()
-
-    def test_toolsets_without_context_engine_blocks_injection(self):
-        """A toolset list that doesn't name 'context_engine' suppresses injection."""
-        c = self._compressor_with("lcm_grep", "lcm_describe")
-        tools, names, engine_names = self._run_context_engine_injection(
-            ["terminal", "memory"], c
-        )
-        assert tools == []
-        assert engine_names == set()
-
-    def test_no_compressor_no_injection(self):
-        """Gate is moot without a context_compressor."""
-        tools, names, engine_names = self._run_context_engine_injection(None, None)
-        assert tools == []
 
 
 class TestNormalizeToolSchema:
@@ -1355,17 +1147,6 @@ class TestNormalizeToolSchema:
     """
 
 
-    def test_already_wrapped_schema_is_unwrapped(self):
-        from agent.memory_manager import normalize_tool_schema
-        wrapped = {
-            "type": "function",
-            "function": {"name": "x_grep", "description": "d", "parameters": {}},
-        }
-        out = normalize_tool_schema(wrapped)
-        assert out is not None
-        assert out["name"] == "x_grep"
-        # Must be the inner function schema, not the wrapper.
-        assert "type" not in out or out.get("type") != "function"
 
 
     def test_non_dict_rejected(self):

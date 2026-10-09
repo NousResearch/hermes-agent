@@ -45,9 +45,9 @@ import pytest
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
+from aiohttp import web
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import create_app
 
 
 # How long the fake adapter blocks. Long enough that a starved loop records
@@ -77,7 +77,7 @@ class _RecordingAdapter(UpstreamAdapter):
         base_url: str,
         *,
         stall: float = 0.0,
-        ticks: Optional[List[int]] = None,
+        ticks: Optional[list[int]] = None,
         raise_on_credential: bool = False,
         retry_bearer: Optional[str] = None,
         raise_on_retry: bool = False,
@@ -160,7 +160,7 @@ async def _start_runner(app: "web.Application"):
     return runner, f"http://127.0.0.1:{port}"
 
 
-def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
     async def echo(request):
         body = await request.read()
         captured["requests"].append(
@@ -174,7 +174,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
 
 
 def _build_rejecting_upstream(
-    captured: Dict[str, Any], *, reject_status: int, accept_bearer: str
+    captured: dict[str, Any], *, reject_status: int, accept_bearer: str
 ) -> "web.Application":
     """Upstream that rejects every bearer except ``accept_bearer``.
 
@@ -197,7 +197,7 @@ def _build_rejecting_upstream(
     return app
 
 
-async def _heartbeat(ticks: List[int], running: List[bool]) -> None:
+async def _heartbeat(ticks: list[int], running: list[bool]) -> None:
     """Tick a counter on the event loop until told to stop."""
     while running[0]:
         ticks[0] += 1
@@ -217,7 +217,7 @@ def test_get_credential_runs_off_the_event_loop():
     """
     async def run():
         loop_thread = threading.get_ident()
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         adapter = _RecordingAdapter(f"{upstream_base}/v1")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
@@ -254,7 +254,7 @@ def test_event_loop_keeps_running_while_credentials_resolve():
     async def run():
         ticks = [0]
         running = [True]
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         adapter = _RecordingAdapter(
             f"{upstream_base}/v1", stall=_STALL_SECONDS, ticks=ticks
@@ -292,7 +292,7 @@ def test_credential_failure_still_maps_to_401():
     red-before set — it guards the behaviour the fix must leave alone.
     """
     async def run():
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         adapter = _RecordingAdapter(f"{upstream_base}/v1", raise_on_credential=True)
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
@@ -336,7 +336,7 @@ def test_get_retry_credential_runs_off_the_event_loop():
     """
     async def run():
         loop_thread = threading.get_ident()
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(
             _build_rejecting_upstream(
                 captured, reject_status=401, accept_bearer="rotated-bearer"
@@ -383,7 +383,7 @@ def test_event_loop_keeps_running_while_the_retry_credential_resolves():
     async def run():
         ticks = [0]
         running = [True]
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(
             _build_rejecting_upstream(
                 captured, reject_status=429, accept_bearer="rotated-bearer"
@@ -428,7 +428,7 @@ def test_retry_credential_failure_still_returns_the_upstream_rejection():
     the red-before set — it guards behaviour the fix must leave alone.
     """
     async def run():
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(
             _build_rejecting_upstream(
                 captured, reject_status=401, accept_bearer="never-offered"

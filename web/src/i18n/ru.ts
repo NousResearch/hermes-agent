@@ -95,6 +95,7 @@ export const ru: Translations = {
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Обновлено, но работа ещё не завершена (запустите `hermes update` снова, чтобы закончить)",
     actions: "Действия",
     agent: "Агент",
     activeSessions: "Активные сессии",
@@ -162,9 +163,14 @@ export const ru: Translations = {
     deleteSelectedConfirmMessage:
       "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
+    selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    workspace: "рабочая папка",
+    workspaceDefault: "По умолчанию",
+    workspaceRescan: "Пересканировать репозитории",
+    workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {
@@ -324,6 +330,8 @@ export const ru: Translations = {
     disableRuntime: "Отключить",
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
+    toggleTakesEffectAfterRestart:
+      "Сохранено — перезапустите шлюз, чтобы применить изменение.",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
     headline:
       "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",

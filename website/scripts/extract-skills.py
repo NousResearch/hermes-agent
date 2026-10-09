@@ -20,12 +20,14 @@ the unified index existed).
 
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 
-import yaml
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
+import hermes_yaml as yaml
+
 LOCAL_SKILL_DIRS = [
     ("skills", "built-in"),
     ("optional-skills", "optional"),

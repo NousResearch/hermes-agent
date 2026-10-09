@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("hermes_cli.auth")
@@ -34,24 +34,29 @@ class SetupRecord:
 
     provider_configured: bool      # some provider can carry inference (free tier included)
     inference_provider: str        # ``resolve_provider("auto")``'s answer, "" when nothing resolves
-    free_tier: bool                # the identity that exists is the free tier AND the tier is on
+    free_tier_account: bool        # the identity that exists is the free tier AND the tier is on
     has_identity: bool             # a Nous identity (free tier or account) is on disk
     other_providers: bool          # the inventory found something usable BESIDES the free tier
     error: str = ""                # why the mint did not happen, when it did not; "" otherwise
     # The mint memo's verdict, verbatim (``anon_auth.MintFailure.as_payload``):
     # ``{error, error_code, retryable, retry_after}`` when the mint did not happen, else ``{}``.
     # One wire shape: every status RPC spreads it as is.
-    failure: Dict[str, Any] = field(default_factory=dict)
+    failure: dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
-    def as_payload(self) -> Dict[str, Any]:
+    @property
+    def free_tier_route(self) -> bool:
+        return self.free_tier_account and self.inference_provider == "nous"
+
+    def as_payload(self) -> dict[str, Any]:
         # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
         # so a client keys on ``error_code`` identically whichever surface it read.
         payload = asdict(self)
         payload.update(payload.pop("failure"))
+        payload["free_tier_route"] = self.free_tier_route
         return payload
 
-    def failure_fields(self) -> Dict[str, Any]:
+    def failure_fields(self) -> dict[str, Any]:
         return dict(self.failure)
 
 
@@ -59,6 +64,10 @@ _lock = threading.Lock()
 _record: Optional[SetupRecord] = None
 _done = threading.Event()
 _started = False
+# ``(mtime_ns, size)`` of the files the inventory reads, taken by the inventory that built the
+# current record; ``reconcile_record`` re-inventories only when they moved.
+_inventory_stamp: Optional[tuple] = None
+_INVENTORY_FILES = ("config.yaml", ".env", "auth.json")
 
 
 def current_record() -> Optional[SetupRecord]:
@@ -68,30 +77,82 @@ def current_record() -> Optional[SetupRecord]:
 
 def wait_for_record(timeout: float = SETUP_READY_WAIT_SECONDS) -> Optional[SetupRecord]:
     """Block up to ``timeout`` seconds for a bootstrap that is IN FLIGHT, then return whatever it
-    produced. Returns None at once when no bootstrap ever started in this process (a bare
-    ``tui_gateway`` under test, an old serve without the boot hook): the caller falls back to its
-    live probe instead of paying the wait for nothing."""
+    produced, reconciled with any provider configured since (:func:`reconcile_record`). Returns
+    None at once when no bootstrap ever started in this process (a bare ``tui_gateway`` under
+    test, an old serve without the boot hook): the caller falls back to its live probe instead of
+    paying the wait for nothing."""
     if not _started:
         return None
     _done.wait(timeout)
-    return _record
+    return reconcile_record()
+
+
+def reconcile_record() -> Optional[SetupRecord]:
+    """Let a provider configured AFTER boot count: a record that says ``provider_configured:
+    false`` is re-inventoried once ``config.yaml`` / ``.env`` / ``auth.json`` moved since the
+    inventory that built it, and replaced (+ ``setup.ready``) when something now carries
+    inference. The mint verdict (identity, failure block) is kept as is: only the boot bootstrap
+    and its retries mint. A record that already says ``True`` is never re-probed, so the answer
+    only moves false -> true here. Every write path that assigns the main model (the Models page,
+    a picker key save) calls this for the immediate broadcast; ``setup.status`` calls it for
+    writes this process never saw (``hermes setup`` / ``hermes model`` from a shell, a hand edit).
+    The record is the LAUNCH profile's: a call scoped to another profile's home (a dashboard
+    write with ``?profile=B``) leaves it alone, or B's providers would open the launch gate."""
+    global _record
+    record = _record
+    if record is None or record.provider_configured:
+        return record
+    from hermes_constants import get_process_hermes_home, hermes_home_key
+    if hermes_home_key() != hermes_home_key(get_process_hermes_home()) or _inventory_stamp == _config_stamp():
+        return record
+    if not _inventory_other_providers():
+        return _record
+    refreshed = replace(record, provider_configured=True, other_providers=True,
+                        inference_provider=_resolve_inference(), finished_at=time.time())
+    with _lock:
+        if _record is not record:  # a retry replaced it meanwhile; its inventory is newer
+            return _record
+        _record = refreshed
+    _broadcast(refreshed)
+    return refreshed
 
 
 def reset_for_tests() -> None:
-    global _record, _started
+    global _record, _started, _inventory_stamp
     with _lock:
         _record = None
         _started = False
+        _inventory_stamp = None
         _done.clear()
+
+
+def _config_stamp() -> tuple:
+    from hermes_cli.config import get_hermes_home
+    home = get_hermes_home()
+    stamp = []
+    for name in _INVENTORY_FILES:
+        try:
+            st = (home / name).stat()
+            stamp.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append(None)
+    return tuple(stamp)
 
 
 def _inventory_other_providers() -> bool:
     """Is anything usable configured BESIDES the free tier? Asks the resolver ladder itself (the
     thing that picks the provider for a turn) with the free-tier rung hidden: an explicit key, a
     config pin, a sign-in or a host credential answers; nothing else falls through to
-    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard counts
-    keyless catalog providers as "configured" and is True on a blank machine."""
+    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard also
+    counts host credentials (gh auth, Claude Code) and a config pin, and it does not hide the
+    free-tier rung.
+
+    Stamps the config files BEFORE reading them, so a write that lands during the inventory is
+    seen by the next :func:`reconcile_record`.
+    """
+    global _inventory_stamp
     from hermes_cli.auth import resolve_provider
+    _inventory_stamp = _config_stamp()
     try:
         return resolve_provider("auto", skip_free_tier=True) != "nous"
     except Exception as exc:
@@ -113,12 +174,11 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
     from hermes_cli import anon_auth
 
     error = ""
-    failure: Dict[str, Any] = {}
-    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
+    failure: dict[str, Any] = {}
+    state: Optional[dict[str, Any]] = anon_auth.current_nous_state()
     if anon_auth.guest_enabled():
         try:
-            # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
-            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other, force=force)
+            state = anon_auth.ensure_portal_identity(explicit=True, force=force)
         except Exception as exc:
             error = str(exc)
             logger.info("Nous free tier not set up at boot: %s", exc)
@@ -127,11 +187,11 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
             # cooldown still runs: the record carries that verdict either way.
             failure = anon_auth.last_mint_failure() or {}
             error = error or str(failure.get("error") or "")
-    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
+    free_tier_account = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
     return SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
+        provider_configured=other or free_tier_account or (bool(state) and not anon_auth.is_guest_state(state)),
         inference_provider=_resolve_inference(),
-        free_tier=free_tier,
+        free_tier_account=free_tier_account,
         has_identity=bool(state),
         other_providers=other,
         error=error,

@@ -399,8 +399,8 @@ def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkey
 
     real_export = default_db.export_session_lineage
 
-    def _export_then_append(session_id):
-        payload = real_export(session_id)
+    def _export_then_append(session_id, **kwargs):
+        payload = real_export(session_id, **kwargs)
         # Another backend appends AFTER the export snapshot is taken.
         default_db.append_message(STRANDED_ID, "user", "raced question")
         default_db.append_message(STRANDED_ID, "assistant", "raced answer")
@@ -420,3 +420,34 @@ def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkey
     second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
     assert second["donor_retired"] is False
     assert not default_db.get_session(STRANDED_ID)["archived"]
+
+
+def _every_row(db, session_id):
+    return [(m["role"], m["content"], m["active"], m["compacted"], m.get("codex_reasoning_items"))
+            for m in db.get_messages(session_id, include_inactive=True)]
+
+
+def test_adoption_keeps_every_row_checkpoint_sidecar(stores):
+    """Rows written before shadowed-checkpoint pruning (#102374) each still carry their own checkpoint.
+    Archived rows must not take part in the import's live-row pruning: a newer rewound carrier would
+    strip the newest LIVE checkpoint, and the retired donor is the only other copy."""
+    default_db, profile_db = stores
+    _seed_stranded(default_db, turns=0)
+    for i in range(1, 4):
+        default_db.append_message(STRANDED_ID, "user", f"question {i}")
+        default_db.append_message(STRANDED_ID, "assistant", f"answer {i}", codex_reasoning_items=[
+            {"type": "compaction", "encrypted_content": f"checkpoint {i}"}])
+    rows = default_db.get_messages(STRANDED_ID)
+    default_db._execute_write(lambda conn: (
+        conn.executemany("UPDATE messages SET codex_reasoning_items = ? WHERE id = ?", [
+            (f'[{{"type": "compaction", "encrypted_content": "checkpoint {i}"}}]', rows[2 * i - 1]["id"])
+            for i in range(1, 4)]),
+        conn.executemany("UPDATE messages SET active = 0, compacted = ? WHERE id = ?", [
+            (1, rows[0]["id"]), (1, rows[1]["id"]), (0, rows[4]["id"]), (0, rows[5]["id"])])))
+    donor_rows = _every_row(default_db, STRANDED_ID)
+    assert [row[4] is not None for row in donor_rows] == [False, True] * 3
+
+    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+
+    assert result["donor_retired"] is True
+    assert _every_row(profile_db, STRANDED_ID) == donor_rows

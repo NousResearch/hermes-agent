@@ -21,7 +21,7 @@ Scenarios (all deterministic, no network beyond 127.0.0.1):
 
 Usage (from a checkout root, venv python)::
 
-    python evals/native_compaction/ab_checkpoint_preflight.py --out /tmp/result.json
+    python evals/native_compaction/ab_checkpoint_preflight.py --out result.json
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class _FakeResponses:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a):  # noqa: D401
+            def log_message(self, *_a):
                 pass
 
             def do_POST(self):
@@ -245,7 +245,7 @@ def main() -> int:
     (tmp / "home").mkdir(parents=True)
     import subprocess
 
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     wire = _FakeResponses()
     try:
         result = {

@@ -5,16 +5,18 @@
  *
  * A URL/HTML preview renders in a sandboxed <webview> owned by PreviewPane;
  * that pane registers a PAGE READER here (url + title + rendered text), keyed
- * by tab id. `readActivePreview` resolves the ACTIVE tab from the store and
- * owns the windowing: a registered reader answers with the live page's text;
+ * by tab id. `readActivePreview` resolves the preview the user is looking at
+ * (hovered zone, else focused zone, else the store) and owns the windowing:
+ * a registered reader answers with the live page's text;
  * a tab with no reader (a file peek, an artifact) still answers with its
  * identity and a note pointing the agent at the tool that reads that content
  * directly (read_file / the conversation's artifact).
  */
 
-import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs } from '@/store/preview'
+import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
+import { resolveActivePreviewTab } from './preview-active-tab'
 import { nudgeOverlay } from './preview-nudge'
 
 export interface PreviewReadOptions {
@@ -24,12 +26,23 @@ export interface PreviewReadOptions {
   start?: number
 }
 
+export interface PreviewReadTabSummary {
+  id: string
+  kind: string
+  label: string
+  url: string
+}
+
 export interface PreviewReadResult {
+  /** Set when more than one preview is mounted — the tab this read used. */
+  active_tab_id?: string
   end: number
   kind: string
   note?: string
   path?: string
   start: number
+  /** Open preview tabs, set when more than one is mounted. */
+  tabs?: PreviewReadTabSummary[]
   text: string
   title: string
   total_chars: number
@@ -75,10 +88,37 @@ function windowText(
   return { ...base, end: to, start: from, text: text.slice(from, to), total_chars: total }
 }
 
-/** Read the ACTIVE preview tab. Null only when no tab is open at all. */
-export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<PreviewReadResult | null> {
-  const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+function tabSummary(tab: PreviewTab): PreviewReadTabSummary {
+  return { id: tab.id, kind: tab.target.kind, label: tab.target.label, url: tab.target.url }
+}
+
+function zoneMeta(tab: PreviewTab, tabs: PreviewTab[]): { active_tab_id?: string; tabs?: PreviewReadTabSummary[] } {
+  if (tabs.length < 2) {
+    return {}
+  }
+
+  return { active_tab_id: tab.id, tabs: tabs.map(tabSummary) }
+}
+
+function withMultiNote(note: string | undefined, multi: boolean): string | undefined {
+  if (!multi) {
+    return note
+  }
+
+  const extra = 'Multiple preview tabs are open; this read used the hovered or focused preview (see tabs).'
+
+  return note ? `${note} ${extra}` : extra
+}
+
+/** Read the preview the user is looking at, among the tabs `sessionId` (the
+ *  requesting session; default the focused one) can see. Null only when that
+ *  session has no tab open at all. */
+export async function readActivePreview(
+  opts: PreviewReadOptions = {},
+  sessionId?: PreviewOwner
+): Promise<null | PreviewReadResult> {
+  const tabs = previewTabsFor(sessionId)
+  const tab = resolveActivePreviewTab(tabs)
 
   if (!tab) {
     return null
@@ -86,6 +126,8 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
 
   const { target } = tab
   const reader = readers.get(tab.id)
+  const multi = tabs.length > 1
+  const meta = zoneMeta(tab, tabs)
 
   if (reader) {
     try {
@@ -96,10 +138,17 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
       // side of it — so a run of reads used to leave the pane dark for the
       // twenty seconds it took to page through a document, immediately after
       // the one moment that showed anything.
-      nudgeOverlay('read')
+      nudgeOverlay('read', sessionId)
 
       return windowText(
-        { kind: target.kind, path: target.path, title: page.title || target.label, url: page.url || target.url },
+        {
+          ...meta,
+          kind: target.kind,
+          note: withMultiNote(undefined, multi),
+          path: target.path,
+          title: page.title || target.label,
+          url: page.url || target.url
+        },
         page.text,
         opts
       )
@@ -112,15 +161,18 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
   // No live webview behind the tab (a file peek, an artifact, or a page still
   // booting): answer with the tab's identity so the agent knows what's on
   // screen and which of its own tools reads the content directly.
+  const identity =
+    target.kind === 'file'
+      ? 'File preview — read the file itself with read_file.'
+      : target.kind === 'artifact'
+        ? 'Generated artifact — its content is in the conversation that produced it.'
+        : 'The page has not finished loading — retry in a moment.'
+
   return windowText(
     {
+      ...meta,
       kind: target.kind,
-      note:
-        target.kind === 'file'
-          ? 'File preview — read the file itself with read_file.'
-          : target.kind === 'artifact'
-            ? 'Generated artifact — its content is in the conversation that produced it.'
-            : 'The page has not finished loading — retry in a moment.',
+      note: withMultiNote(identity, multi),
       path: target.path,
       title: target.label,
       url: target.url

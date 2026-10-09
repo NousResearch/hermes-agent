@@ -67,9 +67,9 @@ def _interpret_signal_exit(exit_code: int) -> str | None:
 
 # Informational non-zero exit codes per base command.
 _EXIT_CODE_SEMANTICS: dict[str, dict[int, str]] = {
-    **dict.fromkeys(("grep", "egrep", "fgrep", "rg", "ag", "ack"), {1: "No matches found (not an error)"}),
-    **dict.fromkeys(("diff", "colordiff"), {1: "Files differ (expected, not an error)"}),
-    **dict.fromkeys(("test", "["), {1: "Condition evaluated to false (expected, not an error)"}),
+    **{key: {1: "No matches found (not an error)"} for key in ("grep", "egrep", "fgrep", "rg", "ag", "ack")},
+    **{key: {1: "Files differ (expected, not an error)"} for key in ("diff", "colordiff")},
+    **{key: {1: "Condition evaluated to false (expected, not an error)"} for key in ("test", "[")},
     "find": {1: "Some directories were inaccessible (partial results may still be valid)"},
     "curl": {6: "Could not resolve host", 7: "Failed to connect to host",
              22: "HTTP response code indicated error (e.g. 404, 500)", 28: "Operation timed out"},
@@ -117,7 +117,7 @@ def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bo
     """Sudo failure handling -> (output, auth_failed, cache_cleared)."""
     import tools.terminal_tool as tt
     from tools.terminal_tool_sudo import (
-        _handle_sudo_failure, _in_delegated_child_context, _invalidate_cached_sudo_on_auth_failure,
+        _handle_sudo_failure, _invalidate_cached_sudo_on_auth_failure, _no_sudo_user,
         _sudo_wrong_password_failure,
     )
     from utils import env_var_enabled
@@ -126,7 +126,7 @@ def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bo
     cache_cleared = _invalidate_cached_sudo_on_auth_failure(command, output)
     can_reprompt = cache_cleared and (
         tt._get_sudo_password_callback() is not None or env_var_enabled("HERMES_INTERACTIVE")
-    ) and not _in_delegated_child_context()
+    ) and not _no_sudo_user()
     if can_reprompt:
         output += ("\n\n⚠️ Sudo authentication failed — cached password "
                    "cleared. You will be prompted again on the next sudo command.")
@@ -177,7 +177,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8", errors="replace")
+        raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),

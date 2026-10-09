@@ -158,7 +158,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def adapter(self) -> "A2AAdapter":
         return self.server.adapter  # type: ignore[attr-defined]
 
-    def log_message(self, format, *args):  # noqa: A002,N802
+    def log_message(self, format, *args):
         logger.debug("A2A http: " + format, *args)  # silence the default stderr access log
 
     def _json(self, code: int, payload: dict):
@@ -192,7 +192,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         scheme = (self.headers.get("X-Forwarded-Proto", "") or "http").split(",")[0].strip()
         return f"{scheme}://{host}/" if host else ""
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         adapter = self.adapter
         route = adapter._route_for_path(self.path)
         agent = route["agent"]
@@ -211,7 +211,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             payload["served_agents"] = adapter._served_agent_summary(public_url=public_url)
         self._json(200, payload)
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
@@ -288,13 +288,13 @@ class A2AAdapter(BasePlatformAdapter):
         # Per-adapter protocol state (not module-global).
         self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
         # Forwarded profile sessions: (profile, agent_slug, context_id) -> session_id.
-        self._profile_sessions: Dict[tuple[str, str, str], str] = {}
-        self._profile_session_locks: Dict[tuple[str, str, str], threading.Lock] = {}
+        self._profile_sessions: dict[tuple[str, str, str], str] = {}
+        self._profile_session_locks: dict[tuple[str, str, str], threading.Lock] = {}
         self._profile_session_locks_guard = threading.Lock()
         # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
         # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
-        self._pending: Dict[str, tuple[str, Future]] = {}
-        self._pending_order: Dict[str, deque[str]] = {}
+        self._pending: dict[str, tuple[str, Future]] = {}
+        self._pending_order: dict[str, deque[str]] = {}
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
         self._pending_lock = threading.Lock()
@@ -330,6 +330,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
+        sec = self._security_context
+        if sec.dispatch_fails_closed():
+            logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
+                         "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
@@ -816,7 +820,7 @@ class A2AAdapter(BasePlatformAdapter):
             headers["X-A2A-Signature"] = signature
         try:
             req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 status = resp.status
         except Exception as e:
             return fail("failed: %s", e)
@@ -825,7 +829,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.push_sent += 1
         logger.debug("A2A: push notification sent for task %s", task_id)
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None):
         """Fulfil the oldest pending reply Future for this context (``chat_id`` = A2A context id).
         Only sends carrying ``metadata['notify']`` (the base adapter's final-reply marker) satisfy
         the caller; progress/status/preview sends must not."""
@@ -838,15 +842,23 @@ class A2AAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"a2a:{chat_id}", "type": "dm"}
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send (failures,
-        cancellations, empty runs) so the HTTP thread returns promptly."""
+        cancellations, empty runs, or a reply the gateway already streamed to the user) so the
+        HTTP thread returns promptly."""
         task_id = str(getattr(event, "message_id", "") or "")
         if task_id:
+            # A streamed turn never calls send() with notify=True (the gateway suppresses the
+            # normal final send once streaming delivered the body), so the SUCCESS default must
+            # not resolve with "" — that strands every A2A streaming reply as an empty completed
+            # task (#116944). _streamed_final_response is the same stash _final_text_for_post_turn_hooks
+            # reads for /goal and /loop.
+            _streamed = getattr(event, "_streamed_final_response", "")
+            default = (protocol.STATE_COMPLETED, _streamed if isinstance(_streamed, str) else "")
             self._resolve_task(task_id, *{
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
-            }.get(outcome, (protocol.STATE_COMPLETED, "")))
+            }.get(outcome, default))

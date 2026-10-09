@@ -25,7 +25,7 @@ _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
-def _load_xai_web_config() -> Dict[str, Any]:
+def _load_xai_web_config() -> dict[str, Any]:
     """Read ``web.xai`` from config.yaml (returns {} on miss)."""
     try:
         from hermes_cli.config import load_config
@@ -33,12 +33,12 @@ def _load_xai_web_config() -> Dict[str, Any]:
         for key in ("web", "xai"):
             cfg = cfg.get(key) if isinstance(cfg, dict) else None
         return cfg if isinstance(cfg, dict) else {}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Could not load web.xai config: %s", exc)
         return {}
 
 
-def _coerce_domain_list(value: Any) -> List[str]:
+def _coerce_domain_list(value: Any) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()][:_MAX_DOMAIN_FILTERS] if isinstance(value, list) else []
 
 
@@ -63,12 +63,12 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         auth-store lock, since this runs on every ``hermes tools`` repaint."""
         return has_xai_credentials()
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         try:
             from tools.interrupt import is_interrupted
             if is_interrupted():
                 return _fail("Interrupted")
-        except Exception:  # noqa: BLE001 — interrupt module is best-effort
+        except Exception:
             pass
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
@@ -84,9 +84,9 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             # xAI rejects this combo — surface a clear error rather than an API 400.
             return _fail("web.xai.allowed_domains and web.xai.excluded_domains cannot both be set (xAI restriction).")
         # include=no_inline_citations keeps the JSON block clean; URLs come from annotations/citations.
-        payload: Dict[str, Any] = {"model": model, "input": [{"role": "user", "content": self._build_prompt(query, limit)}], "tools": [web_search_tool], "include": ["no_inline_citations"]}
+        payload: dict[str, Any] = {"model": model, "input": [{"role": "user", "content": self._build_prompt(query, limit)}], "tools": [web_search_tool], "include": ["no_inline_citations"]}
         try:
-            import httpx  # noqa: F401 — availability probe
+            import httpx
         except ImportError:
             return _fail("httpx is not installed (required for xAI web search)")
         logger.info("xAI web search via %s: '%s' (limit=%d, model=%s)", base_url, query, limit, model)
@@ -107,7 +107,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return search_ok(self._extract_results(data, limit=limit))
 
     @staticmethod
-    def _web_search_tool(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _web_search_tool(cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
         """``web_search`` tool spec with optional domain filters; None when both
         allowed and excluded are set (xAI rejects the combination)."""
         filters = {k: _coerce_domain_list(cfg.get(k)) for k in ("allowed_domains", "excluded_domains")}
@@ -117,7 +117,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return {"type": "web_search", "filters": filters} if filters else {"type": "web_search"}
 
     @staticmethod
-    def _post_responses(base_url: str, payload: Dict[str, Any], api_key: str, timeout: float, *, is_oauth_path: bool) -> tuple[Any, Optional[Dict[str, Any]]]:
+    def _post_responses(base_url: str, payload: dict[str, Any], api_key: str, timeout: float, *, is_oauth_path: bool) -> tuple[Any, Optional[dict[str, Any]]]:
         """POST ``/responses`` → ``(parsed_json, None)`` or ``(None, failure_envelope)``.
 
         Two attempts: on a first-call 401 with OAuth creds, force-refresh once and retry
@@ -131,7 +131,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             try:
                 key = str(resolve_xai_http_credentials(force_refresh=True, api_key_hint=api_key).get("api_key") or "").strip()
                 return key if key != api_key else ""
-            except Exception as refresh_exc:  # noqa: BLE001
+            except Exception as refresh_exc:
                 logger.warning("xAI web search OAuth refresh after 401 failed: %s", refresh_exc)
                 return ""
 
@@ -161,7 +161,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             return None, _fail("xAI web search produced no response")
         try:
             return resp.json(), None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("xAI web search bad JSON: %s", exc)
             return None, _fail("Could not parse xAI Responses API reply as JSON")
 
@@ -179,7 +179,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         )
 
     @classmethod
-    def _extract_results(cls, response_data: Dict[str, Any], *, limit: int) -> List[Dict[str, Any]]:
+    def _extract_results(cls, response_data: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
         """Rows in order of preference: (1) the JSON object in ``output_text`` blocks,
         (2) ``url_citation`` annotations paired with surrounding text, (3) the raw
         ``citations`` list. (2) only short-circuits when it yields rows, so future
@@ -192,7 +192,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return [_row("", str(u), "", i + 1) for i, u in enumerate(citations[:limit]) if isinstance(u, str) and u.strip()] if isinstance(citations, list) else []
 
     @staticmethod
-    def _collect_output_text(response_data: Dict[str, Any]) -> tuple[List[str], List[Dict[str, Any]]]:
+    def _collect_output_text(response_data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
         """(text_blocks, annotations) from ``response.output`` message chunks."""
         output = response_data.get("output")
         chunks = [
@@ -207,7 +207,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return text_blocks, annotations
 
     @staticmethod
-    def _try_parse_json_results(text: str, *, limit: int) -> Optional[List[Dict[str, Any]]]:
+    def _try_parse_json_results(text: str, *, limit: int) -> Optional[list[dict[str, Any]]]:
         """Parse a JSON object with a ``results`` array out of ``text``; None when absent.
         Whole string first, then the regex-matched block (reasoning models prefix narration)."""
         match = _JSON_BLOCK_RE.search(text)
@@ -219,7 +219,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
             results = parsed.get("results") if isinstance(parsed, dict) else None
             if not isinstance(results, list):
                 continue
-            normalized: List[Dict[str, Any]] = []
+            normalized: list[dict[str, Any]] = []
             for row in results[:limit]:
                 url = str(row.get("url", "")).strip() if isinstance(row, dict) else ""
                 if url:
@@ -230,11 +230,11 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return None
 
     @staticmethod
-    def _results_from_annotations(annotations: List[Dict[str, Any]], joined_text: str, *, limit: int) -> List[Dict[str, Any]]:
+    def _results_from_annotations(annotations: list[dict[str, Any]], joined_text: str, *, limit: int) -> list[dict[str, Any]]:
         """Fallback rows from ``url_citation`` annotations: URL plus ~200 chars of
         preceding text as the description (the annotation title is just a number)."""
         seen: set[str] = set()
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for ann in annotations:
             url = str(ann.get("url", "")).strip() if ann.get("type") == "url_citation" else ""
             if not url or url in seen:
@@ -251,32 +251,10 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
                 break
         return results
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         # Auth resolution is delegated to the shared ``xai_grok`` post_setup hook
         # (same one image_gen.xai / tts.xai use) for a consistent OAuth-or-key prompt.
         return setup_schema(
             "xAI Web Search (Grok)", "paid",
             "Agentic web search via Grok's web_search tool — uses xAI Grok OAuth or XAI_API_KEY.", post_setup="xai_grok",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

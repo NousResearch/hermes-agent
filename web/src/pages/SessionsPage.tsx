@@ -15,14 +15,11 @@ import {
   ChevronRight,
   Database,
   ListFilter,
-  MessageSquare,
   Search,
   Trash2,
   Clock,
   Terminal,
   Globe,
-  MessageCircle,
-  Hash,
   X,
   Play,
   Eraser,
@@ -48,7 +45,19 @@ import type {
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
+import {
+  AUTOMATION_SESSION_SOURCES,
+  NO_MATCHING_SESSION_SOURCE,
+  SOURCE_CONFIG,
+  type SessionFilterCategory,
+  type SourceSelectionsByCategory,
+  isAutomationSource,
+  sourceBelongsToCategory,
+  sourceLabel,
+} from "./SessionsPage_sources";
+import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
+import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
@@ -76,96 +85,6 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
-  {
-    cli: { icon: Terminal, color: "text-primary" },
-    tui: { icon: Terminal, color: "text-primary" },
-    telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-    slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    whatsapp: { icon: Globe, color: "text-success" },
-    whatsapp_cloud: { icon: Globe, color: "text-success" },
-    signal: { icon: MessageCircle, color: "text-success" },
-    matrix: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    email: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    sms: { icon: MessageCircle, color: "text-success" },
-    cron: { icon: Clock, color: "text-warning" },
-    tool: { icon: Play, color: "text-warning" },
-    api_server: { icon: Globe, color: "text-muted-foreground" },
-    acp: { icon: Database, color: "text-muted-foreground" },
-    hermes_flow: { icon: Play, color: "text-warning" },
-    vulcan_delegate: { icon: Play, color: "text-warning" },
-    webhook: { icon: Globe, color: "text-warning" },
-  };
-
-const AUTOMATION_SESSION_SOURCES = [
-  "cron",
-  "tool",
-  "api_server",
-  "acp",
-  "hermes_flow",
-  "vulcan_delegate",
-  "webhook",
-];
-const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
-
-type SessionFilterCategory = "chats" | "automation" | "all";
-type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
-
-function isAutomationSource(source: string): boolean {
-  return AUTOMATION_SESSION_SOURCE_SET.has(source);
-}
-
-function sourceBelongsToCategory(
-  source: string,
-  category: SessionFilterCategory,
-): boolean {
-  if (category === "all") return true;
-  if (category === "automation") return isAutomationSource(source);
-  return !isAutomationSource(source);
-}
-
-function sourceLabel(source: string): string {
-  switch (source) {
-    case "api_server":
-      return "API server";
-    case "acp":
-      return "ACP";
-    case "cli":
-      return "CLI";
-    case "tui":
-      return "TUI";
-    case "telegram":
-      return "Telegram";
-    case "discord":
-      return "Discord";
-    case "slack":
-      return "Slack";
-    case "whatsapp":
-      return "WhatsApp";
-    case "whatsapp_cloud":
-      return "WhatsApp Cloud";
-    case "sms":
-      return "SMS";
-    case "cron":
-      return "Cron";
-    case "tool":
-      return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
-    case "vulcan_delegate":
-      return "Vulcan delegate";
-    case "webhook":
-      return "Webhook";
-    default:
-      return source
-        .split("_")
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-  }
-}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -415,6 +334,11 @@ function MessageBubble({
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
             {msg.content}
           </div>
+        ) : shouldRenderStructuredReasoning(msg.role, msg.content) ? (
+          <StructuredReasoning
+            content={msg.content}
+            highlightTerms={highlightTerms}
+          />
         ) : (
           <Markdown content={msg.content} highlightTerms={highlightTerms} />
         ))}
@@ -515,7 +439,7 @@ function SessionRow({
     }
     setRenameSaving(true);
     try {
-      await onRename(session.id, value);
+      await onRename(session.id, value, session.profile);
       setRenaming(false);
     } finally {
       setRenameSaving(false);
@@ -1280,10 +1204,11 @@ export default function SessionsPage() {
   // the global management profile, which lags the row (it stays "" while the
   // sticky active profile equals the dashboard process's own, so the request
   // hits the process store — a delete then "succeeds" as already_absent).
-  // Search rows carry no stamp: undefined falls back to the management profile.
+  // Current search rows carry the same stamp; an unstamped row from an older
+  // backend still falls back to the management profile.
   const rowProfile = useCallback(
-    (id: string) => sessions.find((s) => s.id === id)?.profile,
-    [sessions],
+    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
+    [searchResults, sessions],
   );
 
   const sessionDelete = useConfirmDelete({
@@ -1393,19 +1318,31 @@ export default function SessionsPage() {
         ids,
         owners.size === 1 ? [...owners][0] : undefined,
       );
-      showToast(
-        t.sessions.selectedSessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
+      const skippedCount = resp.skipped_active?.length ?? 0;
+      if (skippedCount) {
+        showToast(
+          t.sessions.selectedSessionsSkippedActive
+            .replace("{deleted}", String(resp.deleted))
+            .replace("{count}", String(skippedCount)),
+          "error",
+        );
+      } else {
+        showToast(
+          t.sessions.selectedSessionsDeleted.replace(
+            "{count}",
+            String(resp.deleted),
+          ),
+          "success",
+        );
+      }
       setDeleteSelectedOpen(false);
       // Drop deleted rows out of the visible list immediately rather
       // than waiting for the reload. The reload still runs so total /
       // pagination stays correct, and so any rows the reload pulls in
       // from later pages render in place.
-      const deletedSet = new Set(ids);
+      // Rows a live turn still owns were refused server-side; keep them listed.
+      const skipped = new Set(resp.skipped_active ?? []);
+      const deletedSet = new Set(ids.filter((id) => !skipped.has(id)));
       setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
       setTotal((prev) => Math.max(0, prev - resp.deleted));
       if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);
@@ -1467,9 +1404,10 @@ export default function SessionsPage() {
   ]);
 
   const handleRename = useCallback(
-    async (id: string, title: string) => {
+    async (id: string, title: string, profile?: string) => {
+      const targetProfile = profile ?? rowProfile(id);
       try {
-        await api.renameSession(id, title, rowProfile(id));
+        await api.renameSession(id, title, targetProfile);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
@@ -2202,7 +2140,7 @@ interface SessionRowProps {
   isSelected: boolean;
   onDelete: () => void;
   onExport: (id: string) => void;
-  onRename: (id: string, title: string) => Promise<void>;
+  onRename: (id: string, title: string, profile?: string) => Promise<void>;
   onSelectClick: (event: React.MouseEvent) => void;
   onToggle: () => void;
   resumeInChatEnabled: boolean;

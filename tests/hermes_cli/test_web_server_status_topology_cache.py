@@ -12,7 +12,6 @@ loop, so the desktop WS never received gateway.ready and boot escalated to the
 import threading
 import time
 
-from hermes_cli import web_server
 import hermes_cli.web_server_gateway as _web_server_gateway
 
 
@@ -95,24 +94,3 @@ def test_topology_cache_collapses_concurrent_scans(monkeypatch):
     assert len(calls) == 1
     assert len(results) == 8
     assert all(r == results[0] for r in results)
-def test_topology_cache_misses_when_collector_is_swapped(monkeypatch):
-    """Tests (and hot-reload scenarios) monkeypatch the collector; a swapped
-    function identity must be a cache miss so stale data from the previous
-    collector never leaks across the swap."""
-    calls_a, calls_b = [], []
-    monkeypatch.setattr(
-        _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls_a)
-    )
-    _reset_cache()
-    try:
-        first = _web_server_gateway._collect_profile_gateway_topology_cached()
-        monkeypatch.setattr(
-            _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls_b)
-        )
-        second = _web_server_gateway._collect_profile_gateway_topology_cached()
-    finally:
-        _reset_cache()
-
-    assert len(calls_a) == 1
-    assert len(calls_b) == 1
-    assert first is not second

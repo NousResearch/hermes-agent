@@ -1332,10 +1332,39 @@ def active_profile_name(cli_profile: Optional[str] = None) -> str:
     return "default"
 
 
+def discover_installed_hermes_profiles(hermes_base: Optional[Path] = None) -> List[str]:
+    """Scan Hermes profiles directory for profiles with hermes-companion installed."""
+    discovered: List[str] = []
+    base_dirs: List[Path] = []
+    if hermes_base:
+        base_dirs.append(hermes_base)
+    else:
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        if env_home:
+            base_dirs.append(Path(env_home).expanduser())
+        base_dirs.append(Path.home() / ".hermes")
+
+    for base in base_dirs:
+        profiles_dir = base / "profiles"
+        if not profiles_dir.is_dir():
+            continue
+        try:
+            for item in sorted(profiles_dir.iterdir(), key=lambda p: p.name):
+                if item.is_dir() and not item.name.startswith("."):
+                    skill_link = item / "skills" / "hermes-companion"
+                    if skill_link.exists() and item.name not in discovered:
+                        discovered.append(item.name)
+        except Exception:
+            continue
+    return discovered
+
+
 def register_active_profile(
     profile_id: str,
     icloud_dir: Optional[str] = None,
     now: Optional[datetime] = None,
+    auto_discover: bool = False,
+    hermes_base: Optional[Path] = None,
 ) -> None:
     directories = icloud_directories(icloud_dir)
     if not directories:
@@ -1376,6 +1405,17 @@ def register_active_profile(
             "name": display_name,
             "last_active": timestamp_str,
         })
+
+    if auto_discover:
+        discovered = discover_installed_hermes_profiles(hermes_base)
+        for disc_id in discovered:
+            if not any(r.get("id") == disc_id for r in records):
+                disc_name = "Default Agent" if disc_id == "default" else f"{disc_id.capitalize()} Agent"
+                records.append({
+                    "id": disc_id,
+                    "name": disc_name,
+                    "last_active": "2026-01-01T00:00:00Z",
+                })
 
     records = sorted(records, key=lambda p: str(p.get("last_active", "")), reverse=True)
     payload: ProfilesConfig = {
@@ -1635,6 +1675,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--message", help="Message body for reply or new thread")
     parser.add_argument("--profile", help="Active Hermes agent profile name (e.g. 'default', 'work', 'personal')")
     parser.add_argument("--to-profile", help="Target agent profile for new dispatch thread (defaults to 'default')")
+    parser.add_argument("--register-profile", metavar="NAME", help="Register a specific agent profile in profiles.json")
+    parser.add_argument("--discover-profiles", action="store_true", help="Discover and print all installed Hermes profiles")
     parser.add_argument("--places", type=Path, help="Places JSON file")
     parser.add_argument("--icloud-dir", help="Directory that contains the latest_*.json files")
     parser.add_argument("--name")
@@ -1655,9 +1697,19 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
         args.places = expand(str(args.places))
     moment = now or utcnow()
 
-    # Automatically register active profile in iCloud profiles.json
+    # Automatically register active profile and discover installed profiles in iCloud profiles.json
     active_profile = active_profile_name(args.profile)
-    register_active_profile(active_profile, args.icloud_dir, now=moment)
+    if args.register_profile:
+        register_active_profile(args.register_profile.strip(), args.icloud_dir, now=moment, auto_discover=True)
+        print(f"Registered profile '{args.register_profile.strip()}' in profiles.json")
+        return 0
+
+    register_active_profile(active_profile, args.icloud_dir, now=moment, auto_discover=True)
+
+    if args.discover_profiles:
+        profs = discover_installed_hermes_profiles()
+        print(f"Discovered Hermes profiles with companion skill: {', '.join(profs) if profs else 'none'}")
+        return 0
 
     if args.threads:
         return command_threads(args)

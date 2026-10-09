@@ -392,6 +392,27 @@ def test_profiles_registration_and_filtering() -> None:
         check("fitness filter yields 1 thread", len(fitness_filtered) == 1 and fitness_filtered[0]["subject"] == "Marathon Training Plan")
 
 
+def test_discover_installed_hermes_profiles() -> None:
+    with tempfile.TemporaryDirectory() as hermes_dir, tempfile.TemporaryDirectory() as icloud_dir:
+        hermes_base = Path(hermes_dir)
+        # Setup mock profiles
+        (hermes_base / "profiles" / "love" / "skills" / "hermes-companion").mkdir(parents=True, exist_ok=True)
+        (hermes_base / "profiles" / "fitness" / "skills" / "hermes-companion").mkdir(parents=True, exist_ok=True)
+        (hermes_base / "profiles" / "other" / "skills").mkdir(parents=True, exist_ok=True)
+
+        discovered = companion.discover_installed_hermes_profiles(hermes_base)
+        check("discovered love and fitness", sorted(discovered) == ["fitness", "love"])
+
+        companion.register_active_profile("love", icloud_dir=icloud_dir, now=NOW, auto_discover=True, hermes_base=hermes_base)
+        prof_file = Path(icloud_dir) / "profiles.json"
+        check("profiles.json created with discovery", prof_file.is_file())
+        config = json.loads(prof_file.read_text(encoding="utf-8"))
+        profs = config.get("profiles", [])
+        prof_ids = [p["id"] for p in profs]
+        check("love registered as active", "love" in prof_ids and profs[0]["id"] == "love")
+        check("fitness discovered and added", "fitness" in prof_ids)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -408,6 +429,7 @@ def main() -> int:
     test_apple_maps_placemark_resolution()
     test_dispatch_threads_roundtrip()
     test_profiles_registration_and_filtering()
+    test_discover_installed_hermes_profiles()
     print("ok")
     return 0
 

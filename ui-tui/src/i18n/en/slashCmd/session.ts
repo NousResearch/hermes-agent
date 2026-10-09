@@ -61,6 +61,14 @@ export const slashCmdSessionEn = {
       // {0}=effort value, {1}=display mode
       currentWithDisplay: (value: string, display: string) => `reasoning: ${value} · display ${display}`
     },
+    search: {
+      footerHint: '↑↓ select · ↵ open · esc close',
+      noQueryHint: 'type to search session titles and content',
+      // {0}=the user's query
+      noResults: (query: string) => `no sessions matched "${query}"`,
+      placeholder: 'search sessions…',
+      searching: 'searching…'
+    },
     sessions: {
       busyGuardAction: 'switch sessions'
     },

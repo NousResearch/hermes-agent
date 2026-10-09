@@ -250,6 +250,34 @@ method("session.list", params=SessionListParams, result=SessionListResult,
        doc="Human-facing stored sessions, most recent first (sub-agent / kanban sources denied).")
 
 
+class SessionSearchParams(ProfileParams):
+    query: str = ""  # blank/whitespace returns no results, never an error
+    limit: int | None = None
+
+
+class SessionSearchRow(Result):
+    """One ``session.search`` hit resolved to its lineage tip (``_lineage_root_id`` groups a
+    compressed conversation, the same field ``SessionListRow`` carries)."""
+
+    id: str
+    title: str = ""
+    preview: str = ""
+    started_at: float = 0
+    source: str = ""
+    snippet: str = ""
+    role: str | None = None  # None on id/title matches; the FTS row's role on content matches
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
+
+
+class SessionSearchResult(Result):
+    results: list[SessionSearchRow]
+
+
+method("session.search", params=SessionSearchParams, result=SessionSearchResult,
+       doc="Search stored sessions by id, message content (FTS) and title; deduped by compression "
+           "lineage, each hit resolved to its live tip (dashboard /api/sessions/search parity).")
+
+
 class SessionMostRecentParams(ProfileParams):
     pass
 

@@ -309,6 +309,8 @@ export interface OverlayState {
   vaultSaveLogin: null | VaultSaveLoginReq
   vaultUnlock: null | VaultUnlockReq
   sessions: boolean
+  /** /search overlay — `{ query }` prefills the box and fires one immediate search. */
+  sessionSearch: boolean | { query: string }
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq

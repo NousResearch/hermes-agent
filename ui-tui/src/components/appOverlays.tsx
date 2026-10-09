@@ -18,6 +18,7 @@ import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { SessionSearchOverlay } from './sessionSearchOverlay.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -289,7 +290,30 @@ export function FloatingOverlays({
             onNew={onNewLiveSession}
             onNewPrompt={onNewPromptSession}
             onResume={onResumeSelect}
+            onSearch={() => patchOverlayState({ sessions: false, sessionSearch: true })}
             onSelect={onActiveSessionSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.sessionSearch) {
+    // `/search <text>` arrives as {query} — the opening fill fires one
+    // immediate search; bare `/search` opens with an empty box.
+    const initialQuery = typeof overlay.sessionSearch === 'object' ? overlay.sessionSearch.query : undefined
+
+    widgets.push({
+      id: 'session-search',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <SessionSearchOverlay
+            gw={gw}
+            initialQuery={initialQuery}
+            maxWidth={width}
+            onCancel={() => patchOverlayState({ sessionSearch: false })}
+            onResume={onResumeSelect}
             t={theme}
           />
         </FloatBox>

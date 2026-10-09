@@ -145,7 +145,8 @@ export const pickersEn = {
         close: ' close',
         move: ' move · ',
         new: ' new · ',
-        refresh: ' refresh · '
+        refresh: ' refresh · ',
+        searchHint: ' · / search · /search <text> full-text search'
       }
     },
     pet: {

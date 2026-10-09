@@ -2,7 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
-import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
@@ -1104,6 +1104,34 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('demo title'))
     })
+  })
+
+  it('/search opens the session search overlay with an empty query', () => {
+    patchOverlayState({ sessions: true })
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/search')).toBe(true)
+
+    expect(getOverlayState().sessionSearch).toBe(true)
+    expect(getOverlayState().sessions).toBe(false)
+    expect(ctx.transcript.sys).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('/search <query> prefills the overlay query for an immediate search', () => {
+    patchOverlayState({ sessions: true })
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/search found')).toBe(true)
+
+    expect(getOverlayState().sessionSearch).toEqual({ query: 'found' })
+    expect(getOverlayState().sessions).toBe(false)
+    // The overlay owns the RPC — the command itself never hits the gateway
+    // beyond the shared slash-metrics report.
+    expect(rpc).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 })
 

@@ -306,6 +306,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ sessions: false })
     }
 
+    if (overlay.sessionSearch) {
+      return patchOverlayState({ sessionSearch: false })
+    }
+
     if (overlay.agents) {
       return patchOverlayState({ agents: false })
     }
@@ -567,6 +571,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
+      } else if (key.escape && overlay.sessionSearch) {
+        patchOverlayState({ sessionSearch: false })
       }
 
       // When a prompt overlay is up and the user pressed a scroll key, fall

@@ -33,7 +33,7 @@ class _Recorder(MemoryProvider):
     def queue_prefetch(self, query, *, session_id=""): self.seen.append(query)
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None, **kw): self.seen.append((user_content, assistant_content, messages))
     def handle_tool_call(self, tool_name, args, **kw): self.seen.append(args); return "{}"
-    def on_turn_start(self, turn_number, message, **kw): self.seen.append(message)
+    def on_turn_start(self, turn_number, message, **kw): self.seen.append((message, kw))
     def on_session_end(self, messages): self.seen.append(messages)
     def on_pre_compress(self, messages, **kw): self.seen.append(messages); return ""
     def on_delegation(self, task, result, **kw): self.seen.append((task, result))
@@ -53,7 +53,7 @@ FANOUTS = {
     "prefetch_all": lambda m, t: m.prefetch_all(f"recall {_LEAK}"),
     "queue_prefetch_all": lambda m, t: m.queue_prefetch_all(f"recall {_LEAK}"),
     "handle_tool_call": lambda m, t: m.handle_tool_call("rec_tool", {"q": _LEAK, "nested": [_LEAK]}),
-    "on_turn_start": lambda m, t: m.on_turn_start(1, _LEAK),
+    "on_turn_start": lambda m, t: m.on_turn_start(2, _LEAK, previous_message=_LEAK, author_name="Ada"),
     "on_session_end": lambda m, t: m.on_session_end(t),
     "on_pre_compress": lambda m, t: m.on_pre_compress(t, evidence_messages=t),
     "on_delegation": lambda m, t: m.on_delegation(f"task {_LEAK}", f"result {_LEAK}"),

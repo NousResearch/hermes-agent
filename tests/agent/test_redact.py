@@ -1,6 +1,7 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import ast
+import json
 import logging
 import time
 
@@ -389,6 +390,61 @@ class TestJsonFields:
         for _ in range(depth):
             inner = json.loads(inner)["output"]
         assert json.loads(inner)["model"] == "gemini"
+
+
+class TestJsonEncodedPayloadStructure:
+    """Redacting an ENCODED JSON payload must not corrupt the document (t_c5759e28).
+
+    The ENV-assignment pass takes the value token after a credential-shaped ``KEY=``.
+    While that token was ``\\S+`` it ran past the closing delimiter of the JSON string the
+    assignment sat in: the first pass folded the encoded document's ``"}`` into the value
+    and the second masked it away, so the caller got ``{"result": "… FINNHUB_API_KEY=***``
+    — invalid JSON, handed to the model from any encoded tool result / MCP body / HTTP
+    response. The value now stops at the string's real terminator (an escaped ``\\"`` is
+    still part of the value, as JSON escaping is left-to-right).
+    """
+
+    # Synthetic value — this repo is public, never a real credential here.
+    KEY = "demo0key1abcdef2345"
+
+    def test_json_object_stays_parseable(self):
+        payload = json.dumps({"result": f"excerpt: FINNHUB_API_KEY={self.KEY}"})
+
+        result = redact_sensitive_text(payload, force=True)
+
+        # json.loads raised "Unterminated string starting at: line 1 column 12" before the fix.
+        document = json.loads(result)
+        assert self.KEY not in result
+        # The label survives, so the reader still learns WHICH credential was stripped.
+        assert "FINNHUB_API_KEY=" in document["result"]
+
+    def test_json_array_stays_parseable(self):
+        payload = json.dumps([f"excerpt: FINNHUB_API_KEY={self.KEY}", "plain"])
+
+        result = redact_sensitive_text(payload, force=True)
+
+        document = json.loads(result)
+        assert self.KEY not in result
+        assert "FINNHUB_API_KEY=" in document[0]
+        assert document[1] == "plain"  # the array's own tail is intact
+
+    def test_escaped_quote_is_not_treated_as_the_terminator(self):
+        # A JSON-encoded shell command: the string carries \" inside it, so the real
+        # terminator is the LAST quote. Stopping at the escaped one both corrupted the
+        # document and lost coverage (the value collapsed to a lone backslash, which the
+        # credential-shape gate reads as a non-secret).
+        payload = json.dumps({"cmd": f'export OPENAI_KEY="{self.KEY}"'})
+
+        result = redact_sensitive_text(payload, force=True)
+
+        document = json.loads(result)
+        assert self.KEY not in result
+        assert document["cmd"].startswith("export OPENAI_KEY=")
+
+    def test_secret_free_json_is_untouched(self):
+        payload = json.dumps({"name": "John", "model": "gpt-4", "count": 3})
+
+        assert redact_sensitive_text(payload, force=True) == payload
 
 
 class TestPythonReprFields:

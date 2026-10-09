@@ -218,14 +218,28 @@ _PREFIX_PATTERNS = [
 # ``token=``, ``KEYBOARD=``, ``PASSAGE=``) do not match — those are handled by the config/form/URL paths,
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
-_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
+# The value class excludes an UNESCAPED ``"`` (``\\.`` keeps an escaped pair inside the value)
+# instead of ``\S+``: the greedy run crossed the closing delimiter of the JSON string an
+# assignment sat in. The first pass folded the document's ``"}`` into the value, the second
+# masked it away, and the caller got ``{"result": "… FINNHUB_API_KEY=***`` — invalid JSON from
+# any encoded payload (tool result, MCP body, HTTP response) that gets redacted (t_c5759e28).
+# Same rationale as _AUTH_HEADER_RE's quote exclusion: pulling a delimiter into the mask turns
+# value corruption into SYNTAX corruption. Pairing ``\\.`` matches JSON's own left-to-right
+# escaping, so the value stops at the real terminator, while ``\`` stays legal inside a pair so
+# Windows paths (``C:\Users\…``) are unchanged. ``,``/``}``/``]`` deliberately STAY legal in the
+# value: real values carry them (``$argon2id$v=19$m=65536,t=3,…``) and stopping at one would
+# leak the tail. A JSON string always ends on a literal ``"``, so the quote bound alone stops
+# the match before any structural character outside the string.
+# The quote backreference above still handles a delimited value (``KEY="value"``).
+_ENV_ASSIGN_VALUE = r"((?:\\.|[^\s\"\\])+)"
+_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?){_ENV_ASSIGN_VALUE}\2")
 # Lowercase env names: only underscore-boundary forms (``openai_key=``) — NOT
 # bare ``password=``/``token=``, which appear in prose, URLs, and form bodies.
 # The lookbehind anchors each attempt to the start of an identifier run; without
 # it re.sub retries the greedy prefix at every byte of a long opaque payload.
 # See #77484.
 _ENV_ASSIGN_LOWER_RE = re.compile(
-    r"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?){_ENV_ASSIGN_VALUE}\2",
     re.IGNORECASE,
 )
 

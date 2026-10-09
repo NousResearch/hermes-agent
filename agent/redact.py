@@ -583,18 +583,24 @@ _TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     # Leading boundary: a preceding ``[A-Za-z0-9_-]`` normally blocks the match
     # so embedded identifiers (``myglpat-…``) stay untouched. Escaped-JSON text
-    # is the exception: JSONL transcripts store newline/tab as the two-byte
-    # escapes ``\n``/``\t``, so a credential at the start of the NEXT logical
-    # line sits right after an alphanumeric byte and the plain guard swallowed
-    # its mask verbatim (issue #135822). The nested lookbehind keeps the block
-    # unless the preceding byte pair is a backslash escape indicator — every
-    # ``\n``/``\t``/``\r``/``\b``/``\f``/``\u`` form — while a plain
-    # mid-word predecessor (``myglpat-…``) still blocks. The prefix
-    # families here are self-delimiting (literal prefix + length floor), so
-    # erring toward the mask after a backslash is fail-open, not a false
-    # positive. The trailing guard is unchanged.
+    # is the exception: JSONL transcripts and ensure_ascii JSON bodies store
+    # newlines as ``\n`` and non-ASCII characters as ``\uXXXX``, so a
+    # credential often sits right after an alphanumeric byte (the ``n`` of an
+    # escape, or the last hex digit of a CJK escape) and the plain guard
+    # swallowed its mask verbatim (issue #135822). The leading block is
+    # therefore an OR of positive escape-relief lookbehinds and the plain
+    # boundary guard: start-of-string, after a backslash-letter escape, after
+    # a full ``\uXXXX``/``\xHH`` escape, or not preceded by an alnum byte at
+    # all. Plain mid-word predecessors (``myglpat-…``, ``Xghp_…``) still
+    # block; the trailing guard is unchanged. The prefix families here are
+    # self-delimiting (literal prefix + length floor), so erring toward the
+    # mask after an escape is fail-open, not a false positive.
     return re.compile(
-        r"(?<!(?<!\\)[A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])"
+        r"(?:(?<![A-Za-z0-9_-])"
+        r"|(?<=\\[A-Za-z])"
+        r"|(?<=\\u[0-9a-fA-F]{4})"
+        r"|(?<=\\x[0-9a-fA-F]{2})"
+        r")(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])"
     )
 
 

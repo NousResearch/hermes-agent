@@ -116,6 +116,18 @@ class TestKnownPrefixes:
             result = redact_sensitive_text(escaped, force=True)
             assert ghp not in result and sk not in result, result
 
+    def test_token_after_unicode_and_hex_escapes_still_masks(self):
+        """ensure_ascii JSON bodies store non-ASCII text as ``\\uXXXX`` and
+        control characters as ``\\xHH``; a credential right after such an
+        escape sits behind hex digits, which the plain alnum guard also
+        swallowed (#135822)."""
+        ghp = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        sk = "sk-" + "a1B2c3D4e5F6g7H8i9J0kKlM"
+        for escaped in ('"\\u5bc6\\u94a5' + ghp + '"', '"\\u000a' + ghp + '"',
+                        '"\\x0a' + sk + '"'):
+            result = redact_sensitive_text(escaped, force=True)
+            assert ghp not in result and sk not in result, result
+
     def test_leading_guard_still_blocks_plain_embedded_prefixes(self):
         """The escape relief is narrow: a plain alphanumeric predecessor still
         blocks the match (embedded identifiers, prose keywords) — the guard's
@@ -124,6 +136,7 @@ class TestKnownPrefixes:
             "myglpat-AbCdEfGhIjKlMnOpQrSt",
             "tokenizer: cl100k_base",
             "Secretary: J.Smith",
+            "X" + "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
         ]:
             assert redact_sensitive_text(benign, force=True) == benign
 

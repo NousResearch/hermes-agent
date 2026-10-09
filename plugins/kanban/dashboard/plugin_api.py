@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_board_settings as board_settings
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
@@ -1631,14 +1632,24 @@ def get_workflow():
 
 
 @router.get("/orchestration")
-def get_orchestration_settings():
+def get_orchestration_settings(board: Optional[str] = Query(None)):
     """Current orchestration knobs from config.yaml plus the resolved effective
     values. An unset/unknown profile resolves to the active profile here; the
     decomposer prefers the root card's assignee in that case and uses the active
-    profile only for cards with no assignee."""
+    profile only for cards with no assignee.
+
+    With ``?board=<slug>`` the two profile knobs are read board-first
+    (``kanban.boards.<slug>`` -> global); the ``board_*`` fields carry the raw
+    board scope so a UI can show "overridden here" vs "inherited"."""
+    board_slug = _resolve_board(board)
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
-    explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
+    global_explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
+    board_explicit = {
+        k: (board_settings.board_override(kanban_cfg, k, board_slug) or "")
+        for k in _PROFILE_SETTINGS
+    }
+    explicit = {k: (board_explicit[k] or global_explicit[k]) for k in _PROFILE_SETTINGS}
     resolved = dict(explicit)
     try:
         from hermes_cli import profiles as profiles_mod
@@ -1656,7 +1667,11 @@ def get_orchestration_settings():
         "auto_promote_children": bool(kanban_cfg.get("auto_promote_children", True)),
         "resolved_orchestrator_profile": resolved["orchestrator_profile"],
         "resolved_default_assignee": resolved["default_assignee"],
-        "active_profile": active_default}
+        "active_profile": active_default,
+        "board": board_slug,
+        "board_orchestrator_profile": board_explicit["orchestrator_profile"],
+        "board_default_assignee": board_explicit["default_assignee"],
+    }
 
 
 def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
@@ -1673,12 +1688,21 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
 
 
 @router.put("/orchestration")
-def set_orchestration_settings(payload: OrchestrationSettingsBody):
+def set_orchestration_settings(
+    payload: OrchestrationSettingsBody, board: Optional[str] = Query(None),
+):
     """Update orchestration knobs in config.yaml. Only fields explicitly passed
-    are written; empty profile strings clear the override."""
+    are written; empty profile strings clear the override.
+
+    Without ``board`` the global keys are written (unchanged). With
+    ``?board=<slug>`` the two profile knobs are written under
+    ``kanban.boards.<slug>`` and an explicit empty string removes that board's
+    override so it inherits the global again. ``auto_decompose`` /
+    ``auto_promote_children`` are not board-scoped in v1."""
     with _errors_to_500("failed to load config"):
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
+    board_slug = _resolve_board(board)
     kanban_section = cfg.setdefault("kanban", {})
     if not isinstance(kanban_section, dict):
         kanban_section = cfg["kanban"] = {}
@@ -1686,12 +1710,28 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
         from hermes_cli import profiles as profiles_mod
     except Exception:
         profiles_mod = None  # type: ignore
-    # Field order == write order (profiles validated first, then the booleans).
-    for key, value in payload.model_dump(exclude_none=True).items():
-        kanban_section[key] = _validated_profile_name(value, profiles_mod) if key in _PROFILE_SETTINGS else bool(value)
+    if board_slug:
+        boards = kanban_section.setdefault("boards", {})
+        if not isinstance(boards, dict):
+            boards = kanban_section["boards"] = {}
+        entry = boards.setdefault(board_slug, {})
+        if not isinstance(entry, dict):
+            entry = boards[board_slug] = {}
+        for key, value in payload.model_dump(exclude_none=True).items():
+            if key not in _PROFILE_SETTINGS:
+                continue  # v1: board scope covers the two profile knobs only
+            name = _validated_profile_name(value, profiles_mod)
+            if name:
+                entry[key] = name
+            else:
+                entry.pop(key, None)  # explicit "" clears the board override
+    else:
+        # Field order == write order (profiles validated first, then the booleans).
+        for key, value in payload.model_dump(exclude_none=True).items():
+            kanban_section[key] = _validated_profile_name(value, profiles_mod) if key in _PROFILE_SETTINGS else bool(value)
     with _errors_to_500("failed to save config"):
         save_config(cfg)
-    return get_orchestration_settings()  # callers re-render from the resolved state
+    return get_orchestration_settings(board=board)  # callers re-render from the resolved state
 
 
 # --- WebSocket: /events?since=<event_id>&board=<slug> ------------------------

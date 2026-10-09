@@ -698,9 +698,9 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 if reply_req_id:
                     try:
                         response = await self._send_reply_markdown(reply_req_id, content)
-                    except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                    except (TimeoutError, RuntimeError) as passive_err:
                         err_text = str(passive_err)
-                        if isinstance(passive_err, asyncio.TimeoutError) or not self._is_transient_send_error(err_text):
+                        if isinstance(passive_err, TimeoutError) or not self._is_transient_send_error(err_text):
                             # Timeouts: may have delivered — never retry. Permanent req_id staleness:
                             # proactive send needs none, so fall back (original behaviour).
                             logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
@@ -713,7 +713,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                             transient_error = err_text
                 else:
                     response = await self._send_proactive_markdown(chat_id, content)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return SendResult(success=False, error="Timeout sending message to WeCom")
             except Exception as exc:
                 if self._is_transient_send_error(str(exc)):

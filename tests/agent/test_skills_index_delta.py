@@ -1,76 +1,85 @@
-"""A skill that appears or disappears mid-conversation reaches the model without a prompt rebuild.
+"""Skills that change mid-conversation reach the model, behind the cached system prompt.
 
-The persisted ``<available_skills>`` index is reused byte-for-byte for the prefix cache, so the
-delta is delivered on the per-turn note channel (cloudflare/cloudflare-os#267 port).
+The ``<available_skills>`` index is frozen in the system prompt for the prefix cache, so the change
+is delivered on the per-turn note channel (cloudflare/cloudflare-os#267 port).
 """
-from unittest.mock import MagicMock, patch
+import subprocess
+import sys
+from types import SimpleNamespace
 
-from agent.skills_index_delta import (
-    _ADDED_HEAD, _REMOVED_HEAD, _SKILLS_INDEX_NOTE_PREFIX, index_entries, stage_skills_index_note,
-)
-
-_STORED = (
-    "BODY\n\n## Skills\nintro\n\n<available_skills>\n"
-    "  devops: ops tools\n"
-    "    - docker-ops: Run and debug containers.\n"
-    "    - k8s-ops: Kubernetes rollouts.\n"
-    "  creative [names only]: ascii-art, manim-video\n"
-    "</available_skills>\n\nOnly proceed without loading a skill if none fit.\n\nPlatform: cli"
-)
-_CURRENT = _STORED.replace(
-    "    - k8s-ops: Kubernetes rollouts.\n",
-    "    - k8s-ops: Kubernetes rollouts.\n    - terraform-ops: Plan and apply infra changes.\n",
-).replace("ascii-art, manim-video", "manim-video")
+from agent import prompt_builder as pb
+from agent.skills_index_delta import stage_skills_index_note
+from agent.turn_context import consume_skills_index_note
 
 
-def _agent():
-    agent = MagicMock()
-    agent.provider = "openrouter"
-    agent.api_mode = "chat_completions"
-    agent._skills_index_note = ""
-    return agent
+def _write_skill(skills, name, description):
+    path = skills / "devops" / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nname: {name}\ndescription: {description}\n---\nBody.\n", encoding="utf-8")
 
 
-def _stage(agent, history, current=_CURRENT):
-    with patch("agent.system_prompt._skills_prompt", return_value=current):
-        return stage_skills_index_note(agent, _STORED, history)
+def _agent(home):
+    return SimpleNamespace(valid_tool_names={"skills_list", "skill_view", "skill_manage"}, platform="cli",
+                           provider="openrouter", api_mode="chat_completions", session_id="s1",
+                           _session_db=SimpleNamespace(db_path=str(home / "state.db")))
 
 
-def test_index_entries_reads_described_and_names_only_skills():
-    assert set(index_entries(_STORED)) == {"docker-ops", "k8s-ops", "ascii-art", "manim-video"}
-    assert index_entries(_STORED)["docker-ops"] == "    - docker-ops: Run and debug containers."
-    assert index_entries("no block here") == {}
+def _turn(agent, prompt, history):
+    """One turn: stage, then the consume ``_merge_gateway_notes`` does; returns the note sent."""
+    stage_skills_index_note(agent, prompt, history)
+    note = consume_skills_index_note(agent)
+    history.append({"role": "user", "content": "hi", **({"api_content": f"hi\n\n{note}"} if note else {})})
+    history.append({"role": "assistant", "content": "ok"})
+    return note
 
 
-def test_delta_is_announced_once_with_its_description_and_restaged_only_when_it_changes():
-    agent = _agent()
-    assert _stage(agent, [{"role": "user", "content": "hi"}]) is True
-    note = agent._skills_index_note
-    assert note.startswith(_SKILLS_INDEX_NOTE_PREFIX)
-    assert "    - terraform-ops: Plan and apply infra changes." in note  # the routing signal, not just a name
-    assert f"{_REMOVED_HEAD} ascii-art]" in note
-    assert "docker-ops" not in note.split(_ADDED_HEAD, 1)[1]  # unchanged skills are not re-listed
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *_: set())
+    pb.clear_skills_system_prompt_cache(clear_snapshot=True)
+    return tmp_path / "skills"
 
-    # Gateway shape: a fresh agent next turn, the transcript already carries this exact delta.
-    carried = [{"role": "user", "content": "hi", "api_content": f"hi\n\n{note}"}, {"role": "assistant", "content": "ok"}]
-    again = _agent()
-    assert _stage(again, carried) is False
-    assert again._skills_index_note == ""
 
-    # The delta grows (another skill lands): the cumulative note is re-staged.
-    grown = _CURRENT.replace("</available_skills>", "    - ansible-ops: Configuration runs.\n</available_skills>")
-    third = _agent()
-    assert _stage(third, carried, current=grown) is True
-    assert "ansible-ops" in third._skills_index_note and "terraform-ops" in third._skills_index_note
+def test_skill_installed_by_another_process_reaches_a_running_process(tmp_path, monkeypatch):
+    """The in-process index cache is keyed on skill files: a write this process never saw (a hub
+    install in another terminal) is not answered from the pre-install cache entry (#92313)."""
+    skills = _home(tmp_path, monkeypatch)
+    _write_skill(skills, "docker-ops", "Run containers.")
+    assert "docker-ops" in pb.build_skills_system_prompt()
+    code = ("import pathlib, sys; p = pathlib.Path(sys.argv[1]); p.parent.mkdir(parents=True); "
+            "p.write_text('---\\nname: terraform-ops\\ndescription: Plan infra.\\n---\\nBody.\\n')")
+    subprocess.run([sys.executable, "-c", code, str(skills / "devops" / "terraform-ops" / "SKILL.md")], check=True)
+    assert "- terraform-ops: Plan infra." in pb.build_skills_system_prompt()
 
-    # Undone (index accurate again): the stale note is retired, then nothing more is staged.
-    fourth = _agent()
-    assert _stage(fourth, carried, current=_STORED) is True
-    assert "accurate again" in fourth._skills_index_note
-    retired = carried + [{"role": "user", "content": "x", "api_content": f"x\n\n{fourth._skills_index_note}"}]
-    fifth = _agent()
-    assert _stage(fifth, retired, current=_STORED) is False
 
-    # A prompt without an index has no baseline; an unchanged index stages nothing.
-    assert stage_skills_index_note(_agent(), "no skills block", []) is False
-    assert _stage(_agent(), [], current=_STORED) is False
+def test_long_lived_agent_is_told_each_skill_change_once(tmp_path, monkeypatch):
+    """Every turn checks the index (a long-lived agent never rebuilds its prompt). The note names
+    only what changed, is sent once per change (a fresh agent reading the transcript included,
+    however far back the note is), and retires itself when the change is undone."""
+    skills = _home(tmp_path, monkeypatch)
+    _write_skill(skills, "docker-ops", "Run containers.")
+    agent, history = _agent(tmp_path), []
+    prompt = "Identity.\n\n" + pb.build_skills_system_prompt()
+    assert _turn(agent, prompt, history) == ""
+
+    _write_skill(skills, "terraform-ops", "Plan infra.")
+    note = _turn(agent, prompt, history)
+    assert "    - terraform-ops: Plan infra." in note and "docker-ops" not in note
+    assert _turn(agent, prompt, history) == ""
+    history += [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}] * 150
+    assert _turn(_agent(tmp_path), prompt, history) == ""
+
+    (skills / "devops" / "docker-ops" / "SKILL.md").unlink()
+    note = _turn(agent, prompt, history)
+    assert "    - terraform-ops: Plan infra." in note and note.endswith("No longer available: docker-ops]")
+
+    (skills / "devops" / "terraform-ops" / "SKILL.md").unlink()
+    _write_skill(skills, "docker-ops", "Run containers.")
+    assert "accurate again" in _turn(agent, prompt, history)
+    assert _turn(_agent(tmp_path), prompt, history) == ""
+
+    # A compaction rebuild that now lists the announced skill needs no new note.
+    _write_skill(skills, "terraform-ops", "Plan infra.")
+    assert "terraform-ops" in _turn(agent, prompt, history)
+    rebuilt = "Identity.\n\n" + pb.build_skills_system_prompt()
+    assert _turn(agent, rebuilt, history) == "" and _turn(_agent(tmp_path), rebuilt, history) == ""

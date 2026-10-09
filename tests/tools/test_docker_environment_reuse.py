@@ -258,6 +258,86 @@ def test_runtime_reuse_identity_handles_surrogate_escaped_posture():
     assert set(label) <= set("0123456789abcdef")
 
 
+def test_transient_cgroup_probe_does_not_reuse_unlimited_container(monkeypatch):
+    """Effective limits are immutable posture, not label noise from the probe."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(docker_env, "_cgroup_limits_available", lambda _image: False)
+
+    unlimited = _make_dummy_env(
+        task_id="transient-cgroup-probe",
+        cpu=1.0,
+        memory=512,
+        persist_across_processes=False,
+    )
+    stale_runtime_label = unlimited._labels["hermes-runtime"]
+    assert "--cpus" not in unlimited._all_run_args
+    assert "--memory" not in unlimited._all_run_args
+    assert "--pids-limit" not in unlimited._all_run_args
+
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=stale_runtime_label,
+    )
+    monkeypatch.setattr(docker_env, "_cgroup_limits_available", lambda _image: True)
+
+    limited = _make_dummy_env(
+        task_id="transient-cgroup-probe",
+        cpu=1.0,
+        memory=512,
+    )
+
+    assert limited._labels["hermes-runtime"] != stale_runtime_label
+    assert limited._container_id == "fresh-cid"
+    assert "--cpus" in limited._all_run_args
+    assert "--memory" in limited._all_run_args
+    assert "--pids-limit" in limited._all_run_args
+    assert any(cmd[1] == "ps" for cmd, _kwargs in calls if len(cmd) >= 2)
+
+
+def test_transient_storage_probe_does_not_reuse_unlimited_container(monkeypatch):
+    """A disk-quota probe recovery must start a quota-bearing container."""
+    if docker_env.sys.platform == "darwin":
+        pytest.skip("Docker Desktop does not use the Linux storage-opt path")
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_storage_opt_supported",
+        staticmethod(lambda: False),
+    )
+
+    unlimited = _make_dummy_env(
+        task_id="transient-storage-probe",
+        disk=1024,
+        persist_across_processes=False,
+    )
+    stale_runtime_label = unlimited._labels["hermes-runtime"]
+    assert "--storage-opt" not in unlimited._all_run_args
+
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=stale_runtime_label,
+    )
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_storage_opt_supported",
+        staticmethod(lambda: True),
+    )
+
+    limited = _make_dummy_env(task_id="transient-storage-probe", disk=1024)
+
+    assert limited._labels["hermes-runtime"] != stale_runtime_label
+    assert limited._container_id == "fresh-cid"
+    assert "--storage-opt" in limited._all_run_args
+    assert "size=1024m" in limited._all_run_args
+    assert any(cmd[1] == "ps" for cmd, _kwargs in calls if len(cmd) >= 2)
+
+
 def test_runtime_reuse_key_is_private_and_stable(tmp_path):
     """Concurrent Hermes processes need one persistent machine-local HMAC key."""
     load_key = getattr(docker_env, "_load_or_create_runtime_reuse_key", lambda _path: None)

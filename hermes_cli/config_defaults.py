@@ -1303,7 +1303,9 @@ DEFAULT_CONFIG = {
         "memory_trim": {
             "enabled": True,
             "cooldown_seconds": 60.0,
-            "log_every_n": 1,  # INFO-log every Nth periodic trim; force paths always log.
+            # INFO-log every Nth periodic trim (~hourly at the default cooldown); the rest log at
+            # DEBUG. Force paths always log at INFO.
+            "log_every_n": 60,
             # Suppress INFO logs when the readable RSS delta is smaller; 0 = log all.
             "info_log_min_delta_mb": 0.0,
         },

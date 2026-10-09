@@ -212,6 +212,37 @@ def _raw_section(section: str) -> dict[str, Any] | None:
         return None
 
 
+def browser_mcp_backend_url() -> str | None:
+    """URL for a generic browser-MCP backend (``browser.mcp_url``), or None when unset.
+
+    Lets ANY MCP server that speaks the browser-tool surface act as the browser backend,
+    vendor-agnostic: URL + key only, no product name anywhere in the mechanism. Env
+    ``BROWSER_MCP_URL`` overrides for tests/temporary lanes. Never raises.
+    """
+    try:
+        from agent.secret_scope import get_secret
+        url = (get_secret("BROWSER_MCP_URL", "") or "").strip()
+        if not url:
+            raw = _raw_section("browser") or {}
+            url = str(raw.get("mcp_url") or "").strip()
+        return url or None
+    except Exception:
+        return None
+
+
+def browser_mcp_backend_key() -> str | None:
+    """Auth key for the generic browser-MCP backend (``browser.mcp_api_key``), or None."""
+    try:
+        from agent.secret_scope import get_secret
+        key = (get_secret("BROWSER_MCP_API_KEY", "") or "").strip()
+        if key:
+            return key
+        raw = _raw_section("browser") or {}
+        return str(raw.get("mcp_api_key") or "").strip() or None
+    except Exception:
+        return None
+
+
 def read_selection(section: str) -> str | None:
     """THE single runtime read of the persisted `hermes tools` selection: ``"nous"`` (managed
     gateway row), a vendor name (direct, own credentials), or ``None`` (never configured ->

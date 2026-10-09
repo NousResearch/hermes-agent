@@ -4,7 +4,6 @@ import threading
 import types
 
 from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
-
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,

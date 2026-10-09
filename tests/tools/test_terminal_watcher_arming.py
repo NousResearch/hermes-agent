@@ -159,4 +159,3 @@ def test_delegate_child_on_an_unguarded_platform_keeps_todays_behaviour(monkeypa
     assert armed == ["armed"]
     assert result["notify_on_complete"] is False
     assert "subagent_note" in result
-

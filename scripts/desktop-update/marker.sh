@@ -429,8 +429,21 @@ marker_claim() { # FIRST action of the daemon. Sets MARKER_BODY/CLAIMED.
 marker_add_delegate_locked() { # pid ct -> zero ONLY when the delegate was published
   marker_read || return 1
   marker_judge "$SEEN"
-  if [ "$M_PID" != "$MY_PID" ] || [ "$J_OWNER_STATE" -ne 0 ]; then
-    log "update marker is no longer ours; no delegate written"; return 1
+  # The launcher (posix.sh) may have forked a custodian refresher before the
+  # delegate write; the marker line-1 owner then becomes the custodian PID, not
+  # posix.sh PID. A custodian is our direct child, so check whether M_PID's
+  # parent is MY_PID and it is still alive.
+  if [ "$M_PID" != "$MY_PID" ]; then
+    local parent
+    parent="$(pid_parent "$M_PID")"
+    if [ "$parent" != "$MY_PID" ] || ! pid_alive "$M_PID"; then
+      log "update marker is no longer ours; no delegate written"
+      return 1
+    fi
+    # M_PID is a live child of MY_PID — likely the custodian; allow the write.
+  elif [ "$J_OWNER_STATE" -ne 0 ]; then
+    log "update marker is no longer ours; no delegate written"
+    return 1
   fi
   if [ -n "$M_DPID" ] && [ "$M_DPID" != "$1" ] && [ "$J_DELEGATE_STATE" -eq 2 ]; then return 1; fi
   marker_replace "$(marker_canonical "$M_PID" "$M_STARTED_DIGITS" "$M_CT" "$1" "$2")"$'\n' \

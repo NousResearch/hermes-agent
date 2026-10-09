@@ -124,7 +124,7 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
             continue
         try:
             reset(token)
-        except Exception as exc:  # noqa: BLE001 — keep releasing the remaining scopes
+        except Exception as exc:
             first_error = first_error or exc
     if first_error is not None:
         raise first_error

@@ -46,7 +46,7 @@ _ensure_slack_mock()
 import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +167,7 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         if allowed and channel_id not in allowed:
             return False
 
-        if channel_id in adapter._slack_free_response_channels():
-            return True
-        elif not adapter._slack_require_mention():
+        if channel_id in adapter._slack_free_response_channels() or not adapter._slack_require_mention():
             return True
         elif adapter._slack_strict_mention() and not is_mentioned:
             return False
@@ -525,7 +523,7 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
 # Tests: Block-Kit-only mention detection (#52387)
 # ---------------------------------------------------------------------------
 
-from plugins.platforms.slack.adapter import _slack_mention_detection_text  # noqa: E402
+from plugins.platforms.slack.adapter import _slack_mention_detection_text
 
 
 def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):

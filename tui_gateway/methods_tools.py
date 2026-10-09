@@ -101,8 +101,8 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
+_stripped = lambda v: bool(str(v or "").strip())
+_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 

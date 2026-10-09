@@ -78,7 +78,7 @@ def test_schema_and_installers_match_the_contract_exactly():
     sh, ps1 = INSTALL_SH.read_text(encoding="utf-8-sig"), INSTALL_PS1.read_text(encoding="utf-8-sig")
     # Initialize-ResolvedPaths runs before the ladder's try, so its Fail can never write a receipt and
     # carries no class (a class there would be dead); every ladder call site must carry one.
-    pre_ladder = re.search(r"\nfunction Initialize-ResolvedPaths \{\r?\n.*?\r?\n\}\r?\n", ps1, re.S).group(0)
+    pre_ladder = re.search(r"\nfunction Initialize-ResolvedPaths \{\r?\n.*?\r?\n\}\r?\n", ps1, re.DOTALL).group(0)
     assert re.search(r'Fail "[^\n]*-InstallDir\."\r?\n', pre_ladder)
     ps1 = ps1.replace(pre_ladder, "\n")
     # Every fail()/Fail call site passes a class from the contract, and every class is used somewhere.

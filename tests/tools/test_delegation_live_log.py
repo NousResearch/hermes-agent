@@ -305,7 +305,7 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     home = tmp_path / "own-profile"
     home.mkdir()
 
-    deleg_id, writers, paths = create_live_transcripts(
+    deleg_id, _writers, paths = create_live_transcripts(
         [{"goal": "pin me"}], home=home,
     )
     update_manifest_statuses(

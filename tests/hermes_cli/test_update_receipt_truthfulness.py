@@ -196,7 +196,7 @@ class TestSuccessImpliesAccounting:
         receipt carries the plan + per-runtime outcomes as evidence."""
         ur.begin_update_receipt()
         plan = _plan_with_runtimes(_THREE_RUNTIMES)
-        outcomes, incomplete, path = self._drive_decision(
+        _outcomes, incomplete, path = self._drive_decision(
             plan,
             # Serve/dashboard runtimes are reconciled in their own unit
             # vocabulary and never borrow a gateway relaunch (#100479).

@@ -39,7 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow
 # CI checkout resolves to; tests of version resolution call _reset_version_info_cache().
-from hermes_cli import version_info as _version_info  # noqa: E402
+from hermes_cli import version_info as _version_info
 
 _version_info._cached_version_info = _version_info.VersionInfo(
     "unknown", "git.0000000", None, "0" * 40, "main", "git")
@@ -245,7 +245,7 @@ if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
 # non-root conftest carrying ``pytest_plugins`` after startup (e.g. ``pytest .``).
 # Fixtures imported here register exactly as if they were defined here.
 from tests._fixtures.env_filter import _HERMES_BEHAVIORAL_VARS, _looks_like_credential
-from tests._fixtures.live_system_guard import (  # noqa: F401 — _live_system_guard registers here
+from tests._fixtures.live_system_guard import (
     _GATEWAY_LOOKALIKE_MARK,
     _LIVE_SYSTEM_GUARD_BYPASS_MARK,
     _live_system_guard,
@@ -417,7 +417,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
-    return None
+    return
 
 
 @pytest.fixture(autouse=True)
@@ -447,7 +447,7 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
         from hermes_cli import kanban_db_dispatch as _kbd_mod
     except Exception:
         return
-    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
+    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", dict, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -564,12 +564,12 @@ def _neutralize_webbrowser(monkeypatch):
 def _neutralize_macos_keychain_creds(request, monkeypatch):
     """Default Anthropic credential resolution away from the real macOS Keychain."""
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
-        return None
+        return
 
     try:
         _mod = importlib.import_module("agent.anthropic_credentials")
     except Exception:
-        return None
+        return
     monkeypatch.setattr(
         _mod,
         "_read_claude_code_credentials_from_keychain",
@@ -584,7 +584,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         lambda *_args, **_kwargs: None,
         raising=False,
     )
-    return None
+    return
 
 
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
@@ -1090,12 +1090,12 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
-def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+def pytest_unconfigure(config):
     _remove_relocated_basetemp(config)
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
-def pytest_configure(config):  # noqa: D401 — pytest hook
+def pytest_configure(config):
     """Register markers used by hermetic conftest."""
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
@@ -1225,7 +1225,7 @@ def pytest_runtest_setup(item):
             )
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+def pytest_collection_modifyitems(config, items):
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
     OS gating: a test marked ``platforms(...)`` runs only on hosts its
@@ -1405,7 +1405,7 @@ _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 # Captured before any test can patch sys.platform, HOME or XDG_*: a test that runs the real
 # GUI uninstall or update swap would otherwise delete the developer's own Hermes app. Only the
 # ones present (none on CI runners, so the guard costs nothing there), each literal and resolved.
-from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: E402
+from hermes_cli.gui_uninstall import packaged_gui_app_paths
 
 _REAL_INSTALLED_GUI_APPS = sorted({
     os.path.normcase(form) for app in packaged_gui_app_paths() if os.path.lexists(app)

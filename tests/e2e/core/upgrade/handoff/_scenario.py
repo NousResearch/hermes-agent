@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 CRON_DUE_S = 65  # after the update starts: the checkout holds the new code, the old gateway still ticks
 _TASK_RE = re.compile(r"work kanban task (t_[0-9a-f]+)")
-_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.I)
+_PORT_IN_USE = re.compile(r"address already in use|port \d+ is (already )?in use|errno 98", re.IGNORECASE)
 REPLY = "handoff reply"
 _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|cannot import name")
 
@@ -476,7 +476,7 @@ class HandoffProperties:
 
 def dashboard_verdict(o) -> str:
     """Why no new dashboard serves its port, in words a gate can key on."""
-    if re.search(r"^SyntaxError", o.dash_restarts, re.M) and "restarted:" in o.up.stdout:
+    if re.search(r"^SyntaxError", o.dash_restarts, re.MULTILINE) and "restarted:" in o.up.stdout:
         return (f"the respawned dashboard died parsing its launcher: the update replayed the pre-update argv and "
                 f"Python read a shell script (SyntaxError in logs/dashboard-restart.log); port {o.dash_port} is dark")
     # The sandbox runs no Hermes unit, so any unit the dashboard stop restarts is the one the test runner

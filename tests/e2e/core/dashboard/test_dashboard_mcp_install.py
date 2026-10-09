@@ -79,7 +79,7 @@ def _ws_opens(url: str, timeout: float) -> str:
             return "accepted"
     except TimeoutError:
         return f"timed out after {timeout}s"
-    except Exception as exc:  # noqa: BLE001 - reported verbatim in the assertion
+    except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
 
 
@@ -107,7 +107,7 @@ def _install_and_probe(sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: typ
         try:
             resp = install.result(timeout=INSTALL_DEADLINE_S + 5)
             install_outcome = f"HTTP {resp.status_code} {resp.text[:300]}"
-        except Exception as exc:  # noqa: BLE001 - httpx.ReadTimeout on the bug
+        except Exception as exc:
             resp, install_outcome = None, f"{type(exc).__name__} after {time.monotonic() - t0:.1f}s"
 
         # Both follow-ups run concurrently, after the install either answered or timed out.
@@ -115,7 +115,7 @@ def _install_and_probe(sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: typ
         ws = pool.submit(_ws_opens, dash.ws_url("/api/ws", token=dash.token), FOLLOWUP_DEADLINE_S)
         try:
             config_outcome = f"HTTP {config.result(timeout=FOLLOWUP_DEADLINE_S + 5).status_code}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             config_outcome = type(exc).__name__
         ws_outcome = ws.result(timeout=FOLLOWUP_DEADLINE_S + 10)
 

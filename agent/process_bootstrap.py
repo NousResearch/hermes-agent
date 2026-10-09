@@ -332,9 +332,17 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    from agent.thread_scoped_output import _ThreadRoutingStream
+
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
+        # Never wrap the thread-routing proxy: it already delegates to the
+        # safe-writer-backed stream under it, and this call runs on every AIAgent
+        # build — wrapping the proxy let each build × silenced-worker alternation
+        # stack another proxy/safe-writer pair until attribute misses (the
+        # per-build ``line_buffering`` read in hermes_logging) exhausted the
+        # recursion limit in long-lived gateway processes.
+        if stream is not None and not isinstance(stream, (_SafeWriter, _ThreadRoutingStream)):
             setattr(sys, stream_name, _SafeWriter(stream))
 
 

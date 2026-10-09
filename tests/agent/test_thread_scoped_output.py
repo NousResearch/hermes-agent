@@ -14,6 +14,7 @@ import threading
 import time
 
 import agent.thread_scoped_output as thread_output
+from agent.process_bootstrap import _SafeWriter, _install_safe_stdio
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -164,4 +165,51 @@ def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
         assert "must-stay-silenced" not in redirected.getvalue()
     finally:
         release.set()
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+
+def test_safe_stdio_and_silence_alternation_never_grows_the_chain(monkeypatch):
+    """``_install_safe_stdio`` runs on every AIAgent build; silenced worker threads
+    install the routing proxy.  Each wrapper only guards against re-wrapping itself,
+    so alternating the two used to stack proxy/safe-writer pairs until any attribute
+    miss (``hermes_logging``'s per-build ``line_buffering`` read) died with
+    RecursionError and swallowed console writes in long-lived gateway processes
+    (gateway.error.log, 2026-10-09).  However often they interleave, the delegation
+    chain must stay bounded and routing must keep working."""
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {})
+    monkeypatch.setattr(thread_output, "_routing_states", {})
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    real_out, real_err = io.StringIO(), io.StringIO()
+    sys.stdout, sys.stderr = real_out, real_err
+
+    def chain_depth(stream):
+        depth = 0
+        while isinstance(stream, (thread_output._ThreadRoutingStream, _SafeWriter)):
+            stream = stream._passthrough if isinstance(stream, thread_output._ThreadRoutingStream) else stream._inner
+            depth += 1
+        return depth
+
+    try:
+        _install_safe_stdio()
+        with thread_scoped_silence():
+            pass
+        settled = chain_depth(sys.stdout)
+
+        for _ in range(300):
+            _install_safe_stdio()
+            with thread_scoped_silence():
+                pass
+
+        assert chain_depth(sys.stdout) == settled <= 4
+        assert chain_depth(sys.stderr) == settled
+        # The exact read that killed gateway agent builds must resolve.
+        assert getattr(sys.stdout, "line_buffering", False) is False
+        # Routing still holds: silenced writes vanish, unsilenced writes arrive.
+        with thread_scoped_silence():
+            sys.stdout.write("hidden\n")
+        sys.stdout.write("kept\n")
+        assert real_out.getvalue() == "kept\n"
+    finally:
         sys.stdout, sys.stderr = original_stdout, original_stderr

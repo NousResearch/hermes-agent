@@ -559,6 +559,7 @@ export function useTerminalSession({
       // Clamping to 4.5:1 darkens/lightens foregrounds against the background
       // at render time, matching the muted ink-like look of their terminal.
       minimumContrastRatio: 4.5,
+      screenReaderMode: true,
       scrollback: 1000,
       theme: withSurface(initialThemeRef.current)
     })

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { en } from '@/i18n/en'
 
 import { ComposerTriggerPopover } from './trigger-popover'
 
@@ -152,4 +153,17 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
 
     expect(drawer.scrollTop).toBe(30)
   })
+})
+
+it('announces localized loading text once while the spinner stays decorative', () => {
+  render(
+    <I18nProvider configClient={null} initialLocale="en">
+      <ComposerTriggerPopover activeIndex={0} items={[]} kind="@" loading onHover={vi.fn()} onPick={vi.fn()} />
+    </I18nProvider>
+  )
+
+  const status = screen.getByRole('status')
+  expect(status.textContent).toBe(en.composer.lookupLoading)
+  expect(screen.getAllByRole('status')).toHaveLength(1)
+  expect(screen.getByRole('listbox').textContent).toContain(status.textContent)
 })

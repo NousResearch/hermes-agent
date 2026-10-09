@@ -47,6 +47,32 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
+  it('names icon-only actions, links and menus from existing plain-text metadata', () => {
+    bar([
+      { id: 'action', icon: <span aria-hidden="true">★</span>, title: 'Action title', variant: 'action' },
+      {
+        id: 'link',
+        href: 'https://example.test',
+        icon: <span aria-hidden="true">→</span>,
+        title: '',
+        toggleLabel: 'Open docs'
+      },
+      {
+        id: 'menu',
+        icon: <span aria-hidden="true">⋮</span>,
+        menuItems: [{ id: 'one', label: 'One' }],
+        title: 'More',
+        variant: 'menu'
+      },
+      { id: 'visible', label: 'Visible label', title: 'Tooltip text', variant: 'action' }
+    ])
+
+    expect(screen.getByRole('button', { name: 'Action title' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open docs' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'More' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Visible label' })).toBeTruthy()
+  })
+
   it('shows an item once the user enables it from the bar context menu', async () => {
     const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
 

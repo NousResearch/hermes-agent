@@ -164,8 +164,8 @@ export function ComposerTriggerPopover({
       {items.length === 0 ? (
         loading ? (
           <div className="flex items-center gap-2 px-2 py-1.5 text-(--ui-text-tertiary)">
-            <GlyphSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
-            <span>{copy.lookupLoading}</span>
+            <GlyphSpinner className="text-foreground/70" decorative spinner="braille" />
+            <span role="status">{copy.lookupLoading}</span>
           </div>
         ) : (
           <CompletionDrawerEmpty title={copy.lookupNoMatches}>

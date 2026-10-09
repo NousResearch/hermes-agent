@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react'
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useId } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -145,6 +145,11 @@ export function NavLink({
 // tier art) still lay out on these exact columns so their controls line up.
 export const LIST_ROW_COLUMNS = '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)]'
 
+interface ListRowRelations {
+  titleId: string
+  descriptionId?: string
+}
+
 // The one settings row. `action` is the row's control: beside the label on a
 // wide pane, under the description on a narrow one — the row owns that
 // alignment, so callers never wrap a control in `justify-end`/`items-end`.
@@ -164,7 +169,7 @@ export function ListRow({
   title: ReactNode
   description?: ReactNode
   hint?: ReactNode
-  action?: ReactNode
+  action?: ReactNode | ((relations: ListRowRelations) => ReactNode)
   below?: ReactNode
   /** Durable handle for tours (see lib/tour) — usually the field's schema key. */
   'data-tour'?: string
@@ -172,6 +177,12 @@ export function ListRow({
   wide?: boolean
   className?: string
 }) {
+  const generatedId = useId()
+  const needsRelations = typeof action === 'function'
+  const titleId = `${generatedId}-title`
+  const descriptionId = description ? `${generatedId}-description` : undefined
+  const control = needsRelations ? action({ titleId, descriptionId }) : action
+
   return (
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
@@ -180,20 +191,25 @@ export function ListRow({
       <div className={cn('grid gap-3 py-3', !wide && [LIST_ROW_COLUMNS, '@2xl:items-center'])}>
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-            <span className="min-w-0">{title}</span>
-            {wide && action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+            <span className="min-w-0" id={needsRelations ? titleId : undefined}>
+              {title}
+            </span>
+            {wide && control && <div className="flex shrink-0 items-center gap-2">{control}</div>}
           </div>
           {description && (
-            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            <div
+              className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)"
+              id={needsRelations ? descriptionId : undefined}
+            >
               {description}
             </div>
           )}
           {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
           {below}
         </div>
-        {!wide && action && (
+        {!wide && control && (
           <div className="flex min-w-0 flex-wrap items-center gap-2 @2xl:justify-self-end @2xl:justify-end">
-            {action}
+            {control}
           </div>
         )}
       </div>

@@ -21,6 +21,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
+from gateway.status_process import START_TIME_DRIFT_TOLERANCE, _get_process_start_epoch, _start_times_agree, start_time_fingerprints_match
 from gateway.status_inline_source import (
     command_line_runs_inline_source,
     inline_bootstrap_argv,
@@ -438,26 +439,6 @@ def terminate_pid(
         raise OSError(details or f"taskkill failed for PID {pid}")
 
 
-def _start_times_agree(current: Any, *recorded: Any) -> bool:
-    """Same process object: all fingerprints > 0 and within 1ms of ``current``; raises on junk."""
-    cur = float(current)
-    return cur > 0 and all(r > 0 and abs(r - cur) <= 0.001 for r in map(float, recorded))
-
-
-# Same-host start-time readings can drift by ~1 s between the claim-time and a later liveness read
-# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc ticks,
-# psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially never
-# that close to the original's start time.
-START_TIME_DRIFT_TOLERANCE = 200
-
-
-def start_time_fingerprints_match(recorded: Any, current: Any, tolerance: int = START_TIME_DRIFT_TOLERANCE) -> bool:
-    """Liveness-reconciliation comparator for :func:`get_process_start_time` fingerprints: the
-    recorded owner and the current reading are the same incarnation when they agree within
-    ``tolerance``. Raises on junk; callers decide what an unreadable (``None``) side means."""
-    return abs(int(current) - int(recorded)) <= tolerance
-
-
 def _scope_hash(identity: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
@@ -784,6 +765,7 @@ def _build_pid_record() -> dict:
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "start_epoch": _get_process_start_epoch(os.getpid()),  # wall-clock; start_time is boot-relative
     }
 
 
@@ -1139,7 +1121,7 @@ def _prepare_runtime_status_update(
                 if not isinstance(k, str) or ":" not in k
                 or (drop_prefix is not None and not k.startswith(drop_prefix))
             }
-        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
+        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time", "start_epoch")})
         payload["updated_at"] = _utc_now_iso()
         payload.update(_get_code_identity_fields())
         _apply_set_fields(payload, (

@@ -2832,15 +2832,15 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 )
 
 
-def _first_positional_argv() -> str | None:
-    """First non-flag, non-flag-value token in ``sys.argv[1:]`` (skips values of known flags).
+def _first_positional_argv(argv: list[str] | None = None) -> str | None:
+    """First non-flag, non-flag-value token in *argv* (default ``sys.argv[1:]``; skips known flags' values).
 
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
     """
     from hermes_cli._parser import command_argv
 
-    args = command_argv(sys.argv[1:])
+    args = command_argv(sys.argv[1:] if argv is None else argv)
     return args[0] if args else None
 
 

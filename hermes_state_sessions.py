@@ -16,6 +16,7 @@ from agent.session_activity import (
 )
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_session_scope import _SESSION_LIST_SCOPES, _dm_own_scope_clause
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
@@ -1353,18 +1354,38 @@ class SessionSessionsMixin:
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False,
+        requester_user_id: str | None = None, scope: str | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
-        archived must still return."""
+        archived must still return.
+
+        ``scope="own"`` (paired with ``requester_user_id``) restricts results to that user's own
+        Telegram DM sessions — see ``_dm_own_scope_clause``. This is the Telegram Mini App dashboard's
+        non-admin scoping: a paired-but-non-admin caller must never see another user's sessions or any
+        group/channel session. Any other caller (desktop dashboard, admin callers) passes
+        ``scope=None``/``"admin"`` and sees the existing unfiltered behaviour unchanged. ``scope="own"``
+        without a ``requester_user_id`` is a programming error, not a data-dependent case, so it raises
+        rather than silently returning nothing.
+        """
+        if scope is not None and scope not in _SESSION_LIST_SCOPES:
+            raise ValueError(f"list_sessions_rich: invalid scope {scope!r}")
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
+        if scope == "own":
+            if not requester_user_id:
+                raise ValueError(
+                    "list_sessions_rich: scope='own' requires a non-empty requester_user_id"
+                )
+            own_clause, own_params = _dm_own_scope_clause(requester_user_id)
+            where_clauses.append(own_clause)
+            params.extend(own_params)
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
         # hidden) must still be reachable there, or nothing but direct DB access can bring
@@ -1443,6 +1464,12 @@ class SessionSessionsMixin:
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents,
             )
+            if scope == "own":
+                # The back-fill builds its own WHERE, so it must re-apply the Mini App's
+                # own-DM scope — otherwise a non-admin caller would see every user's pins.
+                own_clause, own_params = _dm_own_scope_clause(requester_user_id)
+                pinned_clauses.append(own_clause)
+                pinned_params.extend(own_params)
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
             pinned_clauses.append("s.pinned = 1")
@@ -1575,13 +1602,29 @@ class SessionSessionsMixin:
         self, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
+        requester_user_id: str | None = None, scope: str | None = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+
+        ``scope="own"``/``requester_user_id`` mirrors ``list_sessions_rich``'s DM-ownership scoping so a
+        paired-but-non-admin Telegram Mini App caller's session count matches what they can actually
+        list — see ``_dm_own_scope_clause``.
+        """
+        if scope is not None and scope not in _SESSION_LIST_SCOPES:
+            raise ValueError(f"session_count: invalid scope {scope!r}")
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
+        if scope == "own":
+            if not requester_user_id:
+                raise ValueError(
+                    "session_count: scope='own' requires a non-empty requester_user_id"
+                )
+            own_clause, own_params = _dm_own_scope_clause(requester_user_id)
+            where_clauses.append(own_clause)
+            params.extend(own_params)
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

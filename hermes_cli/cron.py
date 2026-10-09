@@ -248,6 +248,9 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
+        # Shown only while paused, so a stale reason never decorates an active job.
+        ("Paused", job.get("paused_reason")
+         if not job.get("enabled", True) and job.get("state") == "paused" else ""),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
@@ -852,7 +855,7 @@ def cron_edit(args):
     return 0
 
 
-def _job_action(action: str, job_id: str, success_verb: str) -> int:
+def _job_action(action: str, job_id: str, success_verb: str, **extra) -> int:
     _stateless_token = None
     if action == "run":
         # One-shot CLI: a background-dispatched run (daemon thread, triggered when the CLI
@@ -867,7 +870,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
             from gateway.session_context import _SESSION_ASYNC_DELIVERY
             _stateless_token = _SESSION_ASYNC_DELIVERY.set(False)
     try:
-        result = _cron_api(action=action, job_id=job_id)
+        result = _cron_api(action=action, job_id=job_id, **extra)
     finally:
         if _stateless_token is not None:
             _SESSION_ASYNC_DELIVERY.reset(_stateless_token)
@@ -978,7 +981,8 @@ _CRON_SUBCOMMANDS = {
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),
     "edit": lambda a: cron_edit(a),
-    "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
+    "pause": lambda a: _job_action("pause", a.job_id, "Paused",
+                                   **({"reason": a.reason} if getattr(a, "reason", None) else {})),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),

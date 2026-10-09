@@ -1065,6 +1065,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
         "properties": {
             "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
+            "reason": {"type": "string", "description": "Pause only: auditable reason stored as paused_reason (why, and when to resume or remove it). Cleared on resume."},
             "action": {
                 "type": "string",
                 "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."

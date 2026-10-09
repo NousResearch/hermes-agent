@@ -1882,11 +1882,14 @@ export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 export type { GatewayEventListener } from '@/contrib/events'
 export type {
   HermesPlugin,
+  PetMessageTone,
+  PetSayOptions,
   PluginContext,
   PluginContribution,
   PluginNativeNotificationInput,
   PluginNotificationAction,
   PluginOs,
+  PluginPet,
   PluginRestOptions,
   PluginSettingsPage,
   PluginSettingsSubpage,

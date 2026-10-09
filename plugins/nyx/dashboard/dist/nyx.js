@@ -723,7 +723,7 @@ function pontos(dados, material) {
 }
 
 // Lente de câmera, por cima de tudo: aberração cromática que cresce pros cantos (~2 px no canto da tela cheia),
-// vinheta e grão de filme proporcional à luz (o fundo continua preto puro)
+// vinheta, grão de filme proporcional à luz (o fundo continua preto puro) e a exposição final (×1,2)
 const LENTE = {
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
@@ -737,7 +737,7 @@ const LENTE = {
       float r2 = dot(c, c);
       vec2 ca = c * r2 * 0.006;
       vec3 cor = vec3(texture2D(tDiffuse, vUv + ca).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ca).b);
-      cor *= 1.0 - 0.4 * smoothstep(0.12, 0.55, r2);
+      cor *= 1.2 * (1.0 - 0.4 * smoothstep(0.12, 0.55, r2));
       cor += cor * (grao(gl_FragCoord.xy + floor(fract(uTime * 12.0) * 997.0)) - 0.5) * 0.12;
       gl_FragColor = vec4(cor, 1.0);
     }`,

@@ -82,7 +82,7 @@ def test_config_lookahead_is_linear_on_huge_commands():
 def _decide(command, key, *, smart=True):
     return A._human_decision(
         A._COMMAND_GATE, command=command, description=key, pattern_key=key, pattern_keys=[key],
-        warnings=[(key, key, False)], session_key="s-guardrail", approval_callback=None,
+        session_key="s-guardrail", approval_callback=None,
         is_cli=False, is_gateway=False, is_ask=False, smart=smart)
 
 
@@ -106,7 +106,7 @@ def test_guardrail_always_downgrades_to_session():
     key = detect_dangerous_command("crontab -r")[1]
     with patch.object(A, "approve_session") as sess, patch.object(A, "approve_permanent") as perm, \
             patch.object(A, "save_permanent_allowlist") as save:
-        A._persist_choice("s1", "always", [(key, key, False), ("recursive delete", "rd", False)])
+        A._persist_choice("s1", "always", [key, "recursive delete"])
     assert sess.call_count == 2
     perm.assert_called_once_with("recursive delete")
     save.assert_called_once()

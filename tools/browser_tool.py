@@ -1120,16 +1120,16 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
-    # SEK-70: on SaaS gateway backends the REST /tabs evaluate endpoint is
-    # tenant-denied — route through the MCP transport (t_ca2f1811 follow-up:
+    # On hosted gateway backends the REST /tabs evaluate endpoint is
+    # unavailable — route through the MCP transport (
     # this was the last verb still hitting raw /tabs).
     try:
         from tools.browser_mcp_transport import _is_gateway_backend
-        _saas = _is_gateway_backend()
+        _gateway_backend = _is_gateway_backend()
     except Exception:
-        _saas = False
-    if _saas:
-        # SEK-70: gateway backends deny every raw /tabs call — evaluate must ride MCP.
+        _gateway_backend = False
+    if _gateway_backend:
+        # Gateway backends deny every raw /tabs call — evaluate must ride MCP.
         from tools.browser_mcp_transport import mcp_evaluate
         return mcp_evaluate(expression, timeout_secs=_get_command_timeout())
     from tools.browser_camofox import _ensure_tab, _post

@@ -173,7 +173,8 @@ def _is_local_backend() -> bool:
     if _cdp._get_cdp_override_raw():
         return False
     if _bt._is_camofox_mode():
-        # The Camofox label covers remote-hosted backends too (tenant-key gateways). A remote
+        # The Camofox label covers remote-hosted backends too (key-authenticated
+        # hosted gateways). A remote
         # browser reaches networks this terminal cannot, so it is never "local" for SSRF purposes.
         try:
             from tools.browser_mcp_transport import _is_gateway_backend

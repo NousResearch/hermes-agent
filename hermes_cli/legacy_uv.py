@@ -304,10 +304,12 @@ def _classify(kind: str, st: os.stat_result, magic: bytes, has_identity: bool) -
 def _open_verified(name, st: os.stat_result, *, dir_fd: int | None = None) -> int | None:
     """Open *name* ``O_RDONLY|O_NOFOLLOW`` only while it is still the object *st* named.
 
-    The descriptor fstats back to the same inode/mode/size before any content is
-    read, so a swap between stat and open yields ``None`` instead of another
-    file's bytes. The metadata gate (regular file, size floor) stays with the
-    caller and runs FIRST — a FIFO/device must never reach a blocking open."""
+    The descriptor fstats back to the same device/inode/size before any content is
+    read, so a swap between stat and open yields ``None`` instead of another file's
+    bytes, and the file type must match on every platform; POSIX additionally
+    requires an equal ``st_mode``. The metadata gate
+    (regular file, size floor) stays with the caller and runs FIRST — a FIFO/device
+    must never reach a blocking open."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(name, flags, dir_fd=dir_fd)
@@ -318,9 +320,19 @@ def _open_verified(name, st: os.stat_result, *, dir_fd: int | None = None) -> in
     except OSError:
         os.close(fd)
         return None
-    if (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size) != (
-        st.st_dev, st.st_ino, st.st_mode, st.st_size
-    ):
+    # Windows' path-based stat synthesizes execute bits for an ``.exe`` name that
+    # the descriptor's stat omits, so a full ``st_mode`` compare would reject an
+    # unchanged file. Device/inode/size prove continuity everywhere; the type
+    # bits must match everywhere (a dir/symlink/device swap at the name, which
+    # Windows' synthesized inode would not separate), and equal mode is a
+    # POSIX-only extra.
+    if (opened.st_dev, opened.st_ino, opened.st_size) != (st.st_dev, st.st_ino, st.st_size):
+        os.close(fd)
+        return None
+    if stat.S_IFMT(opened.st_mode) != stat.S_IFMT(st.st_mode):
+        os.close(fd)
+        return None
+    if os.name == "posix" and opened.st_mode != st.st_mode:
         os.close(fd)
         return None
     return fd

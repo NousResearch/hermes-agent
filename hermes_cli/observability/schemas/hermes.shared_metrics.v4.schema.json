@@ -2721,7 +2721,6 @@
                     "channel_unresolved",
                     "checkout_move_failed",
                     "commit_point_refused",
-                    "config_unreadable",
                     "deps_failed",
                     "detached_head",
                     "disk_full",

@@ -1785,11 +1785,11 @@ def _pause_gateways_for_update(opts):
 
 
 def _update_run_channel(args) -> str:
-    """``_source_update_channel`` for this run, naming the exit when config.yaml decides nothing."""
+    """``_source_update_channel`` for this run, naming the exit when the configured channel is invalid."""
     try:
         return _source_update_channel(args)
-    except (RuntimeError, ValueError) as exc:  # unreadable config.yaml / an invalid configured channel name
-        _record_stop("config_unreadable" if isinstance(exc, RuntimeError) else "channel_unresolved")
+    except ValueError:  # ChannelError: this install's configured channel is not a valid name
+        _record_stop("channel_unresolved")
         raise
 
 

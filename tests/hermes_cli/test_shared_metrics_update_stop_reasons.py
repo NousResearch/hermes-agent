@@ -227,7 +227,6 @@ def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(r
 
 
 @pytest.mark.parametrize(("site", "raised", "expected"), [
-    ("channel", RuntimeError("Your settings file cannot be read"), "config_unreadable"),
     ("channel", ValueError("Invalid channel name"), "channel_unresolved"),
     ("pause", RuntimeError("Could not stop Windows gateway service x"), "gateway_pause_failed"),
 ])

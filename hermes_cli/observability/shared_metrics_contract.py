@@ -493,7 +493,6 @@ UPDATE_STOP_CLASSES = frozenset({
     "channel_unresolved",     # the update channel could not be resolved
     "checkout_move_failed",   # git could not move the checkout (ff refused, reset or switch failed)
     "commit_point_refused",   # the commit point could not be armed durably; nothing moved
-    "config_unreadable",      # config.yaml could not be read or parsed, so the update channel is unknown
     "detached_head",          # a detached checkout stayed put, or its commits could not be backed up
     "disk_full",              # (see above)
     "download_failed",        # the ZIP fallback download failed

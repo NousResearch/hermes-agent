@@ -214,6 +214,13 @@ class TestClassifier:
         controls = [_ctrl(index=i, form_index=0, max_length=None) for i in range(6)]
         assert len(classify_otp_controls(controls)) == 6
 
+    def test_anonymous_six_box_with_none_metadata_is_classified(self):
+        controls = [
+            _ctrl(index=i, form_index=0, autocomplete=None, name=None, label=None, max_length=None)
+            for i in range(6)
+        ]
+        assert len(classify_otp_controls(controls)) == 6
+
     def test_select_password_fill_picks_best_password(self):
         user = ClassifiedLoginControl(_ctrl(index=0, form_index=0, autocomplete="username"), 100, "username")
         pw_heur = ClassifiedLoginControl(_ctrl(index=1, form_index=0, type="password"), 90, "current-password")

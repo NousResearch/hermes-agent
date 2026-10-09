@@ -1931,6 +1931,69 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     return total
 
 
+def count_running_tasks_by_assignee(conn: sqlite3.Connection) -> dict[str, int]:
+    """Per-assignee counts of ``status='running'`` tasks on one board.
+
+    Grouped sibling of :func:`count_running_tasks`, feeding the per-profile
+    concurrency cap. Fails open to ``{}`` so a broken board doesn't brick
+    dispatch on healthy ones.
+    """
+    try:
+        return {
+            row["assignee"]: int(row["n"])
+            for row in conn.execute(
+                "SELECT assignee, COUNT(*) AS n FROM tasks "
+                "WHERE status = 'running' AND assignee IS NOT NULL "
+                "GROUP BY assignee"
+            )
+        }
+    except Exception:
+        return {}
+
+
+def count_running_tasks_per_assignee_other_boards(
+    board: Optional[str] = None,
+) -> dict[str, int]:
+    """Per-assignee ``running`` counts across every board EXCEPT ``board``.
+
+    ``kanban.max_in_progress_per_profile`` bounds the profile on the HOST
+    (its model/API quota/browser pool are machine resources), but each
+    board's tick only sees its own DB — without this, N active boards
+    multiply the per-profile cap by N, the exact fan-out the cap exists to
+    prevent (#135515). Boards are matched by resolved DB path, so
+    ``HERMES_KANBAN_DB`` (pins every board to one file) yields ``{}``.
+    Fails open per board.
+    """
+    try:
+        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+    except Exception:
+        current_path = None
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            resolved = str(path.resolve())
+            if current_path is not None and resolved == current_path:
+                continue
+            if not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                for assignee, n in count_running_tasks_by_assignee(other).items():
+                    counts[assignee] = counts.get(assignee, 0) + n
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return counts
+
+
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 
@@ -2380,6 +2443,12 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+        # Same host-wide view as the global cap in _tick_spawn_budget: the
+        # profile's quota/browser pool is a machine resource, so workers this
+        # assignee already has running on OTHER boards count against the cap
+        # too — else N boards multiply the per-profile ceiling (#135515).
+        for assignee, n in count_running_tasks_per_assignee_other_boards(board).items():
+            per_profile_running[assignee] = per_profile_running.get(assignee, 0) + n
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold

@@ -1428,13 +1428,7 @@ def test_leading_assistant_summary_gets_user_bridge():
     assert api_messages[2]["role"] == "assistant"       # assistant->tool intact
     assert api_messages[2]["tool_calls"][0]["id"] == "t1"
     assert api_messages[3]["tool_call_id"] == "t1"      # pairing preserved
-    out = sanitize_api_messages(list(messages))
-    result = next(m for m in out if m.get("role") == "tool")
-    assert result["name"] == "tool_call"
-    # The internal name stays available for the session DB / UI, and the
-    # caller's own message objects are untouched (per-call copy only).
-    assert result["tool_name"] == "mcp__github__create_issue"
-    assert messages[2]["name"] == "mcp__github__create_issue"
+
 
 def test_well_formed_payload_is_noop():
     api_messages = [

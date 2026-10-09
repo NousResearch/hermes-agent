@@ -144,10 +144,14 @@ def _cached_client(cache: dict[str, Any], service: str, region: str):
         kwargs = scoped_aws_session_kwargs()
         bearer = resolve_bedrock_bearer_token()
         boto3 = _require_boto3()
-        if bearer and not kwargs:
-            # The profile's only credential is its Bedrock API key. botocore's bearer probe reads the
-            # LAUNCH process env, so give the session a token provider scoped to this profile and pin
-            # bearer auth explicitly.
+        # Bearer wins unless the profile also names a complete SigV4 identity (key pair or
+        # AWS_PROFILE). A stale partial IAM field next to the bearer must not produce a SigV4
+        # session with no secret.
+        sigv4_complete = ("aws_access_key_id" in kwargs and "aws_secret_access_key" in kwargs) \
+            or "profile_name" in kwargs
+        if bearer and not sigv4_complete:
+            # botocore's bearer probe reads the LAUNCH process env, so give the session a token
+            # provider scoped to this profile and pin bearer auth explicitly.
             import botocore.config
             import botocore.session
             import botocore.tokens

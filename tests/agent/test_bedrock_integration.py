@@ -508,6 +508,62 @@ class TestAuxiliaryClientBedrockResolution:
         finally:
             bedrock_adapter.reset_client_cache()
 
+    @pytest.mark.parametrize("stale", ["AWS_ACCESS_KEY_ID=stale\n", "AWS_SECRET_ACCESS_KEY=stale\n",
+                                       "AWS_SESSION_TOKEN=stale\n"])
+    def test_multiplex_bearer_with_partial_iam_fields_keeps_bearer(self, tmp_path, monkeypatch, stale):
+        """A stale, incomplete IAM field next to the profile's bearer must not switch the client to
+        SigV4 with no secret. Bearer wins unless the profile sets a complete key pair or AWS_PROFILE,
+        the same priority resolve_aws_auth_env_var gives it."""
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
+        from agent import bedrock_adapter, secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-A"
+        home.mkdir()
+        (home / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-A\n" + stale)
+        for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+                    "AWS_BEARER_TOKEN_BEDROCK"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        bedrock_adapter.reset_client_cache()
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            client = bedrock_adapter._get_bedrock_runtime_client("us-east-1")
+            assert client._client_config.signature_version == "bearer"
+            assert client._request_signer._auth_token.token == "bearer-A"
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+            bedrock_adapter.reset_client_cache()
+
+    def test_multiplex_bearer_with_complete_key_pair_uses_sigv4(self, tmp_path, monkeypatch):
+        """A complete key pair is an explicit SigV4 choice and keeps the SigV4 session."""
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
+        from agent import bedrock_adapter, secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-A"
+        home.mkdir()
+        (home / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-A\nAWS_ACCESS_KEY_ID=AKIA-A\n"
+                                   "AWS_SECRET_ACCESS_KEY=secret-A\n")
+        for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        bedrock_adapter.reset_client_cache()
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            client = bedrock_adapter._get_bedrock_runtime_client("us-east-1")
+            assert client._client_config.signature_version != "bearer"
+            assert client._request_signer._credentials.access_key == "AKIA-A"
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+            bedrock_adapter.reset_client_cache()
+
     def test_bedrock_returns_none_without_credentials(self, monkeypatch):
         """Without AWS credentials, Bedrock should return (None, None) gracefully."""
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):

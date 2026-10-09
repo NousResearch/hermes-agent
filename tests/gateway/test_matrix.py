@@ -10,6 +10,15 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
 
 
+def _client_factory(client):
+    class Client:
+        def __new__(cls, **kwargs):
+            client.api = kwargs["api"]
+            return client
+
+    return Client
+
+
 def _make_fake_mautrix():
     """Create a lightweight set of fake ``mautrix`` modules.
 
@@ -30,8 +39,10 @@ def _make_fake_mautrix():
         def __init__(self, base_url="", token="", **kwargs):
             self.base_url = base_url
             self.token = token
-            self.session = MagicMock()
-            self.session.close = AsyncMock()
+            self.session = kwargs.get("client_session")
+            if self.session is None:
+                self.session = MagicMock()
+                self.session.close = AsyncMock()
 
     mautrix_api.HTTPAPI = HTTPAPI
     mautrix.api = mautrix_api
@@ -861,7 +872,7 @@ class TestMatrixAccessTokenAuth:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         # Patch Client constructor to return our mock
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -941,7 +952,7 @@ class TestMatrixE2EEHardFail:
         mock_client.device_id = None
         mock_client.crypto = None
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
@@ -988,7 +999,7 @@ class TestMatrixE2EEHardFail:
         mock_client.add_event_handler = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
@@ -1078,7 +1089,7 @@ class TestMatrixDeviceId:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -1131,7 +1142,7 @@ class TestMatrixPasswordLoginDeviceId:
         mock_client.api.session = MagicMock()
         mock_client.api.session.close = AsyncMock()
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -1379,7 +1390,7 @@ class TestMatrixSyncLoop:
             return [asyncio.create_task(adapter._on_room_message(event))]
 
         mock_client.handle_sync = MagicMock(side_effect=handle_sync)
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
@@ -1536,7 +1547,7 @@ class TestMatrixDiagnostics:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -1658,7 +1669,7 @@ class TestMatrixEncryptedEventHandler:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -2792,7 +2803,7 @@ class TestDeviceIdNoneResolution:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -2859,7 +2870,7 @@ class TestMatrixReconnectDisconnect:
         adapter._client.api.session.close = AsyncMock()
         adapter._client.whoami = AsyncMock()
 
-        adapter.disconnect = AsyncMock()
+        adapter.disconnect = AsyncMock(wraps=adapter.disconnect)
 
         fake_mautrix_mods = _make_fake_mautrix()
 
@@ -2881,7 +2892,7 @@ class TestMatrixReconnectDisconnect:
         mock_client.api.session = MagicMock()
         mock_client.api.session.close = AsyncMock()
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
 
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -2889,6 +2900,7 @@ class TestMatrixReconnectDisconnect:
                     await adapter.connect()
 
         adapter.disconnect.assert_awaited_once()
+        await adapter.disconnect()
 
 
 class TestDeviceIdRecoveryOnReconnect:
@@ -2945,7 +2957,7 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm1.account = MagicMock()
         mock_olm1.account.identity_keys = {"ed25519": "fake_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client1)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client1)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
 
         import plugins.platforms.matrix.adapter as matrix_mod
@@ -2994,7 +3006,7 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm2.account = MagicMock()
         mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key2"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client2)
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client2)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
 
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
@@ -3185,9 +3197,7 @@ class TestCryptoStoreResetOnDeviceChange:
         mock_olm.account = MagicMock()
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
-        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
-            return_value=mock_client
-        )
+        fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
             return_value=mock_olm
         )

@@ -29510,6 +29510,13 @@
           "closed": {
             "title": "Closed",
             "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "array"
           }
         },
         "required": [

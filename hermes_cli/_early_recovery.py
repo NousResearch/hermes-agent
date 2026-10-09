@@ -1001,7 +1001,7 @@ def _checkout_custody(root: Path):
     """
     try:
         from hermes_cli import update_lock
-    except Exception as exc:  # noqa: BLE001 - syntax/import damage must never authorize a write
+    except Exception as exc:
         raise RuntimeError(
             "Cannot safely repair the interrupted update: checkout custody is unavailable "
             f"({type(exc).__name__}: {exc}). The recovery marker was kept. "
@@ -1085,7 +1085,7 @@ def _custody_git(root: Path, recorded: str):
     executable = _git_executable(recorded)
     try:
         from hermes_cli.update_custody import run_git
-    except Exception as exc:  # noqa: BLE001 - never start an uncontained repair writer
+    except Exception as exc:
         raise RuntimeError(
             "Cannot safely repair the interrupted update: child custody is unavailable "
             f"({type(exc).__name__}: {exc}). The recovery marker was kept. "

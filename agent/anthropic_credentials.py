@@ -85,7 +85,7 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
     if callable(credential) and not isinstance(credential, str):
         try:
             credential = credential()
-        except Exception:  # noqa: BLE001 — classification must never raise
+        except Exception:
             return False
     return isinstance(credential, str) and _is_oauth_token(credential)
 
@@ -223,7 +223,7 @@ _SINGLETON_SOURCE_PATHS = {
 }
 
 
-def _claude_oauth_record(data: Any, source: str) -> Optional[Dict[str, Any]]:
+def _claude_oauth_record(data: Any, source: str) -> Optional[dict[str, Any]]:
     """Normalise a ``{"claudeAiOauth": {...}}`` payload into our credential dict."""
     oauth_data = data.get("claudeAiOauth")
     access_token = oauth_data.get("accessToken", "") if isinstance(oauth_data, dict) else ""
@@ -252,7 +252,7 @@ def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
     return match.group("text") or ""
 
 
-def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
+def _find_claude_code_keychain_item() -> Optional[tuple[str, dict[str, Any]]]:
     """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
 
     One ``find-generic-password -g`` call: attributes on stdout, ``password: …`` on stderr. The
@@ -270,8 +270,8 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
         return None
     if result.returncode != 0:
         return None
-    account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.M))
-    raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.M))
+    account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.MULTILINE))
+    raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.MULTILINE))
     if not account or not raw:
         return None
     try:
@@ -281,7 +281,7 @@ def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
     return (account, payload) if isinstance(payload, dict) else None
 
 
-def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
+def _read_claude_code_keychain_payload() -> Optional[dict[str, Any]]:
     """Raw ``{"claudeAiOauth": {...}, ...}`` payload from the macOS Keychain, or None.
 
     Returns the full entry (not the normalised credential record) so a refresh
@@ -312,7 +312,7 @@ def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[list[str], str]:
+def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[list[str], str]:
     """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
 
     The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
@@ -328,7 +328,7 @@ def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[lis
     return ["security", "-i"], line
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+def _read_claude_code_credentials_from_keychain() -> Optional[dict[str, Any]]:
     """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
     payload = _read_claude_code_keychain_payload()
     return _claude_oauth_record(payload, "macos_keychain") if payload else None
@@ -343,12 +343,12 @@ def claude_code_credentials_path() -> Path:
     return root / ".credentials.json"
 
 
-def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
+def _read_claude_code_credentials_from_file() -> Optional[dict[str, Any]]:
     data = _load_json_if_exists(claude_code_credentials_path(), "~/.claude/.credentials.json")
     return _claude_oauth_record(data, "claude_code_credentials_file") if data is not None else None
 
 
-def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+def read_claude_code_credentials() -> Optional[dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
     refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
@@ -368,7 +368,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     return kc_creds if (kc_creds.get("expiresAt", 0) or 0) >= (file_creds.get("expiresAt", 0) or 0) else file_creds
 
 
-def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
+def is_claude_code_token_valid(creds: dict[str, Any]) -> bool:
     """Non-expired access token (60s buffer); no expiresAt means managed key → valid if present."""
     expires_at = creds.get("expiresAt", 0)
     return int(time.time() * 1000) < (expires_at - 60_000) if expires_at else bool(creds.get("accessToken"))
@@ -415,7 +415,7 @@ def _oauth_http_error(exc: Any, *, what: str) -> AnthropicOAuthError:
 
 def _post_oauth_token(
     data: bytes, *, content_type: str, timeout: int, what: str, user_agent: str = _OAUTH_TOKEN_USER_AGENT
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """POST to the token endpoints in order; raise the last error if all fail."""
     import urllib.error
     import urllib.request
@@ -438,7 +438,7 @@ def _post_oauth_token(
     raise last_error or ValueError(f"Anthropic token {what} failed")
 
 
-def _oauth_token_state(result: Dict[str, Any], *, fallback_refresh_token: str = "") -> Dict[str, Any]:
+def _oauth_token_state(result: dict[str, Any], *, fallback_refresh_token: str = "") -> dict[str, Any]:
     """Token-endpoint JSON -> ``{access_token, refresh_token, expires_at_ms}`` (expires_in defaults to 3600s)."""
     return {
         "access_token": result.get("access_token", ""),
@@ -447,7 +447,7 @@ def _oauth_token_state(result: Dict[str, Any], *, fallback_refresh_token: str = 
     }
 
 
-def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> Dict[str, Any]:
+def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> dict[str, Any]:
     """Refresh an Anthropic OAuth token without mutating local credential files."""
     import urllib.parse
     if not refresh_token:
@@ -462,7 +462,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
     return _oauth_token_state(result, fallback_refresh_token=refresh_token)
 
 
-def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
     """Refresh an expired Claude Code OAuth token, returning the new access token. Refresh tokens are single-use and
     Claude Code refreshes on its own schedule, so we first re-read the live sources and adopt an already-rotated
     token instead of racing it into ``invalid_grant``. Read, decision, POST and write-back share the pool's
@@ -545,7 +545,7 @@ def _write_claude_code_credentials(
     except (OSError, ValueError) as e:
         logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
         raise CredentialPersistError(cred_path, e) from e
-    oauth_data: Dict[str, Any] = {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms}
+    oauth_data: dict[str, Any] = {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms}
     if scopes is not None:
         oauth_data["scopes"] = scopes
     elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
@@ -557,8 +557,8 @@ def _write_claude_code_credentials(
 
 
 def _merge_keychain_credential_payload(
-    existing_payload: Dict[str, Any], access_token: str, refresh_token: str, expires_at_ms: int
-) -> Dict[str, Any]:
+    existing_payload: dict[str, Any], access_token: str, refresh_token: str, expires_at_ms: int
+) -> dict[str, Any]:
     """Rotate the ``claudeAiOauth`` token triple over the existing Keychain payload,
     preserving its metadata (``subscriptionType`` / ``rateLimitTier`` / ``scopes``).
 
@@ -608,7 +608,7 @@ def _mirror_claude_code_credentials_to_keychain(
 # ── Resolution ──
 
 
-def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def _resolve_claude_code_token_from_credentials(creds: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
     if not creds:
@@ -627,7 +627,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return refreshed or None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
+def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[dict[str, Any]]) -> Optional[str]:
     """Prefer refreshable Claude Code creds over a static env OAuth token: Hermes historically persisted setup tokens
     into ANTHROPIC_TOKEN, and that static token would otherwise win before the refreshable file is inspected."""
     if not (env_token and _is_oauth_token(env_token) and isinstance(creds, dict) and creds.get("refreshToken")):
@@ -751,7 +751,7 @@ def _generate_pkce() -> tuple:
     return verifier, challenge
 
 
-def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
+def run_hermes_oauth_login_pure() -> Optional[dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
     import webbrowser
     from urllib.parse import urlencode
@@ -773,7 +773,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     try:
         from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+        _can_open_gui = lambda: True
     if _can_open_gui():
         with contextlib.suppress(Exception):
             webbrowser.open(auth_url)
@@ -806,7 +806,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     return _oauth_token_state(result)
 
 
-def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
+def read_hermes_oauth_credentials() -> Optional[dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
     data = _load_json_if_exists(_get_hermes_oauth_file(), "Hermes OAuth credentials")
     return data if data is not None and data.get("accessToken") else None

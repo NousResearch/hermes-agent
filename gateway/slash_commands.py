@@ -937,19 +937,15 @@ class GatewaySlashCommandsMixin(
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
         persisted on the routing entry so it survives a gateway restart."""
-        from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
+        from tools.approval_yolo import toggle_session_yolo
         session_key = self._session_key_for_source(event.source)
-        if self.session_store is not None:
+        persisted, persist = False, None
+        if (store := self.session_store) is not None:
             # A first-message /yolo has no routing entry yet; materialize it so the flag has a home.
-            entry = await self.async_session_store.get_or_create_session(event.source)
-            # After a restart only the persisted copy is set: the user still sees it ON.
-            enable = not (entry.yolo is True or is_session_yolo_enabled(session_key))
-            # Persist BEFORE flipping the live flag: a turn restoring in between then never revives a
-            # bypass that is being switched off.
-            await self.async_session_store.set_session_yolo(session_key, enable)
-        else:
-            enable = not is_session_yolo_enabled(session_key)
-        (enable_session_yolo if enable else disable_session_yolo)(session_key)
+            persisted = (await self.async_session_store.get_or_create_session(event.source)).yolo is True
+            persist = lambda on: store.set_session_yolo(session_key, on)
+        # Off the loop: the persist is a routing-store write (thread-safe, like AsyncSessionStore's calls).
+        enable = await asyncio.to_thread(toggle_session_yolo, session_key, persisted=persisted, persist=persist)
         return EphemeralReply(t("gateway.yolo.enabled" if enable else "gateway.yolo.disabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:

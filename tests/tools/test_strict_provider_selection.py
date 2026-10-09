@@ -236,7 +236,7 @@ class TestSttStrictSelection:
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value=None), \
              patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value="sk-env"):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
+            api_key, _base_url = tt._resolve_openai_audio_client_config()
         assert api_key == "sk-env"
 
 

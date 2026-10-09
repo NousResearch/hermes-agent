@@ -316,7 +316,7 @@ def _static_gate_env_prefixes() -> frozenset:
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)
-    except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
+    except Exception:
         pass
     return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
@@ -329,7 +329,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     try:
         from gateway.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return frozenset(names)
 

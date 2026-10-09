@@ -216,7 +216,7 @@ def vercel_sdk(monkeypatch):
 @pytest.fixture()
 def vercel_module(vercel_sdk, monkeypatch):
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
     monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
 

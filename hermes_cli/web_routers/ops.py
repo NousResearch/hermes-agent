@@ -50,7 +50,7 @@ load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
-def _spawn_action(argv: List[str], name: str, *, log_msg: str, prefix: str,
+def _spawn_action(argv: list[str], name: str, *, log_msg: str, prefix: str,
                   profile: Optional[str] = None) -> dict:
     """Spawn a ``hermes -p <profile> <argv>`` action; spawn failure -> 500.
 
@@ -133,7 +133,7 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
 
 
-def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -215,7 +215,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     expected = await config_scoped_to_thread(profile, _snapshot)
 
     secret = body.secret or secrets.token_urlsafe(32)
-    route: Dict[str, Any] = {
+    route: dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
         "events": [e.strip() for e in body.events if e.strip()],
         "secret": secret,
@@ -243,7 +243,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     return summary
 
 
-def _webhook_key_in(subscriptions: Dict[str, dict], name: str) -> str:
+def _webhook_key_in(subscriptions: dict[str, dict], name: str) -> str:
     """Normalized key for an existing route in a lock-held subscription snapshot."""
     key = (name or "").strip().lower()
     if key not in subscriptions:
@@ -323,7 +323,7 @@ async def stop_gateway(profile: Optional[str] = None):
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 
 
-def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
+def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
     """Redacted view of one PooledCredential; ``index`` is 1-based to match
     CredentialPool.remove_index()."""
     token = entry.access_token or ""
@@ -457,8 +457,8 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
         if removed is None:
             raise HTTPException(status_code=404, detail="No pool entry at that index")
 
-        cleaned: List[str] = []
-        hints: List[str] = []
+        cleaned: list[str] = []
+        hints: list[str] = []
         step = find_removal_step(provider, removed.source or "")
         if step is not None:
             try:
@@ -743,7 +743,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
             entries = hooks_cfg.get(event)
             if not isinstance(entries, list):
                 entries = hooks_cfg[event] = []
-            new_entry: Dict[str, Any] = {"command": command}
+            new_entry: dict[str, Any] = {"command": command}
             if body.matcher:
                 new_entry["matcher"] = body.matcher
             if body.timeout is not None:

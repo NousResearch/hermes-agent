@@ -149,7 +149,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
-        self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
+        self.assertEqual(result["stdout_bytes_total"], len(b"hello\n"))
         # The session-kernel path runs first and fails open on this fake env
         # (no PID from nohup), so search for the per-call sandbox commands
         # rather than pinning positions.
@@ -491,8 +491,8 @@ class TestStubSchemaDrift(unittest.TestCase):
 
         # Import the registry and trigger tool registration
         from tools.registry import registry
-        import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
-        import tools.web_tools  # noqa: F401 - registers web_search, web_extract
+        import tools.file_tools
+        import tools.web_tools
 
         for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)

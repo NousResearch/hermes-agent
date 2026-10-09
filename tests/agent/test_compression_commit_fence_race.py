@@ -16,8 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import agent.compression_facade as compression_facade
-import agent.conversation_compression as conversation_compression
+from agent import compression_facade
+from agent import conversation_compression
 from agent.conversation_compression import CompressionCommitFence
 from hermes_state import SessionDB
 
@@ -70,7 +70,7 @@ def _overlapping_attempts(agent, messages):
     def _attempt(fence):
         try:
             agent._compress_context(messages, "sys", commit_fence=fence)
-        except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
+        except Exception as exc:
             errors.append(exc)
 
     return fence_a, fence_b, entered_a, entered_b, release_a, release_b, errors, _fake_compress, _attempt

@@ -35,9 +35,9 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
         role="OWNER",
         balance_usd=Decimal("142.5"),
         cli_billing_enabled=True,
-        charge_presets=(Decimal("100"), Decimal("250")),
-        min_usd=Decimal("10"),
-        max_usd=Decimal("10000"),
+        charge_presets=(Decimal(100), Decimal(250)),
+        min_usd=Decimal(10),
+        max_usd=Decimal(10000),
         card=CardInfo(brand="visa", last4="4242"),
         payment_method=PaymentMethodInfo(
             kind="link",
@@ -45,7 +45,7 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
             resolved_via="customerDefault",
         ),
         monthly_cap=MonthlyCap(
-            limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("180"), is_default_ceiling=True
+            limit_usd=Decimal(1000), spent_this_month_usd=Decimal(180), is_default_ceiling=True
         ),
         portal_url="https://portal/billing?topup=open",
     )

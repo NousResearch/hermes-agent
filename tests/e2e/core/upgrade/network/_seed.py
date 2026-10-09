@@ -279,7 +279,7 @@ def prefetch(url: str, sha256: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == sha256:
         return dest
-    with urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310 - pinned URL + digest
+    with urllib.request.urlopen(url, timeout=120) as resp:
         data = resp.read()
     got = hashlib.sha256(data).hexdigest()
     assert got == sha256, f"prefetched {url} has sha256 {got}, pinned {sha256}"

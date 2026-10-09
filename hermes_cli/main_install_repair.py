@@ -298,7 +298,7 @@ def _install_configured_features_missing_deps(project_root: Path) -> None:
     if extras:
         try:
             pm.sync_venv(extras, explicit=True, project_root=project_root, evict_incompatible_plugins=True)
-        except Exception as exc:  # noqa: BLE001 — a feature install never fails the update; warn below
+        except Exception as exc:
             print(f"  ⚠ Could not install {', '.join(extras)} for configured features: {exc}")
         else:
             missing = [row for row in missing if row[2].replace("_", "-") not in extras]

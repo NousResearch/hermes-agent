@@ -257,7 +257,7 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
-    def __init__(self, cwd: str, timeout: int, env: dict = None):
+    def __init__(self, cwd: str, timeout: int, env: dict | None = None):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
@@ -589,7 +589,6 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook before each command. Remote backends (SSH, Modal, Daytona)
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
-        pass
 
     def _mark_recreated(self) -> None:
         """Flag that the live container/sandbox was replaced while serving the

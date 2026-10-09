@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import tools.browser_tool as browser_tool
+from tools import browser_tool
 from tools import browser_tool_cloud as bt_cloud
 
 
@@ -68,7 +68,7 @@ class TestCloudProviderCachePolicy:
         self, tmp_path, monkeypatch
     ):
         from agent.browser_provider import BrowserProvider
-        import agent.browser_registry as browser_registry
+        from agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -125,7 +125,7 @@ class TestCloudProviderCachePolicy:
         from threading import Event
 
         from agent.browser_provider import BrowserProvider
-        import agent.browser_registry as browser_registry
+        from agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,

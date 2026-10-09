@@ -19,14 +19,14 @@ from tools.connectors.mcp_oauth import (
 )
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
-_sessions: Dict[str, Dict[str, Any]] = {}
+_sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 _SESSION_TTL_SECONDS = 900  # completed/abandoned session lingers this long before GC
 _MAX_PENDING = 12  # cap in-flight flows so a runaway client can't exhaust ports/threads
 
 
-def _shutdown_listener(rec: Dict[str, Any]) -> None:
+def _shutdown_listener(rec: dict[str, Any]) -> None:
     server = rec.get("httpd")
     if server is None:
         return
@@ -36,7 +36,7 @@ def _shutdown_listener(rec: Dict[str, Any]) -> None:
     rec["httpd"] = None
 
 
-def register_flow(flow, *, httpd=None) -> Dict[str, Any]:
+def register_flow(flow, *, httpd=None) -> dict[str, Any]:
     """Register a callback-relay flow so both RPC and card starts share ownership checks."""
     rec = {
         "session_id": flow.flow_id,
@@ -61,7 +61,7 @@ def finish_flow(session_id: str) -> None:
 
 def start_flow(
     hermes_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
-    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> Dict[str, Any]:
+    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> dict[str, Any]:
     """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
     ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
     raise ``ValueError``) no gateway-side listener is bound."""
@@ -114,7 +114,7 @@ def start_flow(
 
 def _lookup(
     session_id: str, server_name: str, hermes_home: Optional[str] = None,
-) -> "tuple[Dict[str, Any] | None, str | None]":
+) -> "tuple[dict[str, Any] | None, str | None]":
     """Find a session belonging to the caller's resolved profile."""
     from hermes_constants import hermes_home_key
     with _sessions_lock:
@@ -128,7 +128,7 @@ def _lookup(
     return rec, None
 
 
-def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
+def poll_flow(session_id: str, server_name: str) -> dict[str, Any]:
     """Poll a session → ``{status, error_message?, auth_url?, tools?}``; ``status`` is
     ``pending`` | ``approved`` | ``error`` (the bridge's ``authorization_required`` maps to
     ``pending``)."""
@@ -139,7 +139,7 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
     snap = flow.snapshot()
     raw = snap.get("status")
     status = raw if raw in ("approved", "error") else "pending"
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "session_id": session_id, "status": status, "error_message": snap.get("error"),
         "auth_url": snap.get("authorization_url")}
     if status == "approved":
@@ -147,7 +147,7 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
     return out
 
 
-def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str, Any]:
+def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> dict[str, Any]:
     """Cancel only the owning profile's flow and release its callback waiter."""
     rec, err = _lookup(session_id, server_name, hermes_home)
     if rec is None:
@@ -160,7 +160,7 @@ def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str
 
 def deliver_callback_flow(
     session_id: str, server_name: str, *, code: Optional[str], state: Optional[str],
-    error: Optional[str] = None, iss: Optional[str] = None) -> Dict[str, Any]:
+    error: Optional[str] = None, iss: Optional[str] = None) -> dict[str, Any]:
     """Relay a client-captured OAuth redirect into a session's flow (remote-backend companion
     to ``start_flow(client_redirect_uri=...)``); ``deliver_callback`` still verifies ``state``
     and rejects replays. Returns ``{ok: true}`` or ``{ok: false, error_message}``."""

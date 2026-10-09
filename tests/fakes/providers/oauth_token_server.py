@@ -252,7 +252,7 @@ def _make_handler(server: OAuthTokenServer) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             ctype = self.headers.get("Content-Type", "")
@@ -278,7 +278,7 @@ def _make_handler(server: OAuthTokenServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
             self.close_connection = True
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
     return Handler

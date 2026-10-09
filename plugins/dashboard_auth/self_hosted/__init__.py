@@ -109,7 +109,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         self._client_secret = (client_secret or "").strip()
         # Discovery + JWKS resolve lazily so registration never hits the network
         # (the IDP may be down at boot; fail per-request instead).
-        self._discovery: Dict[str, Any] | None = None
+        self._discovery: dict[str, Any] | None = None
         self._discovery_fetched_at: float = 0.0
         self._discovery_lock = threading.Lock()
         self._jwks_client: Any = None
@@ -125,26 +125,26 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         # Best-effort RFC 7009 revocation when the IDP advertises an endpoint.
         # Must never raise — logout is client-side cookie clearing regardless.
         if not refresh_token:
-            return None
+            return
         try:
             disco = self._get_discovery()
         except ProviderError:
-            return None
+            return
         endpoint = str(disco.get("revocation_endpoint") or "").strip()
         if not endpoint:
-            return None
+            return
         # Confidential clients must authenticate on revocation too (RFC 7009 §2.1).
         extra_data, extra_headers = self._token_endpoint_auth(disco)
         data = {"token": refresh_token, "token_type_hint": "refresh_token", "client_id": self._client_id, **extra_data}
         try:
             httpx.post(endpoint, data=data, headers={**JSON_HEADERS, **extra_headers}, timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC)
-        except Exception as exc:  # noqa: BLE001 — best-effort
+        except Exception as exc:
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
-        return None
+        return
 
     # ---- JwtOAuthProvider hooks: token exchange ---------------------------
 
-    def _token_endpoint_auth(self, disco: Dict[str, Any]) -> tuple[Dict[str, str], Dict[str, str]]:
+    def _token_endpoint_auth(self, disco: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
         """``(extra_data, extra_headers)`` for token-endpoint client auth. Public client →
         ``({}, {})`` (PKCE alone). Confidential client → ``client_secret_post`` when the IDP
         advertises it *without* ``client_secret_basic``, else HTTP Basic (the OIDC default
@@ -159,7 +159,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         userpass = f"{urllib.parse.quote(self._client_id, safe='')}:{urllib.parse.quote(self._client_secret, safe='')}"
         return {}, {"Authorization": f"Basic {base64.b64encode(userpass.encode('utf-8')).decode('ascii')}"}
 
-    def _refresh_request(self, refresh_token: str) -> tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    def _refresh_request(self, refresh_token: str) -> tuple[dict[str, str], Optional[dict[str, str]]]:
         # Re-request the same scopes so the rotated ID token keeps its identity claims
         # (some IDPs narrow scope on refresh otherwise).
         return (
@@ -168,7 +168,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
             None)
 
     def _grant(
-        self, data: Dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[Dict[str, str]] = None,
+        self, data: dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[dict[str, str]] = None,
         previous_refresh_token: str = "",
     ) -> Session:
         """POST the discovered token endpoint and turn the response into a Session.
@@ -189,12 +189,12 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
 
     # ---- internals: discovery ---------------------------------------------
 
-    def _fresh_discovery(self) -> Dict[str, Any] | None:
+    def _fresh_discovery(self) -> dict[str, Any] | None:
         if self._discovery is not None and time.time() - self._discovery_fetched_at < _DISCOVERY_CACHE_TTL_SEC:
             return self._discovery
         return None
 
-    def _get_discovery(self) -> Dict[str, Any]:
+    def _get_discovery(self) -> dict[str, Any]:
         """Return the cached OIDC discovery document, fetching if stale (double-checked lock)."""
         disco = self._fresh_discovery()
         if disco is None:
@@ -206,7 +206,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
                     self._jwks_client = None  # new issuer/keys → rebind the JWKS client to the fresh jwks_uri
         return disco
 
-    def _fetch_discovery(self) -> Dict[str, Any]:
+    def _fetch_discovery(self) -> dict[str, Any]:
         url = f"{self._issuer}/.well-known/openid-configuration"
         try:
             # follow_redirects=True: many IDPs answer discovery with a 3xx (Authentik
@@ -261,7 +261,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
     def _jwks_uri(self) -> str:
         return self._get_discovery()["jwks_uri"]
 
-    def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
+    def _verify_id_token(self, id_token: str) -> dict[str, Any]:
         issuer = self._get_discovery()["issuer"]
         return verify_jwt(
             id_token, self._get_jwks_client(), algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
@@ -269,7 +269,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
 
     _claims_for = _verify_id_token
 
-    def _session(self, id_token: str, refresh_token: str, claims: Dict[str, Any]) -> Session:
+    def _session(self, id_token: str, refresh_token: str, claims: dict[str, Any]) -> Session:
         """Map verified OIDC claims onto a Session. The verified ID token is stored in
         ``Session.access_token`` so the per-request ``verify_session`` re-verifies a real
         JWT; the opaque OAuth access token is not kept — the dashboard only needs identity."""

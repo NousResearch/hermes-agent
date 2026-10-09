@@ -27,6 +27,7 @@ tab ids — the transport forwards `tab_id` verbatim when a verb supports it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, Optional
 
@@ -279,6 +280,7 @@ def mcp_screenshot_b64() -> Optional[bytes]:
     try:
         result = _call("browser_screenshot", {"format": "png"})
         if not _result_ok(result):
+            logging.getLogger(__name__).error("mcp_screenshot_b64: backend returned not-ok: %s", str(result)[:300])
             return None
         text = _result_text(result)
         import base64 as _b64
@@ -287,4 +289,7 @@ def mcp_screenshot_b64() -> Optional[bytes]:
             text = text.split(",", 1)[-1]
         return _b64.b64decode(text)
     except Exception:
+        # Never silently swallow: browser_vision surfaces a generic "MCP screenshot failed"
+        # and the real cause (cold-boot warm-up timeout, decode error, 401...) died here.
+        logging.getLogger(__name__).exception("mcp_screenshot_b64 failed")
         return None

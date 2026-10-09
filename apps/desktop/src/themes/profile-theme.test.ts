@@ -24,7 +24,10 @@ const cases = [
 ]
 
 describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
-  beforeEach(() => window.localStorage.clear())
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetThemeScope()
+  })
 
   it('falls back to the default when unassigned', () => {
     expect(pref.resolve('default')).toBe(fallback)
@@ -54,7 +57,7 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
 // per-profile record survives a round trip untouched.
 const THEME_SCOPE_KEY = 'hermes-desktop-theme-scope-v1'
 
-describe.each(cases)('theme scope for $name', ({ pref, fallback, a, b }) => {
+describe.each(cases)('theme scope for $name', ({ pref, a, b }) => {
   beforeEach(() => {
     window.localStorage.clear()
     __resetThemeScope()
@@ -120,7 +123,8 @@ describe.each(cases)('theme scope for $name', ({ pref, fallback, a, b }) => {
 
     setThemeScope('per-profile')
 
-    expect(pref.resolve('default')).toBe(fallback)
+    // The named assignment already seeded the global fallback before the no-op.
+    expect(pref.resolve('default')).toBe(a)
     expect(window.localStorage.getItem(THEME_SCOPE_KEY)).toBeNull()
   })
 })
@@ -147,5 +151,37 @@ describe('theme scope persistence', () => {
     window.localStorage.setItem(THEME_SCOPE_KEY, 'everywhere')
     __resetThemeScope()
     expect($themeScope.get()).toBe('per-profile')
+  })
+})
+
+// #101216: named-profile assign must seed the global fallback so a Bot Mode
+// gateway hop onto a never-themed bot does not resolve `system`.
+describe('named-profile appearance seeds the global fallback (#101216)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetThemeScope()
+  })
+
+  it('lets a never-themed bot profile inherit Dark set on the launch profile', () => {
+    modePref.assign('forge', 'dark')
+    expect(modePref.resolve('atlas')).toBe('dark')
+  })
+
+  it('keeps an explicit per-profile override over the global fallback', () => {
+    modePref.assign('forge', 'dark')
+    modePref.assign('atlas', 'light')
+    expect(modePref.resolve('forge')).toBe('dark')
+    expect(modePref.resolve('atlas')).toBe('light')
+  })
+
+  it('lets a never-themed profile inherit the last named-profile assign', () => {
+    modePref.assign('forge', 'dark')
+    modePref.assign('atlas', 'light')
+    expect(modePref.resolve('never-themed')).toBe('light')
+  })
+
+  it('promotes a unanimous pre-existing per-profile mode into the empty global slot', () => {
+    window.localStorage.setItem('hermes-desktop-profile-modes-v1', JSON.stringify({ forge: 'dark' }))
+    expect(modePref.resolve('atlas')).toBe('dark')
   })
 })

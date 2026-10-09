@@ -571,7 +571,7 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
 
         delta_info = ""
         if bl and not is_skipped(bl) and bl.get("duration_s") is not None:
-            d_text, d_cls = fmt_delta(dur, bl.get("duration_s"))
+            d_text, _d_cls = fmt_delta(dur, bl.get("duration_s"))
             delta_info = f' — {d_text}'
 
         # Wait bar: shows idle time before the job started running

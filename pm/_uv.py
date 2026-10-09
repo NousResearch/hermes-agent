@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pm import paths
+from pm.filesystem import long_root, native
 from pm.lock import Facts
 from pm.package import InstallError
 from pm.registry import get_package
@@ -13,8 +14,11 @@ from pm.store import Store, current_target
 def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, Path] | None:
     """Resolve uv and Python without host discovery or recursive worker dispatch.
 
-    A read-only probe never installs. Windows bundle builds need a verified
-    writable interpreter so their venv redirectors can run outside the MSIX.
+    A read-only probe never installs. A sealed Windows payload builds on a verified writable
+    copy of its Python: uv starts a venv's ``Scripts\\python.exe`` to query it, and that
+    redirector runs outside the package, so its target must too. A redirector naming the
+    packaged interpreter dies with exit 101 (#135236). Hermes itself still enters those venvs
+    on the packaged interpreter (``pm.environments.venv_command``).
     """
     from pm.install import (
         _install, _installed_location, _lockfile, _refuse_lazy,
@@ -35,7 +39,8 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
                 return None
             raise InstallError(name, "pinned tool is unavailable", "run `hermes pm install`")
         if name == "python" and target.startswith("win32") and sealed():
-            writable = paths.writable_store_root()
+            # Spelled like Store spells its root, so the comparison and the copy's file calls agree.
+            writable = long_root(paths.writable_store_root())
             if location[1].root != writable:
                 copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
                 if copied is None:
@@ -55,4 +60,5 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
                 return None
             raise InstallError(name, "installed binary is missing", "run `hermes pm install`")
         binaries[name] = binary
-    return binaries["uv"], binaries["python"]
+    # Callers execute and compare these outside PM's own file calls: the ordinary spelling, not the store's.
+    return Path(native(binaries["uv"])), Path(native(binaries["python"]))

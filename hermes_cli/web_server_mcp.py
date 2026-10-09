@@ -14,7 +14,7 @@ from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
 
 
-def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, Any], Optional[str]]:
+def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, Any], Optional[str]]:
     """Validate a Dashboard MCP create request and build its safe config.
 
     The returned config never contains the Bearer token; callers persist it via
@@ -38,7 +38,7 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
     if auth not in {"none", "header", "oauth"}:
         raise ValueError(f"Unsupported auth mode: {auth}")
 
-    server_config: Dict[str, Any] = {}
+    server_config: dict[str, Any] = {}
     if url:
         if body.args:
             raise ValueError("Arguments are only supported for stdio MCP servers")
@@ -70,9 +70,9 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
     return name, server_config, bearer_token
 
 
-def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
+def _redact_mcp_env(env: dict[str, Any]) -> dict[str, str]:
     """Mask secret-shaped MCP env values for read responses."""
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for k, v in (env or {}).items():
         try:
             out[str(k)] = redact_key(str(v)) if v else ""
@@ -81,7 +81,7 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
-def _mcp_server_summary(name: str, cfg: Dict[str, Any], plugin: str | None = None) -> Dict[str, Any]:
+def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = None) -> dict[str, Any]:
     from tools.mcp_tool_common import mcp_server_enabled
 
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")

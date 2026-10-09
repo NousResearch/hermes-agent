@@ -106,7 +106,7 @@ def _handler(status: int = 200,
             pb = post_body if post_body else body
             self._write(sc, ct, pb)
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H
@@ -292,7 +292,7 @@ def _redirect_handler(target_base: str):
 
         do_HEAD = do_GET = do_POST = _redir
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H
@@ -314,7 +314,7 @@ def _recording_mcp_handler(seen: dict):
 
         do_HEAD = do_GET = do_POST = _write_ok
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     return _H

@@ -34,7 +34,7 @@ import {
   launchDesktop,
   type MockBackendFixture,
   type Sandbox,
-  waitForAppReady,
+  waitForAppReady
 } from './fixtures'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
@@ -76,15 +76,21 @@ const html = (page: Page) => page.locator('html')
 const rail = (page: Page) => page.locator('[data-slot="profile-rail"]')
 const scopeRow = (page: Page) => page.locator('[id="setting-field-appearance.theme-scope"]')
 const themeRow = (page: Page) => page.locator('[id="setting-field-appearance.theme"]')
-const scopeButton = (page: Page, label: 'Per profile' | 'Shared') => scopeRow(page).getByRole('button', { name: label, exact: true })
-const modeButton = (page: Page, label: 'Light' | 'Dark' | 'System') => themeRow(page).getByRole('button', { name: label, exact: true })
+const scopeButton = (page: Page, label: 'Per profile' | 'Shared') =>
+  scopeRow(page).getByRole('button', { name: label, exact: true })
+const modeButton = (page: Page, label: 'Light' | 'Dark' | 'System') =>
+  themeRow(page).getByRole('button', { name: label, exact: true })
 
 // A card's text is label + description, so match the label node exactly.
 const themeCard = (page: Page, label: string) =>
-  themeRow(page).getByRole('button').filter({ has: page.getByText(label, { exact: true }) })
+  themeRow(page)
+    .getByRole('button')
+    .filter({ has: page.getByText(label, { exact: true }) })
 
 async function waitReady(page: Page): Promise<void> {
-  await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({ timeout: 120_000 })
+  await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({
+    timeout: 120_000
+  })
 }
 
 async function gotoAppearance(page: Page): Promise<void> {
@@ -121,14 +127,17 @@ async function switchProfile(page: Page, name: 'default' | 'work' | 'research'):
   }
 
   if (name !== 'default') {
-    await expect(rail(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 120_000 })
+    await expect(rail(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true', {
+      timeout: 120_000
+    })
   }
 
   await expect.poll(() => storage(page, LAST_PROFILE_KEY), { timeout: 120_000 }).toBe(name)
   await waitReady(page)
 }
 
-const expectSkin = (page: Page, skin: string) => expect(html(page)).toHaveAttribute('data-hermes-theme', skin, { timeout: 30_000 })
+const expectSkin = (page: Page, skin: string) =>
+  expect(html(page)).toHaveAttribute('data-hermes-theme', skin, { timeout: 30_000 })
 
 test.describe('theme scope — per-profile vs shared appearance', () => {
   test.describe.configure({ mode: 'serial' })
@@ -195,11 +204,11 @@ test.describe('theme scope — per-profile vs shared appearance', () => {
     await themeCard(page, 'Everforest').click()
     await expectSkin(page, 'everforest')
     expect(await storageRecord(page, PROFILE_SKINS_KEY)).toEqual({ work: 'everforest' })
-    // The global slot is untouched by a named profile's pick.
-    expect(await storage(page, SKIN_KEY)).toBe('catppuccin')
+    // Named picks also seed the global fallback for never-themed profiles.
+    expect(await storage(page, SKIN_KEY)).toBe('everforest')
 
     await switchProfile(page, 'default')
-    await expectSkin(page, 'catppuccin')
+    await expectSkin(page, 'everforest')
 
     await switchProfile(page, 'work')
     await expectSkin(page, 'everforest')
@@ -250,7 +259,7 @@ test.describe('theme scope — per-profile vs shared appearance', () => {
     expect(await storageRecord(page, PROFILE_SKINS_KEY)).toEqual({ work: 'everforest' })
   })
 
-  test('flipping back to Per profile restores each profile\'s own assignment', async () => {
+  test("flipping back to Per profile restores each profile's own assignment", async () => {
     test.setTimeout(300_000)
 
     await gotoAppearance(page)

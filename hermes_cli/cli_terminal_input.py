@@ -298,7 +298,7 @@ def _apply_bracketed_paste_timeout_patch() -> None:
         _vt100_mod.Vt100Parser.feed = _patched_vt100_feed
         _vt100_mod._hermes_bp_timeout_patched = True
         logger.debug("Applied Vt100Parser bracketed-paste timeout patch (#16263)")
-    except Exception as exc:  # noqa: BLE001 — defensive: never break startup
+    except Exception as exc:
         logger.debug("Bracketed-paste timeout patch skipped: %s", exc)
 
 
@@ -413,7 +413,7 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     return False
 
 
-def _cli_multiline_shortcuts_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+def _cli_multiline_shortcuts_enabled(config: Optional[dict[str, Any]] = None) -> bool:
     """``display.cli_multiline_shortcuts`` (default on: Ctrl+J = newline; off restores the legacy c-j submit)."""
     if config is None:
         config = _cli().CLI_CONFIG

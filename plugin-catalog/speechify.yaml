@@ -1,0 +1,19 @@
+name: speechify
+title: Speechify
+repo: https://github.com/Lokeshm24/hermes-speechify
+sha: 1c4ace31fd2517d63b1a522af8881cfbde8bb098
+description: "The official Speechify text-to-speech provider (tts.provider: speechify), maintained by Speechify. Simba 3 voices with low-latency streaming in voice mode, Opus voice notes for messaging platforms, and a hermes speechify command to list voices and hear a test line. Disclosure: sends the text being spoken, the chosen voice and model, and your Speechify API key to api.speechify.ai (or the base_url you configure); synthesis is billed to your Speechify workspace. Reads only SPEECHIFY_API_KEY. Generated audio is written to Hermes's audio cache. No tools, hooks or middleware. No telemetry."
+maintainer: Lokeshm24
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Lokeshm24/hermes-speechify#readme
+version: "0.1.0"
+known_issues:
+  - "Streaming in voice mode needs Hermes 0.21.6 or newer; 0.21.5 speaks whole sentences instead."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SPEECHIFY_API_KEY

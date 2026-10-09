@@ -28,8 +28,8 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_bloc
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
-    _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _posix_match_forms, _resolve_base_dir,
+    _resolve_entry_for_task, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -176,10 +176,11 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_t
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd/proc paths that can hang reads or leak process state."""
-    normalized = os.path.normpath(_expand_tilde(path))
-    if normalized in _BLOCKED_DEVICE_PATHS:
-        return True
-    return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
+    forms = _posix_match_forms(path)
+    return any(
+        form in _BLOCKED_DEVICE_PATHS
+        or (form.startswith("/proc/") and form.endswith(_BLOCKED_PROC_SUFFIXES))
+        for form in forms)
 
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
@@ -202,6 +203,10 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
             target = os.readlink(current)
         except OSError:
             break
+        # A rooted link target (``/dev/zero``) is drive-relative on Windows (Python 3.13+ isabs is
+        # False), so joining it onto the link's dir would hide its POSIX form; check it as written.
+        if _is_blocked_device_path(target):
+            return True
         if not os.path.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)

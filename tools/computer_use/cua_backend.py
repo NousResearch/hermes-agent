@@ -172,6 +172,33 @@ def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, 
     return (command, args), {"PATH": os.environ.get("PATH", "")}
 
 
+def sandbox_cli_invocation(call_argv: list[str]) -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` running a one-shot ``call_argv`` (a ``cua-driver call ...`` CLI
+    invocation) INSIDE the terminal backend's sandbox, the same exec-prefix + env wrapping
+    ``sandbox_mcp_invocation`` uses for the long-lived MCP server; None on a gateway-hosted desktop.
+
+    The MCP transport's ``list_windows``-empty-result CLI fallback (``cua_backend_session.py::
+    _call_tool_via_cli``) used to skip this and run a bare local ``cua-driver call`` instead, which has no
+    DISPLAY for a desktop that lives inside the sandbox ('no DISPLAY is set' / 'Connection refused (os error
+    111)') even though the MCP transport it is falling back FROM is already running correctly inside that
+    same sandbox. Same placement authority as ``sandbox_mcp_invocation``: raises rather than falling back to
+    the host driver when the sandbox's screen is down."""
+    from tools.bot_desktop import placement, runtime as _bd_runtime
+    if _bd_runtime.tool_placement() == placement.GATEWAY:
+        return None
+    published = _bd_runtime.published_env()
+    if not published.get("DISPLAY"):
+        raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")
+    from tools.bot_desktop import sandbox_host
+    env = _bd_runtime._sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
+    command, args = sandbox_host.cua_cli_invocation(env, _bd_runtime._profile_name(),
+                                                     {**published, _CUA_TELEMETRY_ENV_VAR: "0"}, call_argv)
+    _bd_runtime.touch_activity()
+    return (command, args), {"PATH": os.environ.get("PATH", "")}
+
+
 def sanitized_cua_driver_env() -> dict[str, str]:
     """``cua_driver_child_env()`` with Hermes provider secrets stripped — cua-driver is a third-party binary and must
     never inherit API keys. Falls back to the unsanitized telemetry env if the sanitizer can't import."""
@@ -233,12 +260,29 @@ def _linux_session_locked() -> Optional[bool]:
     except Exception:
         return None
 
+def _effective_display() -> str:
+    """The DISPLAY that actually matters for diagnosing empty discovery: the sandbox's own published
+    DISPLAY when the Bot Desktop is sandboxed (``bot_desktop.placement: terminal``), never the host
+    gateway process's ``os.environ`` -- a headless Docker host legitimately has NO DISPLAY on itself
+    by design, so checking it for a sandboxed desktop always misdiagnoses a healthy sandbox as
+    "no DISPLAY is set" (reported live: Wian's Docker-sandboxed Bot Desktop, 2026-10-09 -- the
+    sandbox's screen was confirmed working by hand, yet every empty discovery blamed a missing
+    DISPLAY that was never actually missing)."""
+    try:
+        from tools.bot_desktop import placement, runtime as _bd_runtime
+        if _bd_runtime.tool_placement() != placement.GATEWAY:
+            return str(_bd_runtime.published_env().get("DISPLAY") or "")
+    except Exception:
+        pass  # placement resolution itself failing is not this function's concern; fall through
+    return str(os.environ.get("DISPLAY") or "")
+
+
 def _empty_discovery_reason() -> str:
     """One-line diagnosis for 'window discovery found nothing'."""
     if _linux_session_locked() is True:
         return ("the desktop session is LOCKED (loginctl LockedHint=yes) — unlock the screen; "
                 "a locked compositor hides windows and freezes app renderers")
-    if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+    if sys.platform == "linux" and not _effective_display():
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
     if sys.platform == "darwin":  # headless Mac / asleep panel: ScreenCaptureKit has 0 shareable displays while TCC looks fine
         return ("window discovery returned no windows; on macOS this usually means no shareable display (headless Mac or "

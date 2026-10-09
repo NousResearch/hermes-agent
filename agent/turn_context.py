@@ -892,12 +892,25 @@ def _memory_query_text(original_user_message: Any) -> str:
     return ""
 
 
+def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> str:
+    """Semantic text of the last user message before this turn (``""`` on a first turn)."""
+    for message in reversed(conversation_history or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return _memory_query_text(message.get("content"))
+    return ""
+
+
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
+    conversation_history: Optional[list[Any]] = None,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
-    Returns the prefetch text (``""`` when nothing was injected)."""
+    Returns the prefetch text (``""`` when nothing was injected).
+
+    ``previous_message`` reaches providers because a process that resumes a session
+    starts mid-conversation: whatever a live process queued at the end of the last
+    turn, keyed on that turn's message, was never queued."""
     if not agent._memory_manager:
         return ""
     _query = _memory_query_text(original_user_message)
@@ -908,6 +921,7 @@ def _memory_turn_start_and_prefetch(
             agent._user_turn_count, _query,
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
+            previous_message=_previous_user_message_text(conversation_history),
         )
     ext_prefetch_cache = ""
     with suppress(Exception):
@@ -1172,7 +1186,9 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(
+        agent, original_user_message, turn_author, conversation_history
+    )
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,

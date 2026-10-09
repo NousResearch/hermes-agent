@@ -278,6 +278,20 @@ def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stas
     assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
 
 
+def test_resumed_turn_hands_providers_the_previous_user_message():
+    """A resumed process must tell providers what the last turn asked: a live process
+    may have keyed end-of-turn recall on it, and a provider may save no transcript of its own."""
+    agent, mm = _agent_with_memory_manager()
+    history = [
+        {"role": "user", "content": "Add the ShapeIndex encoder."},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    _build(agent, user_message="Now decode it back.", conversation_history=history)
+
+    assert mm.on_turn_start.call_args.kwargs["previous_message"] == "Add the ShapeIndex encoder."
+
+
 def test_turn_without_author_clears_previous_bot_author():
     agent, mm = _agent_with_memory_manager()
     _build(agent, user_message="first turn", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})

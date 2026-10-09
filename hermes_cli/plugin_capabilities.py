@@ -20,7 +20,7 @@ class CapabilitySpec:
     """One declarable capability and the legacy gate it maps to."""
 
     id: str
-    legacy_path: Tuple[str, ...]  # deprecated boolean under plugins.entries.<id>, e.g. ("llm", "allow_model_override")
+    legacy_path: tuple[str, ...]  # deprecated boolean under plugins.entries.<id>, e.g. ("llm", "allow_model_override")
     description: str  # one-line risk description shown on the consent screen
 
 
@@ -45,7 +45,7 @@ _CAPABILITY_ROWS = (
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))
-CAPABILITY_REGISTRY: Dict[str, CapabilitySpec] = {
+CAPABILITY_REGISTRY: dict[str, CapabilitySpec] = {
     cid: CapabilitySpec(cid, path, desc) for cid, path, desc in _CAPABILITY_ROWS
 }
 VALID_CAPABILITY_IDS = frozenset(CAPABILITY_REGISTRY)
@@ -55,7 +55,7 @@ GRANTED_KEY = "granted_capabilities"
 CONSENT_KEY = "capabilities_consent"
 
 
-def parse_declared_capabilities(raw: Any, plugin_name: str = "?") -> List[str]:
+def parse_declared_capabilities(raw: Any, plugin_name: str = "?") -> list[str]:
     """Normalize a manifest ``capabilities:`` value into known capability ids.
 
     Unknown ids are dropped with a warning: they can never be granted by this build, so hiding
@@ -68,7 +68,7 @@ def parse_declared_capabilities(raw: Any, plugin_name: str = "?") -> List[str]:
             "Plugin %s: manifest 'capabilities' must be a list, got %s — ignoring",
             plugin_name, type(raw).__name__)
         return []
-    out: List[str] = []
+    out: list[str] = []
     for item in raw:
         if not isinstance(item, str):
             logger.warning("Plugin %s: ignoring non-string capability entry %r", plugin_name, item)
@@ -83,7 +83,7 @@ def parse_declared_capabilities(raw: Any, plugin_name: str = "?") -> List[str]:
     return out
 
 
-def _known(capabilities: Iterable[str]) -> List[str]:
+def _known(capabilities: Iterable[str]) -> list[str]:
     """Deduplicated (order-preserving) subset of *capabilities* with a registry entry."""
     return [c for c in dict.fromkeys(capabilities) if c in VALID_CAPABILITY_IDS]
 
@@ -195,7 +195,7 @@ def consent_hash(plugin_id: str, config: Optional[Mapping[str, Any]] = None) -> 
 
 def pending_capabilities(
     plugin_id: str, declared: Iterable[str], config: Optional[Mapping[str, Any]] = None
-) -> List[str]:
+) -> list[str]:
     """Declared-but-ungranted capabilities: everything at first consent, only the additions on an
     update re-consent (they must be re-consented before going live)."""
     granted = granted_capabilities(plugin_id, config)

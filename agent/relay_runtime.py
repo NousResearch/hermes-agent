@@ -88,7 +88,7 @@ def _run_on_daemon_thread(
     def _target() -> None:
         try:
             outcome["result"] = fn()
-        except BaseException as exc:  # noqa: BLE001 - propagated below
+        except BaseException as exc:
             outcome["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True, name=name)
@@ -152,11 +152,73 @@ def _same_handle(a: Any, b: Any) -> bool:
 
 
 # Process-wide plugin-configuration result shared by every currently hosted profile.
-_RelayPluginConfigurationState = Enum("_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED")
+_RelayPluginConfigurationState = Enum(
+    "_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED"
+)
 
 
 class _RelayPluginConfigurationLoadError(RuntimeError):
     """An explicitly selected Relay plugin configuration could not be loaded."""
+
+
+def _activation_requires_managed_execution(activation: Any) -> bool:
+    """Return whether Relay activated any static or dynamic plugin behavior."""
+    try:
+        report = getattr(activation, "report", None)
+    except Exception:
+        report = None
+    return _report_requires_managed_execution(report)
+
+
+def _activation_config_paths(activation: Any) -> list[str]:
+    """Return the plugins.toml files an activation loaded, lowest precedence first."""
+    try:
+        paths = getattr(activation, "report", {}).get("config_paths")
+    except Exception:
+        return []
+    return [str(path) for path in paths] if isinstance(paths, list) else []
+
+
+def _report_requires_managed_execution(report: Any) -> bool:
+    """Return whether a Relay plugin-host report enables any static or dynamic plugin.
+
+    Relay owns the report contract. An unfamiliar report stays fail-safe by
+    retaining Hermes managed execution instead of silently bypassing plugins.
+    """
+
+    def keep_enabled() -> bool:
+        logger.warning(
+            "Hermes could not determine whether the Relay plugin configuration is empty; keeping managed "
+            "execution enabled"
+        )
+        return True
+
+    if not isinstance(report, dict):
+        return keep_enabled()
+    resolved = report.get("resolved_config")
+    dynamic_plugins = report.get("dynamic_plugins")
+    if not isinstance(resolved, dict) or not isinstance(dynamic_plugins, list):
+        return keep_enabled()
+    components = resolved.get("components")
+    if not isinstance(components, list):
+        return keep_enabled()
+    for component in components:
+        if not isinstance(component, dict):
+            return keep_enabled()
+        enabled = component.get("enabled")
+        if not isinstance(enabled, bool):
+            return keep_enabled()
+        if enabled:
+            return True
+    for plugin in dynamic_plugins:
+        if not isinstance(plugin, dict) or "selected" not in plugin:
+            return keep_enabled()
+        selected = plugin["selected"]
+        if not isinstance(selected, bool):
+            return keep_enabled()
+        if selected:
+            return True
+    return False
 
 
 @dataclass
@@ -195,7 +257,7 @@ def _load_segments_config() -> dict[str, Any]:
             max_turns = max(0, int(segments.get("max_turns", 0) or 0))
         except (TypeError, ValueError):
             max_turns = 0
-    except Exception:  # noqa: BLE001 - config absence (or a malformed section) must not crash
+    except Exception:
         pass
     return {"on_compaction": on_compaction, "max_turns": max_turns}
 
@@ -244,7 +306,9 @@ class _ProcessRelayPluginConfiguration:
                 self._state = self._preflight(relay) or self._activate(relay)
                 if self._state is _RelayPluginConfigurationState.ACTIVE:
                     logger.info(
-                        "Relay plugins are active process-wide and apply to all profiles hosted by this Hermes process."
+                        "The Relay plugin host is active process-wide and applies to all profiles hosted by this "
+                        "Hermes process. Configuration files: %s",
+                        "; ".join(_activation_config_paths(self._activation)) or "none reported",
                     )
             self._owners.add(id(owner))
             return self._state
@@ -255,6 +319,12 @@ class _ProcessRelayPluginConfiguration:
                 return _RelayPluginConfigurationState.DISABLED
         except Exception as exc:
             self._activation = None
+            if _is_relay_host_conflict(exc):
+                logger.warning(
+                    "A process-global Relay plugin configuration is already active outside Hermes native "
+                    "ownership; leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
+                )
+                return _RelayPluginConfigurationState.FOREIGN
             logger.warning("Hermes Relay plugin initialization failed: %s", exc, exc_info=True)
             return _RelayPluginConfigurationState.FAILED
         self._relay = relay
@@ -267,42 +337,18 @@ class _ProcessRelayPluginConfiguration:
                 "Hermes Relay plugin cleanup is still pending; refusing to replace the process-global configuration"
             )
             return _RelayPluginConfigurationState.FAILED
-        try:
-            existing_report = relay.plugin.report()
-        except Exception:
-            logger.warning(
-                "Hermes could not determine whether a process-global Relay plugin configuration is already "
-                "active; refusing to replace it", exc_info=True,
-            )
-            return _RelayPluginConfigurationState.FAILED
-        if existing_report is not None:
-            logger.warning(
-                "A process-global Relay plugin configuration is already active outside Hermes native ownership; "
-                "leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
-            )
-            return _RelayPluginConfigurationState.FOREIGN
         return None
 
     def _initialize(self, relay: Any) -> bool:
-        """Initialize Relay from the selected plugins.toml; False when none is selected."""
-        configured_inputs = _configured_plugin_inputs(relay)
-        if configured_inputs is None:
-            return False
-        plugin_config, dynamic_plugins = configured_inputs
-        if dynamic_plugins:
-            try:
-                initialize = relay.plugin.initialize_with_dynamic_plugins
-                activation = _resolve_plugin_awaitable(initialize(plugin_config, dynamic_plugins))
-                if activation is None:
-                    raise RuntimeError("NeMo Relay dynamic plugin initialization returned no activation handle")
-                self._activation = activation
-            except Exception as exc:
-                raise RuntimeError("Hermes Relay dynamic plugin activation failed") from exc
-        if self._activation is None:
-            # Reached only after explicit opt-in. Relay 0.8 no longer layers repository-local
-            # configuration onto this explicitly selected payload.
-            _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
-        return True
+        """Initialize Relay and report whether the resolved configuration needs managed execution."""
+        config_path = _configured_plugin_inputs()
+        # An explicit file replaces Relay's user file; its system file always remains above either source.
+        activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
+        if activation is None:
+            raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
+        self._activation = activation
+        self._relay = relay
+        return _activation_requires_managed_execution(activation)
 
     def release(self, owner: Any) -> None:
         """Release one host and clear Relay after the final host exits."""
@@ -329,11 +375,9 @@ class _ProcessRelayPluginConfiguration:
             return True
 
         def close_configuration() -> Any:
-            if activation is None:
-                return _resolve_plugin_awaitable(relay.plugin.clear_async())
             if callable(close := getattr(activation, "close", None)):
                 return _resolve_plugin_awaitable(close())
-            raise RuntimeError("NeMo Relay dynamic plugin activation has no close method")
+            raise RuntimeError("NeMo Relay plugin activation has no close method")
 
         for what, step in (
             ("subscriber flush", lambda: _resolve_plugin_awaitable(relay.subscribers.flush_async())),
@@ -353,7 +397,7 @@ atexit.register(_PLUGIN_CONFIGURATION.retry_pending_cleanup)
 
 
 class RelayRuntime:
-    """Own Relay session scopes and optional process plugin configuration."""
+    """Own Relay session scopes and the process plugin configuration."""
 
     def __init__(self, relay: Any = None, *, profile_key: str | None = None) -> None:
         self.relay = relay or _load_nemo_relay()
@@ -364,6 +408,10 @@ class RelayRuntime:
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
         self._execution_consumers: set[str] = set()
+        # Outputs of scopes that finished under a concurrent scope (pop_relay_scope_if_top said no),
+        # keyed by handle uuid: the drain that later reclaims the scope closes it with this output.
+        self._deferred_scope_outputs: dict[str, dict[str, Any]] = {}
+        self._deferred_scope_outputs_lock = threading.Lock()
         self._closing = self._shutdown_started = False
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
         self._operations_idle.set()
@@ -377,6 +425,21 @@ class RelayRuntime:
 
     def _plugins_active(self) -> bool:
         return self._plugin_configuration_state is _RelayPluginConfigurationState.ACTIVE
+
+    def defer_scope_output(self, handle: Any, output: dict[str, Any]) -> None:
+        """Keep the real output of a finished scope that could not be popped yet because a
+        concurrent scope sits above it; the orphan drain closes it with this instead."""
+        key = getattr(handle, "uuid", None)
+        if key is not None:
+            with self._deferred_scope_outputs_lock:
+                self._deferred_scope_outputs[str(key)] = output
+
+    def _take_deferred_scope_output(self, handle: Any) -> dict[str, Any] | None:
+        key = getattr(handle, "uuid", None)
+        if key is None:
+            return None
+        with self._deferred_scope_outputs_lock:
+            return self._deferred_scope_outputs.pop(str(key), None)
 
     def retain_managed_execution(self, consumer: str) -> None:
         """Keep managed LLM and tool execution active for one consumer."""
@@ -665,7 +728,9 @@ class RelayRuntime:
             if session_root is not None and _same_handle(top, session_root) and handle is not session_root:
                 break
             try:
-                orphan_output = {"outcome": "cancelled", "hermes.orphan_drain": True}
+                orphan_output = self._take_deferred_scope_output(top) or {
+                    "outcome": "cancelled", "hermes.orphan_drain": True,
+                }
                 pop_relay_scope(self.relay, top, output=orphan_output, metadata=metadata)
                 drained += 1
             except Exception:
@@ -1270,18 +1335,25 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
-def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | None:
-    """Load selected plugin inputs, or return ``None`` when none were selected."""
+def _configured_plugin_inputs() -> Path | None:
+    """Return the parseable explicit override, or ``None`` to use Relay discovery."""
+    config_path = _explicit_plugins_toml()
+    if config_path is None and (legacy_vars := configured_legacy_relay_env_vars(os.environ)):
+        logger.warning(
+            "Legacy NeMo Relay exporter variables are set but no %s was provided. %s no longer configure "
+            "Relay exporters; any standard user or system plugins.toml still applies. Run `hermes migrate "
+            "relay` (or `hermes update`, which runs it for every profile) to generate %s and select it in .env.",
+            RELAY_PLUGINS_CONFIG_ENV,
+            ", ".join(legacy_vars),
+            get_hermes_home() / "relay-plugins.toml",
+        )
+    return config_path
+
+
+def _explicit_plugins_toml() -> Path | None:
+    """Return the file selected by ``HERMES_NEMO_RELAY_PLUGINS_TOML`` after checking that it parses."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
-        if legacy_vars := configured_legacy_relay_env_vars(os.environ):
-            logger.warning(
-                "Legacy NeMo Relay exporter variables are set but no %s was provided — NO traces are being "
-                "exported. %s no longer activate Relay exporters. Run `hermes migrate relay` (or `hermes update`, "
-                "which runs it for every profile) to generate %s from them and select it in .env.",
-                RELAY_PLUGINS_CONFIG_ENV, ", ".join(legacy_vars),
-                get_hermes_home() / "relay-plugins.toml",
-            )
         return None
     config_path = Path(configured).expanduser()
     try:
@@ -1289,12 +1361,57 @@ def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | 
             config = tomllib.load(config_file)
         if "dynamic_plugins" in config:
             raise ValueError("Hermes [[dynamic_plugins]] records are unsupported; use Relay [[plugins.dynamic]] records")
-        dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(config_path) if "plugins" in config else []
-        return {k: v for k, v in config.items() if k != "plugins"}, dynamic_plugins
+        return config_path
     except Exception as exc:
         raise _RelayPluginConfigurationLoadError(
             f"Hermes Relay plugin configuration could not be loaded from {config_path}; continuing without Relay plugins"
         ) from exc
+
+
+@dataclass(frozen=True)
+class RelayPluginSources:
+    """The plugin configuration Relay resolves for this process, as its validator reports it."""
+
+    config_paths: tuple[str, ...]  # lowest precedence first
+    enabled: bool  # whether any static component or dynamic plugin is switched on
+    errors: tuple[str, ...]  # initialization would refuse the configuration
+    warnings: tuple[str, ...]
+
+
+def resolve_plugin_sources(relay: Any = None) -> RelayPluginSources:
+    """Resolve the plugins.toml layers this process would load, without loading plugin code.
+
+    Relay's validator reads the same layers as initialization but does not take the process-wide host.
+    Raises when a file cannot be read or parsed.
+    """
+    relay = relay or _load_nemo_relay()
+    report = relay.plugin.validate({}, additional_plugins_toml=_explicit_plugins_toml())
+    diagnostics = [d for d in (report.get("config") or {}).get("diagnostics") or [] if isinstance(d, dict)]
+    return RelayPluginSources(
+        config_paths=tuple(str(path) for path in report.get("config_paths") or []),
+        enabled=_report_requires_managed_execution(report),
+        errors=tuple(str(d.get("message")) for d in diagnostics if d.get("level") == "error"),
+        # Relay adds one "configuration_inherited" note per discovered file; config_paths already names them.
+        warnings=tuple(
+            str(d.get("message")) for d in diagnostics
+            if d.get("level") == "warning" and d.get("code") != "plugin.configuration_inherited"
+        ),
+    )
+
+
+# Relay 0.9 exposes no active-host query; only initialize's two Conflict messages signal one.
+_RELAY_HOST_CONFLICT_MESSAGES = frozenset(
+    {
+        "conflict: a static plugin configuration is already active; to combine static and dynamic plugins, "
+        "provide the static components as the base configuration to dynamic plugin activation before calling "
+        "plugin initialization",
+        "conflict: plugin configuration is owned by an active dynamic plugin host",
+    }
+)
+
+
+def _is_relay_host_conflict(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc) in _RELAY_HOST_CONFLICT_MESSAGES
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:
@@ -1321,91 +1438,3 @@ def _reset_for_tests() -> None:
     HOST_REGISTRY.shutdown_all()
     _PLUGIN_CONFIGURATION.reset_for_tests()
     _PROFILE_KEY_CACHE.clear()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from enum import auto  # noqa: F401,E402
-
-def emit_mark(
-    name: str,
-    *,
-    session_id: str,
-    data: Any = None,
-    metadata: Any = None,
-) -> bool:
-    """Emit a fail-open Relay mark under a Hermes session."""
-    runtime = get_runtime(create=False)
-    if runtime is None:
-        return False
-    try:
-        return runtime.emit_mark(
-            name,
-            {"session_id": session_id},
-            data=data,
-            metadata=metadata,
-        )
-    except Exception:
-        logger.warning("Hermes Relay mark failed: %s", name, exc_info=True)
-        return False
-
-def ensure_session(*, session_id: str, **context: Any) -> RelaySession | None:
-    """Create or return the shared Relay session used by Hermes core."""
-    runtime = get_runtime()
-    if runtime is None:
-        return None
-    try:
-        return runtime.ensure_session({"session_id": session_id, **context})
-    except Exception:
-        logger.warning("Hermes Relay session initialization failed", exc_info=True)
-        return None
-
-def get_host(
-    *,
-    create: bool = True,
-    profile_key: str | None = None,
-) -> RelayHost | None:
-    """Return the explicit real or reduced-capability host for a profile."""
-    return HOST_REGISTRY.for_profile(profile_key, create=create)
-
-def get_session_handle(session_id: str) -> Any:
-    """Return the shared Relay handle for direct core instrumentation."""
-    runtime = get_runtime(create=False)
-    return None if runtime is None else runtime.get_session_handle(session_id)
-
-def run_in_session(
-    session_id: str,
-    callback: Callable[..., Any],
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
-    """Run a scope, LLM, or tool API against a shared Hermes session."""
-    runtime = get_runtime()
-    if runtime is None:
-        raise RuntimeError("Hermes Relay runtime is unavailable")
-    session = runtime.get_session(session_id)
-    if session is None:
-        session = runtime.ensure_session({"session_id": session_id})
-    if session is None:
-        raise RuntimeError("Hermes Relay session is unavailable")
-    return runtime.run_in_session(session, callback, *args, **kwargs)
-
-async def run_in_session_async(
-    session_id: str,
-    callback: Callable[..., Any],
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
-    """Await a Relay operation inside a shared Hermes session context."""
-    runtime = get_runtime()
-    if runtime is None:
-        raise RuntimeError("Hermes Relay runtime is unavailable")
-    session = runtime.get_session(session_id)
-    if session is None:
-        session = runtime.ensure_session({"session_id": session_id})
-    if session is None:
-        raise RuntimeError("Hermes Relay session is unavailable")
-    return await runtime.run_in_session_async(session, callback, *args, **kwargs)
-# ---- END PLUGIN-COMPAT ----

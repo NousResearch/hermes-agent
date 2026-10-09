@@ -1,0 +1,60 @@
+# Paths that need a hermes-agent-core approval before merge. This replaces the
+# ``ci-reviewed`` label gate: GitHub requests the review and enforces it
+# (ruleset: "Require review from Code Owners"), so CI no longer needs to
+# classify these paths, check a label, or rerun jobs when one is added.
+#
+# Last match wins; every rule below has the same owner, so order is moot.
+# Patterns without a leading slash match at any depth.
+
+# Workflows, composite actions, and this file: they decide what CI executes
+# and what the autofix job pushes to main. The scripts the workflows run get the
+# same review for the same reason.
+/.github/                       @NousResearch/hermes-agent-core
+/scripts/ci/                    @NousResearch/hermes-agent-core
+# The code-health gate decides whether a PR passes; weakening it is a CI change.
+/scripts/check                  @NousResearch/hermes-agent-core
+/scripts/code_health/           @NousResearch/hermes-agent-core
+
+# eslint configs can define custom ``fix`` functions that run arbitrary code.
+eslint.config.*                 @NousResearch/hermes-agent-core
+/.prettierrc                    @NousResearch/hermes-agent-core
+
+# MCP catalog entries define local commands users later install into
+# ``mcp_servers``; the installer decides how they are fetched and run.
+/optional-mcps/                 @NousResearch/hermes-agent-core
+/hermes_cli/mcp_catalog.py      @NousResearch/hermes-agent-core
+
+# Files that execute at pip-install or interpreter startup.
+/setup.py                       @NousResearch/hermes-agent-core
+/setup.cfg                      @NousResearch/hermes-agent-core
+/sitecustomize.py               @NousResearch/hermes-agent-core
+/usercustomize.py               @NousResearch/hermes-agent-core
+*.pth                           @NousResearch/hermes-agent-core
+
+# Dependency manifests, resolved pins, and image builds: an edit here changes
+# what gets installed and run without touching any reviewed source.
+pyproject.toml                  @NousResearch/hermes-agent-core
+package.json                    @NousResearch/hermes-agent-core
+uv.lock                         @NousResearch/hermes-agent-core
+*package-lock.json              @NousResearch/hermes-agent-core
+/flake.lock                     @NousResearch/hermes-agent-core
+/pm/lock.json                   @NousResearch/hermes-agent-core
+*Dockerfile                     @NousResearch/hermes-agent-core
+
+# The npm supply-chain quarantine (min-release-age) lives here.
+.npmrc                          @NousResearch/hermes-agent-core
+
+# Where PM fetches artifacts from.
+/pm/artifact-mirror.json        @NousResearch/hermes-agent-core
+
+# The installers users pipe into a shell, and the generator for the pins they carry.
+/scripts/install.sh             @NousResearch/hermes-agent-core
+/scripts/install.ps1            @NousResearch/hermes-agent-core
+/scripts/install.cmd            @NousResearch/hermes-agent-core
+/scripts/gen-bootstrap-pins.py  @NousResearch/hermes-agent-core
+
+# The trust model and the scope authority for security reports.
+/SECURITY.md                    @NousResearch/hermes-agent-core
+
+# Each entry pins a third-party repo by sha; editing it changes what users install.
+/plugin-catalog/                @NousResearch/hermes-agent-core

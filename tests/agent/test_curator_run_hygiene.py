@@ -18,11 +18,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     import tools.skill_usage as usage
-    import agent.curator as curator
+    from agent import curator
     import agent.curator_backup as cb
     for m in (usage, cb, curator):
         importlib.reload(m)
-    monkeypatch.setattr(curator, "_load_config", lambda: {})
+    monkeypatch.setattr(curator, "_load_config", dict)
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
     yield {"home": home, "curator": curator, "cb": cb}
     for t in threading.enumerate():

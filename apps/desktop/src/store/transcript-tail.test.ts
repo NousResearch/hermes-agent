@@ -11,7 +11,16 @@ import {
 const page = (count: number, limit = 10) =>
   ({
     messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
-    pagination: { limit, offset: 0 }
+    pagination: { limit, offset: 0, order: 'latest' as const }
+  }) as never
+
+/** A page from a backend that predates the `order` param: it dropped the
+ *  unknown query param, answered from the OLDEST row, and still returned a
+ *  `pagination` object — without the honoured-order echo. */
+const orderlessPage = (count: number, limit = 10) =>
+  ({
+    messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
+    pagination: { limit, offset: 0, returned: count }
   }) as never
 
 describe('recordTranscriptTail no-op suppression', () => {
@@ -151,6 +160,35 @@ describe('recordTranscriptTail with an empty page', () => {
     recordTranscriptTail('s1', page(10))
 
     recordTranscriptTail('s1', page(0))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
+  })
+})
+
+describe('order-echo guard (#92508)', () => {
+  beforeEach(() => {
+    clearTranscriptTailPaging()
+  })
+
+  it('never adopts an orderless page as a truncated tail', () => {
+    recordTranscriptTail('s1', orderlessPage(10))
+
+    // The rows are the transcript's OLDEST page, so nothing may be counted
+    // back from them and no backfill may arm.
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: false })
+  })
+
+  it("never adopts a page stamped with the order it really served ('oldest')", () => {
+    recordTranscriptTail('s1', {
+      messages: Array.from({ length: 10 }, (_, i) => ({ id: `m${i}` })),
+      pagination: { limit: 10, offset: 0, order: 'oldest', returned: 10 }
+    } as never)
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: false })
+  })
+
+  it('still arms a real tail when the page echoes order=latest', () => {
+    recordTranscriptTail('s1', page(10))
 
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })

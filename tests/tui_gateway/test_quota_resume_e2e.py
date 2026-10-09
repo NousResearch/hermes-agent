@@ -280,6 +280,58 @@ def test_clear_removes_all_pending_state(server):
         assert key not in session
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_quota_failure_survives_strict_wire_validation(server, monkeypatch, enabled):
+    """The terminal result must cross the current gateway contract without losing its reset."""
+    from types import SimpleNamespace
+
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import max_retries_exhausted_result
+
+    reset_at = time.time() + 1800
+    error = _FakeError({**CODEX_QUOTA_BODY, "resets_at": reset_at}, status_code=429)
+    context = extract_api_error_context(error)
+    classified = classify_api_error(error, provider="openai-codex", model="test-model")
+    agent = SimpleNamespace(
+        provider="openai-codex", model="test-model", log_prefix="", _credential_pool=None,
+        _flush_status_buffer=lambda: None, _summarize_api_error=lambda error: str(error),
+        _emit_diagnostic_status=lambda text: None, _vprint=lambda *a, **k: None,
+        _persist_session=lambda *a: None,
+    )
+    result = max_retries_exhausted_result(
+        agent, error, classified, attempts=3, is_rate_limited=True,
+        error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=[],
+        conversation_history=None, api_call_count=3, approx_tokens=0,
+        provider=agent.provider, base_url="https://chatgpt.com/backend-api", model=agent.model,
+        error_context=context,
+    )
+    assert result["quota_resume"]["eligible"] is True
+    assert result["quota_resume"]["resume_at"] == pytest.approx(reset_at + 45)
+    monkeypatch.setattr(server, "_quota_resume_config", lambda: (enabled, 2))
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(server, "render_message", lambda text, cols: None)
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+    session = _session()
+    turn = SimpleNamespace(
+        result=result, agent=agent, prompt_text="finish the interrupted task",
+        terminal_callback=None, receipt_committed=False, receipt_attempted=False,
+        marker_key="", error_retained=False, error_detail="",
+    )
+    payload, _, status = server._complete_turn_payload(session, turn, None, 80, sid="quota-test")
+    assert status == "error"
+    frame = server._event_frame("message.complete", "quota-test", payload)
+    wire = frame["params"]["payload"]
+    assert wire["failure_reason"] == "rate_limit"
+    assert wire["quota_resume"]["scheduled"] is enabled
+    assert wire["quota_resume"]["resume_at"] == result["quota_resume"]["resume_at"]
+    if enabled:
+        assert session["_quota_resume_prompt"] == turn.prompt_text
+        assert session["_quota_resume_at"] == wire["quota_resume"]["resume_at"]
+    else:
+        assert "_quota_resume_at" not in session
+
+
 def test_config_defaults_expose_a_settings_toggle():
     """Desktop Settings renders booleans from DEFAULT_CONFIG; the toggle must exist."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG

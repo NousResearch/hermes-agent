@@ -8,6 +8,7 @@ whose callers fall back to the in-repo lists on ``None``.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -163,22 +164,22 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
         logger.info("model catalog cache write failed: %s", exc)
 
 
-# Stale-while-revalidate: at most one background manifest refresh in flight per process. The
-# refreshed manifest lands on disk; the NEXT get_catalog() call picks it up via the mtime check.
+# Stale-while-revalidate: at most one background manifest refresh in flight per cache file (i.e.
+# per profile home — profile A's refresh must not suppress profile B's). The refreshed manifest
+# lands on disk; the NEXT get_catalog() call picks it up via the mtime check.
 _catalog_swr_lock = threading.Lock()
-_catalog_swr_inflight = False
+_catalog_swr_inflight: set[str] = set()
 
 
 def _spawn_catalog_swr_refresh(url: str) -> None:
-    """Refresh the catalog manifest off-thread (fire-and-forget, deduped)."""
-    global _catalog_swr_inflight
+    """Refresh the catalog manifest off-thread (fire-and-forget, deduped per cache path)."""
+    inflight_key = str(_cache_path())
     with _catalog_swr_lock:
-        if _catalog_swr_inflight:
+        if inflight_key in _catalog_swr_inflight:
             return
-        _catalog_swr_inflight = True
+        _catalog_swr_inflight.add(inflight_key)
 
     def _refresh() -> None:
-        global _catalog_swr_inflight
         try:
             fetched = _fetch_manifest_with_fallback(url, DEFAULT_FETCH_TIMEOUT)
             if fetched is not None:
@@ -187,9 +188,12 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
             logger.debug("catalog SWR refresh failed", exc_info=True)
         finally:
             with _catalog_swr_lock:
-                _catalog_swr_inflight = False
+                _catalog_swr_inflight.discard(inflight_key)
 
-    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+    # copy_context: the picker may be serving a profile scoped by the HERMES_HOME ContextVar
+    # (tui_gateway ``_profile_scoped``), so the worker must write THAT profile's cache file.
+    context = contextvars.copy_context()
+    threading.Thread(target=lambda: context.run(_refresh), daemon=True, name="model-catalog-swr").start()
 
 
 def _remember(data: dict[str, Any], mtime: float) -> dict[str, Any]:

@@ -621,7 +621,7 @@ def test_put_page_object_carries_html_type_and_no_store(r2_server):
         os.unlink(path)
     stored, _etag = r2_server.store["releases/stable/index.html"]
     assert stored == page.encode("utf-8")
-    headers = [r[2] for r in r2_server.requests if r[0] == "PUT"][0]
+    headers = next(r[2] for r in r2_server.requests if r[0] == "PUT")
     assert headers["Content-Type"] == "text/html; charset=utf-8"
     assert headers["Cache-Control"] == "no-store"
 

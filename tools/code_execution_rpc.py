@@ -108,9 +108,32 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
         logger.error("Tool call failed in %s: %s", where, exc, exc_info=True)
         result = tool_error(str(exc))
     tool_call_counter[0] += 1
-    tool_call_log.append({"tool": tool_name, "args_preview": str(tool_args)[:80],
-                          "duration": round(time.monotonic() - call_start, 2)})
+    entry = {"tool": tool_name, "args_preview": str(tool_args)[:80],
+             "duration": round(time.monotonic() - call_start, 2)}
+    error = _result_error(result)
+    if error:
+        entry["error"] = error
+    tool_call_log.append(entry)
     return result
+
+
+def _result_error(result) -> str:
+    """The ``error`` text of a JSON-object tool result, else ``""``."""
+    if not isinstance(result, str) or not result.startswith("{") or '"error"' not in result:
+        return ""
+    try:
+        body = json.loads(result)
+    except ValueError:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    return str(error)[:300] if error else ""
+
+
+def tool_errors_since(tool_call_log: list, start: int = 0) -> list:
+    """Failed in-script tool calls since *start*, for the execute_code result: a script that
+    ignores a helper's ``{"error": ...}`` return would otherwise report plain success while
+    the write/patch it relied on never happened."""
+    return [{"tool": e["tool"], "error": e["error"]} for e in tool_call_log[start:] if e.get("error")][:5]
 
 
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,

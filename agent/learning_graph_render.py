@@ -27,7 +27,7 @@ Row = list  # of runs ``[text, style, alpha, hex?]``; a grid is a list of rows
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -191,7 +191,7 @@ def _skill_category_counts(nodes: Iterable[dict[str, Any]]) -> Counter:
 # ── Timeline chart frame ─────────────────────────────────────────────────────
 
 class _ChartBucket:
-    __slots__ = ("label", "ts", "nodes", "rec")
+    __slots__ = ("label", "nodes", "rec", "ts")
 
     def __init__(self, label: str, ts: float):
         self.label, self.ts, self.rec = label, ts, 1.0
@@ -421,14 +421,3 @@ def render_frames(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, fr
         "buckets": _bucket_rows(buckets, payload), "summary": build_summary(payload), "axis": axis_labels(payload),
         "count": len(payload.get("nodes", [])), "cols": cols, "rows": rows,
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-Grid = list  # list[Row]
-
-Run = list  # [text, style, alpha, hex?]
-# ---- END PLUGIN-COMPAT ----

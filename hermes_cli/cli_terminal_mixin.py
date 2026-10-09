@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+from agent.i18n import t
 from hermes_cli.cli_render import (
     _chrome_floor,
     _hold_paints,
@@ -626,9 +627,7 @@ class CLITerminalMixin:
         logger.warning("Recovered terminal input modes after leak: %s", reason)
         if not self._input_mode_recovery_notice_shown:
             self._input_mode_recovery_notice_shown = True
-            _cprint(
-                f"  {_DIM}Recovered terminal input modes after leaked mouse reports. "
-                f"If this repeats, run /new or restart this tab.{_RST}")
+            _cprint(f"  {_DIM}{t('cli.terminal.recovered_mouse_modes')}{_RST}")
 
     def _check_termios_drift(self) -> None:
         """Idle watchdog: heal a tty that drifted back to cooked mode (a lost
@@ -666,6 +665,4 @@ class CLITerminalMixin:
                 pass
             if not self._termios_drift_notice_shown:
                 self._termios_drift_notice_shown = True
-                _cprint(
-                    f"  {_DIM}Recovered terminal from cooked-mode drift "
-                    f"(input should respond normally again).{_RST}")
+                _cprint(f"  {_DIM}{t('cli.terminal.recovered_cooked_mode')}{_RST}")

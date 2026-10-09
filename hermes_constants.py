@@ -487,10 +487,12 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Read PM's selected Node/npm/npx, then a user-owned PATH toolchain.
+    """Read PM's selected Node/npm/npx; ``None`` when PM has not installed it.
 
-    Explicit executable paths remain caller-owned. Discovery never installs,
-    probes, repairs, or activates the retired ``HERMES_HOME/node`` layout.
+    Never falls back to the user's PATH copy (callers ``pm.ensure`` on ``None``):
+    mixing toolchains breaks native-addon ABIs and npm caches. Explicit
+    executable paths remain caller-owned. Discovery never installs, probes,
+    repairs, or activates the retired ``HERMES_HOME/node`` layout.
     """
     command = str(command)
     if any(sep in command for sep in ("/", "\\")):
@@ -505,14 +507,15 @@ def find_node_executable(command: str) -> str | None:
         from pm import installed_package
 
         installed = installed_package(package_name)
-        if installed is not None and installed.binary is not None:
-            if base != "npx":
-                return str(installed.binary)
-            for name in _candidate_node_command_names("npx"):
-                candidate = installed.binary.parent / name
-                if candidate.is_file():
-                    return str(candidate)
+        if installed is None or installed.binary is None:
             return None
+        if base != "npx":
+            return str(installed.binary)
+        for name in _candidate_node_command_names("npx"):
+            candidate = installed.binary.parent / name
+            if candidate.is_file():
+                return str(candidate)
+        return None
     if sys.platform != "win32":
         return shutil.which(command)
     directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
@@ -915,11 +918,13 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRATCH_MAX_IDLE_HOURS) -> int:
     """Delete top-level scratch entries with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and git worktree registrations rooted in them
-    first (``hermes_constants_scratch``); return the count removed."""
+    first (``hermes_constants_scratch``); return the count removed. Each removal and kill is
+    recorded in ``<home>/logs/scratch-prune.log`` (*scratch* is ``<home>/cache/scratch``)."""
     from hermes_constants_scratch import prune_idle_entries
 
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
-    return prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}))
+    log_file = root.parent.parent / "logs" / "scratch-prune.log"
+    return prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}), log_file)
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:

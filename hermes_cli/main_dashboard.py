@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 from pathlib import Path
 from typing import NoReturn
@@ -35,22 +36,22 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
         _scan_dashboard_processes,
     )
     pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
-    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
-    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    # The scan also selects the caller's own wrapper shell (``bash -c 'hermes dashboard --stop'``);
+    # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
-    """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
-        if any(pattern in command for pattern in patterns):
-            mode = candidate
-            break
-    if mode is None:
+    """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
+
+    The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
+    backend inventory (a kill + kickstart path) and ``--status`` (#121156).
+    """
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    mode = _hermes_holder_subcommand(command)
+    if mode not in ("dashboard", "serve"):
         return None
 
     port = 9119
@@ -376,6 +377,26 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
+_RESPAWN_LIVENESS_GRACE_SECONDS = 1.0
+
+
+def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
+    """Rebuild a captured ``[<interpreter>, <hermes launcher>, ...]`` argv on this install's launcher.
+
+    A pre-PM-takeover install left ``~/.local/bin/hermes`` as a symlink to a Python console
+    script, so the kernel recorded a manual backend as ``[<old venv python>, <launcher>, dashboard,
+    ...]``. The takeover then rewrote that launcher into a POSIX shell shim, and replaying the
+    captured argv verbatim asks the old interpreter to parse a shell script (#124778). This
+    checkout's own ``hermes`` entry script stays Python, so it and every other shape replay unchanged.
+    """
+    root = Path(__file__).resolve().parents[1]
+    if (len(argv) > 2 and os.path.basename(argv[0]).startswith("python")
+            and os.path.basename(argv[1]) == "hermes" and Path(argv[1]) != root / "hermes"):
+        from hermes_cli._launchers import runtime_command
+        return runtime_command(root, argv[2:])
+    return list(argv)
+
+
 def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
@@ -385,30 +406,46 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
-    failed: list[tuple[list[str], str]] = []
+    spawned: list[tuple[list[str], list[str], "subprocess.Popen"]] = []
+    failed: list[tuple[list[str], list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for command in commands:
+    for original in commands:
+        command = _respawnable_command_for_current_install(original)
+        # Keep restarted dashboards headless; reopening a browser after a
+        # background update is noisy and fails in SSH/headless sessions.
+        if "dashboard" in command and "--no-open" not in command:
+            command = [*command, "--no-open"]
         try:
-            # Keep restarted dashboards headless; reopening a browser after a
-            # background update is noisy and fails in SSH/headless sessions.
-            if "dashboard" in command and "--no-open" not in command:
-                command = [*command, "--no-open"]
             with open(log_path, "ab") as log_f:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True)
-            respawned.append(command)
+            spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:
-            failed.append((command, str(exc)))
+            failed.append((original, command, str(exc)))
+
+    # A respawned backend is a resident server: one that exits within the grace
+    # window died at startup (SyntaxError on a stale argv, port already bound,
+    # ...) and must surface as a failure, not as ``✓ restarted`` (#124778).
+    if spawned:
+        time.sleep(_RESPAWN_LIVENESS_GRACE_SECONDS)
+    for original, command, proc in spawned:
+        if proc.poll() is None:
+            respawned.append(command)
+        else:
+            failed.append((original, command, f"child exited during the first "
+                                              f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
 
     for command in respawned:
         print(f"    ✓ restarted: {shlex.join(command)}")
-    for command, err_msg in failed:
+    for _, command, err_msg in failed:
         print(f"    ✗ failed to restart ({shlex.join(command)}): {err_msg}")
-    return [command for command, _ in failed]
+    # The caller's argv, not the spawned one: callers match it against the stopped PID's
+    # captured cmdline to book the runtime as not brought back (#109290).
+    return [original for original, _, _ in failed]
 
 
 class _UpdateOutputStream:
@@ -478,10 +515,11 @@ def _install_hangup_protection(gateway_mode: bool = False):
 
     # Any failure here is non-fatal; we just skip the wrap.
     try:
-        # Late-bound import so tests can monkeypatch
-        # hermes_cli.config.get_hermes_home to simulate setup failure.
-        from hermes_cli.config import get_hermes_home as _get_hermes_home
-        logs_dir = _get_hermes_home() / "logs"
+        # Late-bound import so tests can monkeypatch it to simulate setup failure. The ROOT
+        # home, never a sticky profile's: the update mutates the shared checkout, and the
+        # Desktop and the hand-off scripts read <root>/logs/update.log.
+        from hermes_constants import get_default_hermes_root as _get_root_home
+        logs_dir = _get_root_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
 
@@ -889,7 +927,9 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+    from hermes_cli.url_utils import format_url_host
+
+    url = f"http://{format_url_host(hr.dial_host(record))}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")

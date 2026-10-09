@@ -27,7 +27,7 @@ from hermes_cli import (
     portal_cli,
     status_auth,
 )
-from hermes_cli.auth import _load_auth_store  # noqa: F401  (store import name kept for parity with core tests)
+from hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
@@ -127,6 +127,28 @@ def test_real_account_keeps_account_rendering(isolated_store, capsys):
     assert nous_account.format_nous_portal_entitlement_message(info) is None  # paid_access claim entitles
 
 
+@pytest.mark.parametrize("tier", ["Anonymous", "ANONYMOUS", " anonymous "])
+def test_anonymous_tier_matches_case_and_whitespace_insensitively(isolated_store, tier):
+    """The tier claim is wire data; casing must not hand a guest billing copy instead of the sign-in copy."""
+    _write_auth({**_guest_state(), "account_tier": tier, "access_token": _jwt(account_tier=tier)})
+    info = nous_account.get_nous_portal_account_info()
+    assert info.is_anonymous_tier
+    assert nous_account.format_nous_portal_entitlement_message(info) == nous_account.FREE_TIER_NEEDS_ACCOUNT
+
+
+def test_guest_whose_lookup_fails_still_gets_the_sign_in_copy(isolated_store, monkeypatch):
+    """A token inside its refresh window falls through to the account API; when that fails the
+    stored tier must survive on the error snapshot."""
+    state = {**_guest_state(), "access_token": _jwt(exp=int(time.time()) + 30),
+             "portal_base_url": "http://127.0.0.1:9"}
+    _write_auth(state)
+    monkeypatch.setattr(nous_account, "_fetch_nous_account_info",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("portal down")))
+    info = nous_account.get_nous_portal_account_info()
+    assert info.error is not None and info.is_anonymous_tier
+    assert nous_account.format_nous_portal_entitlement_message(info) == nous_account.FREE_TIER_NEEDS_ACCOUNT
+
+
 def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
     started: list = []
 
@@ -204,7 +226,7 @@ def test_cli_chat_status_names_the_free_tier(isolated_store):
         reasoning_config=None,
         show_reasoning=None,
         session_key="cli:free-tier-status",
-        _get_status_bar_snapshot=lambda: {},
+        _get_status_bar_snapshot=dict,
         _console_print=lambda text, **_kwargs: rendered.append(text),
     )
     CLISessionMixin._show_session_status(cli)

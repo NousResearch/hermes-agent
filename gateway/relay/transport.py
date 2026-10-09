@@ -52,8 +52,8 @@ class RelayTransport(Protocol):
         ...
 
     async def send_outbound(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
         Returns a result dict; for ``op == "send"`` it carries ``success`` and
@@ -63,7 +63,7 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Proxy a chat-info lookup to the connector."""
         ...
 
@@ -84,8 +84,8 @@ class RelayTransport(Protocol):
         ...
 
     async def send_follow_up(
-        self, action: Dict[str, Any], *, platform: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, action: dict[str, Any], *, platform: Optional[str] = None
+    ) -> dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 
         A credential acting on the SHARED bot identity (e.g. a Discord interaction

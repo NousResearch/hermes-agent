@@ -329,6 +329,8 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
 
     def pack_into_staging(cmd, *args, **kwargs):
         assert kwargs["env"]["PATH"].startswith("C:\\pm-pinned-git\\cmd;")
+        # The build holds the checkout lock, so npm arrives wrapped in the custody launcher.
+        cmd = cmd[cmd.index("/usr/bin/npm"):] if "/usr/bin/npm" in cmd else cmd
         if cmd[1:3] != ["run", "builder"]:
             return subprocess.CompletedProcess(list(cmd), 0)
         # electron-builder honours -c.directories.output=<staging>; emulate a

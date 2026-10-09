@@ -13,6 +13,8 @@ export interface DesktopLaunchConfig {
   rendererMaxOldSpaceMb: number
   /** `desktop.renderer_accessibility`; unset when the key is absent or unreadable. */
   rendererAccessibility?: boolean
+  /** `desktop.ssh_path`: explicit Windows ssh client (#103288); unset when absent. */
+  sshPath?: string
 }
 
 export interface PlannedSwitch {
@@ -64,7 +66,16 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
     const [, key, rawValue] = keyed
     const value = rawValue.replace(/\s+#.*$/, '')
 
-    if (key === 'renderer_accessibility') {
+    if (key === 'ssh_path') {
+      // YAML double quotes escape backslashes ("C:\\Git\\usr\\bin\\ssh.exe");
+      // plain and single-quoted scalars keep them literally.
+      const doubleQuoted = /^"(.*)"$/.exec(value)
+      const sshPath = doubleQuoted ? doubleQuoted[1].replace(/\\\\/g, '\\') : unquote(value)
+
+      if (sshPath) {
+        out.sshPath = sshPath
+      }
+    } else if (key === 'renderer_accessibility') {
       const word = unquote(value).toLowerCase()
 
       if (['0', 'false', 'no', 'off', 'disabled'].includes(word)) {

@@ -9,7 +9,7 @@ from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
 from hermes_cli.colors import Colors, color
 
 # Rich radiolist rows: (text, style). style is None | "yellow" | "dim". Plain ``str`` works too.
-RadioItem = Union[str, Sequence[Tuple[str, Optional[str]]]]
+RadioItem = Union[str, Sequence[tuple[str, Optional[str]]]]
 _NO_REPLAY = object()
 
 
@@ -239,7 +239,7 @@ def _fuzzy_score(label: str, query: str) -> float | None:
     return None if None in scores else sum(scores)
 
 
-def _filter_indices(items: List[str], query: str) -> List[int]:
+def _filter_indices(items: list[str], query: str) -> list[int]:
     """Item indices matching *query*, best-first; ties keep catalog order. Empty query = all."""
     q = query.strip()
     if not q:
@@ -256,14 +256,14 @@ class _SearchState:
     query: str = ""
 
 
-def _reconcile_cursor(filtered: List[int], cursor: int) -> tuple[int, int]:
+def _reconcile_cursor(filtered: list[int], cursor: int) -> tuple[int, int]:
     """Return ``(cursor, cursor_pos)`` inside the filtered index list."""
     if not filtered:
         return cursor, 0
     return (cursor, filtered.index(cursor)) if cursor in filtered else (filtered[0], 0)
 
 
-def _move_filtered_cursor(filtered: List[int], cursor: int, cursor_pos: int, delta: int) -> int:
+def _move_filtered_cursor(filtered: list[int], cursor: int, cursor_pos: int, delta: int) -> int:
     """Move through the filtered index list, wrapping like the legacy menus."""
     return filtered[(cursor_pos + delta) % len(filtered)] if filtered else cursor
 
@@ -360,7 +360,9 @@ def _enhanced_key_action(codepoint: int, modifier: int = 1) -> str:
     # CSI-u encodes Ctrl+C as `c` plus the Ctrl modifier bit; lock-state bits may be added, so
     # test the Ctrl bit rather than the canonical value 5.
     has_ctrl = bool((max(1, modifier) - 1) & 4)
-    return NAV_INTERRUPT if codepoint == 3 or (codepoint in (99, 67) and has_ctrl) else NAV_NONE
+    if codepoint == 3 or (codepoint in (99, 67) and has_ctrl):
+        return NAV_INTERRUPT
+    return NAV_CANCEL if codepoint == 4 or (codepoint in (100, 68) and has_ctrl) else NAV_NONE
 
 
 def _read_csi_tail(stdscr) -> tuple[str, int | None]:
@@ -410,6 +412,7 @@ def _decode_menu_key(stdscr, key: int) -> str:
     plain = {
         curses.KEY_UP: NAV_UP, ord("k"): NAV_UP, curses.KEY_DOWN: NAV_DOWN, ord("j"): NAV_DOWN,
         curses.KEY_LEFT: NAV_BACK, 3: NAV_INTERRUPT,  # 3 = Ctrl+C in raw/cbreak mode
+        4: NAV_CANCEL,  # 4 = Ctrl+D (EOF) in raw mode: leaves the menu, as it does in cooked mode
         curses.KEY_ENTER: NAV_SELECT, 10: NAV_SELECT, 13: NAV_SELECT,
         ord(" "): NAV_TOGGLE, ord("q"): NAV_CANCEL}
     if key in plain:
@@ -577,8 +580,8 @@ def _run_curses_menu(
 
 
 def curses_checklist(
-    title: str, items: List[str], selected: Set[int], *, cancel_returns: Set[int] | None = None,
-    status_fn: Optional[Callable[[Set[int]], str]] = None) -> Set[int]:
+    title: str, items: list[str], selected: set[int], *, cancel_returns: set[int] | None = None,
+    status_fn: Optional[Callable[[set[int]], str]] = None) -> set[int]:
     """Curses multi-select checklist -> set of selected indices. ``cancel_returns`` (default: the
     original *selected*) is returned on ESC/q; ``status_fn(chosen)`` renders on the bottom row
     for live aggregate info such as token estimates."""
@@ -637,9 +640,9 @@ def _simple_header(title: str, confirm: str, cancel: str, searchable: bool):
 
 
 def curses_radiolist(
-    title: str, items: List[RadioItem], selected: int = 0, *, cancel_returns: int | None = None,
+    title: str, items: list[RadioItem], selected: int = 0, *, cancel_returns: int | None = None,
     description: str | None = None, searchable: bool = False,
-    search_labels: List[str] | None = None) -> int:
+    search_labels: list[str] | None = None) -> int:
     """Curses single-select radio list -> selected index.
 
     Items are plain strings or ``(text, style)`` segment sequences (``None``/``"yellow"``/
@@ -702,7 +705,7 @@ def format_radio_item_ansi(item: RadioItem) -> str:
 
 
 def _radio_numbered_fallback(
-    title: str, items: List[RadioItem], selected: int, cancel_returns: int) -> int:
+    title: str, items: list[RadioItem], selected: int, cancel_returns: int) -> int:
     """Text-based numbered fallback for radio selection."""
     print(color(f"\n  {title}", Colors.YELLOW))
     print(color("  Select by number, Enter to confirm.\n", Colors.DIM))
@@ -717,7 +720,7 @@ def _radio_numbered_fallback(
 
 
 def curses_single_select(
-    title: str, items: List[str], default_index: int = 0, *, cancel_label: str = "Cancel",
+    title: str, items: list[str], default_index: int = 0, *, cancel_label: str = "Cancel",
     searchable: bool = False) -> int | None:
     """Curses single-select menu -> selected index or None on cancel. With ``searchable``, ``/``
     opens a type-to-filter prompt; the return value is always the original item index."""
@@ -744,7 +747,7 @@ def curses_single_select(
         search_labels=list(all_items) if searchable else None)
 
 
-def _numbered_single_fallback(title: str, items: List[str], cancel_idx: int) -> int | None:
+def _numbered_single_fallback(title: str, items: list[str], cancel_idx: int) -> int | None:
     """Text-based numbered fallback for single-select."""
     print(f"\n  {title}\n")
     for i, label in enumerate(items, 1):
@@ -755,8 +758,8 @@ def _numbered_single_fallback(title: str, items: List[str], cancel_idx: int) -> 
 
 
 def _numbered_fallback(
-    title: str, items: List[str], selected: Set[int], cancel_returns: Set[int],
-    status_fn: Optional[Callable[[Set[int]], str]] = None) -> Set[int]:
+    title: str, items: list[str], selected: set[int], cancel_returns: set[int],
+    status_fn: Optional[Callable[[set[int]], str]] = None) -> set[int]:
     """Text-based toggle fallback for terminals without curses."""
     chosen = set(selected)
     print(color(f"\n  {title}", Colors.YELLOW))
@@ -777,11 +780,3 @@ def _numbered_fallback(
         if 0 <= idx < len(items):
             chosen.symmetric_difference_update({idx})
         print()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Protocol  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -38,7 +38,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    import tools.daemon_pool as daemon_pool
+    from tools import daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -112,7 +112,7 @@ def _clarify_call(call_id: str = "clarify-1"):
         type="function",
         function=SimpleNamespace(
             name="clarify",
-            arguments='{"question": "Pick one?", "choices": ["A", "B"]}',
+            arguments='{"questions": [{"question": "Pick one?", "choices": ["A", "B"]}]}',
         ),
     )
 
@@ -167,7 +167,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
     import model_tools
 
     agent = _make_agent(tmp_path)
@@ -309,11 +309,11 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
         lambda: clarify_timeout,
     )
 
-    def _callback(question, choices, multi_select=False):
+    def _callback(questions):
         # Must OUTLAST the 1.0s sequential deadline — the test proves the
         # generic timeout never cuts a human clarify wait.
         time.sleep(1.3)
-        return "A"
+        return {"answers": {"q0": "A"}, "outcome": "submitted"}
 
     agent.clarify_callback = _callback
     terminal_events: list[dict] = []
@@ -343,7 +343,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     assert time.monotonic() - started < 10.0
     assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
     payload = json.loads(messages[0]["content"])
-    assert payload["user_response"] == "A"
+    assert payload["responses"][0]["user_response"] == "A"
     assert "timed out" not in messages[0]["content"]
     assert messages[1]["content"] == "second result"
     assert not any(event.get("error_type") == "tool_timeout" for event in terminal_events)

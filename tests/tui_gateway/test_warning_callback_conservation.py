@@ -10,6 +10,8 @@ from agent.status_output import StatusOutputMixin
 from tui_gateway import server
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
+CLARIFY_QUESTIONS = [{"qid": "q0", "question": "Continue recovery?", "choices": ["yes", "no"], "multi_select": False}]
+
 
 class Agent(StatusOutputMixin):
     log_prefix = ""
@@ -63,7 +65,7 @@ def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_
     def wire(frame):
         frames.append(frame)
         if frame.get("method") == "clarify":
-            assert server_requests.resolve_response({"id": frame["id"], "result": {"answer": "yes"}})
+            assert server_requests.resolve_response({"id": frame["id"], "result": {"answers": {"q0": "yes"}}})
         return True
     monkeypatch.setattr(server, "write_json", wire)
     monkeypatch.setattr(server_requests, "_write", wire)
@@ -73,7 +75,7 @@ def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_
     agent.clarify_callback = server._agent_cbs("drain-owner")["clarify_callback"]
     def run(message, **kwargs):
         work.append(message)
-        controls.append(agent.clarify_callback("Continue recovery?", ["yes", "no"]))
+        controls.append(agent.clarify_callback(CLARIFY_QUESTIONS))
         logging.getLogger("operator").warning("watch diagnostic retained")
         return {"final_response": "diagnostic final", "messages": []}
     agent.run_conversation = run
@@ -84,7 +86,7 @@ def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_
     with caplog.at_level(logging.WARNING, logger="operator"):
         server._run_post_turn_followups("request", "drain-owner", session, {}, None)
     assert len(work) == 1
-    assert controls == ["yes"]
+    assert [c["answers"] for c in controls] == [{"q0": "yes"}]
     assert process_registry.completion_queue.empty()
     assert "watch diagnostic retained" in caplog.text
     presentation = [f for f in frames if f.get("params", {}).get("type") in {"status.update", "message.complete", "message.start", "error"}]
@@ -102,7 +104,7 @@ def test_diagnostic_turn_callbacks_from_real_worker_keep_controls_and_logs(turn_
     def wire(frame):
         frames.append(frame)
         if frame.get("method") == "clarify":
-            assert server_requests.resolve_response({"id": frame["id"], "result": {"answer": "yes"}})
+            assert server_requests.resolve_response({"id": frame["id"], "result": {"answers": {"q0": "yes"}}})
         return True
     monkeypatch.setattr(server, "write_json", wire)
     monkeypatch.setattr(server_requests, "_write", wire)
@@ -126,7 +128,7 @@ def test_diagnostic_turn_callbacks_from_real_worker_keep_controls_and_logs(turn_
                 agent._emit_wait_notice("plain wake thinking")
                 agent._emit_notice(SimpleNamespace(level="info", text="wake notice", kind="custom", ttl_ms=0, key="custom", id="n"))
                 kwargs["stream_callback"]("wake stream")
-                controls.append(agent.clarify_callback("Continue recovery?", ["yes", "no"]))
+                controls.append(agent.clarify_callback(CLARIFY_QUESTIONS))
                 logging.getLogger("operator").warning("worker diagnostic retained")
             except BaseException as exc:
                 failures.append(exc)
@@ -142,7 +144,7 @@ def test_diagnostic_turn_callbacks_from_real_worker_keep_controls_and_logs(turn_
         session["_run_thread"].join(timeout=10)
         assert not session["_run_thread"].is_alive()
     assert not failures
-    assert controls == ["yes"]
+    assert [c["answers"] for c in controls] == [{"q0": "yes"}]
     assert "worker diagnostic retained" in caplog.text
     presentation = [f for f in frames if f.get("params", {}).get("type") in
                     {"status.update", "thinking.delta", "notification.show", "message.delta", "message.complete"}]

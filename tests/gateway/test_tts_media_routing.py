@@ -521,11 +521,11 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     _QueuedMediaAgent.first_response = f"Quote here\nMEDIA:{media_file}\n{protected}"
 
     fake_dotenv = types.ModuleType("dotenv")
-    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
-    setattr(fake_run_agent, "AIAgent", _QueuedMediaAgent)
+    fake_run_agent.AIAgent = _QueuedMediaAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = _QueuedMediaCaptureAdapter()

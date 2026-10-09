@@ -26,7 +26,7 @@ def _stub(monkeypatch, *, managed: bool):
     branch reads. ``is_agent_created`` stays True so the existing bundled/
     hub refusal guard passes and the code reaches the managed check.
     """
-    import tools.skill_usage as skill_usage
+    from tools import skill_usage
 
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(skill_usage, "is_agent_created", lambda name: True)
@@ -49,7 +49,7 @@ def _stub(monkeypatch, *, managed: bool):
 
 def test_pin_still_refuses_bundled_skills(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
+    from tools import skill_usage
 
     calls = _stub(monkeypatch, managed=True)
     # _stub leaves is_agent_created True; override AFTER so the refusal

@@ -110,6 +110,25 @@ def _nav_targets(cmd: str) -> list:
     return targets
 
 
+# A container cwd is not a host path: a docker/local session whose working dir is the backend
+# container's default /home (or /root) home must not start hint discovery either — the same
+# vacuous-containment hazard as the desktop home pin, just container-shaped (#76902).
+_CONTAINER_HOMES = frozenset({Path("/home"), Path("/root"), Path("/workspace")})
+
+
+def _is_home_like_working_dir(working_dir: Path) -> bool:
+    """True when ``working_dir`` is a home the desktop/container fell back to — not a project."""
+    home = Path.home()
+    if working_dir == home or working_dir in _CONTAINER_HOMES or working_dir.parent in _CONTAINER_HOMES:
+        return True
+    # Also the local-sandbox home mount: a docker backend binds the host home under a
+    # container path whose basename stays the user name (e.g. /mnt/host-home/brooklyn).
+    for part in working_dir.parts:
+        if part in (".home", "host-home", "host_home"):
+            return True
+    return False
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -123,26 +142,56 @@ class SubdirectoryHintTracker:
         # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
         self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # $HOME is not a project (#76902): the packaged Desktop app with no default project
+        # dir configured resolves its cwd (and TERMINAL_CWD) to home, and the containment
+        # check is then vacuously true for the whole home subtree — every AGENTS.md /
+        # CLAUDE.md / .cursorrules under ~ would be injected on tool calls. Hint discovery
+        # runs only inside a real project workspace; a home cwd only resumes when the
+        # session adopts a real project (see ``rebind_working_dir``).
+        self._home_is_working_dir = _is_home_like_working_dir(self.working_dir)
         # The working dir is pre-marked loaded (startup context handles it).
-        self._loaded_dirs: Set[Path] = {self.working_dir}
+        self._loaded_dirs: set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
         # symlinks/hardlinks/copies is never re-sent. Seeded with the CWD hint
         # file prompt_builder already loaded.
-        self._loaded_digests: Set[str] = set()
+        self._loaded_digests: set[str] = set()
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    def rebind_working_dir(self, working_dir: str) -> None:
+        """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
+        try:
+            new_dir = Path(working_dir).expanduser().resolve()
+            if not new_dir.is_dir() or _is_home_like_working_dir(new_dir):
+                return
+        except (OSError, ValueError, RuntimeError):
+            return
+        if new_dir == self.working_dir:
+            self._home_is_working_dir = False
+            return
+        self.working_dir = new_dir
+        self._home_is_working_dir = False
+        # Fresh anchor, fresh bookkeeping: the new project's directories get their
+        # own first-visit hints (startup never loaded context files for it).
+        self._loaded_dirs = {self.working_dir}
+        self._loaded_digests = set()
+        found = _first_hint_file(self.working_dir)
+        if found and found[1]:
+            self._loaded_digests.add(_digest(found[1]))
+
+    def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
         if not self.enabled:
+            return None
+        if self._home_is_working_dir:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
-    def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
+    def _extract_directories(self, tool_name: str, args: dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
-        candidates: Set[Path] = set()
+        candidates: set[Path] = set()
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
@@ -152,7 +201,7 @@ class SubdirectoryHintTracker:
             self._extract_paths_from_command(cmd, candidates)
         return list(candidates)
 
-    def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
+    def _add_path_candidate(self, raw_path: str, candidates: set[Path]):
         """Add a raw path's directory and its ancestors (up to ``_MAX_ANCESTOR_WALK``
         levels, stopping at the first already-loaded dir) so reading
         ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
@@ -174,7 +223,7 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError, RuntimeError):
             pass
 
-    def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
+    def _extract_paths_from_command(self, cmd: str, candidates: set[Path]):
         """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
             tokens = shlex.split(cmd)
@@ -225,7 +274,7 @@ class SubdirectoryHintTracker:
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
-        if not self._within_working_dir(directory):
+        if self._home_is_working_dir or not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None
         for filename in _HINT_FILENAMES:

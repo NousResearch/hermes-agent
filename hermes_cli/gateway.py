@@ -5,7 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import contextlib
-from hermes_cli.cli_output import line_input  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -19,7 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import setup_platforms  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli import gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -31,9 +31,9 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
-from gateway.restart import (  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -45,7 +45,7 @@ from gateway.restart import (  # noqa: F401 — resolved lazily by siblings thro
     resolve_restart_exit_wait_budget,
     resolve_systemd_timeout_stop_sec,
 )
-from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
     is_managed,
@@ -56,7 +56,7 @@ from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings th
 )
 
 # display_hermes_home is imported lazily: hermes_constants may be a cached pre-update version.
-from hermes_cli.setup import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.setup import (
     print_header,
     print_info,
     print_success,
@@ -603,8 +603,9 @@ def _scan_gateway_pids(
 
         # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
         # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
-        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home.
-        if profile_flag_value(command_lc) is not None:
+        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home. An explicit
+        # ``--profile default`` names this home (#100817).
+        if profile_flag_value(command_lc) not in (None, "default"):
             return False
         if hermes_home_assignments(command_lc):
             return command_line_names_hermes_home(command_lc, current_home_lc)
@@ -824,7 +825,7 @@ def find_windows_gateway_services(
         return []
     try:
         if psutil_module is None:
-            import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
+            import psutil as psutil_module  # type: ignore[no-redef]
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
         from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots
@@ -976,9 +977,9 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str], home: str | None = None) -> bool:
+    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv (on Windows under ``home``, the one it ran on) after exit."""
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv), home=home)
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -1054,7 +1055,7 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     return env
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1073,7 +1074,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     if sys.platform == "win32":
         try:
             from hermes_cli.gateway_windows import windowless_gateway_restart_spec
-            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv))
+            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv), home=home)
         except Exception:
             # Fall back to the original argv: a visible window beats a failed respawn.
             respawn_cwd = ""
@@ -2117,9 +2118,13 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
+        # pythonw/console-less backend startup reaches this probe; powershell.exe is a
+        # console-subsystem binary and would flash a window per spawn (#117781).
+        from hermes_cli._subprocess_compat import windows_hide_flags
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None
@@ -2221,17 +2226,23 @@ def _bare_unit_pinned_home() -> Path | None:
     one naming basis that holds still across the sudo mid-command switch (see ``_profile_suffix``) and it
     covers every elevated identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
 
-    Linux- and root-gated: a systemd unit is not an identity authority for launchd labels, Windows
-    scheduled tasks, or s6 slots, which share ``_profile_suffix()``, and only an elevated process ever
-    operates the system unit — an unprivileged user-scope command must keep naming its own units, or a
-    bare system unit pinning ``profiles/<name>`` would alias that profile onto the user's default unit.
-    ``is_linux()`` is a plain ``sys.platform`` test; ``supports_systemd_services()`` would be wrong here,
-    since it can shell out to ``systemctl is-system-running`` on WSL/containers and this runs on every
-    name resolution.
+    Root reads the system unit; an unprivileged process reads only its own user unit, never the system
+    one — a bare system unit pinning ``profiles/<name>`` would otherwise alias that profile onto the
+    user's default unit. The user unit matters for a custom root: the ``hermes-gateway-<hash>`` naming
+    (#105525) left a bare user unit installed before it pinning that same root, so lifecycle commands
+    saw "no unit", ``gateway restart`` fell through to a foreground run, and the still-enabled legacy
+    unit's ``Restart=always`` looped on the instance lock (#109476). A unit pinning THIS home is this
+    home's service, whatever it is named.
+
+    Linux-gated: a systemd unit is not an identity authority for launchd labels, Windows scheduled tasks,
+    or s6 slots, which share ``_profile_suffix()``. ``is_linux()`` is a plain ``sys.platform`` test;
+    ``supports_systemd_services()`` would be wrong here, since it can shell out to ``systemctl
+    is-system-running`` on WSL/containers and this runs on every name resolution.
     """
-    if not is_linux() or os.geteuid() != 0:  # windows-footgun: ok — behind is_linux()
+    if not is_linux():
         return None
-    pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
+    unit_dir = _SYSTEM_UNIT_DIR if os.geteuid() == 0 else user_systemd_unit_dir()  # windows-footgun: ok — behind is_linux()
+    pinned = _hermes_home_pinned_by_unit(unit_dir / f"{_SERVICE_BASE}.service")
     if not pinned:
         return None
     try:
@@ -2301,13 +2312,20 @@ def get_service_name() -> str:
 
 
 def user_systemd_unit_dir() -> Path:
-    """``$XDG_CONFIG_HOME/systemd/user`` (``~/.config`` only as the spec's default).
+    """``$XDG_CONFIG_HOME/systemd/user`` (``~/.config`` only as the spec's default), ``~`` being the
+    ACCOUNT home, not the process HOME.
 
     Hardcoding ``~/.config`` made every unit probe silently false-negative on a host that moves
-    XDG_CONFIG_HOME — doctor then reported no gateway unit while systemd was running ours.
+    XDG_CONFIG_HOME — doctor then reported no gateway unit while systemd was running ours. And
+    ``Path.home()`` trusts a process HOME that profile isolation may point at ``{HERMES_HOME}/home`` — the
+    ACTIVE profile's, not even the one selected with ``-p`` — so ``gateway install`` wrote the unit under
+    ``~/.hermes/profiles/<active>/home/.config/systemd/user/`` where ``systemctl --user`` never looks and
+    ``enable`` failed with "Unit ... does not exist" (#98699). ``systemctl --user`` targets the login
+    user's session, so the unit dir follows the account home like ``get_launchd_plist_path()`` does.
     """
+    from hermes_constants import get_real_home
     config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(config_home) if config_home else Path.home() / ".config"
+    base = Path(config_home) if config_home else Path(get_real_home()) / ".config"
     return base / "systemd" / "user"
 
 
@@ -2905,8 +2923,16 @@ def get_launchd_plist_path() -> Path:
     import pwd
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    # Real account home: profile mode may point HOME at a profile dir.
-    home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # Real account home: profile mode may point HOME at a profile dir. Sandboxed/app-hosted
+    # shells can expose a UID that pwd cannot resolve (#57292); fall back to the shared
+    # real-home resolver (HERMES_REAL_HOME → HOME → pwd → ~, profile home skipped) instead
+    # of crashing launchd commands.
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    except (KeyError, ImportError, OSError):
+        from hermes_constants import get_real_home
+
+        home = Path(get_real_home())
     return home / "Library" / "LaunchAgents" / f"{name}.plist"
 
 
@@ -2991,11 +3017,17 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted."""
+    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
+
+    Only the which()-resolved tool dirs and the hardcoded System32 family belong here. The
+    shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
+    git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
+    unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
+    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
     if not is_wsl():
         return []
 
-    candidates = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.startswith("/mnt/")]
+    candidates: list[str] = []
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:
@@ -3154,8 +3186,8 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
     home's store records node/npm PATH entries, and those dirs — resolved via
     Facts.env_for — are used verbatim. With managed Node recorded, consulting
     the invoker's PATH would make a system unit depend on who ran sudo, so
-    lookup stops there. The legacy ``<hermes>/node`` tree and finally a PATH
-    lookup are fallbacks for installs pm never recorded.
+    lookup stops there. The legacy ``<hermes>/node`` tree is the only fallback,
+    for installs pm never recorded; the invoker's PATH node never is.
     """
     home = Path(hermes_root) if hermes_root is not None else Path(get_hermes_home())
     try:
@@ -3179,19 +3211,6 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
         if present and entry not in path_entries:
             path_entries.append(entry)
 
-    # With managed Node present, consulting the invoker's PATH would make a system unit depend on who ran sudo.
-    if managed_node_present:
-        return
-
-    resolved_node = shutil.which("node")
-    if not resolved_node:
-        return
-
-    # Use the dir where node is FOUND, not the symlink target (~/.local/bin/node often links into one profile).
-    resolved_node_dir = str(Path(resolved_node).parent)
-    if resolved_node_dir not in path_entries:
-        path_entries.append(resolved_node_dir)
-
 
 def _systemd_command(argv: list[str]) -> str:
     """Quote argv for systemd, including its non-shell specifier expansion."""
@@ -3213,7 +3232,9 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
         owner = (uid, username)
     token = set_hermes_home_override(home)
     try:
-        if resolve_store_python(root) is None:
+        # Publication gate: ask what stage_launcher will bind, so an inherited
+        # HERMES_RUNTIME_DIR cannot stand in for this install's store (#131745).
+        if resolve_store_python(root, publication=True) is None:
             return  # Externally owned Nix/developer runtime.
         local = root / ".hermes" / "bin"
         paths = ensure_install_launchers(root, local)
@@ -3355,7 +3376,7 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     import re
     return re.sub(
         r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.S,
+        _normalize_service_definition(text), flags=re.DOTALL,
     )
 
 
@@ -3373,42 +3394,8 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
-    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))  # noqa: E731
+    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))
     return norm(installed) == norm(expected)
-
-
-def _temp_home_in_service_definition(definition: str) -> str | None:
-    """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
-    test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
-    import re
-    import tempfile
-    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S)
-    temp_roots = {
-        Path(tempfile.gettempdir()).resolve(),
-        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
-    }
-    for raw in candidates:
-        try:
-            resolved = Path(raw.strip().strip('"')).resolve()
-        except (OSError, ValueError):
-            continue
-        if any(resolved == root or root in resolved.parents for root in temp_roots):
-            return raw.strip()
-    return None
-
-
-def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
-    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
-    temp_home = _temp_home_in_service_definition(definition)
-    if temp_home is None:
-        return False
-    print(f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a temporary directory ({temp_home}).")
-    print(
-        "  This usually means a test/E2E environment exported HERMES_HOME. "
-        "Unset it (or run from a clean shell) and retry."
-    )
-    return True
 
 
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
@@ -3431,6 +3418,11 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
+    # Every boot/start/restart lands here: never rewrite a unit pinning another home (checked before
+    # systemd_unit_is_current adopts the unit's home into os.environ).
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not unit_belongs_to_caller(unit_path, system, "rewrite"):
+        return False
     # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
     current = systemd_unit_is_current(system=system)
     if _retire_hermes_replace_dropin(system=system):
@@ -3450,7 +3442,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3595,7 +3587,7 @@ def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
 
 
 def _get_cron_drain_timeout() -> float:
-    """Return the configured cron-only drain floor in seconds.
+    """Return the configured cron and api_server (/v1) drain floor in seconds.
 
     See #82161.
     """
@@ -3619,9 +3611,16 @@ def systemd_install(
     run_as_user: str | None = None,
     enable_on_startup: bool = True,
     non_interactive: bool = False,
+    force_unit_path: bool = False,
 ):
     if system:
         _require_root_for_system_service("install")
+
+    # A unit pinning another home is another install's gateway, --force included; --force-unit-path repoints.
+    unit_path = get_systemd_unit_path(system=system)
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not force_unit_path and not unit_belongs_to_caller(unit_path, system, "overwrite", run_as_user):
+        sys.exit(1)
 
     # Offer to remove legacy units first: alongside the new unit they flap-fight for the bot token.
     if has_legacy_hermes_units():
@@ -3632,15 +3631,15 @@ def systemd_install(
             remove_legacy_hermes_units(interactive=False)
             print()
 
-    unit_path = get_systemd_unit_path(system=system)
     scope_label = _service_scope_label(system)
     sudo, scope_flag, user_flag = _systemd_cli_bits(system)
 
-    # Existing system units already pin HERMES_HOME; adopt it before any regenerate.
-    if unit_path.exists():
+    # Existing system units already pin HERMES_HOME; adopt it before any regenerate. A repoint keeps the
+    # caller's home (adopting the old one would regenerate the unit unchanged).
+    if unit_path.exists() and not force_unit_path:
         _sync_hermes_home_from_systemd_unit(system=system)
 
-    if unit_path.exists() and not force:
+    if unit_path.exists() and not (force or force_unit_path):
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {scope_label} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
@@ -3650,6 +3649,16 @@ def systemd_install(
         else:
             print(f"Service already installed at: {unit_path}")
             print("Use --force to reinstall")
+            # An existing, current unit may still be DISABLED (a host whose unit predates
+            # enable-on-install, or a migration whose uninstall took the wrong unit's wants
+            # symlink). Honour enable_on_startup for this branch too — it used to return without
+            # ever enabling, so even the migration's install path was no enablement guarantee
+            # (#124922).
+            if enable_on_startup:
+                enabled = _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
+                if getattr(enabled, "returncode", 0) != 0:
+                    print_warning(f"could not enable {get_service_name()} at boot "
+                                  f"(systemctl enable exited {enabled.returncode}); a reboot may come up with no gateway")
         # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
@@ -3660,7 +3669,7 @@ def systemd_install(
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)
@@ -3963,7 +3972,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # =============================================================================
 
 
-from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_launchd import (
     get_launchd_label,
     _probe_launchd_domain_for_label,
     _launchd_domain,
@@ -4120,7 +4129,16 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        if gateway is None:
+            return None
+        # Same predicate as decide() / _claim_host_gateway_role: another tenant's multiplexer
+        # "serving default" is a name collision, and the CLI guards refused on it with exit 78 (#121352).
+        from gateway.host_attach import launched_by_other_tenant
+        if launched_by_other_tenant(gateway.home, get_hermes_home()):
+            logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
+            return None
+        return gateway
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None
@@ -4159,9 +4177,15 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    # multiplexer started by a named profile is visible here too. A record launched by THIS profile's
+    # own home is its own gateway (a standalone fleet member, or a multiplexer it hosts), never a
+    # multiplexer serving a satellite: counting it refused the owner's own restart with exit 78 and
+    # pointed it at `-p default`, whose gateway was not running (#120871).
+    gateway = host_multiplexer_serving(suffix)
+    if gateway is not None:
+        from hermes_cli.profiles import normalize_profile_name
+        if normalize_profile_name(gateway.profile_label) != normalize_profile_name(suffix):
+            return True
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -4581,6 +4605,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+    begin_process("gateway")
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore
     # console-control broadcasts from sibling CLIs; foreground runs keep Ctrl+C-to-stop.
@@ -4662,7 +4688,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
-from hermes_cli.gateway_setup_wizard import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_setup_wizard import (
     _PLATFORMS,
     _all_platforms,
     _platform_status,
@@ -4890,7 +4916,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     for profile in profiles:
         try:
             fn(f"gateway-{profile}")
-        except Exception as exc:  # noqa: BLE001 — report and continue
+        except Exception as exc:
             errors.append((profile, exc))
     succeeded = len(profiles) - len(errors)
     verb = "stopped" if action == "stop" else "restarted"
@@ -5198,6 +5224,7 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
     systemd_install(
         force=force, system=system, run_as_user=run_as_user,
         enable_on_startup=start_on_login, non_interactive=non_interactive,
+        force_unit_path=getattr(args, "force_unit_path", False),
     )
     if start_now:
         systemd_start(system=system)
@@ -5223,7 +5250,8 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False,
+                        force_unit_path=getattr(args, "force_unit_path", False))
     elif backend == "windows":
         _gw_windows().install(
             force=force,
@@ -5287,15 +5315,12 @@ def _print_unfolded_gateway_note(owner) -> None:
 
 
 def _cmd_start(args):
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle
     if profile_lifecycle("start", args):
         return
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
-    _guard_named_profile_under_multiplexer(force=force)
-    if not start_all and _dispatch_via_service_manager_if_s6("start"):
-        return
     if start_all:
         owner = None if force else _host_multiplexer_for_all_verb()
         if owner is not None:
@@ -5305,24 +5330,35 @@ def _cmd_start(args):
             print("  One gateway per host serves every profile; nothing to start.")
             _print_unfolded_gateway_note(owner)
             return
-        killed = kill_gateway_processes(all_profiles=True)
-        if killed:
-            print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-            _wait_for_api_server_port_free()
-
-    if _service_mgmt_blocked():
-        _no_backend_exit("start", "termux")
-    backend = _service_backend()
-    if backend is not None:
-        _service_call(backend, "start", system)
+        # `--all` names the ONE host gateway, regardless of which profile invoked the CLI: stale-owner
+        # cleanup, Windows task names/launchers, systemd/launchd identity files and raw HERMES_HOME
+        # readers all target the default root (see host_scope_for_all_verb).
+        start_scope = host_scope_for_all_verb(owner)
     else:
-        _handle_no_backend("start", wsl=True, s6=False)
+        _guard_named_profile_under_multiplexer(force=force)
+        if _dispatch_via_service_manager_if_s6("start"):
+            return
+        start_scope = contextlib.nullcontext()
+
+    with start_scope:
+        if start_all:
+            killed = kill_gateway_processes(all_profiles=True)
+            if killed:
+                print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
+                _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+                _wait_for_api_server_port_free()
+        if _service_mgmt_blocked():
+            _no_backend_exit("start", "termux")
+        backend = _service_backend()
+        if backend is not None:
+            _service_call(backend, "start", system)
+        else:
+            _handle_no_backend("start", wsl=True, s6=False)
 
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle
     if profile_lifecycle("stop", args):
         return
     stop_all = getattr(args, "all", False)
@@ -5349,20 +5385,23 @@ def _cmd_stop(args):
     if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
         return
 
-    service_available = _stop_installed_service(system)
     if stop_all:
+        # Stop the HOST's installed service (a bare pkill under a supervisor is a restart, not a
+        # stop), whichever profile invoked the CLI.
+        with host_scope_for_all_verb(_host_multiplexer_for_all_verb()):
+            service_available = _stop_installed_service(system)
         total = kill_gateway_processes(all_profiles=True) + (1 if service_available else 0)
         if total:
             print(f"✓ Stopped {total} gateway process(es) across all profiles")
         else:
             print("✗ No gateway processes found")
-    elif not service_available:
-        if stop_profile_gateway():
-            print("✓ Stopped gateway for this profile")
-        else:
-            print("✗ No gateway running for this profile")
-    else:
+        return
+    if _stop_installed_service(system):
         print(f"✓ Stopped {get_service_name()} service")
+    elif stop_profile_gateway():
+        print("✓ Stopped gateway for this profile")
+    else:
+        print("✗ No gateway running for this profile")
 
 
 def _stop_host_multiplexer(owner) -> int:
@@ -5389,6 +5428,7 @@ def _discard_dead_host_record() -> bool:
 
 
 def _restart_all(system: bool) -> None:
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb
     owner = _host_multiplexer_for_all_verb()
     if owner is not None and not _host_multiplexer_is_ours(owner):
         # `--all` means "restart the ONE host multiplexer" — and this profile does not own it.
@@ -5400,7 +5440,13 @@ def _restart_all(system: bool) -> None:
         print()
         print(f"    hermes -p {owner.profile_label} gateway restart --all")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+    # No live owner: stop/kill/start as the host root, not as the invoking profile (whose own
+    # gateway the run-side guard would refuse — the host stayed down after a Desktop update).
+    with host_scope_for_all_verb(owner):
+        _restart_all_as_host(owner, system)
 
+
+def _restart_all_as_host(owner, system: bool) -> None:
     service_stopped = _stop_installed_service(system)
     if owner is not None:
         # Stop ONLY the host process: its served set comes back with it, and any per-profile
@@ -5424,12 +5470,56 @@ def _restart_all(system: bool) -> None:
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
     kind = _installed_service_kind_for(is_windows)
-    if kind is None:
-        # replace=True: if the old owner is still draining (a long drain, an ineffective SIGKILL, a
-        # foreign-home owner the scan never saw), take the host over instead of attaching to it.
-        run_gateway(verbose=0, replace=True)
-    else:
+    if kind is not None:
         _service_call(kind, "start", system)
+        return
+    from hermes_constants import get_routing_process_hermes_home, named_profile_home
+    if named_profile_home(get_routing_process_hermes_home()) is not None:
+        # A named profile's CLI never runs the root IN this process: os.environ holds that profile's
+        # .env and the root's dotenv load does not clear inherited keys, so the host served the
+        # default profile with the named profile's credentials. The detached child starts from the
+        # scrubbed host env (the root's own secrets only); `--replace` is part of its argv.
+        if not _spawn_detached_gateway():
+            print_error("Failed to start the host gateway as a background process.")
+            sys.exit(1)
+        print("✓ Started the host gateway as a background process")
+        return
+    # replace=True: if the old owner is still draining (a long drain, an ineffective SIGKILL, a
+    # foreign-home owner the scan never saw), take the host over instead of attaching to it.
+    run_gateway(verbose=0, replace=True)
+
+
+def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
+
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
+    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
+    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
+    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
+    (the caller itself started under some unit) never proves ownership.
+    """
+    if not pid or pid <= 1:
+        return
+    from hermes_cli import main_dashboard as _dash
+
+    unit = _dash._get_systemd_service_for_pid(pid)
+    if unit is None:
+        return
+    scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    cmds = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [user_cmd, system_cmd])
+    _print_lines(
+        "",
+        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
+        "  `hermes gateway restart` cannot restart it from here: the fallback would",
+        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
+        "  cgroup while the unit keeps failing against the stolen lock.",
+        "  Restart it through its unit instead:",
+        *(f"    {c}" for c in cmds),
+        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
+        "  removes the legacy unit so the canonical one can own the gateway.)",
+    )
+    sys.exit(1)
 
 
 def _cmd_restart(args):
@@ -5452,6 +5542,15 @@ def _cmd_restart(args):
     if restart_all:
         _restart_all(system)
         return
+
+    # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to reap
+    # before spawning this command, so a refused restart still cost the profile its gateway. From
+    # here every path restarts (service manager, external-supervisor hand-back, manual fallback),
+    # and the reap stays best-effort: a scan failure must not abort the restart (#77276).
+    try:
+        _reap_unsupervised_gateway_orphans()
+    except Exception as exc:
+        logger.debug("orphan reap before gateway restart failed: %s", exc)
 
     # The Windows restart path handles both registered installs and detached restarts.
     kind = _installed_service_kind_for(is_windows)
@@ -5498,6 +5597,7 @@ def _cmd_restart(args):
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
+    _refuse_restart_of_service_managed_gateway(supervised_pid)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
@@ -5545,12 +5645,14 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
-    if print_parked_status():
-        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
+    # beside it, so only a parked profile with nothing running stops here.
+    if print_parked_status() and not snapshot.running:
+        return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"
@@ -5586,6 +5688,13 @@ def _cmd_status(args):
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
+        elif snapshot.service_running:
+            # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
+            # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
+            print(f"✓ Gateway is running (supervised by {snapshot.manager})")
+            _print_runtime_health()
+            _print_multiplex_standalone_reason()
+            _print_served_ingress_urls()
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()
@@ -5642,41 +5751,6 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def print_systemd_linger_guidance() -> None:
-    """Print the current linger status and the fix when it is disabled."""
-    linger_enabled, linger_detail = get_systemd_linger_status()
-    if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
-    elif linger_enabled is False:
-        print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
-        print("  Run: sudo loginctl enable-linger $USER")
-    else:
-        print(f"⚠ Could not verify systemd linger ({linger_detail})")
-        print("  If you want the gateway user service to survive logout, run:")
-        print("  sudo loginctl enable-linger $USER")
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT': ('gateway.restart', 'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
 
 
 def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:

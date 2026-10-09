@@ -2,6 +2,7 @@ import { paletteToggle } from '@/app/command-palette/contrib'
 import { isPaneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Terminal } from '@/lib/icons'
 import { isFocusWithin } from '@/lib/keybinds/combo'
+import { trackArea } from '@/store/desktop-metrics'
 
 const TERMINAL_FOCUS_SCOPE = '[data-terminal]'
 
@@ -53,6 +54,7 @@ export function toggleTerminalPane(): void {
   const revealed = !isPaneVisible('terminal')
 
   togglePaneVisible('terminal')
+  trackArea('terminal_pane', revealed)
 
   if (revealed) {
     focusRevealedTerminal()

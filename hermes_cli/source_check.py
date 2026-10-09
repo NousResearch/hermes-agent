@@ -306,6 +306,29 @@ def _heal_deleted_branch(branch_config_path: Path, desktop_config: dict) -> None
         atomic_json_write(branch_config_path, {**desktop_config, "branch": "main"})
 
 
+def _unhealable_reason(co: _Checkout, branch: str) -> Optional[str]:
+    """Why a branch the remote does not advertise must keep its pin; None when healing loses nothing.
+
+    An empty ref advertisement cannot tell "merged and deleted upstream" from "never pushed":
+    only a branch that was once published (remote-tracking ref or configured upstream, which
+    survives ``fetch --prune``) and whose commits are all in main may be re-pinned to main.
+    """
+    if co.embedded:
+        return None
+    local = f"refs/heads/{branch}"
+    if not _git_ok(["rev-parse", "--verify", "--quiet", local], cwd=co.root, git=co.git):
+        return None  # Nothing in this checkout to abandon.
+    if not (_git_ok(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=co.root, git=co.git)
+            or _git_ok(["config", "--get", f"branch.{branch}.merge"], cwd=co.root, git=co.git)):
+        return "never-pushed"
+    for base in ("refs/remotes/origin/main", "refs/heads/main"):
+        # `git cherry` also treats rebase-merged commits (same patch, new SHA) as merged.
+        cherry = _git_run(["cherry", base, local], cwd=co.root, git=co.git, timeout=10)
+        if cherry is not None and cherry.returncode == 0:
+            return "unmerged" if any(line.startswith("+") for line in cherry.stdout.splitlines()) else None
+    return "unmerged"  # Unknown merge state keeps the branch.
+
+
 def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
@@ -325,6 +348,13 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
+    reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
+    if reason:
+        detail = ("has never been pushed" if reason == "never-pushed"
+                  else "is gone from the remote but has commits that are not in main")
+        result.update(error="branch-local-only", localOnly=True,
+                      message=f"Branch '{selected_branch}' {detail}; keeping it instead of switching to main.")
+        return
     if missing and selected_branch != "main":
         result["branch"] = "main"
         if heal:

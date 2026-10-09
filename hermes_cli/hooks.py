@@ -43,7 +43,7 @@ def _cmd_list(_args) -> None:
     if not specs:
         print("No shell hooks configured in ~/.hermes/config.yaml.")
     else:
-        by_event: Dict[str, List] = {}
+        by_event: dict[str, list] = {}
         for spec in specs:
             by_event.setdefault(spec.event, []).append(spec)
         approved = {
@@ -145,7 +145,7 @@ _DEFAULT_PAYLOADS = {
         "api_call_count": 1, "api_duration": 1.234,
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
-        "usage": {"input_tokens": 2048, "output_tokens": 512},
+        "usage": {"input_tokens": 2048, "output_tokens": 512}, "context_length": 200000,
         "assistant_content_chars": 1200, "assistant_tool_call_count": 0,
         # Per-advisor metrics on a MoA turn, None otherwise: MoA returns only the aggregator's
         # response, so without this an observer cannot see or price the fan-out.
@@ -225,7 +225,7 @@ def _cmd_test(args) -> None:
         print()
 
 
-def _print_run_result(result: Dict[str, Any]) -> None:
+def _print_run_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
     elif result.get("timed_out"):

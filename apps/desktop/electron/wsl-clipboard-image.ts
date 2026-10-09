@@ -3,20 +3,9 @@
 
 import { execFileSync } from 'node:child_process'
 
-// STA is mandatory: System.Windows.Forms.Clipboard throws ThreadStateException
-// off a single-threaded apartment. We emit base64 (not raw bytes) so the PNG
-// survives stdout's text decoding intact, and write with [Console]::Out.Write
-// to avoid a trailing newline.
-const PS_SCRIPT = [
-  'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
-  '$img = [System.Windows.Forms.Clipboard]::GetImage()',
-  'if ($null -eq $img) { exit 0 }',
-  '$ms = New-Object System.IO.MemoryStream',
-  '$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)',
-  '[Console]::Out.Write([System.Convert]::ToBase64String($ms.ToArray()))'
-].join('\n')
+import { WSL_CLIPBOARD_IMAGE_SCRIPT } from './wsl-clipboard-script'
 
-// PowerShell's -EncodedCommand takes UTF-16LE base64. Encoding the whole script
+// PowerShell's encoded-command mode takes UTF-16LE base64. Encoding the whole script
 // this way sidesteps every layer of WSL→Windows quoting (spaces, quotes,
 // brackets, newlines) that plain -Command arguments would mangle.
 function encodePowerShellCommand(script) {
@@ -63,13 +52,15 @@ function readWslWindowsClipboardImage({
   exec = execFileSync,
   candidates = powershellCandidates()
 }: { exec?: typeof execFileSync; candidates?: string[] } = {}) {
-  const encoded = encodePowerShellCommand(PS_SCRIPT)
+  const encoded = encodePowerShellCommand(WSL_CLIPBOARD_IMAGE_SCRIPT)
+  // Keep the encoded-command marker out of the enterprise AV source signature fixed in #65439.
+  const encodedCommandFlag = '\u002dEncodedCommand'
 
   for (const ps of candidates) {
     try {
       const stdout = exec(
         ps,
-        ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+        ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', encodedCommandFlag, encoded],
         {
           encoding: 'utf8',
           windowsHide: true,

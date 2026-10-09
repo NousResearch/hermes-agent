@@ -302,6 +302,48 @@ class TestMultiplexProfileScope:
         finally:
             reset_hermes_home_override(token)
 
+    def test_check_requirements_scoped_reads_toplevel_platforms_buzz(
+        self, multiplex_scope, default_profile_env, tmp_path
+    ):
+        """Loader parity (#125985): the documented top-level platforms.buzz shape passes the
+        scoped gate, and an unconfigured sibling profile still fails closed (A→B→A)."""
+        import hermes_yaml as yaml
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = tmp_path / "s6probe-a"
+        home_a.mkdir()
+        creds = home_a / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1profile"}), encoding="utf-8")
+        (home_a / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "platforms": {
+                        "buzz": {
+                            "enabled": True,
+                            "extra": {
+                                "relay_url": "https://profile.relay",
+                                "credentials_file": str(creds),
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        home_b = tmp_path / "s6probe-b"
+        home_b.mkdir()
+
+        for home, expected in ((home_a, True), (home_b, False), (home_a, True)):
+            multiplex_scope()
+            token = set_hermes_home_override(str(home))
+            try:
+                assert check_requirements() is expected
+            finally:
+                reset_hermes_home_override(token)
+
     def test_env_enablement_scoped_returns_none(self, multiplex_scope, default_profile_env):
         """Scoped env enablement must not fabricate Buzz for a profile from
         the default profile's env values."""

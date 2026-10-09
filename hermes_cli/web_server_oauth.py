@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 _log = logging.getLogger("hermes_cli.web_server")
 
 
-_LOGGED_OUT: Dict[str, Any] = {"logged_in": False, "source": None}
+_LOGGED_OUT: dict[str, Any] = {"logged_in": False, "source": None}
 
 
 def _truncate_token(value: Optional[str], visible: int = 6) -> str:
@@ -32,7 +32,7 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     return s if len(s) <= visible else f"…{s[-visible:]}"
 
 
-def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict[str, Any]:
+def _token_status(source: str, source_label: str, creds: dict[str, Any]) -> dict[str, Any]:
     return {
         "logged_in": True, "source": source, "source_label": source_label,
         "token_preview": _truncate_token(creds.get("accessToken")),
@@ -40,7 +40,7 @@ def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict
     }
 
 
-def _anthropic_oauth_status() -> Dict[str, Any]:
+def _anthropic_oauth_status() -> dict[str, Any]:
     """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
     registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
 
@@ -73,7 +73,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _claude_code_only_status() -> Dict[str, Any]:
+def _claude_code_only_status() -> dict[str, Any]:
     """Claude Code CLI credentials as their own entry, independent of the Anthropic card.
 
     Connected follows the same local validity gate as Anthropic resolution. A
@@ -92,7 +92,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _copilot_acp_status() -> Dict[str, Any]:
+def _copilot_acp_status() -> dict[str, Any]:
     """Status for copilot-acp. ``logged_in`` only on positive evidence (env token or known on-disk
     store); the CLI may hold its session in an OS keychain Hermes can't read, so the unverified
     state reads "managed by the Copilot CLI" — never signed out."""
@@ -141,7 +141,7 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
 # the Anthropic credential-status card and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
-_OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
+_OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     # status_fn None → dispatched via auth.get_<provider>_auth_status.
     {"id": "nous", "name": "Nous Portal", "flow": "device_code", "cli_command": "hermes auth add nous",
      "docs_url": "https://portal.nousresearch.com", "status_fn": None},
@@ -173,7 +173,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
      "flow": "external", "cli_command": "claude setup-token",
      "docs_url": "https://docs.claude.com/en/docs/claude-code", "status_fn": _claude_code_only_status},
 )
-_oauth_sessions: Dict[str, Dict[str, Any]] = {}
+_oauth_sessions: dict[str, dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
 
@@ -182,14 +182,6 @@ def _oauth_profile_name(profile: Optional[str]) -> Optional[str]:
     if not requested or requested.lower() == "current":
         return None
     return requested
-
-
-def _oauth_session_profile(session_id: str, fallback: Optional[str] = None) -> Optional[str]:
-    """Return the profile that owns an OAuth session, if one was provided."""
-    with _oauth_sessions_lock:
-        sess = _oauth_sessions.get(session_id)
-        profile = sess.get("profile") if sess else None
-    return profile or _oauth_profile_name(fallback)
 
 
 def _oauth_poller(label: str):
@@ -216,7 +208,9 @@ def _oauth_poller(label: str):
                 else:
                     _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
             except Exception as e:
+                from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
                 _log.warning("%s device-code poll failed (session=%s): %s", label, session_id, e)
+                note_oauth_failure(sess, e)
                 with _oauth_sessions_lock:
                     sess["status"] = "error"
                     sess["error_message"] = str(e)
@@ -224,7 +218,7 @@ def _oauth_poller(label: str):
     return deco
 
 
-def _record_sign_in_state(sess: Dict[str, Any], state: Any) -> None:
+def _record_sign_in_state(sess: dict[str, Any], state: Any) -> None:
     """Write one ``anon_auth.SignInState`` onto the dashboard session, under the sessions lock.
 
     The whole desktop mapping lives here: the state carries its own copy, so nothing below turns a
@@ -279,7 +273,7 @@ def _record_sign_in_state(sess: Dict[str, Any], state: Any) -> None:
 
 
 @_oauth_poller("nous")
-def _nous_promotion_poller(session_id: str, sess: Dict[str, Any]) -> None:
+def _nous_promotion_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Drain the sign-in the start route began: one shared flow, rendered onto the session.
 
     The generator was created and advanced to its ``Code`` state by ``_start_nous_device_code``, so
@@ -300,7 +294,7 @@ def _nous_promotion_poller(session_id: str, sess: Dict[str, Any]) -> None:
 
 
 @_oauth_poller("nous")
-def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
+def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Background poller for a plain Nous device-code login (no free-tier identity to transfer).
 
     A sign-in that carries the free tier's connectors runs through ``anon_auth.run_sign_in`` and
@@ -347,7 +341,9 @@ def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
         ),
         "expires_in": token_ttl,
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
+    # The profile comes from the poller's own session dict: a cancel or the 15-minute sweep drops
+    # the registry entry, and a lookup by id would then save into the dashboard's launch profile.
+    with _profile_scope(sess.get("profile")):
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
         # The final cancellation check and the save share the session lock, so a cancel cannot
         # land between them.
@@ -364,7 +360,7 @@ def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
 
 
 @_oauth_poller("minimax")
-def _minimax_poller(session_id: str, sess: Dict[str, Any]) -> None:
+def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
     """MiniMax poller: PKCE-style ``code_verifier`` + ``user_code`` instead of Nous's
     ``device_code``. Builds the same auth_state as the CLI's ``_minimax_oauth_login`` and persists
     via ``_minimax_save_auth_state`` so the system ends up as after ``hermes auth add minimax-oauth``.
@@ -401,12 +397,18 @@ def _minimax_poller(session_id: str, sess: Dict[str, Any]) -> None:
         "expires_at": datetime.fromtimestamp(expires_at_ts, tz=timezone.utc).isoformat(),
         "expires_in": max(0, int(expires_at_ts - now.timestamp())),
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
-        _minimax_save_auth_state(auth_state)
+    with _profile_scope(sess.get("profile")):
+        # The cancellation check and the save share the session lock, so a cancel cannot land
+        # between them (the same contract as the Nous and Codex savers).
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return
+            _minimax_save_auth_state(auth_state)
 
 
 @_oauth_poller("xai")
-def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
+def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Background poller for xAI's OAuth device-code flow."""
     from hermes_cli.web_server_profiles import _profile_scope
     import httpx
@@ -428,7 +430,11 @@ def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
         "expires_in": token_data.get("expires_in"),
         "token_type": str(token_data.get("token_type") or "Bearer").strip() or "Bearer",
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
+    with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
+        # One critical section with the cancel check, as in the Nous and Codex savers.
+        if sess.get("cancelled"):
+            sess["status"] = "cancelled"
+            return
         # set_active=False: persist without hijacking an existing active chat provider.
         _save_xai_oauth_tokens(
             tokens, discovery=discovery, auth_mode="oauth_device_code", set_active=False,

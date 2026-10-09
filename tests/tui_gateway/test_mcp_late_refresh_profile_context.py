@@ -3,6 +3,8 @@
 import threading
 import types
 
+from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
+
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
@@ -18,6 +20,7 @@ def test_late_mcp_refresh_keeps_routed_profile_context(tmp_path, monkeypatch):
     launch_home.mkdir()
     served_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("MCP_REFRESH_PROFILE_TEST_TOKEN", "launch-only")
 
     monkeypatch.setattr(entry, "mcp_discovery_in_flight", lambda: True)
     monkeypatch.setattr(entry, "join_mcp_discovery", lambda timeout=None: True)
@@ -26,7 +29,7 @@ def test_late_mcp_refresh_keeps_routed_profile_context(tmp_path, monkeypatch):
     called = threading.Event()
 
     def _observe_refresh(agent, *, quiet_mode=True):
-        observed.append(get_hermes_home())
+        observed.append((get_hermes_home(), get_secret("MCP_REFRESH_PROFILE_TEST_TOKEN")))
         called.set()
         return False
 
@@ -36,9 +39,11 @@ def test_late_mcp_refresh_keeps_routed_profile_context(tmp_path, monkeypatch):
     sid = "profile-scoped-late-mcp"
     server._sessions[sid] = {"agent": agent, "profile_home": str(served_home)}
     token = set_hermes_home_override(served_home)
+    secret_token = set_secret_scope({"MCP_REFRESH_PROFILE_TEST_TOKEN": "served-only"})
     try:
         server._schedule_mcp_late_refresh(sid, agent)
     finally:
+        reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
     try:
@@ -46,6 +51,6 @@ def test_late_mcp_refresh_keeps_routed_profile_context(tmp_path, monkeypatch):
         for thread in list(threading.enumerate()):
             if thread.name == f"tui-mcp-late-refresh-{sid}":
                 thread.join(timeout=5)
-        assert observed == [served_home]
+        assert observed == [(served_home, "served-only")]
     finally:
         server._sessions.pop(sid, None)

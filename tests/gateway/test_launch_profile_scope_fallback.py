@@ -82,7 +82,7 @@ async def test_named_secondary_with_unresolvable_home_cannot_read_the_launch_sec
     def _gone(_name):
         raise FileNotFoundError("profile deleted mid-run")
 
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", _gone)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", _gone)
 
     seen: list[str] = []
     handler = _Runner(seen)._make_profile_message_handler("b")
@@ -95,5 +95,5 @@ def test_unresolvable_home_is_a_sentinel_not_none(multiplexing_host, monkeypatch
     """Overloading ``None`` is what made the fallback silent; keep the two answers distinct."""
     from hermes_cli import profiles as profiles_mod
 
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _n: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda _n: (_ for _ in ()).throw(OSError()))
     assert GatewayAdapterLifecycleMixin._routed_profile_home("b") is UNRESOLVED_PROFILE_HOME

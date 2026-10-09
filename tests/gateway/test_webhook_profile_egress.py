@@ -44,8 +44,8 @@ def profile_homes(tmp_path, monkeypatch):
     sec = home / "profiles" / "sec"
     sec.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: home / "profiles")
     (sec / "config.yaml").write_text(
         "gateway:\n  multiplex_profiles: true\nplatforms:\n  slack:\n    enabled: true\n"
         "    home_channel:\n      platform: slack\n      chat_id: SEC-HOME\n")

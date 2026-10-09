@@ -1005,7 +1005,8 @@ def read_receipt_for_action(action_id: str) -> Optional[dict[str, Any]]:
 
 def _profile_homes() -> list[tuple[str, Path]]:
     """``(profile, home)`` for the default home plus every valid named profile dir, sorted."""
-    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root, _PROFILE_ID_RE
+    from profiles.names import _PROFILE_ID_RE
+    from profiles.paths import _get_default_hermes_home, _get_profiles_root
 
     homes: list[tuple[str, Path]] = []
     default_home = _get_default_hermes_home()

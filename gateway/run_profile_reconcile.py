@@ -49,8 +49,8 @@ def profile_serve_signature(home: "Path") -> tuple:
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
-    _served_profile_homes: Optional[dict[str, "Path"]] = None
-    _served_profile_signatures: Optional[dict[str, tuple]] = None
+    _served_profile_homes: Optional[Dict[str, "Path"]] = None
+    _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
@@ -96,7 +96,7 @@ class GatewayProfileReconcileMixin:
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
-    async def reconcile_served_profiles(self, *, reason: str = "request") -> dict[str, Any]:
+    async def reconcile_served_profiles(self, *, reason: str = "request") -> Dict[str, Any]:
         """Diff ``profiles/`` (what exists now) against the served set (the process reservation):
         reserve + build the runtime and start adapters for new profiles, tear down, unroute and
         unreserve deleted ones, (re)build adapters for served profiles whose config/.env changed.
@@ -104,8 +104,8 @@ class GatewayProfileReconcileMixin:
         whose store is unusable is parked (logged, not served) and left for an explicit rescan.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
         from gateway.run import MultiplexConfigError
-        from hermes_cli.profiles import profiles_to_serve
-        result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
+        from gateway.profile_serving import profiles_to_serve
+        result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
@@ -174,7 +174,7 @@ class GatewayProfileReconcileMixin:
         whose home another gateway owns or whose store is unusable is parked, not served."""
         from gateway.run import MultiplexConfigError
         from gateway.run_runtime import park_profile, unpark_profile
-        from hermes_cli.profiles import profiles_to_serve
+        from gateway.profile_serving import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
         result = dict(result or {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason})
         result.setdefault("parked", [])
@@ -284,7 +284,7 @@ class GatewayProfileReconcileMixin:
             return f"session store unusable: {exc}"
         return None
 
-    def _live_resource_claims(self, active: str) -> dict[tuple, str]:
+    def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
         secondary's credential/listener, so a hot-added profile reusing a token is parked, never a
         second poller."""
@@ -328,9 +328,6 @@ class GatewayProfileReconcileMixin:
         profile's). Secrets are not re-hydrated: teardown must not block the loop on a source fetch.
         """
         from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
-        from gateway.run_runtime import release_profile_home, unserve_profile_runtime
-        # Retire before teardown; a False verdict (writer outlived its Stop) is honoured below.
-        retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:
@@ -358,14 +355,12 @@ class GatewayProfileReconcileMixin:
             for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
                 with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
                     self._evict_cached_agent(key)
-            if not retired:
-                # A writer outlived its Stop and may still write this home: the profile leaves the
-                # served set (ingress is gone above) but keeps its reservation and store handles until
-                # this process exits. Raising here aborted the reconcile for every other profile.
-                logger.error("[MULTIPLEX] Profile '%s' unrouted, but a turn outlived its Stop; ownership retained", name)
-                return
             # Its session authority and reservation go before the store handles: the authority owns the
             # state.db writer, and the next restart must not try to reserve a home that no longer exists.
+            from gateway.run_runtime import release_profile_home, unserve_profile_runtime
+            if getattr(self, "session_authorities", None) is not None:
+                with _log_suppressed(logging.WARNING, "session authority retirement failed for %s", name, exc_info=True):
+                    await unserve_profile_runtime(self, home)
             release_profile_home(self, home)
             with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
                 from hermes_state_registry import close_all_under
@@ -398,7 +393,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     loop = asyncio.get_running_loop()
 
     async def apply(name):
-        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+        from gateway.profile_serving import profiles_to_serve, profile_is_parked
         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
             return {"error": "host multiplexer is not ready"}
         async with runner._reconcile_lock():
@@ -528,7 +523,7 @@ def migrate_profile_identity_verb(runner):
         acquired = []
         try:
             from hermes_state_registry import acquire, release_or_close
-            db_counts: dict[str, dict[str, int]] = {}
+            db_counts: Dict[str, Dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
                 db_counts["routing"] = routing_db.rekey_profile_state(old, new)
@@ -573,7 +568,7 @@ def purge_profile_identity_verb(runner):
         if store is None:
             return {"ok": False, "error": "live gateway has no session store"}
         try:
-            db_counts: dict[str, dict[str, int]] = {}
+            db_counts: Dict[str, Dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
                 db_counts["routing"] = routing_db.purge_profile_state(name)

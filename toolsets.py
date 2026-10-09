@@ -1,5 +1,6 @@
 """Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
+from pathlib import Path
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
@@ -171,6 +172,11 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+    "spotify": _ts(
+        "Native Spotify playback, search, playlist, album, and library tools",
+        ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+         "spotify_playlists", "spotify_albums", "spotify_library"],
+    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
@@ -271,12 +277,12 @@ def _registry_call(method: str, default):
         return default
 
 
-def _registry_generation() -> tuple[int, int]:
+def _registry_generation() -> Tuple[int, int]:
     reg = _registry()
     return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
 
 
-def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[str, Any]]:
+def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
     """Toolset definition, or None if unknown.
 
     include_registry=True merges plugin/overlay tools registered into this toolset
@@ -320,7 +326,7 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[st
     return {"description": description, "tools": registry.get_tool_names_for_toolset(registry_toolset), "includes": []}
 
 
-def bundle_non_core_tools(toolset_name: str) -> set[str]:
+def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     """A bundle's tools minus _HERMES_CORE_TOOLS (one level of includes).
 
     Disabling a `core + extras` bundle must not strip the core tools every other
@@ -342,10 +348,10 @@ def bundle_non_core_tools(toolset_name: str) -> set[str]:
 # engages only at the public entry (visited is None). The scope is part of the key because a
 # multiplexed process resolves ``mcp-<server>`` per profile overlay: without it profile B got
 # profile A's tool names for a server B never connected (#106005).
-_resolve_toolset_memo: dict[tuple[str, bool, int, int, str], list[str]] = {}
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
-def _plugin_platform_bundle(name: str) -> list[str]:
+def _plugin_platform_bundle(name: str) -> List[str]:
     """Implicit `hermes-<platform>` bundle for a registered plugin platform: core
     tools plus whatever the plugin registered under the platform name. [] otherwise."""
     if not name.startswith("hermes-"):
@@ -365,7 +371,7 @@ def _plugin_platform_bundle(name: str) -> list[str]:
     return list(tools)
 
 
-def resolve_toolset(name: str, visited: set[str] | None = None, *, include_registry: bool = True) -> list[str]:
+def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
     """Recursively resolve a toolset (and its includes) to a sorted tool-name list.
     include_registry=False resolves the static TOOLSETS view only.
 
@@ -385,7 +391,7 @@ def resolve_toolset(name: str, visited: set[str] | None = None, *, include_regis
     # "all"/"*" span every toolset so new toolsets are included automatically, except the ones a
     # session platform gates: a profile gets those only when its config names them.
     if name in {"all", "*"}:
-        all_tools: set[str] = set()
+        all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
             if toolset_name not in TOOLSET_SESSION_PLATFORMS:
                 all_tools.update(resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry))
@@ -412,27 +418,27 @@ def resolve_toolset(name: str, visited: set[str] | None = None, *, include_regis
     return result
 
 
-def _get_plugin_toolset_names() -> set[str]:
+def _get_plugin_toolset_names() -> Set[str]:
     """Registry toolset names absent from the static TOOLSETS dict."""
     return {n for n in _registry_call("get_registered_toolset_names", ()) if n not in TOOLSETS}
 
 
-def _get_registry_toolset_aliases() -> dict[str, str]:
+def _get_registry_toolset_aliases() -> Dict[str, str]:
     return _registry_call("get_registered_toolset_aliases", {})
 
 
-def _display_alias(ts_name: str, aliases: dict[str, str]) -> Optional[str]:
+def _display_alias(ts_name: str, aliases: Dict[str, str]) -> Optional[str]:
     """First non-static alias pointing at *ts_name*, or None."""
     return next((a for a, canonical in aliases.items() if canonical == ts_name and a not in TOOLSETS), None)
 
 
-def _plugin_display_names() -> list[str]:
+def _plugin_display_names() -> List[str]:
     """Plugin toolset names, shown under their first non-static alias when one exists."""
     aliases = _get_registry_toolset_aliases()
     return [_display_alias(n, aliases) or n for n in _get_plugin_toolset_names()]
 
 
-def get_all_toolsets() -> dict[str, dict[str, Any]]:
+def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """All toolset definitions: static plus plugin-registered."""
     result = dict(TOOLSETS)
     aliases = _get_registry_toolset_aliases()
@@ -446,7 +452,7 @@ def get_all_toolsets() -> dict[str, dict[str, Any]]:
     return result
 
 
-def get_toolset_names() -> list[str]:
+def get_toolset_names() -> List[str]:
     """Sorted names of all toolsets (static + plugin), excluding aliases."""
     return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
 
@@ -457,7 +463,18 @@ def session_platform_tool_drops(platform: Optional[str]) -> frozenset:
                      for tool in resolve_toolset(name))
 
 
-def session_disabled_toolsets(disabled: Optional[list[str]], platform: Optional[str]) -> Optional[list[str]]:
+def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
+    """Return role-reserved toolsets granted to this profile and reserved toolsets denied to it."""
+    from hermes_constants import get_hermes_home
+    from profiles.metadata import read_profile_meta
+
+    role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
+    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
+    return granted, denied
+
+
+def session_disabled_toolsets(disabled: Optional[List[str]], platform: Optional[str]) -> Optional[List[str]]:
     """*disabled* plus every platform-gated toolset a session on *platform* does not get. An agent stores
     this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
     and delegate children (which inherit it) all subtract the gated tools in ``_select_tool_names``."""
@@ -478,12 +495,12 @@ def validate_toolset(name: str) -> bool:
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 
-def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:
+def create_custom_toolset(name: str, description: str, tools: List[str] = None, includes: List[str] = None) -> None:
     """Register a runtime toolset in TOOLSETS."""
     TOOLSETS[name] = _ts(description, tools or [], includes or [])
 
 
-def get_toolset_info(name: str) -> dict[str, Any]:
+def get_toolset_info(name: str) -> Dict[str, Any]:
     """Toolset definition plus its resolved tools, or None if unknown."""
     toolset = get_toolset(name)
     if not toolset:

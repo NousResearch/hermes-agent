@@ -332,11 +332,15 @@ def _with_session_toolsets(selection, platform: str) -> list[str]:
     [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
     (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
     model toolset."""
-    fold_in = _gui_surface_toolsets(platform) - set(selection)
+    from toolsets import profile_role_toolsets
+
+    granted, denied = profile_role_toolsets()
+    kept = [name for name in selection if name not in denied]
+    fold_in = (_gui_surface_toolsets(platform) | granted) - set(kept)
     disabled = set(_load_disabled_toolsets() or [])
     if disabled:
         fold_in -= disabled - {"desktop_ui"}
-    return [*selection, *sorted(fold_in)]
+    return [*kept, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:

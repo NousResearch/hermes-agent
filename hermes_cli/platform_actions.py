@@ -117,7 +117,7 @@ class PlatformActions:
         resolve_fn = getattr(runner, "_authorization_adapter", None)
         if callable(resolve_fn):
             try:
-                from hermes_cli.profiles import get_active_profile_name
+                from profiles.current import get_active_profile_name
 
                 profile_name = get_active_profile_name()
             except Exception:

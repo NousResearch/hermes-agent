@@ -34,7 +34,7 @@ def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch
     from acp_adapter.content import _content_blocks_to_openai_user_content
     from acp_adapter.gateway_server import _stage_user_content
     from gateway.platforms import base
-    from hermes_cli.gateway_client import GatewayClientError
+    from gateway.client import GatewayClientError
     staging = tmp_path / "home" / "cache" / "images"
     staging.mkdir(parents=True)
     monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)

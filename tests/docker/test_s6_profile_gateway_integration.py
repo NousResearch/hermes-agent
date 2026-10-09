@@ -25,7 +25,7 @@ from tests.docker.conftest import docker_exec, start_container
 _REGISTER_SCRIPT = """
 import sys
 sys.path.insert(0, "/opt/hermes")
-from hermes_cli.service_manager import S6ServiceManager
+from gateway.s6_manager import S6ServiceManager
 S6ServiceManager().register_profile_gateway("phase3test")
 # Don't worry about whether the gateway actually starts — we only care
 # that the supervision slot was created. The gateway run script will
@@ -68,7 +68,7 @@ def test_s6_register_creates_service_dir_in_live_container(
 
     # list_profile_gateways picks it up.
     r = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli.service_manager import S6ServiceManager;"
+        "from gateway.s6_manager import S6ServiceManager;"
         "print(S6ServiceManager().list_profile_gateways())"
     ))
     assert "phase3test" in r.stdout, f"list output: {r.stdout!r}"

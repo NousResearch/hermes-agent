@@ -242,7 +242,9 @@ docs/superpowers/*
 /channel_aliases.json
 /feishu_comment_pairing.json
 /memories/
-/profiles/
+# Runtime named-profile contents may appear here in flat installs, but profiles/*.py is source.
+/profiles/*
+!/profiles/*.py
 /credentials/
 /mcp-tokens/
 /pairing/
@@ -322,3 +324,4 @@ native/fts5_cjk/*.so
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+/.arcana/

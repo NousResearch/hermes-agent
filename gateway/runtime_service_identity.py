@@ -55,13 +55,28 @@ def verify_home(home: Path, configured: str) -> None:
 
 
 def verify_gateway_argv(argv: list[str], home: Path) -> None:
-    from gateway.status import looks_like_gateway_command_line
+    from gateway.status import inline_bootstrap_argv, looks_like_gateway_command_line
 
-    # The installer wraps launchd stderr with this fixed, non-shell module.
-    if len(argv) > 7 and argv[1:4] == ["-m", "hermes_cli.stderr_timestamp", "--error-log"] and argv[5] == "--":
-        if not re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", Path(argv[0]).name.lower()):
+    def normalize_bootstrap(tokens: list[str]) -> list[str]:
+        normalized = inline_bootstrap_argv(tokens)
+        return normalized if normalized is not None else tokens
+
+    argv = normalize_bootstrap(argv)
+
+    # launchd wraps stderr with one fixed Hermes-owned module. Both the Python
+    # module spelling and the stable installation-launcher spelling are valid.
+    wrapper = False
+    if len(argv) > 7 and argv[1:4] == ["-m", "hermes_cli.stderr_timestamp", "--error-log"]:
+        wrapper = bool(
+            re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", Path(argv[0]).name.lower())
+        )
+    elif len(argv) > 7 and argv[1:4] == ["--run-module", "hermes_cli.stderr_timestamp", "--error-log"]:
+        wrapper = Path(argv[0]).name.lower() in {"hermes", "hermes.exe"}
+    if wrapper:
+        if argv[5] != "--":
             _unverified()
-        argv = argv[6:]
+        argv = normalize_bootstrap(argv[6:])
+
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):
         _unverified()
     executable = Path(argv[0]).name.lower()
@@ -91,10 +106,11 @@ def verify_gateway_argv(argv: list[str], home: Path) -> None:
     if len(profiles) > 1:
         _unverified()
     if profiles:
-        # An explicit selector must agree with the pinned environment. This
-        # preserves custom-root profiles without borrowing the caller's root.
         from hermes_constants import profile_name_for_home
-        expected = profile_name_for_home(home) or (home.name if home.parent.name == "profiles" else "default")
+
+        expected = profile_name_for_home(home) or (
+            home.name if home.parent.name == "profiles" else "default"
+        )
         if profiles[0] != expected:
             raise ValueError("profile_mismatch")
     if filtered[:2] != ["gateway", "run"] or any(
@@ -235,40 +251,76 @@ def read_definition(path: Path) -> bytes:
 
 
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
-    # Recognize the vendor's complete template, not a HERMES_HOME substring
-    # inside an arbitrary executable script. Doubled quotes are VB literals.
+    # Recognize the current template plus the pre-PM persisted template. The
+    # legacy grammar remains accepted only as an installed-service boundary.
     literal = r'"(?:[^"\r\n]|"")*"'
     lines = script.splitlines()
-    if len(lines) < 16 or not lines[0].startswith("' "):
+    if len(lines) < 7 or not lines[0].startswith("' "):
         _unverified()
-    fixed = ["Option Explicit", "Dim sh, env, existing_pp",
-             'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
-    if lines[1:5] != fixed:
+    if lines[1] != "Option Explicit":
         _unverified()
+    legacy = lines[2] == "Dim sh, env, existing_pp"
+    current = lines[2] == "Dim sh, env"
+    if not (legacy or current):
+        _unverified()
+    if lines[3:5] != [
+        'Set sh = CreateObject("WScript.Shell")',
+        'Set env = sh.Environment("PROCESS")',
+    ]:
+        _unverified()
+
     env = {}
     index = 5
+    allowed_env = {
+        "HERMES_HOME",
+        "HERMES_SUPERVISED_CHILD",
+        "HERMES_GATEWAY_DETACHED",
+        "PYTHONIOENCODING",
+        "VIRTUAL_ENV",
+    }
     while index < len(lines):
         match = re.fullmatch(r'env.Item\("([A-Z_]+)"\) = (' + literal + ')', lines[index])
         if not match:
             break
-        if match[1] not in {"HERMES_HOME", "HERMES_SUPERVISED_CHILD", "HERMES_GATEWAY_DETACHED", "PYTHONIOENCODING", "VIRTUAL_ENV"} or match[1] in env:
+        if match[1] not in allowed_env or match[1] in env:
             _unverified()
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1
+
     tail = lines[index:]
-    if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
+    if legacy:
+        if (
+            len(tail) != 8
+            or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then']
+            or tail[3] != "Else"
+            or tail[5] != "End If"
+        ):
+            _unverified()
+        if (
+            not re.fullmatch(
+                r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp',
+                tail[2],
+            )
+            or not re.fullmatch(
+                r'  env.Item\("PYTHONPATH"\) = ' + literal,
+                tail[4],
+            )
+        ):
+            _unverified()
+        current_dir, run_line = tail[6], tail[7]
+    else:
+        if len(tail) != 2:
+            _unverified()
+        current_dir, run_line = tail
+
+    if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, current_dir):
         _unverified()
-    if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):
-        _unverified()
-    if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
-        _unverified()
-    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
+    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', run_line)
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
     command = run[1][1:-1].replace('""', '"')
     if "%" in command or "%" in env.get("HERMES_HOME", ""):
         _unverified()
-    # The template uses list2cmdline, with no embedded executable quote escapes.
     argv = [part.strip('"') for part in shlex.split(command, posix=False)]
     return env.get("HERMES_HOME", ""), argv
 

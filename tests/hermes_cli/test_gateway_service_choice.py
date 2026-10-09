@@ -1,4 +1,7 @@
 """Service consent through real config/discovery/install; only OS peers are fake."""
+from gateway import systemd_identity
+from gateway import systemd_runtime
+from gateway import systemd_unit_render
 import io
 import json
 import os
@@ -56,7 +59,7 @@ def supervisor(tmp_path, monkeypatch):
         peer = bin_dir / "supervisor-peer"
         peer.write_bytes((bin_dir / "systemctl").read_bytes())
         peer.chmod(0o700)
-        monkeypatch.setattr(gateway, "_systemctl_cmd", lambda system=False: [str(peer)])
+        monkeypatch.setattr(systemd_runtime, "systemctl_cmd", lambda system=False: [str(peer)])
         yield profile, calls
 
 
@@ -71,16 +74,16 @@ def test_import_and_ordinary_setup_never_authorize_install(supervisor, choice, i
     profile, calls = supervisor
     config_api.save_config({"gateway": {"service_install_choice": choice}})
     if installed:
-        unit = gateway.get_systemd_unit_path()
+        unit = systemd_identity.unit_path()
         unit.parent.mkdir(parents=True)
-        unit.write_text(gateway.generate_systemd_unit(), encoding="utf-8")
+        unit.write_text(systemd_unit_render.generate_systemd_unit(), encoding="utf-8")
     before = (profile / "config.yaml").read_bytes()
     assert setup_service.ensure_gateway_service() is installed
     assert setup_service.ensure_gateway_service(interactive=True) is installed
     assert setup_service.ensure_gateway_service(context="import", install=True) is installed
     from hermes_cli.backup import _revive_gateway_after_import
     _revive_gateway_after_import(profile)
-    assert gateway.get_systemd_unit_path().exists() is installed
+    assert systemd_identity.unit_path().exists() is installed
     forbidden = {"enable", "enable-linger", "daemon-reload"}
     if not installed:
         forbidden.add("start")
@@ -112,7 +115,7 @@ def test_explicit_setup_consent_is_durable_only_after_success(supervisor, monkey
         setup_service.ensure_gateway_service(interactive=True)
         assert len(prompts) == 1
     if not answer:
-        assert not gateway.get_systemd_unit_path().exists()
+        assert not systemd_identity.unit_path().exists()
         assert not any(set(op) & {"enable", "enable-linger", "start", "daemon-reload"} for op in _operations(calls))
 
 
@@ -140,7 +143,7 @@ def test_wizard_service_choice_controls_installation(supervisor, monkeypatch, st
 
     monkeypatch.setattr(gateway.subprocess, "Popen", popen)
     setup_service._wizard_install_service("systemd")
-    assert gateway.get_systemd_unit_path().exists() is consent
+    assert systemd_identity.unit_path().exists() is consent
     assert bool(spawned) is (start_now and not consent)
     assert config_api.load_config()["gateway"]["service_install_choice"] == ("install" if consent else "decline")
     if spawned:

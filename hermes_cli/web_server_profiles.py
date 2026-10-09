@@ -1,6 +1,11 @@
 """Profile-scoped helpers: profile discovery fallback, profile dir/MCP-server writes,
 the profile/config scope context managers, skills-hub and tools/analytics catalog helpers.
 """
+from profiles import current as profile_current
+from profiles import metadata as profile_metadata
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
 
 import logging
 import hashlib
@@ -60,10 +65,10 @@ def serving_profile_name() -> str:
     """
     from hermes_cli import profiles as profiles_mod
     try:
-        name = (profiles_mod.get_active_profile_name() or "").strip()
+        name = (profile_current.get_active_profile_name() or "").strip()
         if not name or name == "custom":
             return ""
-        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+        return name if profile_registry.profile_matches_home(name, get_process_hermes_home()) else ""
     except Exception:
         return ""
 
@@ -79,7 +84,7 @@ def _is_other_profile(profile: Optional[str]) -> bool:
     return target.resolve() != get_process_hermes_home().resolve()
 
 
-def _approval_mode_of(config: dict[str, Any]) -> str:
+def _approval_mode_of(config: Dict[str, Any]) -> str:
     """Normalize approvals.mode from an in-memory config document. Both sides of the
     broadcast comparison use in-memory documents: re-reading through the config cache after
     a save can serve the pre-save document when the replacement file collides on the
@@ -106,7 +111,7 @@ def _broadcast_gateway_session_info() -> None:
 _MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
 
 
-def _parse_model_entries(resp: "Any") -> list[dict[str, str]]:
+def _parse_model_entries(resp: "Any") -> List[Dict[str, str]]:
     """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
     keeping the alias metadata a gateway may advertise (``canonical_model``,
     ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
@@ -122,7 +127,7 @@ def _parse_model_entries(resp: "Any") -> list[dict[str, str]]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         return []
-    entries: list[dict[str, str]] = []
+    entries: List[Dict[str, str]] = []
     for item in data:
         model_id = str((item.get("id") if isinstance(item, dict) else item) or "").strip()
         if not model_id:
@@ -137,16 +142,16 @@ def _parse_model_entries(resp: "Any") -> list[dict[str, str]]:
     return entries
 
 
-def _parse_model_ids(resp: "Any") -> list[str]:
+def _parse_model_ids(resp: "Any") -> List[str]:
     """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
     return [entry["id"] for entry in _parse_model_entries(resp)]
 
 
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
-                            has_env: bool, gateway_running: Callable[[], bool]) -> dict[str, Any]:
+                            has_env: bool, gateway_running: Callable[[], bool]) -> Dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    meta = lambda key, default: _safe(  # noqa: E731
+        lambda: profile_metadata.read_profile_meta(home).get(key, default), default)
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
@@ -158,16 +163,16 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
         "has_alias": False}
 
 
-def _fallback_profile_dicts(profiles_mod) -> list[dict[str, Any]]:
-    profiles: list[dict[str, Any]] = []
-    default_home = profiles_mod._get_default_hermes_home()
+def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
+    profiles: List[Dict[str, Any]] = []
+    default_home = profile_paths._get_default_hermes_home()
     if default_home.is_dir():
         profiles.append(_fallback_profile_entry(
             profiles_mod, "default", default_home, is_default=True,
             has_env=(default_home / ".env").exists(),
             gateway_running=lambda: profiles_mod._check_gateway_running(default_home)))
 
-    profiles_root = profiles_mod._get_profiles_root()
+    profiles_root = profile_paths._get_profiles_root()
     if profiles_root.is_dir():
         # os.scandir (context-managed) rather than Path.iterdir: an exception mid-iteration
         # must not leak the directory fd — the sidebar polls every few seconds, so a leak
@@ -176,7 +181,7 @@ def _fallback_profile_dicts(profiles_mod) -> list[dict[str, Any]]:
             entries = sorted(scan, key=lambda e: e.name)
         for entry in entries:
             home = Path(entry.path)
-            if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+            if not entry.is_dir() or not profile_names._PROFILE_ID_RE.match(entry.name):
                 continue
             profiles.append(_fallback_profile_entry(
                 profiles_mod, entry.name, home, is_default=False,
@@ -191,15 +196,15 @@ def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles_mod.validate_profile_name(name)
+        profile_names.validate_profile_name(name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
+    if not profile_registry.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    return profile_paths.get_profile_dir(name)
 
 
-def _write_profile_mcp_servers(profile_dir: Path, servers: list["MCPServerCreate"]) -> int:
+def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
     """Write MCP server entries into ``profile_dir``'s config.yaml (HERMES_HOME-scoped).
 
     Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole
@@ -290,21 +295,17 @@ def _config_profile_scope(profile: Optional[str]):
 
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
-    None/""/"current" mean the request's EFFECTIVE home: a task-local override (a secondary
-    profile's native ticket, ``native_profile_scope``) is that profile, so it gets that profile's
-    secret scope rather than the launch profile's.
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import get_hermes_home, get_hermes_home_override
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        profile_dir = get_hermes_home() if get_hermes_home_override() else None
+        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
     else:
         profile_dir = _resolve_profile_dir(profile.strip())
-    scoped = None if profile_dir is None or profile_dir.resolve() == process_home.resolve() else profile_dir
+        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
@@ -333,7 +334,7 @@ def _config_profile_scope(profile: Optional[str]):
 # Capabilities panel can render Ready / Needs setup guidance instead of a bare enum (issues #57738 /
 # #63783). Probes must never raise — a probe failure renders as a status, not a 500.
 # ---------------------------------------------------------------------------
-_TERMINAL_BACKENDS: list[dict[str, str]] = [
+_TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
@@ -345,9 +346,9 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]
 
 
-def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
+def _plugin_terminal_backend_rows() -> List[Dict[str, str]]:
     """Picker rows for plugin-registered terminal backends (fail-soft)."""
-    rows: list[dict[str, str]] = []
+    rows: List[Dict[str, str]] = []
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
@@ -370,11 +371,11 @@ def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
 _AUX_COUNTERS = ("input_tokens", "output_tokens", "estimated_cost", "api_calls")
 
 
-def _token_volume(row: dict[str, Any]) -> Any:
+def _token_volume(row: Dict[str, Any]) -> Any:
     return (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
 
 
-def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
+def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
     """Per-(model, task) auxiliary usage within the window: the task-dimension rows
     (task != '') record_auxiliary_usage writes into session_model_usage. [] when the
     table predates the task column (older DB opened read-only by newer code).
@@ -406,13 +407,13 @@ def _aux_usage_rows(db, cutoff: float) -> list[dict[str, Any]]:
 
 
 def _merge_aux_into_by_model(
-    by_model: list[dict[str, Any]], aux_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_model: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fold aux usage rows into the sessions-derived per-model list. Aux usage lives only in
     session_model_usage (never in the sessions counters), so this cannot double-count;
     models that ONLY appear via aux calls (e.g. a vision model) get their own entry."""
     if not aux_rows:
         return by_model
-    merged: dict[str, dict[str, Any]] = {row.get("model") or "unknown": row for row in by_model}
+    merged: Dict[str, Dict[str, Any]] = {row.get("model") or "unknown": row for row in by_model}
     for aux in aux_rows:
         model = aux.get("model") or "unknown"
         target = merged.setdefault(model, {"model": model, "input_tokens": 0, "output_tokens": 0,
@@ -424,9 +425,9 @@ def _merge_aux_into_by_model(
     return sorted(merged.values(), key=_token_volume, reverse=True)
 
 
-def _aux_task_summary(aux_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Aggregate aux usage rows across models into a per-task summary."""
-    by_task: dict[str, dict[str, Any]] = {}
+    by_task: Dict[str, Dict[str, Any]] = {}
     for aux in aux_rows:
         task = aux.get("task") or ""
         d = by_task.setdefault(task, {"task": task, "input_tokens": 0, "output_tokens": 0,
@@ -439,7 +440,7 @@ def _aux_task_summary(aux_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(by_task.values(), key=_token_volume, reverse=True)
 
 
-def _profile_cli_args(profile: Optional[str]) -> list[str]:
+def _profile_cli_args(profile: Optional[str]) -> List[str]:
     """``["-p", <name>]`` for a validated named profile, else ``[]``. Hub actions run in
     a fresh ``hermes`` subprocess whose ``_apply_profile_override()`` reads ``-p`` from argv —
     the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``.
@@ -451,7 +452,7 @@ def _profile_cli_args(profile: Optional[str]) -> list[str]:
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
-    return ["-p", profiles_mod.normalize_profile_name(requested)]
+    return ["-p", profile_names.normalize_profile_name(requested)]
 
 
 def _hub_action_name(verb: str, key: str) -> str:

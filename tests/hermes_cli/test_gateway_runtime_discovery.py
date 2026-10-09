@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from gateway.control_socket import _home_hash
-from hermes_cli.gateway_runtime_discovery import DiscoveryError, home_mode_unsafe, query_identify
+from gateway.runtime_discovery import DiscoveryError, home_mode_unsafe, query_identify
 
 
 @pytest.mark.platforms("linux")

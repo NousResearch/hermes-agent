@@ -13,7 +13,7 @@ def test_startup_warns_on_timed_session_reset_unless_plugin_enabled(tmp_path, mo
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text("session_reset:\n  mode: idle\n  idle_minutes: 60\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda multiplex: [("default", home)])
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", lambda multiplex: [("default", home)])
     monkeypatch.setattr(session_reset_retirement, "reset_plugin_enabled", lambda: plugin_enabled)
     runner = object.__new__(GatewayStartupMixin)
     runner.config = SimpleNamespace(multiplex_profiles=False)

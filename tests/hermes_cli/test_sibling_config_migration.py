@@ -36,13 +36,10 @@ def _latest_version() -> int:
 def _setup(monkeypatch, tmp_path, active_home: Path, *, default_home: Path | None = None):
     import hermes_cli.profiles as profiles_mod
 
-    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "profiles")
-    # Default lives at the install root, not under profiles/; absent unless a test passes it,
-    # so no test can reach the real ~/.hermes.
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: tmp_path / "profiles")
     missing = tmp_path / "no-such-default-home"
     monkeypatch.setattr(
-        profiles_mod,
-        "_get_default_hermes_home",
+        "profiles.paths._get_default_hermes_home",
         lambda: default_home if default_home is not None else missing,
     )
     import hermes_constants

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import hermes_cli.gateway_runtime as gateway_runtime
+import gateway.runtime as gateway_runtime
 import hermes_constants
 
 
@@ -59,7 +59,7 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
 
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", query_runtime_control)
     else:
-        import hermes_cli.gateway_runtime_discovery as discovery
+        import gateway.runtime_discovery as discovery
 
         class FakeStream:
             def __enter__(self):

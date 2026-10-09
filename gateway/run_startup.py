@@ -944,7 +944,7 @@ class GatewayStartupMixin:
                     "in config.yaml to re-enable.", _redact_raw,
                 )
         with suppress(Exception):
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             _profile = get_active_profile_name()  # launch profile, pre-identity (boot log)
             if _profile and _profile != "default":
                 logger.info("Active profile: %s", _profile)
@@ -981,7 +981,7 @@ class GatewayStartupMixin:
         unless the plugin that honours it is enabled. Never raises."""
         with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
             from gateway.config_loader import read_yaml_layers
-            from hermes_cli.profiles import profiles_to_serve
+            from gateway.profile_serving import profiles_to_serve
             from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
             hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
                     if (found := retired_reset_policy(read_yaml_layers(home)))]

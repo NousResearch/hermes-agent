@@ -3322,7 +3322,7 @@ def _publish_rotated_compaction(
     # parent's profile ("default" persists as NULL) and keeps a live /yolo; publish COALESCEs from the parent row.
     _profile_for_child = None
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         _profile_for_child = get_active_profile_name()
     _profile_for_child = None if _profile_for_child == "default" else _profile_for_child
     old_title = agent._session_db.get_session_title(agent.session_id)

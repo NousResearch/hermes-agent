@@ -382,7 +382,7 @@ def _refuse_gateway_ancestor_tree_kill(pids: list[int], *, gateway_mode: bool) -
     if gateway_mode or not pids:
         return False
     def _ancestors():
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from gateway.restart import _is_pid_ancestor_of_current_process
         return [int(pid) for pid in pids if _is_pid_ancestor_of_current_process(int(pid))]
 
     ancestors = _try_call(_ancestors, "Could not inspect gateway ancestry before tree-kill: %s")
@@ -795,7 +795,7 @@ def _windows_cold_start_plan() -> dict | None:
     ``hermes gateway status``/``start`` consumes, so execution authorizes the spawn from the token and
     consumes only that generation (#110020 review)."""
     from hermes_cli.update_cmd import _desktop_owns_gateway_lifecycle
-    from hermes_cli import gateway_windows
+    from gateway import windows_service as gateway_windows
     with _best_effort('Could not check Windows gateway autostart state before update: %s'):
         if not gateway_windows.is_installed():
             return None
@@ -872,7 +872,7 @@ def _owned_gateway_pids(pids, *, keep=(), quiet: bool = True) -> list[int]:
 
 def _discover_windows_gateways():
     """``(profile_processes, service_gateways, service_gateway_pids, running_pids)`` for the pause; any indeterminate probe aborts."""
-    from hermes_cli.gateway import find_gateway_pids, find_profile_gateway_processes, find_windows_gateway_services
+    from gateway.process_discovery import find_gateway_pids, find_profile_gateway_processes, find_windows_gateway_services
     with _abort_on_error("Could not map Windows gateway PIDs to profiles"):
         profile_process_list = find_profile_gateway_processes(strict=True)
         profile_processes = {proc.pid: proc for proc in profile_process_list}
@@ -926,9 +926,9 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
 def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
     """Drain budget: configured restart drain (>= 1s), raised to a socket-paused gateway's declared
     ACTIVE-TURN budget + teardown grace so it isn't force-killed mid-turn."""
-    from hermes_cli.gateway import _get_restart_drain_timeout
+    from gateway.restart import get_restart_drain_timeout
     try:
-        drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
+        drain_timeout = max(float(get_restart_drain_timeout()), 1.0)
     except Exception:
         drain_timeout = 10.0
     if socket_acks:
@@ -1076,11 +1076,12 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
     Desktop-owned installs need this (elsewhere autostart brings the profile back); the active profile is
     left to the existing plan so it is never spawned twice. Best-effort: never blocks the pause."""
     from hermes_cli.update_cmd import _desktop_owns_gateway_lifecycle
-    from hermes_cli import gateway_windows
+    from gateway import windows_service as gateway_windows
     with _best_effort("Could not evaluate per-profile attested cold-starts before update: %s"):
         if not _desktop_owns_gateway_lifecycle():
             return
-        from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+        from profiles.current import get_active_profile_name
+        from gateway.profile_serving import profiles_to_serve
         active = get_active_profile_name() or "default"
         cold: dict[str, str] = {}
         # An activation list, not inventory: parked profiles stay offline.
@@ -1097,8 +1098,8 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
 def _cold_start_attested_profiles(token: dict) -> None:
     """Spawn each ``cold_start_profiles`` entry under its own HERMES_HOME and consume exactly the
     generation that authorized it; one profile's failure never aborts the others (#110959)."""
-    from hermes_cli import gateway_windows
-    from hermes_cli.profiles import get_profile_dir
+    from gateway import windows_service as gateway_windows
+    from profiles.paths import get_profile_dir
     pending = dict(token.get("cold_start_profiles") or {})
     if not pending:
         return
@@ -1149,8 +1150,8 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     if not _m()._is_windows():
         return True
     with _abort_on_error("Could not load Windows gateway cold-start helpers"):
-        from hermes_cli import gateway_windows
-        from hermes_cli.gateway import find_gateway_pids
+        from gateway import windows_service as gateway_windows
+        from gateway.process_discovery import find_gateway_pids
     with _abort_on_error("Could not re-check gateway liveness before cold-start"):
         # Another install's live gateway must not suppress this install's cold start (#124659).
         if _owned_gateway_pids(find_gateway_pids(all_profiles=True)):
@@ -1200,7 +1201,7 @@ def _refresh_windows_gateway_launchers() -> None:
     if not _m()._is_windows():
         return
     with _best_effort('Could not refresh Windows gateway launchers after update: %s'):
-        from hermes_cli import gateway_windows
+        from gateway import windows_service as gateway_windows
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
@@ -1273,7 +1274,7 @@ _SERVICE_RETRY_MAX_S = 3600.0
 def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | None = None) -> list[int]:
     """The stable gateway *name*'s service process supervises (in *profile*'s home when known): SCM
     ``running`` proves only the wrapper started, not that the gateway it hosts came up."""
-    from hermes_cli import gateway_windows
+    from gateway import windows_service as gateway_windows
     from hermes_cli.profiles import get_profile_dir
     psutil, service = _win_service(name)
 
@@ -1500,33 +1501,14 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     Vouched PIDs are persisted so a death AFTER updater exit is reported by the next CLI invocation."""
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from gateway.status import _pid_exists
-        from hermes_cli import gateway_windows
-        from hermes_cli.profiles import get_profile_dir
-    deadline = _time.monotonic() + _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
-    taken: set = set()
-    # Profiles first: a gateway on a profile's home is that profile's, never an unmapped entry's.
-    targets = [(("profile", name), lambda _scan, h=Path(get_profile_dir(name)), o=int(old_pid): gateway_windows._live_gateway_pids(
-        home=h, pid_filter=lambda ps: [p for p in ps if int(p) != o]), True) for name, old_pid in sorted(profiles.items())]
-    targets += [(("unmapped", i), lambda scan, f=_unmapped_ready_filter(entry, taken): f(scan()), False)
-                for i, entry in enumerate(unmapped)]
-    ready = _poll_until_ready(targets, deadline, taken)
-    ready_profiles = [name for name in sorted(profiles) if ("profile", name) in ready]
-    ready_unmapped = [entry for i, entry in enumerate(unmapped) if ("unmapped", i) in ready]
-    ready_pids = [pid for pids in ready.values() for pid in pids]
-    # Fleet reconciliation (#91277) cross-checks every planned runtime against relaunched_profiles:
-    # only a verified one is listed, so an unready one still surfaces as unaccounted.
-    token["relaunched_profiles"] = ready_profiles
-    token["profiles"] = {n: pid for n, pid in (token.get("profiles") or {}).items() if n not in ready_profiles}
-    token["unmapped"] = [u for u in (token.get("unmapped") or []) if u not in ready_unmapped]
-    if ready_pids:
-        with suppress(Exception):
-            gateway_windows._write_start_attestation(sorted(set(ready_pids)), "post-update relaunch")
-    if ready_profiles:
-        print(f"\n  ✓ Restarting Windows gateway profile(s): {', '.join(ready_profiles)}")
-    if ready_unmapped:
-        print(f"  ✓ Restarting {len(ready_unmapped)} unmapped Windows gateway process(es)")
-    unready = sorted(set(profiles) - set(ready_profiles)) + [f"pid {u.get('pid')}" for u in unmapped if u not in ready_unmapped]
-    if unready:
+        from gateway import windows_service as gateway_windows
+        timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
+        ready_pids = gateway_windows._wait_for_gateway_ready(
+            timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
+        )
+    if not ready_pids:
+        token["profiles"] = dict(profiles)
+        token["unmapped"] = list(unmapped)
         print(
             "\n  ⚠ Windows gateway restart could not be verified for: " + ", ".join(unready) + "\n"
             "    (The respawned gateway may have been killed by a parent Job Object during updater teardown, #48820.)\n"

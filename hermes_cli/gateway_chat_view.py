@@ -5,7 +5,7 @@ import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from gateway.client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 

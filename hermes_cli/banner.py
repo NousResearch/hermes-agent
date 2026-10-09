@@ -592,7 +592,7 @@ def _codex_runtime_active() -> bool:
 
 
 def _active_profile_name() -> Optional[str]:
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     return get_active_profile_name()
 
 

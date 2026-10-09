@@ -21,7 +21,7 @@ def two_profile_host(tmp_path, monkeypatch):
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    from hermes_cli.profiles import _get_profiles_root
+    from profiles.paths import _get_profiles_root
     assert str(_get_profiles_root()).startswith(str(tmp_path))
     return home / "profiles" / "b"
 
@@ -67,12 +67,12 @@ def test_a_crashed_profile_create_shell_is_not_a_second_tenant(two_profile_host)
 
 def test_unreadable_profiles_dir_fails_closed_and_says_so(two_profile_host, monkeypatch):
     """Silently returning False left the guard off for the process lifetime with zero log lines."""
-    from hermes_cli import profiles as profiles_mod
+    from gateway import profile_serving as profiles_mod
 
     def _boom(multiplex):
         raise PermissionError("profiles/ is unreadable")
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", _boom)
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", _boom)
 
     assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
     assert secret_scope.is_multiplex_active()

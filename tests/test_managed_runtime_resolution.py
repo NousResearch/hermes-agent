@@ -77,6 +77,10 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
+    ("gateway/service_process.py", "node"): (
+        "Fallback rung of _append_node_dir_for_service(), after the managed "
+        "dirs from iter_hermes_node_dirs() are already appended."
+    ),
     ("hermes_cli/main_tui_launch.py", "node"): (
         "PM-composed launch context: `which(node)` runs against the PATH "
         "pm.ensure('node'|'npm') just composed (store dirs first), not the ambient one."

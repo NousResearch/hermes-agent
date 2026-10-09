@@ -14,7 +14,7 @@ async def discover_commands(authority, actor, params, *, completion=False):
         raise RuntimeStoreError('invalid_params')
 
     def discover():
-        from hermes_cli.profiles import profile_matches_home
+        from profiles.registry import profile_matches_home
         home = Path(authority.profile_id)
         if params.get('profile') and not profile_matches_home(params['profile'], home):
             raise RuntimeStoreError('profile_mismatch')

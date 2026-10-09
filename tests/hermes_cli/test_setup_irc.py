@@ -4,6 +4,7 @@ Covers the full plugin-platform discovery → status → configure flow so that
 a fresh Hermes install (no state, no env vars) can set up IRC through the
 interactive setup menus.
 """
+from gateway import systemd_runtime
 
 import os
 
@@ -164,7 +165,7 @@ class TestIRCGatewaySetupFreshInstall:
 
             monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **kw: False)
             monkeypatch.setattr(setup_mod, "prompt_checklist", capture_prompt_checklist)
-            monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+            monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
@@ -210,7 +211,7 @@ class TestIRCGatewaySetupFreshInstall:
                     i for i, item in enumerate(items) if "IRC" in item
                 ],
             )
-            monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+            monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)

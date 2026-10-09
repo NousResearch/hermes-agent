@@ -2,7 +2,7 @@
 
 Covers the three Phase 0 deliverables:
   1. ``gateway.multiplex_profiles`` config flag (default False, round-trips).
-  2. ``hermes_cli.profiles.profiles_to_serve`` enumeration.
+  2. ``gateway.profile_serving.profiles_to_serve`` enumeration.
   3. Profile-stamped ``build_session_key`` that is BYTE-IDENTICAL when the
      flag is off (the orphan-every-session guard) and namespace-segmented when
      on, without disturbing the positional key layout downstream parsers rely
@@ -163,7 +163,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         store = self._store_with_row(tmp_path, row)
         source = _src(chat_id="99", chat_type="dm")
 
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+        with patch("profiles.current.get_active_profile_name", return_value="coder"):
             recovered = store._recover_session_from_db(
                 session_key="agent:main:telegram:dm:99",
                 source=source,
@@ -191,7 +191,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         row = {"id": "sess", "started_at": 1700000000, "session_key": recovered_key}
         store = self._store_with_row(tmp_path, row, multiplex_profiles=True)
         store._db_pinned = store._db
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+        with patch("profiles.current.get_active_profile_name", return_value="coder"):
             recovered = store._recover_session_from_db(
                 session_key="agent:main:telegram:dm:99",
                 source=_src(chat_id="99", chat_type="dm"),

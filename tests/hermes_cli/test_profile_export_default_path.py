@@ -27,7 +27,7 @@ def test_default_export_path_is_managed_and_outside_named_profiles(
 ):
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
 
     result = profiles.get_profile_export_path(
         "Research-Bot", timestamp="20260823-120000"
@@ -49,7 +49,7 @@ def test_custom_hermes_home_inside_a_checkout_uses_a_sibling_store(
     (checkout / ".git").write_text("gitdir: ../git\n", encoding="utf-8")
     monkeypatch.chdir(checkout)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: checkout)
 
     result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
 
@@ -72,7 +72,7 @@ def test_checkout_detection_does_not_depend_on_cwd(tmp_path, monkeypatch, profil
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)  # cwd has no .git ancestor inside tmp_path
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: hermes_home)
 
     result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
 
@@ -86,7 +86,7 @@ def test_cli_export_rejects_bad_profile_name_without_traceback(
     main_mod = importlib.import_module("hermes_cli.main")
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
 
     with pytest.raises(SystemExit):
         profile_cmd.cmd_profile(
@@ -111,7 +111,7 @@ def test_cli_export_default_does_not_write_into_the_current_checkout(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.chdir(checkout)
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr(
         "hermes_constants.get_default_hermes_root", lambda: default_home
     )
@@ -137,8 +137,8 @@ def test_slash_export_uses_the_same_managed_destination(
     mixin_mod = importlib.import_module("hermes_cli.cli_commands_mixin")
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.current.get_active_profile_name", lambda: "default")
     calls = []
     monkeypatch.setattr(
         profiles,
@@ -169,7 +169,7 @@ def test_cwd_in_unrelated_checkout_does_not_prove_safety(
     (checkout_a / ".git").write_text("gitdir: ../git\n", encoding="utf-8")
     monkeypatch.chdir(checkout_a)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout_b)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: checkout_b)
 
     result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
 
@@ -189,7 +189,7 @@ def test_every_candidate_inside_a_checkout_fails_closed(
     checkout.mkdir()
     (checkout / ".git").mkdir()
     monkeypatch.setattr(Path, "home", lambda: checkout / "home")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: checkout)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(checkout / "tmp"))
 
     with pytest.raises(ValueError, match="No safe automatic export destination"):
@@ -205,7 +205,7 @@ def test_export_dir_symlink_is_rejected(tmp_path, monkeypatch, profiles):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (default_home / "profile-exports").symlink_to(elsewhere)
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
 
     with pytest.raises(ValueError, match="symlink"):
         profiles.get_profile_export_path("default")

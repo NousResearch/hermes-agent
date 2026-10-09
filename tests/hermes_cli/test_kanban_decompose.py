@@ -71,8 +71,8 @@ def _patch_list_profiles(names: list[str]):
     ]
     return [
         patch("hermes_cli.profiles.list_profiles", return_value=fake_profiles),
-        patch("hermes_cli.profiles.profile_exists", side_effect=lambda x: x in names),
-        patch("hermes_cli.profiles.get_active_profile_name", return_value=names[0] if names else "default"),
+        patch("profiles.registry.profile_exists", side_effect=lambda x: x in names),
+        patch("profiles.current.get_active_profile_name", return_value=names[0] if names else "default"),
     ]
 
 

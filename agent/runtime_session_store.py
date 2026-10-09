@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import tempfile
 import threading
 
 
@@ -48,11 +49,10 @@ class WorkerRPC:
     def __init__(self, home):
         self.home = Path(home).resolve()
         self.lock = threading.Lock()
-        self.endpoint = None
 
     def __call__(self, method, **params):
-        from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
-        from hermes_cli.gateway_runtime_discovery import query_identify
+        from gateway.client import _session_ticket
+        from gateway.runtime_discovery import query_identify
         from websockets.sync.client import connect
         try:
             asyncio.get_running_loop()
@@ -62,23 +62,20 @@ class WorkerRPC:
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         with self.lock:
             # A served secondary has no socket; its multiplexer's descriptor names it.
-            from hermes_cli.gateway_runtime import discover_gateway_endpoint
+            from gateway.runtime import discover_gateway_endpoint
             discovery = discover_gateway_endpoint(self.home, timeout=5)
-            if discovery.state == 'ready' and discovery.endpoint is not None:
-                self.endpoint = discovery.endpoint
-            elif discovery.state != 'draining' or self.endpoint is None:
+            if discovery.state != 'ready' or discovery.endpoint is None:
                 raise WorkerPersistenceError('owner_unavailable')
-            from hermes_cli.gateway_runtime import control_home_for
-            endpoint = self.endpoint
-            descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
+            from gateway.runtime import control_home_for
+            descriptor = query_identify(control_home_for(self.home, discovery.endpoint), timeout=5)
             if descriptor.get('pid') == os.getpid():
                 raise WorkerPersistenceError('synchronous_self_rpc')
+            endpoint = discovery.endpoint
             ticket = _session_ticket(self.home, endpoint,
                 purpose='interactive' if method == 'worker.register' else 'worker-adoption')
-            url, protocols = gateway_ws_target(endpoint, ticket)
-            # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-            with connect(url, subprotocols=protocols,
-                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None) as ws:
+            url = endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
+            with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
+                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024) as ws:
                 ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}))
                 import time
                 deadline = time.monotonic() + 20
@@ -140,8 +137,6 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             else:
                 self.journal = {'scope': self.scope, 'next_sequence': 1, 'pending': []}
                 self._save(self.journal)
-            if self.journal['pending']:
-                self.retry_pending()
             if is_worker_process():
                 from tools.async_delegation_worker import bind_worker_delegation_store
                 bind_worker_delegation_store(self)
@@ -156,9 +151,21 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         if len(encoded) > self.max_bytes:
             self.failure = 'outbox_full'
             raise WorkerPersistenceError(self.failure)
-        from utils import atomic_write_bytes
-        # Owner-only journal (the dir is 0700 too); the rename and its directory entry are durable.
-        atomic_write_bytes(self.path, encoded, tmp_prefix='.pending-', mode=0o600, fsync_dir=True)
+        fd, temporary = tempfile.mkstemp(prefix='.pending-', dir=self.path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+            if os.name != 'nt':
+                directory = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     def _session(self, session_id):
         if session_id != self.scope['session_id']:

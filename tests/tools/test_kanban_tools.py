@@ -1241,8 +1241,8 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
     db.create_session(live, source="tui", parent_session_id=stale)
     db.append_message(live, role="user", content="post-fork turn")
 
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: name == "teamx")
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: str(store))
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: name == "teamx")
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda name: str(store))
     assert kt._live_tui_session_key(stale, "teamx") == live
 
 
@@ -1260,7 +1260,7 @@ def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
     assert kt._live_tui_session_key("stale-key", None) == "stale-key"
     # An unresolvable profile also falls through to the default store path.
     import hermes_cli.profiles as profiles_mod
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: False)
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: False)
     assert kt._live_tui_session_key("stale-key", "ghost-profile") == "stale-key"
 
 

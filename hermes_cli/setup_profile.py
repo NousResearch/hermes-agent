@@ -11,6 +11,7 @@ from typing import Callable, NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
 from hermes_constants import get_hermes_home, profile_name_for_home
+from profiles.metadata import SETUP_ROLE, drop_profile_role, read_profile_meta, write_profile_meta
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +69,14 @@ class SetupProfile(NamedTuple):
 
 
 def find_setup_profile() -> Optional[tuple[str, Path]]:
-    found = [(p.name, Path(p.path)) for p in profiles_mod.list_profiles(lazy_skill_count=True)
-             if (Path(p.path) / profiles_mod.SETUP_PROFILE_MARKER).is_file()]
+    """Return the setup profile by canonical role, with the legacy marker as migration fallback."""
+    found = [
+        (p.name, Path(p.path))
+        for p in profiles_mod.list_profiles(lazy_skill_count=True)
+        if p.role == SETUP_ROLE or (Path(p.path) / profiles_mod.SETUP_PROFILE_MARKER).is_file()
+    ]
     if len(found) > 1:
-        logger.warning("several profiles carry the setup marker (%s); using %s",
+        logger.warning("several profiles carry the setup role/marker (%s); using %s",
                        ", ".join(name for name, _ in found), found[0][0])
     return found[0] if found else None
 
@@ -79,6 +84,8 @@ def find_setup_profile() -> Optional[tuple[str, Path]]:
 def ensure_setup_profile() -> SetupProfile:
     found = find_setup_profile()
     if found is not None:
+        if read_profile_meta(found[1]).get("role") != SETUP_ROLE:
+            write_profile_meta(found[1], role=SETUP_ROLE)
         return SetupProfile(found[0], found[1], created=False)
     owner = profile_name_for_home(get_hermes_home()) or "default"
     name = _free_setup_profile_name()
@@ -87,6 +94,7 @@ def ensure_setup_profile() -> SetupProfile:
         _write_soul(path)
         _replace_dir(path / "memories")
         _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path), _OWNER: owner})
+        write_profile_meta(path, role=SETUP_ROLE)
     except BaseException:
         profiles_mod.delete_profile(name, yes=True)
         raise
@@ -174,8 +182,10 @@ def _install_has_history() -> bool:
     """A session row in the launch home, or a profile the user made. A fresh boot creates neither:
     it leaves an empty ``state.db``, ``auth.json`` (the free-tier mint) and ``SOUL.md``, which is
     why the signal is a session row and not a file."""
+    from profiles.registry import _iter_named_profile_dirs
+
     if any(not (path / profiles_mod.SETUP_PROFILE_MARKER).is_file()
-           for path in profiles_mod._iter_named_profile_dirs()):
+           for path in _iter_named_profile_dirs()):
         return True
     db_path = get_hermes_home() / "state.db"
     if not db_path.is_file():
@@ -266,6 +276,7 @@ def release_setup_copy(copy_dir: Path, *, setup_state: Optional[dict]) -> None:
     the tool limits ``_write_setup_config`` gave it: the cli toolset grant, the toolsets setup itself disabled
     (the user's own disabled toolsets stay) and its deferred-tool list."""
     (copy_dir / profiles_mod.SETUP_PROFILE_MARKER).unlink(missing_ok=True)
+    drop_profile_role(copy_dir)
     config_path = copy_dir / "config.yaml"
     if setup_state is None or not config_path.is_file():
         return

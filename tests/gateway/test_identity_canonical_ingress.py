@@ -62,9 +62,9 @@ def rig(tmp_path, monkeypatch):
     runner.adapters = {Platform.TELEGRAM: bot_a}
     runner._profile_adapters = {"team_b": {Platform.TELEGRAM: bot_b}, "ops": {}}
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=served), \
+            patch("profiles.paths.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
+            patch("profiles.registry.profile_exists", return_value=True):
         yield SimpleNamespace(runner=runner, home=home, bot_a=bot_a, bot_b=bot_b)
 
 

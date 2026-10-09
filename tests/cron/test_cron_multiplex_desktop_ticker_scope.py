@@ -115,7 +115,7 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
     homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
     running = {homes[-1][1]}
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
+        "gateway.profile_serving.profiles_to_serve", lambda multiplex=False: list(homes)
     )
     monkeypatch.setattr(
         "hermes_cli.profiles._check_gateway_running", lambda home: home in running
@@ -270,8 +270,8 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("LAUNCH_ONLY_SECRET", "launch-secret")
     monkeypatch.delenv("ROUTED_ONLY_SECRET", raising=False)
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: launch)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: launch / "profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: launch)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: launch / "profiles")
     monkeypatch.setattr(scheduler, "_hermes_home", None)
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: InProcessCronScheduler())
     secret_scope.set_multiplex_active(False)  # the desktop backend never sets the process flag

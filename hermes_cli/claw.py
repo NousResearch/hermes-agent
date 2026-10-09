@@ -181,7 +181,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     if liveness.running:
         profile = None
         with contextlib.suppress(Exception):
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             profile = get_active_profile_name()
         if liveness.source == "multiplexer" and profile and profile != "default":
             # Served profile: its platforms live under `<profile>:<platform>` in the host record.

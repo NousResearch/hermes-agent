@@ -276,8 +276,8 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                from gateway.restart import get_restart_drain_timeout
+                _drain = float(get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
             accepted_box: list[bool] = []
@@ -482,9 +482,9 @@ def _launch_home_may_multiplex(config=None) -> bool:
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
         return True
-    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    from gateway.multiplex_mode import explicit_multiplex_flag
     if config is not None and not explicit_multiplex_flag(get_hermes_home()):
-        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, log_multiplex_decision
+        from gateway.multiplex_mode import MultiplexDecision, log_multiplex_decision
         decision = MultiplexDecision(
             False, "guard",
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
@@ -534,7 +534,7 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
         # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
         # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
         # Any other same-user contender keeps the ordinary "already running" exit 1.
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
         if named_profile_served_by_running_multiplexer():
             from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
             from gateway.run import _write_runtime_status_quiet
@@ -688,7 +688,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
 
     from gateway.status import remove_pid_file, release_gateway_runtime_lock
-    if not _start_gateway_reserve_profiles(profile_homes):
+    try:
+        process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
+    except OwnershipConflict as exc:
+        logger.error("Cannot reserve gateway profiles: %s", exc)
+        # A named profile that the LIVE default multiplexer already serves is a configuration
+        # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
+        # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
+        # Any other same-user contender keeps the ordinary "already running" exit 1.
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
+        if named_profile_served_by_running_multiplexer():
+            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+            from gateway.run import _write_runtime_status_quiet
+            logger.error(
+                "The default gateway is running as a profile multiplexer and already serves this profile. "
+                "Manage it with `hermes gateway restart` from the default profile instead of starting a "
+                "second gateway for the profile.")
+            _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=str(exc))
+            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+        return False
+    except OSError as exc:
+        logger.error("Cannot reserve gateway profiles: %s", exc)
         return False
     # Freeze discovery: later profile additions must restart and reserve before opening stores.
     if profile_homes:

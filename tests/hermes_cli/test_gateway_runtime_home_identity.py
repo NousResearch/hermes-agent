@@ -18,7 +18,7 @@ def _ready_payload(home: str) -> dict:
 
 
 def test_endpoint_matches_served_home_under_any_canonical_spelling(tmp_path):
-    from hermes_cli.gateway_runtime import _canonical_home, _endpoint
+    from gateway.runtime import _canonical_home, _endpoint
     real = tmp_path / 'real-home'
     real.mkdir()
     served = str(real.resolve())

@@ -328,6 +328,11 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
         for ts_name in get_all_toolsets():
             if ts_name not in TOOLSET_SESSION_PLATFORMS:
                 tools.update(resolve_toolset(ts_name))
+    # Role-reserved toolsets reach only profiles carrying that backend-owned role.
+    from toolsets import profile_role_toolsets
+    for ts_name in profile_role_toolsets()[1]:
+        tools.difference_update(resolve_toolset(ts_name))
+
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a

@@ -37,7 +37,7 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
     if not pids:
         return []
     try:
-        from hermes_cli.gateway import _get_service_pids
+        from gateway.process_discovery import _get_service_pids
         service_pids = set(_get_service_pids(all_profiles=True))
     except Exception:
         service_pids = set()

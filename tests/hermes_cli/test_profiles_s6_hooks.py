@@ -80,7 +80,7 @@ def _patch_detect_s6(monkeypatch: pytest.MonkeyPatch) -> None:
     exercise the early-return path.
     """
     monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager",
+        "gateway.service_manager.detect_service_manager",
         lambda: "s6",
     )
 
@@ -94,7 +94,7 @@ def test_register_noop_on_host(
     # defense-in-depth assertion that get_service_manager is never
     # reached on host.
     monkeypatch.setattr(
-        "hermes_cli.service_manager.get_service_manager",
+        "gateway.service_manager.get_service_manager",
         lambda: _HostManager(),
     )
     _maybe_register_gateway_service("hostprof")
@@ -110,7 +110,7 @@ def test_register_passes_start_now_false(monkeypatch: pytest.MonkeyPatch) -> Non
     _patch_detect_s6(monkeypatch)
     mgr = _S6Manager()
     monkeypatch.setattr(
-        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+        "gateway.service_manager.get_service_manager", lambda: mgr,
     )
     _maybe_register_gateway_service("coder")
     assert mgr.last_start_now is False, (
@@ -128,12 +128,12 @@ def test_register_silent_when_detect_throws(
     def _broken_detect() -> str:
         raise RuntimeError("detection blew up")
     monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager", _broken_detect,
+        "gateway.service_manager.detect_service_manager", _broken_detect,
     )
     # If get_service_manager is reached, the test will assert via
     # _HostManager.register. It must NOT be reached.
     monkeypatch.setattr(
-        "hermes_cli.service_manager.get_service_manager",
+        "gateway.service_manager.get_service_manager",
         lambda: _HostManager(),
     )
     _maybe_register_gateway_service("anywhere")

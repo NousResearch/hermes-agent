@@ -107,9 +107,9 @@ def gateway(tmp_path, monkeypatch):
 
     runner._run_agent_inner = _fake_turn
     served = list(homes.items())
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: homes[n]), \
-            patch("hermes_cli.profiles.profile_exists", side_effect=lambda n: n in homes):
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=served), \
+            patch("profiles.paths.get_profile_dir", side_effect=lambda n: homes[n]), \
+            patch("profiles.registry.profile_exists", side_effect=lambda n: n in homes):
         yield SimpleNamespace(runner=runner, homes=homes, adapters=adapters, turns=turns)
 
 

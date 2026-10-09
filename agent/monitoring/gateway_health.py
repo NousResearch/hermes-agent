@@ -222,7 +222,7 @@ def build_gateway_health_snapshot(
 
 def _safe_profile() -> str:
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return str(get_active_profile_name() or "default")
     except Exception:
         return "default"

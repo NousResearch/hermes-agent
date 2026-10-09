@@ -9,11 +9,11 @@ import pytest
 
 import hermes_constants
 from hermes_cli import gateway as gw
-from hermes_cli import gateway_migrate as gm
-from hermes_cli import gateway_multiplex_mode as mode
-from hermes_cli import gateway_multiplex_s6 as s6
+from gateway import migration as gm
+from gateway import multiplex_mode as mode
+from gateway import s6_service as s6
 from hermes_cli.container_boot import reconcile_profile_gateways
-from hermes_cli.service_manager import S6ServiceManager
+from gateway.s6_manager import S6ServiceManager
 
 
 class _FakeS6:
@@ -54,6 +54,7 @@ def s6_host(tmp_path, monkeypatch):
     scandir = tmp_path / "run-service"
     fake = _FakeS6(scandir, up=set())
     monkeypatch.setattr(gw, "_running_under_s6", lambda: True)
+    monkeypatch.setattr("gateway.service_manager.detect_service_manager", lambda: "s6")
     monkeypatch.setattr(S6ServiceManager, "__init__", lambda self, scandir=scandir: setattr(self, "scandir", scandir))
     monkeypatch.setattr(s6, "_manager", lambda: fake)
     monkeypatch.setattr(s6, "_wait_down", lambda service_dir, timeout_ms=0: None)

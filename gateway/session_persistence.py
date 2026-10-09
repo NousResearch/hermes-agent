@@ -135,7 +135,8 @@ class SessionPersistenceMixin:
             return cache[profile]
         home: Optional[Path] = None
         try:
-            from hermes_cli.profiles import get_profile_dir, profile_exists
+            from profiles.paths import get_profile_dir
+            from profiles.registry import profile_exists
             if profile_exists(profile):
                 home = Path(get_profile_dir(profile))
         except Exception as exc:

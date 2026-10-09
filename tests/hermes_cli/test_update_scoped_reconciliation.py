@@ -111,7 +111,7 @@ GATEWAYLESS_CASES = [
 @pytest.mark.parametrize("name,receipt,runtimes,states,checkout,pending", GATEWAYLESS_CASES, ids=[case[0] for case in GATEWAYLESS_CASES])
 def test_gatewayless_host_settles_on_host_evidence(monkeypatch, capsys, name, receipt, runtimes, states, checkout, pending):
     """An inventory-less marker with no live gateway settles on what the host runs now (#118742)."""
-    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
+    from profiles.paths import _get_default_hermes_home, _get_profiles_root
 
     seed(monkeypatch, receipt, "new", [])
     (get_hermes_home() / "gateway_state.json").unlink()

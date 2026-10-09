@@ -22,9 +22,9 @@ def _setup(monkeypatch, tmp_path, record: dict):
         "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
+        "profiles.paths._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")

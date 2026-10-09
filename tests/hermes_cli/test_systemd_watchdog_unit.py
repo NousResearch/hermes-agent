@@ -1,6 +1,9 @@
 """Generated service behavior for the opt-in systemd watchdog."""
 
 from __future__ import annotations
+from gateway import service_process
+from gateway import systemd_identity
+from gateway import systemd_unit_render
 
 from gateway.config import GatewayConfig
 from hermes_cli import gateway as gateway_cli
@@ -10,13 +13,13 @@ from hermes_cli import gateway as gateway_cli
 
 def test_positive_watchdog_config_generates_notify_unit(monkeypatch):
     monkeypatch.setattr(
-        gateway_cli,
+        systemd_unit_render,
         "load_gateway_config",
         lambda: GatewayConfig.from_dict({"systemd_watchdog_seconds": 120}),
         raising=False,
     )
 
-    unit = gateway_cli.generate_systemd_unit(system=False)
+    unit = systemd_unit_render.generate_systemd_unit(system=False)
 
     assert "Type=notify" in unit
     assert "NotifyAccess=main" in unit
@@ -42,17 +45,17 @@ def test_system_unit_reads_watchdog_from_target_home(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("HERMES_HOME", str(caller_home))
     monkeypatch.setattr(
-        gateway_cli,
-        "_system_service_identity",
+        systemd_identity,
+        "system_service_identity",
         lambda _user: ("service", "service", str(tmp_path / "account"), 1001),
     )
     monkeypatch.setattr(
-        gateway_cli,
-        "_hermes_home_for_target_user",
+        service_process,
+        "hermes_home_for_target_user",
         lambda _home: str(target_home),
     )
 
-    unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="service")
+    unit = systemd_unit_render.generate_systemd_unit(system=True, run_as_user="service")
 
     assert "Type=notify" in unit
     assert "WatchdogSec=75s" in unit

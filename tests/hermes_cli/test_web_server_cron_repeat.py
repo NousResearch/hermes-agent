@@ -16,8 +16,8 @@ def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: default_home / "profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: default_home / "profiles")
     return default_home
 
 

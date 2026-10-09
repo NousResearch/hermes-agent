@@ -176,11 +176,10 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     not just the root home's. Pre-update snapshots already cover siblings
     (#66140); the guard was the missing half."""
     from hermes_cli import update_cmd
-    from hermes_cli.backup import _sibling_profile_homes
 
     root_home = tmp_path / "default-home"
     root_home.mkdir()
-    sibling_home = tmp_path / "profiles" / "work"
+    sibling_home = root_home / "profiles" / "work"
     sibling_home.mkdir(parents=True)
 
     # Root DB: valid, with its own snapshot — must be left untouched.
@@ -201,8 +200,7 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
     monkeypatch.setattr(
-        "hermes_cli.backup._sibling_profile_homes",
-        lambda invoking_home: [("work", sibling_home)],
+        "profiles.paths._get_default_hermes_home", lambda: root_home
     )
 
     update_cmd._verify_and_restore_state_dbs_post_update()

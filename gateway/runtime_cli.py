@@ -16,7 +16,7 @@ def ensure_exit_code(result) -> int:
 
 def cmd_gateway_ensure(args) -> None:
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from gateway.runtime import ensure_gateway_runtime
 
     try:
         # Legacy imported utilities can print; protocol stdout belongs only to us.

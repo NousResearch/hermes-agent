@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli import gateway as hermes_gateway
-from hermes_cli import gateway_windows
+from gateway import windows_service as gateway_windows
 from hermes_cli import main as cli_main
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd

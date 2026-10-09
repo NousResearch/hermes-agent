@@ -39,7 +39,7 @@ def _make_due(job_id: str) -> None:
 
 
 def test_tick_without_gateway_skips_agent_jobs_without_spawning_or_drift(cron_home, monkeypatch, caplog):
-    from hermes_cli import gateway_runtime, gateway_runtime_start
+    from gateway import runtime as gateway_runtime, runtime_start as gateway_runtime_start
 
     spawned = []
     monkeypatch.setattr(gateway_runtime_start, "spawn_unmanaged_gateway",
@@ -81,7 +81,7 @@ def test_tick_holds_agent_jobs_while_gateway_is_starting_or_silent(cron_home, mo
     import threading
     import time
 
-    from hermes_cli import gateway_runtime_start
+    from gateway import runtime_start as gateway_runtime_start
 
     os.chmod(cron_home, 0o700)
     spawned = []
@@ -135,7 +135,7 @@ def test_tick_holds_agent_jobs_while_gateway_is_starting_or_silent(cron_home, mo
 
 def test_headless_receipt_recovery_never_connects_or_spawns(cron_home, monkeypatch):
     import json
-    from hermes_cli import gateway_client
+    from gateway import client as gateway_client
 
     job = J.create_job(prompt="summarise inbox", schedule="every 1h", name="agent", deliver="local")
     request_id = "prepared-fire"

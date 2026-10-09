@@ -363,9 +363,9 @@ class TestProfileFlagGatewayLifecycle:
         # gateway process itself carries.
         monkeypatch.delenv("HERMES_PROFILE", raising=False)
         monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
-        import hermes_cli.profiles as profiles_mod
+        import profiles.current as profile_current
 
-        monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "zeus")
+        monkeypatch.setattr(profile_current, "get_active_profile_name", lambda: "zeus")
         assert _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
         assert not _contains_gateway_lifecycle_command("hermes -p venus gateway restart")
 

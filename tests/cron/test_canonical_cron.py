@@ -6,7 +6,7 @@ from cron import scheduler
 
 
 def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
-    from hermes_cli import gateway_client
+    from gateway import client as gateway_client
     calls = []
 
     @asynccontextmanager
@@ -58,7 +58,7 @@ def test_owner_ticker_uses_direct_admission_without_loopback(monkeypatch):
 
 def test_lost_cron_ack_retains_identity_instead_of_reporting_failure(tmp_path, monkeypatch):
     from cron.scheduler_authority import run_canonical_job, CronExecutionUnknown
-    from hermes_cli import gateway_client
+    from gateway import client as gateway_client
     from hermes_constants import get_hermes_home
     import json
     import pytest

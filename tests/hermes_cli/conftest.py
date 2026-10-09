@@ -1,6 +1,7 @@
 """Fixtures shared across hermes_cli tests."""
 
 from __future__ import annotations
+from gateway import systemd_runtime
 
 import pytest
 
@@ -16,7 +17,7 @@ def all_assignees_spawnable(monkeypatch):
     would break tests that assert spawn behavior.
     """
     from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: True)
 
 
 @pytest.fixture(autouse=True)

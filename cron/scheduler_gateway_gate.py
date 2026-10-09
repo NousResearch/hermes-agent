@@ -31,7 +31,7 @@ def _gateway_unavailable(home) -> str | None:
     Everything short of ``ready`` — absent (``ensure`` would spawn), starting/draining (``ensure``
     would wait a whole deadline then fail the run), inaccessible/incompatible (no owner answers) —
     is held, never booked as a run."""
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from gateway.runtime import discover_gateway_endpoint
 
     if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
         return None  # explicit remote gateway: connect_gateway never spawns for it

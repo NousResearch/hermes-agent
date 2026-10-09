@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "nous-cli-legacy-seam-required",
+      "type": "require_path",
+      "path": "nous_cli/legacy.py"
+    },
+    {
+      "id": "nous-cli-must-use-only-the-legacy-seam",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+hermes_cli([. \\t]|$)",
+      "include_paths": [
+        "nous_cli/*.py",
+        "nous_cli/**/*.py"
+      ],
+      "exclude_paths": [
+        "nous_cli/legacy.py"
+      ]
+    },
+    {
+      "id": "runtime-must-not-depend-on-nous-cli",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+nous_cli([. \\t]|$)",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py"
+      ]
+    },
+    {
+      "id": "migrated-runtime-must-not-depend-on-hermes-cli",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+hermes_cli([. \\t]|$)",
+      "include_paths": [
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-profile-lifecycle",
+      "type": "forbid_content",
+      "regex": "^[ \\\\t]*(?:import[ \\\\t]+hermes_cli[.]profiles(?:[ \\\\t]|$)|from[ \\\\t]+hermes_cli[ \\\\t]+import[ \\\\t]+profiles(?:[ \\\\t,]|$)|from[ \\\\t]+hermes_cli[.]profiles[ \\\\t]+import[ \\\\t]+.*(_check_gateway_running|_maybe_register_gateway_service|_maybe_unregister_gateway_service|_cleanup_gateway_service|_stop_profile_backends|_stop_gateway_process))",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-gateway-control",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from[ \\t]+hermes_cli[ \\t]+import[ \\t]+gateway|(?:from|import)[ \\t]+hermes_cli[.]gateway)",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-service-manager",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from[ \\t]+hermes_cli[ \\t]+import[ \\t]+service_manager|(?:from|import)[ \\t]+hermes_cli[.]service_manager)",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    }
+  ]
+}

@@ -98,7 +98,7 @@ def _entry(proc: subprocess.Popen, purpose: str = "serve") -> dict:
 
 def test_live_supervised_serve_suppresses_cold_start(sleeper, monkeypatch, tmp_path):
     from hermes_cli import gateway as hermes_gateway
-    from hermes_cli import gateway_windows
+    from gateway import windows_service as gateway_windows
     from hermes_cli import update_cmd
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

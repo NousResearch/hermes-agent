@@ -34,28 +34,35 @@ def implied_host_root(home: Path) -> Path | None:
     root = multiplexer_root_for(home)
     if root is None:
         return None
-    from hermes_cli.gateway_multiplex_mode import host_serves_named_profile
-    return None if host_serves_named_profile(root, home) is False else root
+    from gateway.multiplex_mode import explicit_multiplex_flag
+    from gateway.profile_serving import profile_is_standalone
+    if profile_is_standalone(home):
+        return None
+    return root
 
 
 def multiplexer_serves_home(home: Path) -> Path | None:
     """The root whose (possibly stopped) multiplexer serves *home*, else None.
 
-    ``hermes_cli.gateway.named_profile_served_by_running_multiplexer`` answers the live question;
-    this is its offline twin for the moment no gateway runs, deciding from the boot policy
-    (:func:`hermes_cli.gateway_multiplex_mode.host_serves_named_profile`): a standalone secondary is
-    never served, an explicit ``true`` serves the rest, and an unset or retired ``false`` flag falls
-    back to the ``served_profiles`` the last multiplexer recorded. No evidence keeps it unanswered.
+    ``gateway.host_topology.named_profile_served_by_running_multiplexer`` answers the live question;
+    this is its offline twin for the moment no gateway runs: an explicit ``true`` on the default
+    profile, or a recorded ``served_profiles`` naming this profile (the boot-time verdict of an unset
+    flag). An explicit ``false``, or no evidence, keeps the per-profile daemon.
     """
     root = multiplexer_root_for(home)
     if root is None:
         return None
-    from hermes_cli.gateway_multiplex_mode import host_serves_named_profile
-    verdict = host_serves_named_profile(root, home)
-    if verdict is not None:
-        return root if verdict else None
+    from gateway.multiplex_mode import explicit_multiplex_flag
+    from gateway.profile_serving import profile_is_standalone
+    if profile_is_standalone(home):
+        return None
+    flag = explicit_multiplex_flag(root)
+    if flag is True:
+        return root
+    if flag is False:
+        return None
     from gateway.status import read_runtime_status
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
     served = (read_runtime_status(root / "gateway_state.json") or {}).get("served_profiles")
     if not isinstance(served, list):
         return None

@@ -8,6 +8,7 @@ Invariants (all fail on origin/main):
 * ``hermes claw``'s destructive-action warning FIRES for a served profile.
 * the state.db holder line names the shared host process and the profiles it serves.
 """
+from gateway import systemd_runtime
 
 import json
 import os
@@ -77,8 +78,8 @@ def test_doctor_reports_the_single_host_gateway_not_per_profile_slots(served_hos
         def list_profile_gateways(self):
             return ["default", "served", "legacy"]
 
-    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
-    monkeypatch.setattr("hermes_cli.service_manager.S6ServiceManager", _Mgr)
+    monkeypatch.setattr("gateway.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("gateway.s6_manager.S6ServiceManager", _Mgr)
     issues: list[str] = []
     doctor_platform._check_s6_supervision(issues)
     out = capsys.readouterr().out
@@ -103,8 +104,8 @@ def test_doctor_raises_an_issue_when_nothing_owns_the_gateway_role(served_host, 
             return ["default", "served", "legacy"]
 
     monkeypatch.setattr("gateway.host_topology.host_gateway_topology", lambda: None)
-    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
-    monkeypatch.setattr("hermes_cli.service_manager.S6ServiceManager", _Mgr)
+    monkeypatch.setattr("gateway.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("gateway.s6_manager.S6ServiceManager", _Mgr)
     issues: list[str] = []
     doctor_platform._check_s6_supervision(issues)
 
@@ -122,14 +123,15 @@ def test_doctor_checks_host_unit_linger_under_a_served_profile(served_host, tmp_
     unit_dir.mkdir(parents=True)
     (unit_dir / "hermes-gateway.service").write_text("[Unit]\n")  # the HOST unit; no per-profile unit
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr("gateway.systemd_identity.Path.home", lambda: fake_home)
     # A host that moves XDG_CONFIG_HOME keeps its units there; probing ~/.config false-negatives.
     if xdg:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     else:
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setattr("hermes_cli.gateway.is_linux", lambda: True)
-    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "systemd")
-    monkeypatch.setattr("hermes_cli.gateway.get_systemd_linger_status", lambda *a, **k: (False, "off"))
+    monkeypatch.setattr("gateway.systemd_runtime.is_linux", lambda: True)
+    monkeypatch.setattr("gateway.service_manager.detect_service_manager", lambda: "systemd")
+    monkeypatch.setattr("gateway.systemd_runtime.linger_status", lambda *a, **k: (False, "off"))
 
     issues: list[str] = []
     doctor_platform._check_gateway_service_linger(issues)

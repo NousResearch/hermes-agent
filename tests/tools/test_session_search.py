@@ -488,10 +488,10 @@ class TestSessionLink:
 class TestCrossProfileRead:
     def _patch_profiles(self, monkeypatch, home, exists=True):
         from hermes_cli import profiles as profiles_mod
-        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
-        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
-        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
+        monkeypatch.setattr("profiles.names.normalize_profile_name", lambda n: n)
+        monkeypatch.setattr("profiles.names.validate_profile_name", lambda n: None)
+        monkeypatch.setattr("profiles.registry.profile_exists", lambda n: exists)
+        monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: home)
 
     def test_bare_id_never_reads_another_profiles_store(self, db, tmp_path, monkeypatch):
         # #106761: profiles are isolated islands. A bare id that misses the caller's
@@ -506,7 +506,7 @@ class TestCrossProfileRead:
         from collections import namedtuple
         from hermes_cli import profiles as profiles_mod
         Info = namedtuple("Info", "name path")
-        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
+        monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
 
         result = json.loads(session_search(session_id="s_far", db=db))

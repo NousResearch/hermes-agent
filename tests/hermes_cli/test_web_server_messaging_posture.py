@@ -164,8 +164,8 @@ def test_profile_scoped_posture_ignores_root_env_and_reports_profile_grants(
     (worker_home / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n", encoding="utf-8")
     (worker_home / ".env").write_text(f"TELEGRAM_BOT_TOKEN={_VALID_BOT_TOKEN}\n", encoding="utf-8")
     _gateway_state(worker_home)
-    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
     # ROOT-env allowlist must not authorize the worker profile's bot.
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111,222")
     # The verified gateway identity must belong to the WORKER home: a bare "gateway

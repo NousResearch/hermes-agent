@@ -58,7 +58,8 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             from gateway.status import is_gateway_runtime_lock_active
             if is_gateway_runtime_lock_active():
                 return True
-        from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+        from hermes_cli.gateway import find_gateway_pids
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
         if find_gateway_pids():
             return True
         from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
@@ -514,8 +515,10 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 
 def cron_status():
     """Show cron execution status."""
-    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
-    from hermes_cli.profiles import get_active_profile_name
+    from cron.jobs import list_jobs
+    from hermes_cli.gateway import find_gateway_pids
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
+    from profiles.current import get_active_profile_name
     print()
 
     store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)

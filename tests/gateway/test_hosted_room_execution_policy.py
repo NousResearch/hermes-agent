@@ -246,7 +246,7 @@ def _two_profile_homes(tmp_path, monkeypatch) -> None:
     from hermes_cli import profiles
     import gateway.run as gateway_run
     alpha = root / "profiles" / "alpha"
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: root)
     monkeypatch.setattr(gateway_run, "_hermes_home", alpha)
     monkeypatch.setenv("HERMES_HOME", str(alpha))
     monkeypatch.setenv("HERMES_PROFILE", "alpha")

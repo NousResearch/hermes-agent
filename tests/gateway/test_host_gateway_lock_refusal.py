@@ -43,7 +43,7 @@ def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate
     from gateway import host_rendezvous as hr
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, GATEWAY_SERVICE_RESTART_EXIT_CODE
     from gateway.run import _claim_host_gateway_role
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from gateway.migration import MIGRATE_COMMAND
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
@@ -127,7 +127,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     finally:
         handle.close()
 
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from gateway.migration import MIGRATE_COMMAND
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "standalone gateway owns this host" in logged
     assert MIGRATE_COMMAND in logged, "the bounded outcome must name the command that converges"
@@ -178,7 +178,7 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
         return HostAttachDecision(START, "")
 
     monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
-    monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
+    monkeypatch.setattr("gateway.profile_serving.profile_is_standalone", lambda home: True)
     monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
     handle = _hold_host_lock_from_another_description(hr)
     try:

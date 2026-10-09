@@ -70,10 +70,10 @@ def mux(tmp_path, monkeypatch):
          "bot_profile": "team_b"},
     ])
     rig.home = home
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir",
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=served), \
+            patch("profiles.paths.get_profile_dir",
                   side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+            patch("profiles.registry.profile_exists", return_value=True):
         yield rig
 
 

@@ -1,44 +1,25 @@
 """Prepared native controls retain their identity across ambiguous RPC replies."""
 import json
 import uuid
-from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT, GatewayClientError
+from gateway.client import GatewayClientError
 
 
 class PreparedMutations:
     def __init__(self):
         self.pending = {}
 
-    async def apply(self, client, session_id, operation, payload, *, confirm=None):
-        """The owner's answer for this prepared mutation (retained across ambiguous replies).
-
-        A guarded model target answers ``status: confirmation_required`` and writes nothing.
-        ``confirm`` (``async (refusal) -> bool``) is the surface's prompt: yes re-sends the same
-        retained mutation once with ``payload.confirm`` = the owner's token (under the original
-        key, so an ambiguous reply to the confirmed send retries that exact request); no answers
-        ``status: cancelled``. Without a prompt (non-interactive) the refusal is an error, and a
-        confirmed send refused again (another switch or a turn landed first) is never re-asked.
-
-        ``payload`` may be a function of the snapshot the CAS tuple is read from (a rewind names
-        its target row from that same transcript); returning None means "nothing to do" and is
-        answered ``status: nothing``. A derived payload is keyed by operation alone, so a lost-reply
-        retry re-presents the original target instead of re-deriving one from an already-rewound
-        transcript. Metadata edits (``rename``) carry no generation fence, as on Ink/Desktop."""
-        key = _key(session_id, operation, payload)
+    async def apply(self, client, session_id, operation, payload):
+        encoded = json.dumps(payload, sort_keys=True)
+        key = (session_id, operation, encoded)
         if key not in self.pending:
             snapshot = await client.rpc('session.resume', session_id=session_id)
-            body = payload(snapshot) if callable(payload) else json.loads(key[2])
-            if body is None:
-                return {'status': 'nothing', 'session_id': session_id, 'operation': operation}
-            fence = {} if operation in _METADATA else {'expected_generation': snapshot['execution_generation']}
-            self.pending[key] = {'params': dict(session_id=session_id, operation=operation, payload=body,
-                request_id=uuid.uuid4().hex, expected_revision=snapshot['revision'], **fence)}
+            self.pending[key] = {'params': dict(session_id=session_id, operation=operation,
+                payload=json.loads(encoded), request_id=uuid.uuid4().hex,
+                expected_revision=snapshot['revision'], expected_generation=snapshot['execution_generation'])}
         entry = self.pending[key]
-        while 'result' not in entry:
+        if 'result' not in entry:
             try:
-                # A compression answers after its summary + commit; the default budget would report
-                # a timeout while the owner (which shields the mutation) still commits it.
-                budget = {'_timeout': COMPRESS_RPC_TIMEOUT} if operation == 'compress' else {}
-                entry['result'] = await client.rpc('session.mutate', **budget, **entry['params'])
+                entry['result'] = await client.rpc('session.mutate', **entry['params'])
             except GatewayClientError as exc:
                 # A disconnect is not a definitive authority refusal. Preserve
                 # the tuple; never refresh its preconditions behind the user.
@@ -48,60 +29,10 @@ class PreparedMutations:
                                 'unsupported_compress_options'}:
                     self.pending.pop(key)
                 raise
-            refusal = entry['result']
-            if refusal.get('status') != 'confirmation_required':
-                break
-            # The owner wrote nothing (no receipt): the same tuple may be re-sent with the token.
-            del entry['result']
-            if confirm is None or 'confirm' in entry['params']['payload']:
-                self.pending.pop(key)
-                raise GatewayClientError(model_refusal_text(refusal, confirmed=confirm is not None))
-            try:
-                accepted = await confirm(refusal)
-            except BaseException:
-                self.pending.pop(key)
-                raise
-            if not accepted:
-                self.pending.pop(key)
-                return {'status': 'cancelled', 'session_id': session_id, 'operation': operation}
-            entry['params'] = {**entry['params'], 'request_id': uuid.uuid4().hex,
-                               'payload': {**entry['params']['payload'], 'confirm': refusal['confirm']}}
         return entry['result']
 
     def acknowledge(self, session_id, operation, payload):
-        self.pending.pop(_key(session_id, operation, payload), None)
-
-
-_METADATA = frozenset({'rename'})
-
-
-def _key(session_id, operation, payload):
-    return (session_id, operation, None if callable(payload) else json.dumps(payload, sort_keys=True))
-
-
-def model_refusal_text(refusal, *, confirmed=False):
-    """Why a guarded model target was not applied (the owner's guard text first)."""
-    reason = ('the session changed before the confirmation landed; run /model again.' if confirmed else
-              'this target needs a confirmation; run /model in an interactive session to confirm it.')
-    return f"{refusal['confirm_message']}\n\nModel not switched: {reason}"
-
-
-def confirmation_title(refusal):
-    """The one prompt title for the owner's guard warnings (as ``combined_selection_warning``)."""
-    warnings = refusal.get('warnings') or []
-    return warnings[0]['title'] if len(warnings) == 1 else 'Model Selection Warning'
-
-
-def confirm_choice(raw, choices):
-    """``once`` / ``cancel`` (or None) for a typed answer: the choice's number or the classic
-    CLI's confirm aliases (y/yes/once, n/no/cancel)."""
-    from hermes_cli.cli_modal_mixin import _CONFIRM_ALIASES
-    answer = (raw or '').strip().lower()
-    if answer.isdigit() and 0 < int(answer) <= len(choices):
-        return choices[int(answer) - 1][0]
-    allowed = {choice[0] for choice in choices}
-    normalized = _CONFIRM_ALIASES.get(answer, answer)
-    return normalized if normalized in allowed else None
+        self.pending.pop((session_id, operation, json.dumps(payload, sort_keys=True)), None)
 
 
 def compress_payload(arg):

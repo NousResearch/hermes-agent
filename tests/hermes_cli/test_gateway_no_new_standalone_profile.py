@@ -9,6 +9,8 @@ dashboard ``/api/gateway/start`` twin (``multiplexed_profile_refusal``) applies 
 """
 
 from __future__ import annotations
+from gateway import systemd_identity
+from gateway import systemd_runtime
 
 import argparse
 import contextlib
@@ -33,7 +35,7 @@ def quiet_host(tmp_path, monkeypatch):
         (root / "profiles" / name / "config.yaml").write_text("{}\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(systemd_runtime, "supports_services", lambda: True)
     monkeypatch.setattr(gw, "_service_backend", lambda: "systemd")
     monkeypatch.setattr(gw, "refuses_container_user_scope_install", lambda system: False)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda v: False)
@@ -73,7 +75,7 @@ def test_named_profile_install_and_start_refuse_without_force_when_no_multiplexe
             assert "hermes gateway install" in out and "hermes gateway migrate --multiplex" in out
             assert f"hermes -p {profile} gateway install --force" in out
             assert "already serves" not in out  # nothing is running: this is the no-multiplexer form
-        assert not gw.get_systemd_unit_path(system=False).exists()
+        assert not systemd_identity.unit_path(system=False).exists()
         # Dashboard twin: same rule, same pointers, `stop` untouched (nothing serves the profile).
         refusal = multiplexed_profile_refusal(profile, "start")
         assert refusal and f"'{profile}'" in refusal and "migrate --multiplex" in refusal and "--force" in refusal
@@ -116,7 +118,7 @@ def test_force_installs_a_separate_profile_gateway_and_its_service_stays_startab
 
     # The --force-installed fleet member is not NEW: its supervisor (ExecStart carries no --force)
     # and a plain `gateway start` must keep reaching it, CLI and dashboard alike.
-    unit = gw.get_systemd_unit_path(system=False)
+    unit = systemd_identity.unit_path(system=False)
     unit.parent.mkdir(parents=True)
     unit.write_text("[Service]\n")
     with contextlib.redirect_stdout(io.StringIO()):

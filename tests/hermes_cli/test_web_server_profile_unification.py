@@ -32,8 +32,8 @@ def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
         (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     (worker_home / ".env").write_text("", encoding="utf-8")
 
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker_beta": worker_home}
 
 

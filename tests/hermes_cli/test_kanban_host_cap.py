@@ -322,8 +322,7 @@ def test_nonspawnable_review_does_not_tax_ready_budget(
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
     # Only 'alice' is a real profile; the review assignee is a human lane.
-    monkeypatch.setattr(
-        profmod, "profile_exists", lambda name: name == "alice"
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: name == "alice"
     )
 
     spawns: list = []

@@ -24,8 +24,8 @@ def test_direct_query_alias_survives_noninteractive_launch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_explicit_remote_failure_never_ensures_local(monkeypatch):
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError
-    from hermes_cli import gateway_runtime
+    from gateway.client import connect_gateway, GatewayClientError
+    from gateway import runtime as gateway_runtime
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Remote failure invoked local lifecycle")
@@ -164,7 +164,7 @@ async def test_stream_json_result_record_reports_an_unfinished_turn(capsys):
 @pytest.mark.asyncio
 async def test_oneshot_replay_gap_fails_instead_of_waiting_forever():
     from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.gateway_client import GatewayClientError
+    from gateway.client import GatewayClientError
 
     class Peer:
         events = asyncio.Queue()

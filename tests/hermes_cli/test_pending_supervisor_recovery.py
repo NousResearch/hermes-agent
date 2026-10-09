@@ -1,4 +1,6 @@
 """A pending restart is discharged by supervisor evidence, not an empty PID scan."""
+from gateway import launchd_service
+from gateway import systemd_runtime
 import subprocess
 from types import SimpleNamespace
 
@@ -12,12 +14,12 @@ def test_pending_launchd_requires_complete_supervision(monkeypatch, tmp_path, fa
     # Host-independent subprocess-boundary fixture, not native launchd validation.
     current, sibling = "ai.hermes.gateway", "ai.hermes.gateway-two"
     (tmp_path / f"{sibling}.plist").touch()
-    monkeypatch.setattr(gateway, "get_launchd_label", lambda: current)
-    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: tmp_path / f"{current}.plist")
-    monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: [current, sibling])
+    monkeypatch.setattr(launchd_service, "get_launchd_label", lambda: current)
+    monkeypatch.setattr(launchd_service, "get_launchd_plist_path", lambda: tmp_path / f"{current}.plist")
+    monkeypatch.setattr(launchd_service, "launchd_gateway_labels_for_install", lambda: [current, sibling])
     monkeypatch.setattr(fleet, "_restart_launchd_gateway_after_update", lambda **kw: ([], []))
-    monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", lambda _: (None, None) if failure == "unloaded" else ("gui/501", None))
-    monkeypatch.setattr(gateway, "_wait_for_launchd_service_pid", lambda *a, **kw: None if failure == "inactive" else 42)
+    monkeypatch.setattr(launchd_service, "_locate_launchd_gateway_service", lambda _: (None, None) if failure == "unloaded" else ("gui/501", None))
+    monkeypatch.setattr(launchd_service, "_wait_for_launchd_service_pid", lambda *a, **kw: None if failure == "inactive" else 42)
 
     def kickstart(*args):
         if failure == "restart":

@@ -34,29 +34,7 @@ def remaining(deadline: float) -> float:
     return budget
 
 
-def service_suffix(home: Path) -> str:
-    """Host-service suffix for the REQUESTED home, never the initiating client's env.
-
-    Same rule as ``hermes_cli.gateway._profile_suffix``: only the platform-native
-    default home owns the bare unit name; ``<root>/profiles/<name>`` yields the
-    profile name; any other root (Docker, a temp harness) yields a path hash so a
-    custom root can never resolve to the production ``hermes-gateway`` unit.
-    """
-    from hermes_constants import _get_platform_default_hermes_home
-    from hermes_cli.gateway import _profile_name_from_home
-    default = _get_platform_default_hermes_home().resolve()
-    home = home.resolve()
-    if home == default:
-        return ""
-    root = default
-    if not home.is_relative_to(default):
-        root = home.parent.parent if home.parent.name == "profiles" else home
-    if home != root:
-        name = _profile_name_from_home(home, root)
-        if name:
-            return name
-    return hashlib.sha256(str(home).encode()).hexdigest()[:8]
-
+from gateway.service_identity import service_suffix_for_home
 
 @dataclass(frozen=True)
 class ExistingService:
@@ -90,12 +68,11 @@ def _exists(path: Path) -> bool:
 
 
 def _systemd(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli import gateway as gw
-    from hermes_cli.service_manager import _s6_running
-    from hermes_cli.gateway_runtime_service_identity import ForeignRoot, SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
+    from gateway.service_manager import _s6_running
+    from gateway.runtime_service_identity import ForeignRoot, SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
     if _s6_running():
         raise RuntimeStartError("external_supervisor")
-    suffix = service_suffix(home)
+    suffix = service_suffix_for_home(home)
     unit = f"hermes-gateway{'-' + suffix if suffix else ''}.service"
     paths = (Path.home() / ".config/systemd/user" / unit, Path("/etc/systemd/system") / unit)
     # On non-systemd hosts there is no manager to own transient units. Installed
@@ -108,7 +85,8 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
         return None
     found = []
     for system in (False, True):
-        command = gw._systemctl_cmd(system)
+        from gateway.systemd_runtime import systemctl_cmd
+        command = systemctl_cmd(system)
         result = _run([*command, "show", unit, "--no-pager", "--all",
                        "--property=LoadState,ActiveState,SubState,UnitFileState," + ",".join(SYSTEMD_IDENTITY_PROPERTIES)], deadline)
         props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
@@ -151,12 +129,12 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
 
 def _launchd(home: Path, deadline: float) -> ExistingService | None:
     import pwd
-    suffix = service_suffix(home)
+    suffix = service_suffix_for_home(home)
     label = f"ai.hermes.gateway{'-' + suffix if suffix else ''}"
     account = pwd.getpwuid(os.getuid())  # windows-footgun: ok — native launchd only
     account_home = Path(account.pw_dir)
     plist = account_home / "Library/LaunchAgents" / f"{label}.plist"
-    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist, read_definition
+    from gateway.runtime_service_identity import verify_launchd_loaded, verify_launchd_plist, read_definition
     installed = _exists(plist)
     domains = [f"gui/{os.getuid()}", f"user/{os.getuid()}"]  # windows-footgun: ok — native launchd only
     found = []
@@ -185,8 +163,8 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _schtasks_encoding
-    suffix = service_suffix(home)
+    from gateway.windows_service import _startup_dir, _schtasks_encoding
+    suffix = service_suffix_for_home(home)
     name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
     result = _run(["schtasks.exe", "/Query", "/FO", "CSV", "/NH"], deadline, encoding=_schtasks_encoding())
     if result.returncode:
@@ -195,7 +173,7 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
     if any(len(row) != 3 for row in rows if row):
         raise RuntimeStartError("service_state_unknown")
     if any(row and row[0].lstrip("\\") == name for row in rows):
-        from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+        from gateway.runtime_service_identity import verify_windows_task
         definition = _run(["schtasks.exe", "/Query", "/TN", name, "/XML"], deadline, encoding=None)
         identity = _run(["whoami.exe", "/USER", "/FO", "CSV", "/NH"], deadline, encoding=_schtasks_encoding())
         if definition.returncode or identity.returncode:
@@ -205,24 +183,15 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_identity_unverified")
         _verify_binding(verify_windows_task, definition.stdout, home, *accounts[0])
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
-    # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login
-    # persistence only, with no start verb or identity to verify. Starting a stopped owner is the
-    # same detached direct spawn manual `hermes gateway start` uses beside it; the unmanaged path
-    # pins the explicit home and refuses a job-bound (no-breakaway) child, and the runtime lock
-    # plus host attach arbitrate against the entry firing again at the next login.
+    # Startup-folder entries are installed persistence too, but have no independent
+    # start supervisor. Do not bypass them with a job-bound unmanaged child.
+    if any(_exists(_startup_dir() / f"{name}.{ext}") for ext in ("cmd", "vbs")):
+        raise RuntimeStartError("startup_service_requires_login")
     return None
 
 
-def _no_supervisor(home: Path, deadline: float) -> None:
-    """Android/Termux has no service manager (main refuses `gateway install/start` there and says
-    "Run manually: hermes gateway"): an unmanaged detached start is its only owner. Python 3.13+
-    reports ``sys.platform == "android"``; older Termux interpreters report linux and reach the
-    systemd probe, which finds no unit and lands on the same unmanaged start."""
-
-
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
-    backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows,
-               "android": _no_supervisor}.get(sys.platform)
+    backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows}.get(sys.platform)
     if backend is None:
         raise RuntimeStartError("unsupported_supervisor_platform")
     try:

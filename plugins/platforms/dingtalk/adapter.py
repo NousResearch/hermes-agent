@@ -55,7 +55,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
-from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
+from plugins.platforms.dingtalk.inbound import _rich_list, collect_download_codes, extract_media, extract_text
 
 
 logger = logging.getLogger(__name__)
@@ -477,8 +477,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
                 self._session_webhooks.pop(next(iter(self._session_webhooks)))  # evict oldest (dict is non-empty here)
             self._session_webhooks[chat_id] = (session_webhook, getattr(message, "session_webhook_expired_time", 0) or 0)
-        await self._resolve_media_codes(message)  # download codes -> URLs so vision tools can use them
+        unresolved_media = await self._resolve_media_codes(message)
         text = self._extract_text(message)
+        if unresolved_media:
+            # Preserve the inbound signal without exposing download credentials as URLs.
+            text = "\n\n".join(filter(None, (text, "[Attachment unavailable: media download failed.]")))
         msg_type, media_urls, media_types = self._extract_media(message)
         if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
@@ -664,35 +667,69 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] _send_emotion %s failed", self.name, action, exc_info=True)
 
-    async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
-        """Resolve download codes in the message to real URLs (in place, in parallel)."""
-        token = await self._get_access_token()
-        if not token:
-            return
-        robot_code = getattr(message, "robot_code", None) or self._client_id
-        pairs = [(getattr(obj, key, None) if hasattr(obj, key) else obj.get(key), obj, key) for obj, key in collect_download_codes(message)]
-        tasks = [self._fetch_download_url(code, robot_code, token, obj, key) for code, obj, key in pairs if code]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+    _RICH_TEXT_CODE_CANDIDATES = ("downloadCode", "pictureDownloadCode", "download_code")
 
-    async def _fetch_download_url(self, code: str, robot_code: str, token: str, obj, key: str) -> None:
-        """Fetch the download URL for one code via the robot SDK and write it back to ``obj[key]``."""
+    async def _resolve_media_codes(self, message: "ChatbotMessage") -> int:
+        """Resolve media and count rich-text attachments whose codes all failed."""
+        rich_items = [item for item in _rich_list(message) or () if isinstance(item, dict)]
+        rich_ids = {id(item) for item in rich_items}
+        token = await self._get_access_token()
+        robot_code = getattr(message, "robot_code", None) or self._client_id
+        tasks = [self._resolve_rich_text_item(item, robot_code, token) for item in rich_items]
+        if token:
+            for obj, key in collect_download_codes(message):
+                if id(obj) in rich_ids:
+                    continue
+                code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
+                if code:
+                    tasks.append(self._fetch_download_url(code, robot_code, token, obj, key))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return sum(result is True for result in results)
+        return 0
+
+    async def _resolve_rich_text_item(self, item: dict, robot_code: str, token: Optional[str]) -> bool:
+        """Discard raw codes; report failed attachments separately from their URLs."""
+        candidates = [item.pop(key, None) for key in self._RICH_TEXT_CODE_CANDIDATES]
+        if item.get("downloadUrl"):
+            return False
+        if not token:
+            return any(candidates)
+        for code in candidates:
+            if not code:
+                continue
+            url = await self._resolve_single_code(code, robot_code, token)
+            if url:
+                item["downloadUrl"] = url
+                return False
+        return any(candidates) and not item.get("downloadUrl")
+
+    async def _resolve_single_code(self, code: str, robot_code: str, token: str) -> Optional[str]:
+        """Resolve a credential-like code without logging it or SDK exception bodies."""
         if not self._robot_sdk:
-            return logger.warning("[%s] Robot SDK not initialized, cannot resolve media code", self.name)
+            logger.warning("[%s] Robot SDK not initialized, cannot resolve media code", self.name)
+            return None
         try:
             response = await self._sdk_call(self._robot_sdk.robot_message_file_download_with_options_async,
                                             dingtalk_robot_models.RobotMessageFileDownloadRequest(download_code=code, robot_code=robot_code),
                                             dingtalk_robot_models.RobotMessageFileDownloadHeaders, token)
             body = response.body if response else None
             url = getattr(body, "download_url", None) if body else None
-            if not body:
-                logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
-            elif url and hasattr(obj, key):
-                setattr(obj, key, url)
-            elif url and isinstance(obj, dict):
-                obj[key] = url
+            if isinstance(url, str) and url:
+                return url
+            logger.warning("[%s] Failed to download media: response missing download_url", self.name)
         except Exception as e:
-            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            logger.error("[%s] Error resolving media code (%s)", self.name, type(e).__name__)
+        return None
+
+    async def _fetch_download_url(self, code: str, robot_code: str, token: str, obj, key: str) -> None:
+        """Preserve the single-code image/file write-back contract."""
+        url = await self._resolve_single_code(code, robot_code, token)
+        if url:
+            if hasattr(obj, key):
+                setattr(obj, key, url)
+            elif isinstance(obj, dict):
+                obj[key] = url
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:

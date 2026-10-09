@@ -1850,6 +1850,17 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+### Shared xAI cache routing (`xai_cache_scope`)
+
+xAI keeps prompt caches per routing key (`prompt_cache_key` / `x-grok-conv-id`). By default Hermes derives that key per session, so the first call of every new session re-sends the whole system prompt and tool schemas uncached. Setting a profile-wide key lets new sessions read that shared prefix from xAI's cache:
+
+```yaml
+agent:
+  xai_cache_scope: ""   # empty = per-session key (default). Any string = one key for every session of this profile
+```
+
+Only xAI Responses requests use it. The value is sent verbatim, so sessions whose prompts differ only near the end (date line, memory) still share the long stable prefix. Conversations that share the key keep their own cached history; it may take a call or two before a newly started conversation's own turns are cached.
+
 ### Answer length (`text_verbosity`)
 
 Responses-API models (OpenAI GPT-5 family and later, direct OpenAI, ChatGPT Codex and Azure routes) also accept a separate knob for how long the final natural-language answer is, independent of reasoning depth:

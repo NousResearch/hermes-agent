@@ -12,27 +12,39 @@ import shlex
 import tempfile
 import unicodedata
 
+from agent.file_safety import (
+    SHELL_RC_RELATIVE_PATHS,
+    SHELL_RC_ZSH_FILENAMES,
+    _guard_homes,
+    build_shell_rc_approval_paths,
+)
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# Shell word boundary used by exact-file targets. `#` is deliberately not
+# included: a glued `#` is part of the filename, while a comment has leading
+# whitespace and is already covered by `\s`.
+_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'\.env\b'
+    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
+    rf'\.env(?:\.[^/\s/"\'`]+)*{_WRITE_TARGET_BOUNDARY}'
 )
 # ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
 _HERMES_CONFIG_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
+    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
+    rf'config\.yaml{_WRITE_TARGET_BOUNDARY}'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
-_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
+_SECRET_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
+    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_SECRET_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
     rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
     r'|/etc/(?:shadow|passwd)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b)'
 )
@@ -49,6 +61,25 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
 # one whitespace character; keeping that means this fix changes no approval decision.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+_SHELL_RC_RELATIVE_PATTERN = "|".join(
+    re.escape(path) for path in SHELL_RC_RELATIVE_PATHS
+)
+_SHELL_RC_ZSH_PATTERN = "|".join(
+    re.escape(filename) for filename in SHELL_RC_ZSH_FILENAMES
+)
+_SHELL_RC_FILES = (
+    rf'(?:'
+    rf'(?:~|\$home|\$\{{home\}})/(?:{_SHELL_RC_RELATIVE_PATTERN})'
+    rf'|(?:\$zdotdir|\$\{{zdotdir\}})/(?:{_SHELL_RC_ZSH_PATTERN})'
+    rf'|(?:\$xdg_config_home|\$\{{xdg_config_home\}})/fish/config\.fish'
+    rf'|(?:\$bash_env|\$\{{bash_env\}})'
+    rf'|(?:\$env|\$\{{env\}})'
+    rf'){_WRITE_TARGET_BOUNDARY}'
+)
+_CREDENTIAL_FILES = (
+    r'(?:~|\$home|\$\{home\})/\.'
+    rf'(?:netrc|pgpass|npmrc|pypirc){_WRITE_TARGET_BOUNDARY}'
+)
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -62,10 +93,6 @@ _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PAT
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
-# `>`/`>>`/tee: the path is ALWAYS a write target regardless of what follows, so only require a
-# shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
-# `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
 # Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
@@ -418,6 +445,11 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir/ln create or plant into the same destinations without
+    # going through write_file (which now approval-gates shell rc) or
+    # cp/sed. `touch ~/.ssh/authorized_keys` / `mkdir ~/.ssh` /
+    # `ln -s evil ~/.bashrc` were unpaired theater (#85321).
+    (rf'\b(?:touch|mkdir|ln)\b.*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_WRITE_TARGET_BOUNDARY}', "create or link a file in a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -517,6 +549,35 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
+def _rewrite_resolved_shell_rc_paths(command: str) -> str:
+    """Fold relocated shell startup paths into the shared canonical forms."""
+    try:
+        paths: dict[str, str] = {}
+        for home in _guard_homes():
+            for path in build_shell_rc_approval_paths(home):
+                relative = os.path.relpath(path, home)
+                path_name = os.path.basename(path)
+                if relative in SHELL_RC_RELATIVE_PATHS:
+                    canonical = f"~/{relative}"
+                elif path_name in SHELL_RC_ZSH_FILENAMES:
+                    canonical = f"~/{path_name}"
+                elif path.endswith(os.path.join("fish", "config.fish")):
+                    canonical = "~/.config/fish/config.fish"
+                else:
+                    # Arbitrary BASH_ENV / ENV filenames use the same rc gate.
+                    canonical = "~/.bashrc"
+                paths.setdefault(path, canonical)
+    except Exception:
+        return command
+
+    for path in sorted(paths, key=lambda value: len(value), reverse=True):
+        candidates: set[str] = {path, path.replace(os.sep, "/")}
+        for candidate in candidates:
+            command = re.sub(re.escape(candidate) + _WRITE_TARGET_BOUNDARY,
+                             lambda match: paths[path], command)
+    return command
+
+
 # ---- Detection ----------------------------------------------------------------------------
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
@@ -531,6 +592,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # and C:\Users\alice\.bashrc. Resolved at detection time (not import time) so it tracks HOME/HERMES_HOME set
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
+    # Fold exact rc targets first: an environment-selected file can live
+    # below either home prefix and would otherwise lose its absolute spelling.
+    command = _rewrite_resolved_shell_rc_paths(command)
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).

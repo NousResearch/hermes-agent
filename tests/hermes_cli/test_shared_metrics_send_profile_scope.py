@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
 from hermes_cli.observability import relay_shared_metrics as mod
 from hermes_constants import (
     get_hermes_home,
@@ -37,6 +38,7 @@ def test_send_pass_rechecks_consent_in_routed_profile(monkeypatch, tmp_path):
     launch.mkdir()
     served.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("SHARED_METRICS_PROFILE_TEST_TOKEN", "launch-only")
 
     def config_for_active_profile():
         return {
@@ -57,7 +59,7 @@ def test_send_pass_rechecks_consent_in_routed_profile(monkeypatch, tmp_path):
     # This regression is about the async re-check, not SQLite consent-window bookkeeping.
     monkeypatch.setattr(mod, "_reconcile_store_consent", lambda *_args, **_kwargs: None)
 
-    observed: list[tuple[object, bool]] = []
+    observed: list[tuple[object, str | None, bool]] = []
     checked = threading.Event()
 
     class _FakeSender:
@@ -65,7 +67,10 @@ def test_send_pass_rechecks_consent_in_routed_profile(monkeypatch, tmp_path):
             self.consent_check = consent_check
 
         def send_pending(self):
-            observed.append((get_hermes_home(), self.consent_check()))
+            observed.append((
+                get_hermes_home(), get_secret("SHARED_METRICS_PROFILE_TEST_TOKEN"),
+                self.consent_check(),
+            ))
             checked.set()
 
     monkeypatch.setattr(
@@ -75,11 +80,15 @@ def test_send_pass_rechecks_consent_in_routed_profile(monkeypatch, tmp_path):
 
     runtime = _Runtime()
     token = set_hermes_home_override(served)
+    secret_token = set_secret_scope(
+        {"SHARED_METRICS_PROFILE_TEST_TOKEN": "served-only"}, profile_home=str(served)
+    )
     try:
         runtime._send_exported_packages()
     finally:
+        reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
     assert checked.wait(2.0), "the async send pass did not execute"
     runtime._join_send_thread(timeout=2.0)
-    assert observed == [(served, True)]
+    assert observed == [(served, "served-only", True)]

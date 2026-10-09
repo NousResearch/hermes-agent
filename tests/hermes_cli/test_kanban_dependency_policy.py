@@ -320,3 +320,21 @@ def test_archiving_completed_parent_regates_transitive_descendants(board):
     waits = [event for event in kb.list_events(board, descendant) if event.kind == "dependency_wait"]
     assert waits[-1].payload["parent"] == parent
     assert waits[-1].payload["source_status"] == "running"
+
+
+def test_archive_refuses_oversized_descendant_closure_without_partial_mutation(board, monkeypatch):
+    monkeypatch.setattr(kb, "ARCHIVE_DESCENDANT_LIMIT", 2)
+    parent = kb.create_task(board, title="parent", assignee="writer")
+    status(board, parent, "done")
+    first = kb.create_task(board, title="first", assignee="writer", parents=[parent])
+    status(board, first, "done")
+    second = kb.create_task(board, title="second", assignee="writer", parents=[first])
+    status(board, second, "done")
+    third = kb.create_task(board, title="third", assignee="writer", parents=[second])
+
+    with pytest.raises(ValueError, match="dependency closure exceeds"):
+        kb.archive_task(board, parent)
+    assert status(board, parent) == "done"
+    assert status(board, first) == "done"
+    assert status(board, second) == "done"
+    assert status(board, third) == "ready"

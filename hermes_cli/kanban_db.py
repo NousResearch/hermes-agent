@@ -117,6 +117,9 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+# Archive must remain a bounded board mutation; larger dependency graphs need an
+# explicit bulk workflow instead of monopolizing the single SQLite writer lock.
+ARCHIVE_DESCENDANT_LIMIT = 1000
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3792,12 +3795,18 @@ def _regate_children_after_parent_archive(conn: sqlite3.Connection, parent_id: s
         ") "
         "SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.worker_started_at "
         "FROM tasks t JOIN descendants d ON d.id = t.id "
-        "WHERE t.status IN ('done', 'ready', 'review', 'running')",
-        (parent_id,),
+        "LIMIT ?",
+        (parent_id, ARCHIVE_DESCENDANT_LIMIT + 1),
     ).fetchall()
+    if len(rows) > ARCHIVE_DESCENDANT_LIMIT:
+        raise ValueError(
+            f"archive dependency closure exceeds {ARCHIVE_DESCENDANT_LIMIT}; use a controlled bulk archive"
+        )
     for row in rows:
         child_id = row["id"]
         source_status = row["status"]
+        if source_status not in {"done", "ready", "review", "running"}:
+            continue
         conn.execute(
             "UPDATE tasks SET status = 'todo', claim_lock = NULL, claim_expires = NULL, "
             "worker_pid = NULL, worker_started_at = NULL WHERE id = ?",

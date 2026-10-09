@@ -545,26 +545,24 @@ class MemoryManager:
         if not result.observations:
             return
         try:
-            from hermes_cli import plugins
+            from agent.plugin_stream_hooks import (
+                _enqueue_plugin_observer_hook_with_payload_factory,
+            )
 
-            # The merged context can be large even when the observer payload is
-            # small. Resolve the real, lazily-discovered hook registry before
-            # doing any digest work; without a consumer this method must be a
-            # no-op after the observation-presence check.
-            if not plugins.has_hook("memory_prefetch"):
-                return
-            from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
+            def build_payload():
+                context_bytes = result.context.encode("utf-8")
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "task_id": task_id,
+                    "turn_id": turn_id,
+                    "observations": result.observations,
+                    "context_sha256": hashlib.sha256(context_bytes).hexdigest(),
+                    "context_byte_length": len(context_bytes),
+                }
 
-            context_bytes = result.context.encode("utf-8")
-            enqueue_plugin_observer_hook(
-                "memory_prefetch",
-                query=query,
-                session_id=session_id,
-                task_id=task_id,
-                turn_id=turn_id,
-                observations=result.observations,
-                context_sha256=hashlib.sha256(context_bytes).hexdigest(),
-                context_byte_length=len(context_bytes),
+            _enqueue_plugin_observer_hook_with_payload_factory(
+                "memory_prefetch", build_payload
             )
         except Exception:  # health: allow BLE001 -- optional observer dispatch must never break memory injection
             # Plugin hook dispatch is best-effort; memory injection must remain
@@ -593,18 +591,18 @@ class MemoryManager:
             return MemoryPrefetchResult()
         clean_query = _redact_for_provider(clean_query)
         parts = []
-        observations: List[MemoryObservation] = []
+        observations: list[MemoryObservation] = []
         observation_bytes = 0
         observation_budget_exhausted = False
         # Shared node budget spanning every candidate — malformed included —
         # inspected during this operation. Without it, each malformed payload
         # gets a fresh per-payload budget and can force a full traversal.
-        traversal_budget: List[int] = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
+        traversal_budget: list[int] = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
         # Shared candidate cap spanning every provider. Wrong-type or
         # invalid-metadata candidates fail before freeze and never spend node
         # budget, so this counter is what bounds pull/log work against an
         # unbounded or infinite malformed iterable.
-        inspected_budget: List[int] = [MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES]
+        inspected_budget: list[int] = [MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES]
         for provider in self._providers:
             try:
                 raw_result = self._prefetch_provider(

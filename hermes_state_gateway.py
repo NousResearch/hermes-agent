@@ -308,6 +308,32 @@ class SessionGatewayMixin:
                 )
         self._execute_write(_do)
 
+    def clear_poisoned_delegate_gateway_peer(self, session_id: str, session_key: str) -> bool:
+        """Remove an old gateway identity stamp from a proven internal delegate row.
+
+        This does not end, delete, or interrupt the child's execution. The immutable birth
+        source or delegation marker is checked in the same write transaction as the cleanup.
+        """
+        if not session_id or not session_key:
+            return False
+
+        def _do(conn):
+            changed = conn.execute(
+                f"""UPDATE sessions
+                    SET source = CASE
+                            WHEN created_source IN ('subagent', 'delegate') THEN created_source
+                            ELSE 'subagent' END,
+                        session_key = NULL, user_id = NULL, chat_id = NULL,
+                        chat_type = NULL, thread_id = NULL, display_name = NULL,
+                        origin_json = NULL
+                    WHERE id = ? AND session_key = ?
+                      AND NOT {_NOT_INTERNAL_DELEGATE_SQL.format(a='sessions')}""",
+                (session_id, session_key),
+            )
+            return changed.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
     def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``
         namespaces the index per sessions_dir so two stores never share routing state."""

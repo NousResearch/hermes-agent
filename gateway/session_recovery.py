@@ -38,6 +38,110 @@ def _origin_json(source) -> Optional[str]:
         return None
 
 
+def _is_delegate_execution_row(row: dict[str, Any]) -> bool:
+    """Child execution provenance survives the legacy mutable-source gateway stamp."""
+    if row.get("created_source") in ("subagent", "delegate") or row.get("source") in ("subagent", "delegate"):
+        return True
+    config = row.get("model_config")
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(config, dict) and bool(config.get("_delegate_from"))
+
+
+def _same_delegate_route_peer(store, row: dict[str, Any], entry, source, session_key: str) -> bool:
+    """Match the route's peer, respecting whether its key isolates the participant."""
+    if row.get("session_key") != session_key or row.get("source") != source.platform.value:
+        return False
+    if any(row.get(column) != getattr(source, column) for column in
+           ("chat_id", "chat_type", "thread_id")):
+        return False
+    # The key itself carries the participant only when build_session_key isolates it.
+    # Discord threads are shared by default; their next human sender may differ from
+    # the user_id last stamped onto the durable row.
+    thread = source.thread_id or (
+        source.prospective_thread_id if source.chat_type != "dm" else None
+    )
+    user_isolated = (
+        not source.chat_id if source.chat_type == "dm" else
+        bool(getattr(store.config, "group_sessions_per_user", True)) and
+        (not thread or bool(getattr(store.config, "thread_sessions_per_user", False)))
+    )
+    if user_isolated and row.get("user_id") != source.user_id:
+        return False
+    if not store._recovered_row_matches_source_scope(row, source):
+        return False
+    transport = entry.transport_profile
+    return not (transport and row.get("transport_profile") and
+                row["transport_profile"] != transport)
+
+
+def _delegate_owner_from_route_rows(
+    rows_by_id: dict[str, dict[str, Any]], child_id: str, current: dict[str, Any], same_peer,
+) -> DelegateRouteVerdict:
+    """Walk internal ancestors, then fence later owners and explicit user boundaries."""
+    try:
+        child_started = float(current["started_at"])
+    except (TypeError, ValueError, KeyError):
+        return DelegateRouteVerdict("invalid")
+    chain_ids = {child_id}
+    parent_id = current.get("parent_session_id")
+    owner = None
+    for _ in range(255):
+        if not parent_id or parent_id in chain_ids:
+            return DelegateRouteVerdict("invalid")
+        parent = rows_by_id.get(str(parent_id))
+        if parent is None or parent.get("_ancestry_depth") is None:
+            return DelegateRouteVerdict("invalid")
+        chain_ids.add(str(parent_id))
+        if not _is_delegate_execution_row(parent):
+            owner = parent
+            break
+        parent_id = parent.get("parent_session_id")
+    if owner is None or not same_peer(owner):
+        return DelegateRouteVerdict("invalid")
+
+    try:
+        owner_started = float(owner["started_at"])
+        if owner_started > child_started:
+            return DelegateRouteVerdict("invalid")
+        # The original owner's session_switch is the hijack's own stamp. A switch before
+        # this child existed is a genuine earlier boundary, not evidence for restoration.
+        if owner.get("end_reason") == "session_switch" and (
+            owner.get("ended_at") is None or float(owner["ended_at"]) < child_started
+        ):
+            return DelegateRouteVerdict("invalid")
+    except (TypeError, ValueError, KeyError):
+        return DelegateRouteVerdict("invalid")
+
+    from hermes_state_common import _BOUNDARY_END_REASONS
+
+    for row in rows_by_id.values():
+        row_id = str(row["id"])
+        in_chain = row_id in chain_ids
+        if not in_chain and not same_peer(row):
+            continue
+        if row_id != owner["id"] and not _is_delegate_execution_row(row):
+            try:
+                if row.get("ended_at") is None or float(row["started_at"]) > owner_started:
+                    return DelegateRouteVerdict("invalid")
+            except (TypeError, ValueError, KeyError):
+                return DelegateRouteVerdict("invalid")
+        if row_id == owner["id"] and row.get("end_reason") == "session_switch":
+            continue
+        if row.get("end_reason") in _BOUNDARY_END_REASONS:
+            if in_chain:
+                return DelegateRouteVerdict("invalid")
+            try:
+                if row.get("ended_at") is None or float(row["ended_at"]) >= child_started:
+                    return DelegateRouteVerdict("invalid")
+            except (TypeError, ValueError):
+                return DelegateRouteVerdict("invalid")
+    return DelegateRouteVerdict("recoverable", str(owner["id"]))
+
+
 class SessionRecoveryMixin:
     """SessionStore durable-row recovery and the SQLite side of routing transitions."""
 
@@ -59,6 +163,7 @@ class SessionRecoveryMixin:
             if self._generate_session_key(source) != session_key:
                 return DelegateRouteVerdict("invalid")
         except Exception:
+            logger.debug("Delegate route key verification failed for %s", session_key, exc_info=True)
             return DelegateRouteVerdict("invalid")
         reader = getattr(db, "_read_all", None)
         if not callable(reader):
@@ -80,7 +185,7 @@ class SessionRecoveryMixin:
                 (entry.session_id, session_key),
             )
         except Exception as exc:
-            logger.debug("Delegate route verdict could not read %s: %s", session_key, exc)
+            logger.debug("Delegate route verdict could not read %s: %s", session_key, exc, exc_info=True)
             return DelegateRouteVerdict("unverified")
 
         rows_by_id = {str(row["id"]): dict(row) for row in rows}
@@ -88,105 +193,14 @@ class SessionRecoveryMixin:
         if current is None:
             return DelegateRouteVerdict("unverified")
 
-        def is_delegate(row: dict[str, Any]) -> bool:
-            if row.get("created_source") in ("subagent", "delegate") or row.get("source") in ("subagent", "delegate"):
-                return True
-            config = row.get("model_config")
-            if isinstance(config, str):
-                try:
-                    config = json.loads(config)
-                except (TypeError, ValueError):
-                    return False
-            return isinstance(config, dict) and bool(config.get("_delegate_from"))
-
         def same_peer(row: dict[str, Any]) -> bool:
-            if row.get("session_key") != session_key or row.get("source") != source.platform.value:
-                return False
-            if any(row.get(column) != getattr(source, column) for column in
-                   ("chat_id", "chat_type", "thread_id")):
-                return False
-            # The key itself carries the participant only when build_session_key isolates it.
-            # Discord threads are shared by default; their next human sender may differ from
-            # the user_id last stamped onto the durable row.
-            thread = source.thread_id or (
-                source.prospective_thread_id if source.chat_type != "dm" else None
-            )
-            user_isolated = (
-                not source.chat_id if source.chat_type == "dm" else
-                bool(getattr(self.config, "group_sessions_per_user", True)) and
-                (not thread or bool(getattr(self.config, "thread_sessions_per_user", False)))
-            )
-            if user_isolated and row.get("user_id") != source.user_id:
-                return False
-            if not self._recovered_row_matches_source_scope(row, source):
-                return False
-            transport = entry.transport_profile
-            return not (transport and row.get("transport_profile") and
-                        row["transport_profile"] != transport)
+            return _same_delegate_route_peer(self, row, entry, source, session_key)
 
         if not same_peer(current):
             return DelegateRouteVerdict("invalid")
-        if not is_delegate(current):
+        if not _is_delegate_execution_row(current):
             return DelegateRouteVerdict("not_delegate")
-
-        try:
-            child_started = float(current["started_at"])
-        except (TypeError, ValueError, KeyError):
-            return DelegateRouteVerdict("invalid")
-        chain_ids = {entry.session_id}
-        parent_id = current.get("parent_session_id")
-        owner = None
-        for _ in range(255):
-            if not parent_id or parent_id in chain_ids:
-                return DelegateRouteVerdict("invalid")
-            parent = rows_by_id.get(str(parent_id))
-            if parent is None or parent.get("_ancestry_depth") is None:
-                return DelegateRouteVerdict("invalid")
-            chain_ids.add(str(parent_id))
-            if not is_delegate(parent):
-                owner = parent
-                break
-            parent_id = parent.get("parent_session_id")
-        if owner is None or not same_peer(owner):
-            return DelegateRouteVerdict("invalid")
-
-        try:
-            owner_started = float(owner["started_at"])
-            if owner_started > child_started:
-                return DelegateRouteVerdict("invalid")
-            # The original owner's session_switch is the hijack's own stamp. A switch before
-            # this child existed is a genuine earlier boundary, not evidence for restoration.
-            if owner.get("end_reason") == "session_switch" and (
-                owner.get("ended_at") is None or float(owner["ended_at"]) < child_started
-            ):
-                return DelegateRouteVerdict("invalid")
-        except (TypeError, ValueError, KeyError):
-            return DelegateRouteVerdict("invalid")
-
-        from hermes_state_common import _BOUNDARY_END_REASONS
-
-        for row in rows_by_id.values():
-            row_id = str(row["id"])
-            in_chain = row_id in chain_ids
-            if not in_chain and not same_peer(row):
-                continue
-            if row_id != owner["id"] and not is_delegate(row):
-                try:
-                    if row.get("ended_at") is None or float(row["started_at"]) > owner_started:
-                        return DelegateRouteVerdict("invalid")
-                except (TypeError, ValueError, KeyError):
-                    return DelegateRouteVerdict("invalid")
-            if row_id == owner["id"] and row.get("end_reason") == "session_switch":
-                continue
-            if row.get("end_reason") in _BOUNDARY_END_REASONS:
-                if in_chain:
-                    return DelegateRouteVerdict("invalid")
-                try:
-                    if row.get("ended_at") is None or float(row["ended_at"]) >= child_started:
-                        return DelegateRouteVerdict("invalid")
-                except (TypeError, ValueError):
-                    return DelegateRouteVerdict("invalid")
-        return DelegateRouteVerdict("recoverable", str(owner["id"]))
+        return _delegate_owner_from_route_rows(rows_by_id, entry.session_id, current, same_peer)
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Profile namespace for session keys: None when multiplexing is off (legacy

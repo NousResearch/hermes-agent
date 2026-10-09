@@ -85,7 +85,7 @@ class GatewayNotificationRouteGuardMixin:
             logger.debug("Delegate route owner lookup failed for %s", entry.session_id, exc_info=True)
             return False
         if (
-            owner is None or is_internal_subagent_row(owner)
+            owner is None or owner.get("ended_at") or is_internal_subagent_row(owner)
             or owner.get("session_key") != entry.session_key
         ):
             return False
@@ -93,9 +93,19 @@ class GatewayNotificationRouteGuardMixin:
         row = pinned_row
         for _ in range(64):
             child_id = str(row.get("id") or "")
-            if not child_id or child_id in seen or not is_internal_subagent_row(row):
+            if not child_id or child_id in seen:
                 return False
             seen.add(child_id)
+            if not is_internal_subagent_row(row):
+                # A coordinator can rotate through compression after spawning this child.
+                # Its old id is no longer the route, but a proven compression tip still is.
+                if row.get("session_key") != entry.session_key or row.get("end_reason") != "compression":
+                    return False
+                try:
+                    return await session_db.get_compression_tip(child_id) == entry.session_id
+                except Exception:
+                    logger.debug("Delegate owner compression lookup failed for %s", child_id, exc_info=True)
+                    return False
             parent_id = str(row.get("parent_session_id") or "")
             if not parent_id or parent_id in seen:
                 return False

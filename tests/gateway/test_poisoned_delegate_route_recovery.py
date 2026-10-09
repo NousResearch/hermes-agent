@@ -60,7 +60,14 @@ def _delegate(db, parent_id, peer, *, session_id="delegate", started_at=200.0,
     )
     _stamp(db, session_id, started_at=started_at)
     if stamp_peer:
-        db.record_gateway_session_peer(session_id, **peer)
+        # Historical gateway writer stamped the child before the provenance guard existed.
+        # Bypass today's guarded writer only to recreate that persisted legacy state.
+        _stamp(
+            db, session_id, source=peer["source"], session_key=peer["session_key"],
+            user_id=peer["user_id"], chat_id=peer["chat_id"],
+            chat_type=peer["chat_type"], thread_id=peer["thread_id"],
+            origin_json=peer["origin_json"],
+        )
     return session_id
 
 

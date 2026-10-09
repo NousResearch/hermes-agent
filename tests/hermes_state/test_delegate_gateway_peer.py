@@ -53,3 +53,25 @@ def test_peer_recovery_excludes_an_already_promoted_child(tmp_path):
     assert recovered is not None and recovered["id"] == "parent"
     by_origin = db.find_session_by_origin(platform="discord", chat_id="one")
     assert by_origin == "parent"
+
+
+def test_legacy_child_peer_cleanup_restores_execution_identity_only(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    key = "agent:main:discord:thread:one"
+    db.create_session("parent", source="discord", session_key=key, chat_id="one")
+    db.create_session("child", source="subagent", parent_session_id="parent")
+    db._write_sql(
+        "UPDATE sessions SET source = ?, session_key = ?, user_id = ?, chat_id = ?, "
+        "chat_type = ?, thread_id = ?, origin_json = ? WHERE id = ?",
+        ("discord", key, "sender", "one", "thread", "one", "{}", "child"),
+    )
+
+    assert db.clear_poisoned_delegate_gateway_peer("child", key)
+
+    child = db.get_session("child")
+    assert child["source"] == child["created_source"] == "subagent"
+    assert all(child[field] is None for field in
+               ("session_key", "user_id", "chat_id", "chat_type", "thread_id", "origin_json"))
+    assert child["ended_at"] is None
+    assert db.get_session("parent")["session_key"] == key
+    assert not db.clear_poisoned_delegate_gateway_peer("parent", key)

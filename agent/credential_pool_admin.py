@@ -46,10 +46,10 @@ class CredentialPoolAdminMixin:
             ]
             if stale:
                 stale_ids = {e.id for e in stale}
-                self._entries = [
+                self._replace_all_entries(
                     _cleared_status_copy(e) if e.id in stale_ids else e
                     for e in self._entries
-                ]
+                )
                 self._persist(status_cleared_ids=list(stale_ids))
             return len(stale)
 
@@ -59,8 +59,15 @@ class CredentialPoolAdminMixin:
         with self._lock:
             if index < 1 or index > len(self._entries):
                 return None
-            removed = self._entries.pop(index - 1)
-            self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
+            removed = self._entries[index - 1]
+            remaining = [
+                entry for offset, entry in enumerate(self._entries)
+                if offset != index - 1
+            ]
+            self._replace_all_entries(
+                replace(entry, priority=priority)
+                for priority, entry in enumerate(remaining)
+            )
             persist_pool_entries(
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
@@ -83,7 +90,7 @@ class CredentialPoolAdminMixin:
             entries = [replace(e, priority=p) for p, e in enumerate(others)]
             # Apply load-time ordering now so the reported position survives reload.
             _normalize_pool_priorities(self.provider, entries)
-            self._entries = sorted(entries, key=lambda e: e.priority)
+            self._replace_all_entries(sorted(entries, key=lambda e: e.priority))
             self._persist()
             return self._find(lambda e: e.id == credential_id)
 
@@ -118,17 +125,19 @@ class CredentialPoolAdminMixin:
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
-            self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
+            entries = [*self._entries, entry]
             if borrowed_ids:
                 # ``hermes -p <profile> auth add <single-use provider>``: the
                 # profile claims its OWN credential. Persist only profile-owned
                 # rows — copying the borrowed root grant alongside would fork
                 # its single-use refresh token (#100339). Once the profile owns
                 # rows, the root fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                entries = [e for e in entries if e.id not in borrowed_ids]
+                self._replace_all_entries(entries)
                 write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
                 self._borrowed_root_ids = set()
             else:
+                self._replace_all_entries(entries)
                 self._persist()
             return entry

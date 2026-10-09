@@ -989,6 +989,9 @@ class CredentialPool(
         # Owner-local ABA guard. Every in-memory row replacement advances the
         # generation even when the resulting value equals an earlier snapshot.
         self._entry_generations: Dict[str, int] = {entry.id: 0 for entry in self._entries}
+        # Pool-wide epoch covers structural mutations (remove/add/reorder/bulk
+        # replacement) that cannot be represented by one row generation.
+        self._mutation_epoch = 0
         self._current_id: Optional[str] = None
         # Ids of rows read via the global-root fallback (single-use OAuth
         # providers only); set by load_pool(), consumed by add_entry().
@@ -1100,6 +1103,17 @@ class CredentialPool(
 
     # ---- mutation primitives (self-locking) --------------------------------
 
+    def _advance_mutation_epoch(self) -> int:
+        epoch = int(getattr(self, "_mutation_epoch", 0)) + 1
+        self._mutation_epoch = epoch
+        return epoch
+
+    def _replace_all_entries(self, entries: Iterable[PooledCredential]) -> None:
+        """Publish one structural pool mutation and advance the owner-local ABA epoch."""
+        with self._lock:
+            self._entries = list(entries)
+            self._advance_mutation_epoch()
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order.
 
@@ -1115,6 +1129,7 @@ class CredentialPool(
                     if generations is None:  # compatibility for narrow __new__-constructed test/plugin pools
                         generations = self._entry_generations = {}
                     generations[entry.id] = generations.get(entry.id, 0) + 1
+                    self._advance_mutation_epoch()
                     return
 
     def _persist(
@@ -1149,7 +1164,9 @@ class CredentialPool(
         """
         with self._lock:
             removed_ids = [item.id for item in self._entries if item.source in sources]
-            self._entries = [item for item in self._entries if item.source not in sources]
+            self._replace_all_entries(
+                item for item in self._entries if item.source not in sources
+            )
             if self._current_id == entry.id:
                 self._current_id = None
             self._persist(removed_ids=removed_ids)
@@ -2084,7 +2101,7 @@ class CredentialPool(
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
-            self._entries = [e for e in self._entries if e.id not in pruned_ids]
+            self._replace_all_entries(e for e in self._entries if e.id not in pruned_ids)
         if cleared_any:
             self._persist(removed_ids=entries_to_prune)
         return available, pending_refresh
@@ -2130,7 +2147,9 @@ class CredentialPool(
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
-            self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
+            self._replace_all_entries(
+                replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)
+            )
             self._persist()
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id

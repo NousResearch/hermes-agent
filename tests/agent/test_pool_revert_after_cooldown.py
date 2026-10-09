@@ -449,6 +449,31 @@ def test_reclaim_refresh_detects_equal_value_aba(tmp_path, monkeypatch):
     assert surviving.label == "preferred"
 
 
+def test_reclaim_refresh_detects_public_admin_move_aba(tmp_path, monkeypatch):
+    """A move-away/back through the supported admin API invalidates a prepared reclaim."""
+    import agent.credential_pool_reclaim as reclaim_mod
+
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    before = [entry.to_dict() for entry in pool.entries()]
+    ticket = pool.prepare_reclaim("pref0000", model="gpt-5.4")
+    assert ticket is not None
+
+    assert pool.move_entry("pref0000", 1) is not None
+    assert pool.move_entry("pref0000", 0) is not None
+    assert [entry.to_dict() for entry in pool.entries()] == before
+    assert reclaim_mod._durable_row(
+        pool, "pref0000", ticket._store_path,
+    ) == ticket._durable_basis
+
+    with pytest.raises(RuntimeError, match="stale credential reclaim ticket"):
+        ticket.commit()
+    ticket.abort()
+    surviving = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    assert surviving.last_status == cp.STATUS_EXHAUSTED
+
+
 def test_reclaim_swap_derives_anthropic_oauth_from_candidate_route(tmp_path, monkeypatch):
     """A route change must not classify a third-party endpoint using the old native base URL."""
     pool = _expired_reclaim_pool(tmp_path, monkeypatch, provider="glm")
@@ -600,6 +625,83 @@ def test_reclaim_peer_token_adoption_persists_pool_once(tmp_path, monkeypatch):
     assert committed.refresh_token == "peer-refresh"
     assert committed.last_status == cp.STATUS_OK
     assert writes == 1
+
+
+def test_reclaim_terminal_manual_refresh_publishes_dead(tmp_path, monkeypatch):
+    """A terminal manual grant verdict must reach the real live and durable owner row."""
+    from agent import anthropic_credentials as ac
+    import hermes_cli.auth as auth_mod
+
+    pool = _expired_reclaim_pool(tmp_path, monkeypatch, provider="anthropic", oauth=True)
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
+    terminal = ac.AnthropicOAuthError(
+        400, "invalid_grant", "fixture refresh token revoked", what="refresh",
+    )
+
+    def _terminal_refresh(*_args, **_kwargs):
+        raise terminal
+
+    monkeypatch.setattr(ac, "refresh_anthropic_oauth_pure", _terminal_refresh)
+    ticket = pool.prepare_reclaim("pref0000", model="claude-opus-5")
+    assert ticket is not None
+
+    with pytest.raises(RuntimeError):
+        ticket.commit()
+
+    live = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    assert live.last_status == cp.STATUS_DEAD
+    assert live.last_error_reason == "invalid_grant"
+    durable = next(
+        row for row in auth_mod.read_credential_pool("anthropic")
+        if row["id"] == "pref0000"
+    )
+    assert durable["last_status"] == cp.STATUS_DEAD
+    assert durable["last_error_reason"] == "invalid_grant"
+
+
+def test_reclaim_terminal_singleton_refresh_quarantines_real_owner(tmp_path, monkeypatch):
+    """A terminal singleton grant is removed from the real pool and its owning store."""
+    import hermes_cli.auth as auth_mod
+
+    pool = _expired_reclaim_pool(
+        tmp_path, monkeypatch, provider="openai-codex", oauth=True,
+    )
+    preferred = next(entry for entry in pool.entries() if entry.id == "pref0000")
+    singleton = replace(
+        preferred,
+        source="device_code",
+        access_token="terminal-access",
+        refresh_token="terminal-refresh",
+    )
+    pool._replace_entry(preferred, singleton)
+    pool._persist()
+    store = auth_mod._load_auth_store()
+    store.setdefault("providers", {})["openai-codex"] = {
+        "tokens": {
+            "access_token": "terminal-access",
+            "refresh_token": "terminal-refresh",
+        },
+    }
+    auth_mod._save_auth_store(store)
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _entry: True)
+
+    def _terminal_refresh(*_args, **_kwargs):
+        raise RuntimeError("invalid_grant fixture")
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh)
+    monkeypatch.setattr(
+        auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda _exc: True,
+    )
+    ticket = pool.prepare_reclaim("pref0000", model="gpt-5.4")
+    assert ticket is not None
+
+    with pytest.raises(RuntimeError):
+        ticket.commit()
+
+    assert [entry.id for entry in pool.entries()] == ["fall0000"]
+    assert [row["id"] for row in auth_mod.read_credential_pool("openai-codex")] == [
+        "fall0000",
+    ]
 
 
 def test_reclaim_abort_does_not_overwrite_newer_cooldown(tmp_path, monkeypatch):

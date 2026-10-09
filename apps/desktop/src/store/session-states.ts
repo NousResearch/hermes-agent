@@ -55,7 +55,7 @@ import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $projectTree } from './project-tree'
-import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
+import { $providerWaitSessions, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $connection,
@@ -934,28 +934,44 @@ export function dropSessionState(runtimeId: string) {
  *  computed working / attention sets drain to empty alongside the session list.
  *  Also disarms every watchdog timer and drops all settle-grace entries: a
  *  wiped gateway's sessions must not fire stale clears or linger in the
- *  sidebar merge keep-set after the switch. */
-export function clearAllSessionStates() {
-  for (const timer of sessionWatchdogTimers.values()) {
-    clearTimeout(timer)
+ *  sidebar merge keep-set after the switch. `survivors` keeps those runtimes'
+ *  state whole — watchdog, silence check, provider wait, event-source scope. */
+export function clearAllSessionStates(survivors: ReadonlySet<string> = new Set()) {
+  const drops = (runtimeId: string) => !survivors.has(runtimeId)
+
+  const dropFrom = <V>(byRuntimeId: Map<string, V>, release?: (value: V) => void) => {
+    for (const [runtimeId, value] of [...byRuntimeId]) {
+      if (drops(runtimeId)) {
+        release?.(value)
+        byRuntimeId.delete(runtimeId)
+      }
+    }
   }
 
-  sessionWatchdogTimers.clear()
-
-  for (const timer of sessionEventSilenceTimers.values()) {
-    clearTimeout(timer)
-  }
-
-  sessionEventSilenceTimers.clear()
-  silentTurnChecks.clear()
+  dropFrom(sessionWatchdogTimers, clearTimeout)
+  dropFrom(sessionEventSilenceTimers, clearTimeout)
+  dropFrom(silentTurnChecks)
   settledExpiry.clear()
-  unconfirmedReconnectSettles.clear()
-  clearAllProviderWaits()
-  sessionScopeByRuntimeId.clear()
-  sessionOwnerByRuntimeId.clear()
+
+  for (const [storedId, runtimeId] of [...unconfirmedReconnectSettles]) {
+    if (drops(runtimeId)) {
+      unconfirmedReconnectSettles.delete(storedId)
+    }
+  }
+
+  Object.keys($providerWaitSessions.get())
+    .filter(drops)
+    .forEach(runtimeId => clearSessionProviderWait(runtimeId))
+  dropFrom(sessionScopeByRuntimeId)
+  dropFrom(sessionOwnerByRuntimeId)
+  // Survivors are bound to stored ids, so none can own a pending preview tab.
   forgetPendingRuntimeTabs()
-  $stalledSessionIds.set([])
-  $sessionStates.set({})
+
+  const kept = Object.fromEntries(Object.entries($sessionStates.get()).filter(([runtimeId]) => !drops(runtimeId)))
+  const keptStoredIds = new Set(Object.values(kept).map(state => state.storedSessionId))
+
+  $stalledSessionIds.set($stalledSessionIds.get().filter(storedId => keptStoredIds.has(storedId)))
+  $sessionStates.set(kept)
 }
 
 /** Downgrade cached busy/awaiting states after a gateway reconnect.

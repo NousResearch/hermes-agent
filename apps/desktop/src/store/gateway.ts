@@ -635,6 +635,12 @@ export function liveSecondaryConnectionIds(): Set<string> {
   return live
 }
 
+/** Whether `scope` (a `registryBackendScopeKey`) is a pooled registry route:
+ *  one a connection switch leaves open for as long as live work claims it. */
+export function isPooledRegistryRoute(scope: string): boolean {
+  return Boolean(g.secondaries.get(scope)?.connectionId)
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect

@@ -9,12 +9,25 @@ from typing import Optional
 from hermes_cli import kanban_db as kb
 
 
+def _board_is_home_local() -> bool:
+    """True when the board DB sits under this home's root, i.e. no other home shares it."""
+    from hermes_constants import get_default_hermes_root
+
+    try:
+        kb.kanban_db_path().resolve().relative_to(get_default_hermes_root().resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def create_assignee_warning(assignee: Optional[str]) -> tuple[Optional[str], list[str]]:
     """Return a triage reason and available profiles when an assignee is unknown.
 
-    An empty inventory cannot establish that a profile is missing.
+    An empty inventory cannot establish that a profile is missing, and neither can this home's
+    inventory when the board lives outside it: another home that mounts the same board may own
+    the profile, and its dispatcher (``profile_exists`` there) will claim the card.
     """
-    if not assignee:
+    if not assignee or not _board_is_home_local():
         return None, []
     try:
         profiles = kb.list_profiles_on_disk(require_complete=True)

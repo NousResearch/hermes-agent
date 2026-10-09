@@ -4292,10 +4292,11 @@ def read_worker_log(
 # --- Assignee enumeration (known profiles + per-profile board stats) ---
 
 def list_profiles_on_disk(*, require_complete: bool = False) -> list[str]:
-    """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths directly (not via
-    ``hermes_cli.profiles``). ``require_complete`` raises OSError instead of returning a partial list."""
+    """Live named profiles plus the implicit ``default``; the same ``named_profile_is_live`` predicate
+    the dispatcher's ``profile_exists`` uses (identity markers, no tombstone). ``require_complete``
+    raises OSError instead of returning a partial list."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import get_default_hermes_root, named_profile_is_live
         default_root = get_default_hermes_root()
         profiles_dir = default_root / "profiles"
     except Exception:
@@ -4304,7 +4305,7 @@ def list_profiles_on_disk(*, require_complete: bool = False) -> list[str]:
     names: set[str] = {"default"} if default_root.exists() else set()
     if profiles_dir.is_dir():
         try:
-            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())
+            names.update(e.name for e in profiles_dir.iterdir() if named_profile_is_live(e))
         except OSError:
             if require_complete:
                 raise

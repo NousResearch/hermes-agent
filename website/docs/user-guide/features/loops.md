@@ -85,7 +85,7 @@ Examples:
 
 Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
-In the desktop app and dashboard chat, the backend keeps firing an active loop after you close the window or the app disconnects: a session with an active `/loop` (or `/heartbeat`) is exempt from the disconnected-session reaper, so the wakeups and their results are waiting when you reopen it. The exemption ends when the loop stops, pauses, or reaches its tick budget, and the session is then collected normally. The backend process itself must stay running — a Desktop-spawned local backend exits with the app, so for unattended loops run the session on a long-lived backend (a remote `hermes serve`, or the dashboard).
+In the desktop app and dashboard chat, the backend keeps firing an active loop after you close the window or the app disconnects: a session with an active `/loop` (or `/heartbeat`) is exempt from the disconnected-session reaper, so the wakeups and their results are waiting when you reopen it. The exemption ends when the loop stops, pauses, or reaches its tick budget, and the session is then collected normally. The backend process itself must keep running: if it exits with the app, nothing fires until it is back. For unattended loops, run the session on a long-lived backend (a remote `hermes serve`, or the dashboard).
 
 ## Mixing with `/goal`
 

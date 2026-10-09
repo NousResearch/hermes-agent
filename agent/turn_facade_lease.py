@@ -334,7 +334,7 @@ def admit_durable_turn_lease(
     def _on_wait(elapsed: float) -> None:
         nonlocal reload_needed, announced
         reload_needed = announced = True
-        agent._emit_status(
+        agent._emit_diagnostic_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
             if elapsed < 1.0 else
@@ -372,7 +372,7 @@ def admit_durable_turn_lease(
         # raising ends the turn.
         if reload_needed and durable is not False:
             if announced:
-                agent._emit_status("Session is free; loading the latest transcript...")
+                agent._emit_diagnostic_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
             latest_session_id = db.resolve_resume_session_id(session_id)

@@ -259,11 +259,11 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
     Regression for a live 2026-09-17 hijack: a background process spawned inside a
     delegated child pinned its completion to the CHILD's session id, and the pin became
     the channel's route — ``switch_session`` then ended the chat's real session and
-    re-stamped the child row as the channel's. The guard is fail-safe: the completion is
-    delivered into the chat's CURRENT session instead of re-pointing the route.
+    re-stamped the child row as the channel's. A verified child reports to its
+    coordinator; an unrelated pin is dropped.
 
-    Guarded platforms only (Discord today), so the last two tests pin the boundary:
-    an ordinary pin still rebinds on Discord, and an unguarded platform is untouched.
+    A verified delegate may report to its coordinator on any platform. Other rejected
+    pins are dropped, because their output does not belong to the current chat.
     """
 
     ROUTE_KEY = "agent:main:discord:group:chan1"
@@ -314,24 +314,28 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "row",
+        "row,retarget",
         [
-            pytest.param({"source": "subagent"}, id="subagent-source"),
-            pytest.param({"model_config": {"_delegate_from": "sess_chat"}}, id="delegate-from-marker"),
-            pytest.param({"parent_session_id": "sess_chat"}, id="spawned-by-the-route-session"),
-            pytest.param({"session_key": "agent:main:discord:dm:elsewhere"}, id="foreign-session-key"),
+            pytest.param({"source": "subagent", "parent_session_id": "sess_chat"}, True, id="subagent-source"),
+            pytest.param({"model_config": {"_delegate_from": "sess_chat"}, "parent_session_id": "sess_chat"}, True, id="delegate-from-marker"),
+            pytest.param({"parent_session_id": "sess_chat"}, False, id="unverified-parent"),
+            pytest.param({"session_key": "agent:main:discord:dm:elsewhere"}, False, id="foreign-session-key"),
         ],
     )
-    async def test_pinned_row_that_cannot_own_the_route_is_rejected(self, row):
+    async def test_pinned_row_that_cannot_own_the_route_is_rejected(self, row, retarget):
         current = self._discord_entry("sess_chat")
         # The row is otherwise a perfectly healthy pin: live, and keyed to this route.
         pinned_row = {"id": "sess_child", "ended_at": None, "session_key": self.ROUTE_KEY, **row}
-        runner = self._make_runner({"sess_child": pinned_row})
+        runner = self._make_runner({
+            "sess_child": pinned_row,
+            "sess_chat": {"id": "sess_chat", "source": "discord", "session_key": self.ROUTE_KEY},
+        })
+        runner.session_store.lookup_by_session_key.return_value = current
 
         resolved = await runner._resolve_async_delegation_session(current, "sess_child")
 
         # Delivered into the chat's current session; the route is never re-pointed.
-        assert resolved is current
+        assert resolved is (current if retarget else None)
         getattr(runner.session_store, "switch_session").assert_not_called()
 
     @pytest.mark.asyncio
@@ -352,8 +356,8 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
         )
 
     @pytest.mark.asyncio
-    async def test_unguarded_platform_keeps_todays_rebind(self):
-        """Discord-only by decision: another platform's pin behaves exactly as before."""
+    async def test_delegate_provenance_is_guarded_on_other_platforms(self):
+        """A delegate execution row cannot own a chat route on any messaging platform."""
         current = self._telegram_entry("sess_chat")
         pinned = self._telegram_entry("sess_child")
         runner = self._make_runner(
@@ -363,13 +367,28 @@ class TestRouteGuardRejectsAPinnedRowThatCannotOwnTheRoute:
                     "ended_at": None,
                     "source": "subagent",
                     "session_key": current.session_key,
-                }
+                    "parent_session_id": "sess_chat",
+                },
+                "sess_chat": {"id": "sess_chat", "source": "telegram", "session_key": current.session_key},
             },
             switched_entry=pinned,
         )
+        runner.session_store.lookup_by_session_key.return_value = current
 
         resolved = await runner._resolve_async_delegation_session(current, "sess_child")
 
-        assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once()
+        assert resolved is current
+        getattr(runner.session_store, "switch_session").assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_foreign_delegate_output_is_not_disclosed_to_this_chat(self):
+        current = self._discord_entry("sess_chat")
+        runner = self._make_runner({
+            "sess_child": {"id": "sess_child", "source": "subagent", "parent_session_id": "other_chat"},
+            "sess_chat": {"id": "sess_chat", "source": "discord", "session_key": self.ROUTE_KEY},
+            "other_chat": {"id": "other_chat", "source": "discord", "session_key": "agent:main:discord:dm:elsewhere"},
+        })
+        runner.session_store.lookup_by_session_key.return_value = current
+
+        assert await runner._resolve_async_delegation_session(current, "sess_child") is None
+        runner.session_store.switch_session.assert_not_called()

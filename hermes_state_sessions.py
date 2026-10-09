@@ -17,7 +17,7 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _NOT_INTERNAL_DELEGATE_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
@@ -488,6 +488,7 @@ class SessionSessionsMixin:
         query = """
             SELECT id, user_id, started_at FROM sessions
             WHERE LOWER(source) = LOWER(?)
+              AND """ + _NOT_INTERNAL_DELEGATE_SQL.format(a="sessions") + """
               AND session_key IS NOT NULL
               AND chat_id = ?
               AND ended_at IS NULL

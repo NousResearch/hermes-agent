@@ -42,6 +42,8 @@
   "devDependencies": {
     "@babel/core": "8.0.1",
     "@rolldown/plugin-babel": "0.2.3",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
     "@types/babel__core": "7.20.5",
     "@types/node": "22.20.1",
     "@types/qrcode": "1.5.6",
@@ -50,6 +52,7 @@
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint-plugin-react-refresh": "0.5.3",
+    "jsdom": "29.1.1",
     "three": "0.180.0",
     "typescript": "6.0.3",
     "vite": "8.2.0",

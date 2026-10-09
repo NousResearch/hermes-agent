@@ -751,7 +751,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return False
         return not bool(getattr(self, "_fatal_error_retryable", True))
 
-    def _replacement_telegram_adapter(self) -> Optional[TelegramAdapter]:
+    def _replacement_telegram_adapter(self) -> "Optional[TelegramAdapter]":
         """Live adapter if the reconnect watcher replaced us in ``runner.adapters`` (an in-flight
         ``send()`` still holds the old instance whose ``_bot`` stays None)."""
         runner = getattr(self, "gateway_runner", None)

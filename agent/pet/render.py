@@ -91,7 +91,7 @@ def _raw_frames(sheet_path: str, state_value: str, frame_w: int, frame_h: int, f
         top = min(state_row_index(state_value, rows) * frame_h, max(0, sheet.height - frame_h))
         crops = (sheet.crop((i * frame_w, top, (i + 1) * frame_w, top + frame_h)) for i in range(min(frames_per_state, cols)))
         return tuple(takewhile(lambda f: not _frame_is_blank(f), crops))
-    except Exception as exc:  # noqa: BLE001 - cosmetic feature, never fatal
+    except Exception as exc:
         logger.debug("pet frame decode failed (%s, %s): %s", sheet_path, state_value, exc)
         return ()
 
@@ -246,7 +246,7 @@ def _downscale_cells(frame, *, target_cols: int) -> list[list[Cell]]:
     from PIL import Image
 
     target_cols = max(4, target_cols)
-    target_rows = max(2, int(round(target_cols * (frame.height / max(1, frame.width)) * 0.5)) * 2)
+    target_rows = max(2, round(target_cols * (frame.height / max(1, frame.width)) * 0.5) * 2)
     px = frame.resize((target_cols, target_rows), Image.LANCZOS).convert("RGBA").load()
     return [
         [(px[x, y], px[x, y + 1] if y + 1 < target_rows else (0, 0, 0, 0)) for x in range(target_cols)]
@@ -326,7 +326,7 @@ class PetRenderer:
             if self.mode in _ENCODERS:
                 return _ENCODERS[self.mode](frame)
             return _encode_unicode(frame, target_cols=self.unicode_cols)
-        except Exception as exc:  # noqa: BLE001 - degrade silently
+        except Exception as exc:
             logger.debug("pet frame encode failed (mode=%s): %s", self.mode, exc)
             return ""
 

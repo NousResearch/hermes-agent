@@ -9,7 +9,7 @@ from hermes_cli.toolset_scope import toolset_allowed_for_platform
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
 
 
-def parse_platform_toolsets_value(value: object) -> Optional[List[str]]:
+def parse_platform_toolsets_value(value: object) -> Optional[list[str]]:
     """The toolset list a saved ``platform_toolsets.<platform>`` value encodes, or None.
 
     Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
@@ -85,14 +85,14 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
 def validate_platform_toolsets(
     platform_toolsets: object, is_valid_toolset: Callable[[str], bool],
     is_allowed_for_platform: Callable[[str, str], bool] = toolset_allowed_for_platform,
-) -> List[str]:
+) -> list[str]:
     """Return human-readable warnings for a ``platform_toolsets`` mapping.
     Reports: a toolset name ``is_valid_toolset`` rejects (suggesting ``hermes-<platform>`` when that
     would have been valid); a non-empty mapping resolving to zero valid toolsets (agent would start with
     no tools); a platform with no valid toolsets, checked per-platform because the global net is
     suppressed once any platform is valid; and non-list platform values, which fall back to the platform
     default. ``is_valid_toolset`` is injected so this does no registry imports or I/O."""
-    warnings: List[str] = []
+    warnings: list[str] = []
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
 

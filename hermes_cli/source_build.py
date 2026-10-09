@@ -26,7 +26,7 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
         return False
 
 
-def source_build_env(base_env: dict | None = None, *, explicit: bool = False) -> dict[str, str]:
+def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.paths import repo_root
@@ -43,7 +43,7 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit).env
+    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
@@ -159,7 +159,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
         def node_dependencies() -> None:
             # Acquiring npm is part of this step: its failure must be reported like the install's.
-            env.update(source_build_env(explicit=True))
+            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # tail); a missing one is still installed explicitly.
+            env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
 
         # Every product compiles from these node_modules: without them there is nothing to build.

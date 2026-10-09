@@ -278,7 +278,7 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
-    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [])
+    monkeypatch.setattr(scheduler, "get_due_jobs", list)
     enospc = OSError(errno.ENOSPC, "No space left on device")
     probe_result = [enospc]
     monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_result[0])

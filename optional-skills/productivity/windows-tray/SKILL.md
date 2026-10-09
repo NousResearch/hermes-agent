@@ -53,9 +53,12 @@ pwsh -NoProfile -File ${HERMES_SKILL_DIR}/scripts/install_tray.ps1   # create ve
 pwsh -NoProfile -File ${HERMES_SKILL_DIR}/scripts/install_tray.ps1 -Uninstall
 ```
 
-After install, enable the needs-input observer plugin (write marker for
-"waiting for you"): `hermes config set plugins.enabled "[...existing...,
-tray-needs-input]"`, then restart the desktop app once so the backend loads it.
+After install, enable the needs-input observer plugin (writes the "waiting
+for you" marker): READ the current list with `hermes config get
+plugins.enabled`, then `hermes config set plugins.enabled "[...existing...,
+tray-needs-input]"`. Never set it to `[tray-needs-input]` alone — a bare
+`set` REPLACES the whole list and silently disables your other plugins.
+Restart the desktop app once so the backend loads it.
 
 ## Quick Reference
 
@@ -76,9 +79,12 @@ Dot states (polled every 2s): 🔵 active · 🟠 needs-input · ⚪ idle · �
 2. `install_tray.ps1` creates the dedicated venv, installs `pystray pillow`,
    writes `HermesTray.lnk` into `shell:startup` pointing straight at
    `hermes_tray.py`, and starts it hidden.
-3. Add `tray-needs-input` to `plugins.enabled` via `hermes config set`
-   (NEVER hand-edit config.yaml), then ask the user to restart the desktop app
-   once. Until that restart, needs-input falls back to blue.
+3. Add `tray-needs-input` to `plugins.enabled` by read-modify-write: get the
+   current list (`hermes config get plugins.enabled`), then set it with every
+   existing entry plus `tray-needs-input` — a bare one-item `set` replaces the
+   list and drops other plugins (NEVER hand-edit config.yaml either), then ask
+   the user to restart the desktop app once. Until that restart, needs-input
+   falls back to blue.
 4. Verify per `## Verification`.
 
 ## Pitfalls

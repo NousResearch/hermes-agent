@@ -11,13 +11,18 @@ $plugin = Join-Path $env:LOCALAPPDATA "hermes\plugins\tray-needs-input"
 $lnk    = Join-Path ([Environment]::GetFolderPath("Startup")) "HermesTray.lnk"
 
 if ($Uninstall) {
-    # scope the kill: match only our tray process, never every pythonw on the box
-    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | ForEach-Object {
-        if ($_.CommandLine -like "*hermes_tray.py*") {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-        }
-    }
+    # remove the autostart entry FIRST: a scan failure below must not strand it
     if (Test-Path $lnk) { Remove-Item $lnk -Force }
+    # scope the kill: match only our tray process, never every pythonw on the box
+    try {
+        Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | ForEach-Object {
+            if ($_.CommandLine -like "*hermes_tray.py*") {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        Write-Host "process scan failed, tray may still be running: $_"
+    }
     Write-Host "uninstalled: startup shortcut removed, tray stopped."
     Write-Host "leftovers you can delete manually: $dst  and  $plugin"
     exit 0
@@ -53,6 +58,25 @@ $sc.Save()
 
 Start-Process -WindowStyle Hidden -FilePath $pythonw -ArgumentList """$tray""" -WorkingDirectory $dst
 Write-Host "tray installed + started (icon appears once the desktop app runs)."
-Write-Host "Enable the amber 'needs input' dot with:"
-Write-Host "  hermes config set plugins.enabled ""[tray-needs-input]""   (append to any existing entries)"
+# Enable the observer plugin by READ-MODIFY-WRITE: a bare `set` with a
+# one-item list REPLACES plugins.enabled and silently drops other plugins.
+$items = @()
+if (Get-Command hermes -ErrorAction SilentlyContinue) {
+    try {
+        foreach ($line in (((& hermes config get plugins.enabled 2>$null) -join "`n") -split "`n")) {
+            if ($line -match '^\s*-\s*(\S+)\s*$') { $items += $Matches[1] }
+        }
+    } catch { $items = @() }
+}
+if ($items -contains "tray-needs-input") {
+    Write-Host "needs-input plugin: already enabled - nothing to do."
+} elseif ($items.Count -gt 0) {
+    $list = ($items + "tray-needs-input") -join ", "
+    Write-Host "needs-input plugin: enable with (keeps your existing entries):"
+    Write-Host "  hermes config set plugins.enabled ""[$list]"""
+} else {
+    Write-Host "needs-input plugin: read your current list first, then append - do NOT replace:"
+    Write-Host "  1) hermes config get plugins.enabled"
+    Write-Host "  2) hermes config set plugins.enabled ""[<every existing entry>, tray-needs-input]"""
+}
 Write-Host "then restart the Hermes desktop app once so its backend loads the plugin."

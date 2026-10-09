@@ -63,6 +63,18 @@ class TestSkillMetadata:
         for gone in ("scripts/tray_watchdog.py", "scripts/start_watchdog.js"):
             assert not (SKILL_DIR / gone).exists(), gone
 
+    def test_plugins_enable_is_read_modify_write(self):
+        # A bare `hermes config set plugins.enabled "[x]"` REPLACES the list and
+        # silently drops the user's other plugins — neither the copy-pasteable
+        # installer output nor the doc may print a one-item set command.
+        skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        inst = (SKILL_DIR / "scripts" / "install_tray.ps1").read_text(encoding="utf-8")
+        assert 'set plugins.enabled "[tray-needs-input]"' not in skill
+        assert 'set plugins.enabled ""[tray-needs-input]""' not in inst
+        # both must teach reading the current list first
+        assert "hermes config get plugins.enabled" in skill
+        assert "hermes config get plugins.enabled" in inst
+
     def test_no_machine_local_paths_anywhere(self):
         bad = re.compile(r"[A-Za-z]:\\+Users\\+|/home/[a-z0-9_-]+/")
         for p in SKILL_DIR.rglob("*"):

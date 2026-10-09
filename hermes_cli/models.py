@@ -2282,7 +2282,7 @@ def _fetch_anthropic_models(
         # opus, then sonnet, then haiku; alphabetical within tier.
         return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
     except Exception as e:
-        logger.debug("Failed to fetch Anthropic models: %s", e)
+        logger.debug("Failed to fetch Anthropic models (%s)", type(e).__name__)
         return None
 
 

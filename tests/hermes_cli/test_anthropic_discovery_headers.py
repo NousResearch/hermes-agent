@@ -187,3 +187,22 @@ def test_profile_without_credentials_does_not_probe(monkeypatch):
 
     monkeypatch.setattr(config, "get_custom_provider_extra_headers", unexpected)
     assert get_provider_profile("anthropic").fetch_models() is None
+
+
+@pytest.mark.parametrize("entry_point", ["shared", "profile"])
+def test_invalid_header_does_not_log_its_secret(workspace_server, caplog, entry_point):
+    import logging
+    from providers import get_provider_profile
+
+    base, seen = workspace_server
+    configure(base)
+    path = get_hermes_home() / "config.yaml"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    secret = "fixture-private-header-value"
+    data["providers"]["fixture"]["extra_headers"]["x-private-token"] = secret + "\ninvalid"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    fetch = models._fetch_anthropic_models if entry_point == "shared" else get_provider_profile("anthropic").fetch_models
+    with caplog.at_level(logging.DEBUG):
+        assert fetch(base_url=base, api_key="sk-ant-api-fixture") is None
+    assert not seen
+    assert secret not in caplog.text

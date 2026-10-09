@@ -46,7 +46,7 @@ class AnthropicProfile(ProviderProfile):
                     break
             return list(dict.fromkeys(models))
         except Exception as exc:
-            logger.debug("fetch_models(anthropic): %s", exc)
+            logger.debug("fetch_models(anthropic) failed (%s)", type(exc).__name__)
             return None
 
 

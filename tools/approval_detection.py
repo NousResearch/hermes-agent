@@ -1543,13 +1543,80 @@ _DOCKER_LIFECYCLE_DESCRIPTIONS = frozenset({
 _DOCKER_LIFECYCLE_PROSE_COMMANDS = frozenset({
     "cat", "echo", "egrep", "fgrep", "git", "grep", "hermes", "printf", "rg",
 })
-# git can run shell through `-c alias.x='!cmd'`, core.sshCommand, etc., so it is prose only when the
-# subcommand directly follows `git` and only carries messages/patterns.
-_DOCKER_LIFECYCLE_GIT_PROSE_RE = re.compile(r'\S*git\s+(?:commit|grep|log|show|tag|notes)\b')
+# Prose commands that also ship executor-shaped subcommands are prose only for the listed
+# subcommand directly after the name. git runs shell through `-c alias.x='!cmd'`, core.sshCommand,
+# etc.; hermes stores or runs its arguments under `config set`, `cron`, `plugins`, ... and only the
+# kanban text-carrying subcommands write board text. Global flags before the subcommand fail closed.
+_DOCKER_LIFECYCLE_PROSE_SUBCOMMANDS = {
+    "git": re.compile(r'\S*git\s+(?:commit|grep|log|show|tag|notes)\b'),
+    "hermes": re.compile(
+        r'\S*hermes\s+kanban\s+(?:create|comment|complete|block|edit|request-review|request-changes)(?=\s|$)'
+    ),
+}
+# Pipe consumers that only display or count their stdin. Prose fed to anything else (`ssh host`,
+# `tee file`, `xargs`, an interpreter) may be executed or persisted, so the prose stays scanned.
+_DOCKER_LIFECYCLE_PROSE_SINKS = frozenset({"cut", "head", "less", "more", "sort", "tail", "uniq", "wc"})
+_DOCKER_LIFECYCLE_SAFE_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
 
 
 def _command_word_name(word: str) -> str:
     return os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+
+
+def _segment_writes_file(segment: str) -> bool:
+    """Whether an unquoted output redirection in *segment* writes somewhere other than an fd."""
+    for kind, i, _, quote in _scan_shell(segment, subst="uq", brace=True):
+        if kind != "char" or quote is not None or segment[i] != ">":
+            continue
+        target_at = i + 1 + (segment[i + 1:i + 2] in (">", "|"))
+        if segment.startswith("&", target_at):
+            target_at += 1
+            if re.match(r"\s*(?:[0-9]+|-)(?![^\s;&|<>()])", segment[target_at:]):
+                continue  # `>&2`, `2>&1`, `>&-`: fd duplication, nothing written to a path.
+        target = _deobfuscate_shell_word_for_detection(_read_shell_word(segment, target_at)[2])
+        if target not in _DOCKER_LIFECYCLE_SAFE_WRITE_TARGETS:
+            return True  # a file, a `>(...)` process substitution, or an unreadable target
+    return False
+
+
+def _docker_lifecycle_prose_starts(command: str) -> set[int]:
+    """Return the command-word offsets whose segment is pure prose for lifecycle matching.
+
+    A segment is prose when its command is in ``_DOCKER_LIFECYCLE_PROSE_COMMANDS`` (passing the
+    subcommand gate where one exists), it redirects output to no file, and everything downstream in
+    its pipeline is itself prose or a display-only sink. Data that is written to a file or piped
+    into another command may be persisted (an approval allowlist in config.yaml, a script run
+    later) or executed (``| ssh host``), so it keeps the lifecycle scan. Fails closed: a pipe
+    with no readable consumer is not prose.
+    """
+    words = [(start, _command_word_name(word)) for start, _, word in _iter_shell_command_word_spans(command)]
+    verdicts: dict[tuple[int, bool], bool] = {}
+
+    def is_prose(index: int, consumer: bool) -> bool:
+        start, name = words[index]
+        key = (start, consumer)
+        if key in verdicts:
+            return verdicts[key]
+        verdicts[key] = False  # cycle guard: unreachable for well-formed input, fails closed
+        end = _shell_command_segment_end(command, start, redirect_aware=True)
+        gate = _DOCKER_LIFECYCLE_PROSE_SUBCOMMANDS.get(name)
+        allowed = (consumer and name in _DOCKER_LIFECYCLE_PROSE_SINKS) or (
+            name in _DOCKER_LIFECYCLE_PROSE_COMMANDS
+            and (gate is None or gate.match(command[start:end].lower()))
+        )
+        if not allowed or _segment_writes_file(command[start:end]):
+            return False
+        if command.startswith("|", end) and not command.startswith("||", end):
+            consumer_start = _skip_shell_whitespace(command, end + 1 + command.startswith("|&", end))
+            # Wrapper chain only (`sudo tee f` -> sudo, tee); its last word is the real consumer.
+            chain_end = _shell_command_segment_end(command, consumer_start)
+            chain = [i for i, (s, _) in enumerate(words) if consumer_start <= s < chain_end]
+            if not chain or not is_prose(chain[-1], consumer=True):
+                return False
+        verdicts[key] = True
+        return True
+
+    return {words[i][0] for i in range(len(words)) if is_prose(i, consumer=False)}
 
 
 def _drop_prose_heredoc_bodies(command: str) -> str:
@@ -1595,10 +1662,10 @@ def _drop_prose_heredoc_bodies(command: str) -> str:
             line_start = line_end + 1
         body = command[body_start:body_end]
         expands = not any(ch in delimiter_word for ch in "'\"\\") and ("$(" in body or "`" in body)
-        owners = [_command_word_name(word)
-                  for _, _, word in _iter_shell_command_word_spans(command[cursor:operator])]
+        owners = [start for start, _, _ in _iter_shell_command_word_spans(command[cursor:operator])]
         parts.append(command[cursor:body_start])
-        if expands or not owners or owners[-1] not in _DOCKER_LIFECYCLE_PROSE_COMMANDS:
+        # The header line carries the owner's redirections and pipe (`cat <<'EOF' > run.sh`).
+        if expands or not owners or owners[-1] not in _docker_lifecycle_prose_starts(command[cursor:header_end]):
             parts.append(body)
         cursor = body_end
     parts.append(command[cursor:])
@@ -1613,39 +1680,43 @@ def _docker_lifecycle_executable_text(command: str) -> str:
     pattern cannot match across two of them.
     """
     command = _drop_prose_heredoc_bodies(command)
-    segments = []
-    for start, _, word in _iter_shell_command_word_spans(command):
-        name = _command_word_name(word)
-        segment = _shell_command_segment(command, start).lower()
-        if name in _DOCKER_LIFECYCLE_PROSE_COMMANDS and (
-            name != "git" or _DOCKER_LIFECYCLE_GIT_PROSE_RE.match(segment)
-        ):
-            continue
-        segments.append(segment)
-    return "\0".join(segments)
+    prose = _docker_lifecycle_prose_starts(command)
+    return "\0".join(
+        _shell_command_segment(command, start).lower()
+        for start, _, _ in _iter_shell_command_word_spans(command)
+        if start not in prose
+    )
 
 
 def _docker_lifecycle_requires_raw_scan(command: str, variant: str) -> bool:
-    """Keep policy payloads and shell-carrier code subject to lifecycle detection.
+    """Keep shell-carrier code subject to the raw lifecycle scan.
 
-    ``command_allowlist`` is itself an approval boundary: treating its quoted value as prose would
-    let an unattended worker store a lifecycle approval without a prompt. Shell-carrier arguments
-    are executable code, and extracted ``bash -c`` variants must inherit that fact from the source.
+    Shell-carrier arguments are executable code, and extracted ``bash -c`` variants must inherit
+    that fact from the source. Policy writes need no key list here: a prose segment that writes a
+    file or feeds another command is not prose (``_docker_lifecycle_prose_starts``), and
+    ``hermes config set`` is outside the hermes prose subcommands.
     """
-    return any(
-        "command_allowlist" in candidate.lower() or _contains_shell_carrier(candidate)
-        for candidate in (command, variant)
-    )
+    return any(_contains_shell_carrier(candidate) for candidate in (command, variant))
+
+
+def _shell_command_segment_end(command: str, start: int, *, redirect_aware: bool = False) -> int:
+    """Offset of the separator, comment or closer that ends the command starting at *start*.
+    With *redirect_aware*, a redirection's ``&``/``|`` (``2>&1``, ``&>f``, ``>|f``) stays inside."""
+    previous = None
+    for step in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+        kind, i, _, quote = step
+        prior, previous = previous, step
+        if kind == "comment":
+            return i
+        if kind == "char" and quote is None and command[i] in ";&|\n)`" \
+                and not (redirect_aware and _is_redirection_operator_char(command, i, prior)):
+            return i
+    return len(command)
 
 
 def _shell_command_segment(command: str, start: int) -> str:
     """Bound a candidate to its command, preserving quoted argument bytes."""
-    end = len(command)
-    for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
-            end = i
-            break
-    return command[start:end].strip()
+    return command[start:_shell_command_segment_end(command, start)].strip()
 
 
 def _split_env_string(payload: str) -> list[str] | None:

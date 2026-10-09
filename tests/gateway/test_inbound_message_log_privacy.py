@@ -22,7 +22,7 @@ class _Runner(GatewayTurnMixin):
         return None  # stop right after the inbound log lines
 
 
-def _event():
+def _event(**kwargs):
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
@@ -30,11 +30,11 @@ def _event():
         user_id="12345",
         user_name="Jane Doe",
     )
-    return MessageEvent(text=_TEXT, source=source, message_id="msg-42")
+    return MessageEvent(**{"text": _TEXT, "source": source, "message_id": "msg-42", **kwargs})
 
 
-async def _inbound_records(caplog, level):
-    event = _event()
+async def _inbound_records(caplog, level, **kwargs):
+    event = _event(**kwargs)
     with caplog.at_level(level, logger="gateway.run"):
         await _Runner()._handle_message_with_agent(event, event.source, "q", 1)
     return [r for r in caplog.records if r.getMessage().startswith("inbound message")]
@@ -56,3 +56,14 @@ async def test_debug_line_keeps_text_and_sender(caplog):
     debug = [r.getMessage() for r in records if r.levelno == logging.DEBUG]
     assert len(debug) == 1
     assert "user=Jane Doe" in debug[0] and _TEXT in debug[0]
+
+
+@pytest.mark.asyncio
+async def test_info_line_without_message_id_keeps_reply_text_out(caplog):
+    records = await _inbound_records(
+        caplog, logging.INFO, message_id=None,
+        reply_to_message_id="r-7", reply_to_text="earlier note from Jane Doe",
+    )
+    line = records[0].getMessage()
+    assert "message_id=None" in line and "reply_to_id=r-7" in line
+    assert "Jane" not in line and "earlier note" not in line

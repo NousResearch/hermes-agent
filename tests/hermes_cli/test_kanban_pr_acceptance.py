@@ -75,7 +75,7 @@ def github(tmp_path, monkeypatch):
         thread.join()
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("posix")
 def test_pr_completion_requires_current_required_evidence(github):
     with connect() as conn:
         for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
@@ -109,7 +109,7 @@ def test_pr_completion_requires_current_required_evidence(github):
         assert len(github["requests"]) == before
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("posix")
 def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):
@@ -216,17 +216,132 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
 
 
-def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
+@pytest.mark.parametrize("assignee", ["ghost", "worker"])
+def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch, assignee):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))  # any gh spawn would fail as infra
     kb.init_db()
     with connect() as conn:
-        tid = kb.create_task(conn, title="as-ghost", completion_contract="acme/repo", assignee="ghost")
+        tid = kb.create_task(conn, title="unresolved", completion_contract="acme/repo", assignee=assignee)
         assert not kb.complete_task(conn, tid, result="done",
                                     metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
         receipt = json.loads(conn.execute(
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
-    assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+    assert repr(assignee) in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("lane", ["ready", "review"])
+@pytest.mark.parametrize("phase,status,error_type,exit_code,expected", [
+    ("repository", None, "NOT_FOUND", 1, "auth"),
+    ("repository", None, "NOT_FOUND", 0, "auth"),
+    ("repository", None, "FORBIDDEN", 0, "auth"),
+    ("repository", None, "INTERNAL", 1, "infra"),
+    ("repository", None, "INTERNAL", 0, "infra"),
+    ("repository", None, "RATE_LIMITED", 1, "retry"),
+    ("repository", None, "RATE_LIMITED", 0, "retry"),
+    ("repository", None, "message-only", 1, "retry"),
+    ("repository", None, "message-only", 0, "retry"),
+    ("repository", "401", None, 1, "auth"),
+    ("repository", "500", None, 1, "infra"),
+    ("policy", "401", None, 1, "policy"),
+    ("policy", "403", None, 1, "policy"),
+    ("policy", "404", None, 1, "policy"),
+    ("policy", "500", None, 1, "infra"),
+    ("policy", None, None, 1, "infra"),
+    ("policy", "rate limit", None, 1, "retry"),
+    ("evidence", "403", None, 1, "auth"),
+])
+def test_refusals_are_classified_at_the_failed_operation(
+        tmp_path, monkeypatch, lane, phase, status, error_type, exit_code, expected):
+    """Exercise real gh subprocesses and SQLite completion, not classifier mocks."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    pr = {"headRefOid": "a" * 40, "baseRefName": "main", "state": "OPEN",
+          "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
+              {"context": "required", "app": {"databaseId": 1}}]}}}
+    script = f'''import json, sys
+phase, status, error_type, exit_code = {phase!r}, {status!r}, {error_type!r}, {exit_code!r}
+endpoint = sys.argv[2]
+failing = ((phase == "repository" and endpoint == "graphql") or
+           (phase == "policy" and "/rules/branches/" in endpoint) or
+           (phase == "evidence" and "/check-runs" in endpoint))
+if failing:
+    sys.stderr.write("PRIVATE_DIAGNOSTIC " + ("HTTP " + status if status else "GraphQL refusal"))
+    if error_type:
+        error = {{"path": ["repository"], "message": "PRIVATE_DIAGNOSTIC"}}
+        if error_type == "message-only":
+            error["message"] = "API rate limit exceeded PRIVATE_DIAGNOSTIC"
+        else:
+            error["type"] = error_type
+        data = None if error_type in ("RATE_LIMITED", "message-only") else {{"repository": None}}
+        print(json.dumps({{"data": data, "errors": [error]}}))
+    sys.exit(exit_code)
+if endpoint == "graphql":
+    print(json.dumps({{"data": {{"repository": {{"pullRequest": {pr!r}}}}}}}))
+else:
+    print(json.dumps([[]]))
+'''
+    gh.write_text(f"#!{sys.executable}\n" + script, encoding="utf-8")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="classify", completion_contract="acme/repo", assignee="default")
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (lane, tid))
+        conn.commit()
+        assert not kb.complete_task(conn, tid, result="done",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        task = kb.get_task(conn, tid)
+        assert task.status == lane
+        assert "PRIVATE_DIAGNOSTIC" not in task.last_failure_error
+        assert conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", (tid,)).fetchone()[0] == 0
+
+        from hermes_cli import kanban_db_dispatch as dispatch
+        from hermes_cli import config, profiles
+        monkeypatch.setattr(config, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}})
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+        event_time = conn.execute(
+            "SELECT created_at FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0]
+        monkeypatch.setattr(dispatch.time, "time", lambda: event_time + 100)
+        guard = {"auth": "blocker_auth", "policy": "acceptance_policy_cooldown",
+                 "retry": "rate_limit_cooldown", "infra": "infrastructure_cooldown"}[expected]
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == guard
+        assert dict(dispatch.dispatch_once(conn, dry_run=True).respawn_guarded)[tid] == guard
+        monkeypatch.setattr(dispatch.time, "time", lambda: event_time + 400)
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == (
+            guard if expected == "auth" else None)
+        result = dispatch.dispatch_once(conn, dry_run=True)
+        if expected == "auth":
+            assert dict(result.respawn_guarded)[tid] == "blocker_auth"
+        else:
+            assert tid in [spawn[0] for spawn in result.spawned]
+
+        # A newer worker failure supersedes the receipt, even if it says 403.
+        conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?",
+                     ("worker authentication failed with HTTP 403", tid))
+        conn.commit()
+        assert dispatch.check_respawn_guard(conn, tid, lane=lane) == "blocker_auth"
+    assert receipt["ok"] is False
+    assert receipt["classification"] == expected
+    assert "PRIVATE_DIAGNOSTIC" not in json.dumps(receipt)
+    if expected == "policy":
+        assert "NOT evidence" in receipt["detail"]
+        assert "credentials" not in receipt["detail"]
+    if expected == "auth":
+        assert "acme/repo" in receipt["detail"]
+    if expected == "retry":
+        for detail in (receipt["detail"], task.last_failure_error):
+            assert "wait" in detail and "reset" in detail
+        if phase == "repository":
+            assert receipt["head_sha"] is None
+            assert "graphql acme/repo" in receipt["detail"]

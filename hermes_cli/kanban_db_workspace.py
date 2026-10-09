@@ -49,7 +49,7 @@ _ACTIVE_CHILDREN_SQL = (
     "LIMIT 1"
 )
 
-_WORKSPACE_ROW_SQL = "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?"
+_WORKSPACE_ROW_SQL = "SELECT status, workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?"
 
 
 def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
@@ -499,9 +499,8 @@ def _cleanup_worktree_workspace(
 def _try_cleanup_parent_workspaces(
     conn: sqlite3.Connection, task_id: str, _visited: Optional[set[str]] = None
 ) -> None:
-    """Run the deferred cleanup of any parent scratch/worktree workspace whose
-    children are now all done/archived/failed/cancelled (called after each
-    child completes).
+    """Run deferred cleanup for terminal parents whose children are also all
+    done/archived/failed/cancelled (called after each child completes).
 
     Continue through eligible ancestors; the shared set bounds diamond-DAG visits.
     See #33774.
@@ -520,6 +519,7 @@ def _try_cleanup_parent_workspaces(
             row = conn.execute(_WORKSPACE_ROW_SQL, (parent_id,)).fetchone()
             if (
                 not row
+                or row["status"] not in ("done", "archived", "failed", "cancelled")
                 or row["workspace_kind"] not in _REMOVABLE_KINDS
                 or not row["workspace_path"]
                 or not _is_terminal_task(conn, parent_id)

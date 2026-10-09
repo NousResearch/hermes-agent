@@ -944,8 +944,9 @@ def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_
 
 
 
-def test_deferred_scratch_sweep_recurses_to_grandparent(kanban_home):
-    """A multi-level scratch chain A->B->C must sweep the grandparent A, not just B.
+@pytest.mark.parametrize("grandparent_running", [False, True])
+def test_deferred_scratch_sweep_recurses_to_grandparent(kanban_home, grandparent_running):
+    """Sweep terminal ancestors in A->B->C, but preserve a running grandparent.
 
     Regression for the non-recursive parent sweep: when leaf C completed it swept only its
     direct parent B, leaving A's scratch dir leaked on disk forever even though A had become
@@ -953,6 +954,8 @@ def test_deferred_scratch_sweep_recurses_to_grandparent(kanban_home):
     """
     with kbc.connect() as conn:
         a = kb.create_task(conn, title="A grandparent")
+        if grandparent_running:
+            assert kb.claim_task(conn, a) is not None
         b = kb.create_task(conn, title="B parent")
         c = kb.create_task(conn, title="C leaf")
         kb.link_tasks(conn, a, b)  # B depends on A
@@ -963,20 +966,24 @@ def test_deferred_scratch_sweep_recurses_to_grandparent(kanban_home):
         kbw.set_workspace_path(conn, a, a_ws)
         kbw.set_workspace_path(conn, b, b_ws)
         kbw.set_workspace_path(conn, c, c_ws)
+        marker = a_ws / "active-work.txt"
+        marker.write_text("grandparent work", encoding="utf-8")
 
-        # A and B complete first; their cleanup is deferred while a descendant is still active.
-        kb.complete_task(conn, a, result="handoff A")
-        kb.complete_task(conn, b, result="handoff B")
+        # B's cleanup remains deferred while leaf C is active.
+        if not grandparent_running:
+            kb.complete_task(conn, a, result="handoff A")
+        assert kb.archive_task(conn, b)
         assert a_ws.exists() and b_ws.exists(), "deferred while leaf C is still active"
 
         # Leaf C completes -> the sweep must cascade C -> B -> A.
-        kb.complete_task(conn, c, result="done")
+        assert kb.archive_task(conn, c)
 
     assert not c_ws.exists(), "leaf scratch dir cleaned up"
     assert not b_ws.exists(), "direct parent scratch dir swept"
-    assert not a_ws.exists(), (
-        "grandparent scratch dir must also be swept once the whole chain is terminal"
-    )
+    if grandparent_running:
+        assert marker.read_text(encoding="utf-8") == "grandparent work"
+    else:
+        assert not a_ws.exists(), "terminal grandparent scratch dir must also be swept"
 
 
 def test_deferred_scratch_sweep_handles_diamond_dag(kanban_home):

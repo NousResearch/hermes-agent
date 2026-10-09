@@ -232,6 +232,47 @@ def test_is_http2_transport_failure_matches_the_field_shapes():
     assert not is_http2_transport_failure(None)
 
 
+# ---- the dead-stall shape (#95777, review of #135081) ----
+#
+# On a network where HTTP/2 connects and then stops making progress, the fetch never
+# returns a curl fingerprint: run_git's bounded wait kills it and reports
+# return code 124 with "git fetch timed out after 300s (...)" in stderr. Recognised
+# by return code plus the sentinel phrase, never by wording alone.
+
+
+_STALL_STDERR = ("git fetch timed out after 300s "
+                 "(a stalled remote, or a transfer too large for the limit)")
+
+
+def test_the_timeout_stall_is_a_transport_failure_only_with_its_return_code():
+    assert is_http2_transport_failure(_STALL_STDERR, 124)
+    # The phrase with any other exit code is not a stall verdict.
+    assert not is_http2_transport_failure(_STALL_STDERR, 0)
+    assert not is_http2_transport_failure(_STALL_STDERR, 128)
+
+
+def test_the_timeout_stall_never_misleads_on_other_failures():
+    assert not is_http2_transport_failure("error: pack-objects died of signal 6", 124)
+    assert not is_http2_transport_failure("fatal: Authentication failed", 124)
+    assert not is_http2_transport_failure("", 124)
+
+
+def test_http1_fallback_retries_once_over_http1_on_a_dead_stall():
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        if len(calls) == 1:
+            return CompletedProcess(git_cmd + args, 124, stdout="", stderr=_STALL_STDERR)
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    result = fetch_with_http1_fallback(runner, ["git"], ["fetch", "origin", "main"])
+
+    assert len(calls) == 2
+    assert calls[1][0][:3] == ["git", "-c", "http.version=HTTP/1.1"]
+    assert result.returncode == 0
+
+
 def test_http1_fallback_retries_once_with_http1_pin_on_framing_death():
     calls = []
 

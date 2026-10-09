@@ -51,6 +51,14 @@ describe('slashCommandMatches', () => {
     expect(commands('start over with /some-skill ')).toEqual(['skill:/some-skill'])
   })
 
+  it('offers leading bare built-ins as a command sequence, but stops inside prose', () => {
+    expect(commands('/new /yolo /goal ship it /branch ')).toEqual(['command:/new', 'command:/yolo'])
+  })
+
+  it('does not turn slash-looking path fragments into built-in invocations', () => {
+    expect(commands('/new /yolo/config ')).toEqual(['command:/new'])
+  })
+
   it('disqualifies a leading token when the text lands mid-word', () => {
     expect(commands('/some-skill ', { boundaryBefore: false })).toEqual([])
   })

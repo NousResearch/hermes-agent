@@ -286,7 +286,7 @@ def execute(frame, channel):
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
-    store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']))
+    store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']), adopted)
     from gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
     # Background processes a previous admission of this session started outlive that worker

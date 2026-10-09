@@ -214,7 +214,15 @@ test.describe('sidebar states — cross-session dot transition', () => {
     // Wait for the background dot to appear.
     await expect
       .poll(
-        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+        async () => {
+          // The real backend may ask before starting this scripted task. Use
+          // one-time UI approval; never disable guards or persist an allowlist.
+          const run = page.locator('[data-slot="tool-approval-inline"]').getByRole('button', { name: /^Run / })
+          if (await run.isVisible()) {
+            await run.click()
+          }
+          return page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
+        },
         { timeout: 30_000, message: 'background dot should appear' },
       )
       .toBeGreaterThan(0)

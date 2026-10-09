@@ -60,7 +60,15 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
   // Wait for the background dot — confirms the turn is running.
   await expect
     .poll(
-      () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+      async () => {
+        // The real backend may ask before starting this scripted task. Use
+        // one-time UI approval; never disable guards or persist an allowlist.
+        const run = page.locator('[data-slot="tool-approval-inline"]').getByRole('button', { name: /^Run / })
+        if (await run.isVisible()) {
+          await run.click()
+        }
+        return page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
+      },
       { timeout: 30_000, message: 'background dot should appear' },
     )
     .toBeGreaterThan(0)

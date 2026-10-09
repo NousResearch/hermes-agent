@@ -54,8 +54,13 @@ class SourceTarget:
     def retired(self) -> bool:
         return self.requested_channel != self.channel
 
+    ahead: bool = False
+
     @property
     def label(self) -> str:
+        if self.ahead:
+            return (f"{self.channel} v{self.version}; this checkout is newer and waits for the next release"
+                    " (`hermes update --set-channel main` follows every commit)")
         return f"{self.channel} v{self.version} ({self.commit[:12]})" if self.commit else self.channel
 
 
@@ -72,8 +77,44 @@ def _resolve_channel(name: str, repository: str):
     return ChannelReader(_PUBLIC_BASE, repository=repository).resolve(name)
 
 
-def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    """Resolve every subscription, including default labels, through R2."""
+def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                          forward_only: bool = False) -> SourceTarget:
+    """Resolve every subscription, including default labels, through R2.
+
+    ``forward_only`` (an unchosen default subscription) pins a checkout that already
+    contains the release to its own HEAD, so the update is a no-op instead of a downgrade.
+    """
+    target = _resolve_source_target(channel, git_cmd, cwd, repository=repository)
+    if forward_only and target.commit and git_cmd is not None and cwd is not None:
+        head = _head_containing(git_cmd, cwd, target.commit, target.repository)
+        if head is not None and head != target.commit:
+            from dataclasses import replace
+
+            return replace(target, commit=head, ahead=True)
+    return target
+
+
+def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
+    """HEAD's sha when it equals or descends from ``commit``, else None."""
+    from hermes_cli.source_check import _github_compare, source_git_env
+
+    def run(*args):
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env())
+
+    head = run("rev-parse", "HEAD").stdout.strip()
+    if not _SHA.fullmatch(head):
+        return None
+    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
+    if ancestry in (0, 1):
+        return head if ancestry == 0 else None
+    # A shallow checkout may lack the release commit; GitHub knows the relation.
+    status = (_github_compare(commit, head, repository) or {}).get("status")
+    return head if status in ("ahead", "identical") else None
+
+
+def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
     from hermes_cli.release_channels import ChannelNotFound, validate_name
 
     validate_name(channel)
@@ -81,6 +122,14 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     try:
         resolved = _resolve_channel(channel, repository)
     except ChannelNotFound:
+        if channel == "stable":
+            # Until R2 publishes a stable record, stable is the latest published
+            # GitHub release (non-draft, non-prerelease, strict vX.Y.Z, origin
+            # tag verified). Never a branch tip or an arbitrary tag.
+            tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository)
+            if commit is None:
+                raise ValueError("No published stable release could be verified") from None
+            return SourceTarget(channel, channel, repository, commit=commit, version=str(tag).removeprefix("v"))
         if channel != "main":
             raise
         # main IS the source branch; its record can only add a retirement.
@@ -241,9 +290,10 @@ def _release_pointer(channel: str) -> tuple[str | None, str | None]:
 
 
 def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None) -> tuple[str | None, str | None]:
-    """Read historical stable/canary release metadata (not channel discovery).
+    """Read published stable/canary release metadata (not channel discovery).
 
-    Runtime check/apply use ``resolve_source_target`` and never fall back here.
+    Runtime check/apply go through ``resolve_source_target``; only an unpublished
+    R2 ``stable`` record falls back here.
     Channel pointers outrank GitHub's release listing. A malformed pointer,
     draft, or tag/commit mismatch is not permission to select a different build.
     ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and

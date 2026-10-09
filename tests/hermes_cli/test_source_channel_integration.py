@@ -167,7 +167,7 @@ def test_unpublished_main_record_keeps_following_the_git_branch(source, monkeypa
     assert "error" not in status, status
     assert status["targetSha"] == source.commits[2]
     with pytest.raises(ChannelNotFound):
-        source_releases.resolve_source_target("stable", ["git"], source.root)
+        source_releases.resolve_source_target("canary", ["git"], source.root)
 
 
 def test_passive_check_reports_retirement_without_adopting_it(source, monkeypatch):

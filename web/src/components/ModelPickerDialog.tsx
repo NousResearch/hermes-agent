@@ -6,13 +6,21 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import type { ModelOptionProvider, ModelOptionsResponse } from "@hermes/shared";
+import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router";
 import { cn, themedBody } from "@/lib/utils";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
 import { fuzzyRank, modelSearchText } from "@hermes/shared";
+import { errorMessage } from "@/lib/api-error";
+import {
+  formatPickerCurrentLabel,
+  isAutoPickerCurrent,
+  resolveInitialProviderSlug,
+  resolvePickerCurrent,
+} from "@/lib/model-picker-current";
 
 /**
  * Two-stage model picker modal.
@@ -58,7 +66,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -73,6 +81,12 @@ interface Props {
   title?: string;
   /** If true, hides "Persist globally" checkbox — always saves to config.yaml. */
   alwaysGlobal?: boolean;
+  /**
+   * Current assignment for this picker *slot* (auxiliary task, MoA model).
+   * The options loader always returns the main chat model; without this,
+   * "Set Auxiliary: Vision" shows `current: glm-5.3` while Vision is Qwen.
+   */
+  currentAssignment?: { model?: string; provider?: string } | null;
 }
 
 export function ModelPickerDialog(props: Props) {
@@ -85,6 +99,7 @@ export function ModelPickerDialog(props: Props) {
     onClose,
     title = "Switch Model",
     alwaysGlobal = false,
+    currentAssignment,
   } = props;
   const standalone = !!loader && !!onApply;
 
@@ -103,24 +118,25 @@ export function ModelPickerDialog(props: Props) {
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
-  const applyOptions = (r: ModelOptionsResponse) => {
+  const applyOptions = (r: ModelOptionsResult) => {
     const next = r?.providers ?? [];
+    const current = resolvePickerCurrent(r, currentAssignment);
     setProviders(next);
-    setCurrentModel(String(r?.model ?? ""));
-    setCurrentProviderSlug(String(r?.provider ?? ""));
+    setCurrentModel(current.model);
+    setCurrentProviderSlug(current.provider);
     setSelectedSlug((prev) => {
       if (prev && next.some((p) => p.slug === prev)) return prev;
-      return (next.find((p) => p.is_current) ?? next[0])?.slug ?? "";
+      return resolveInitialProviderSlug(next, current.provider);
     });
     setSelectedModel("");
   };
 
   const requestOptions = (refresh = false) =>
     standalone
-      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResponse>)({
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
           refresh,
         })
-      : (gw as GatewayClient).request<ModelOptionsResponse>(
+      : (gw as GatewayClient).request<ModelOptionsResult>(
           "model.options",
           {
             ...(sessionId ? { session_id: sessionId } : {}),
@@ -143,7 +159,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -162,7 +178,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -283,7 +299,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -311,7 +327,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -361,8 +377,11 @@ export function ModelPickerDialog(props: Props) {
             {title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
-            {currentProviderSlug && ` · ${currentProviderSlug}`}
+            current:{" "}
+            {formatPickerCurrentLabel({
+              model: currentModel,
+              provider: currentProviderSlug,
+            })}
           </p>
         </header>
 
@@ -383,9 +402,11 @@ export function ModelPickerDialog(props: Props) {
           <ProviderColumn
             loading={loading}
             error={error}
+            onClose={onClose}
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
+            currentProviderSlug={currentProviderSlug}
             query={trimmedQuery}
             onSelect={(slug) => {
               setSelectedSlug(slug);
@@ -480,22 +501,31 @@ export function ModelPickerDialog(props: Props) {
 /*  Provider column                                                    */
 /* ------------------------------------------------------------------ */
 
+/** Empty picker: no key and no OAuth login anywhere. Points at the two in-app fixes. */
+export const NO_PROVIDERS_MESSAGE =
+  "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models to see models here.";
+
 function ProviderColumn({
   loading,
   error,
   providers,
   total,
   selectedSlug,
+  currentProviderSlug,
   query,
   onSelect,
+  onClose,
 }: {
   loading: boolean;
   error: string | null;
   providers: ModelOptionProvider[];
   total: number;
   selectedSlug: string;
+  currentProviderSlug: string;
   query: string;
   onSelect(slug: string): void;
+  /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
+  onClose(): void;
 }) {
   return (
     <div className="border-r border-border overflow-y-auto">
@@ -508,17 +538,30 @@ function ProviderColumn({
       {error && <div className="p-4 text-xs text-destructive">{error}</div>}
 
       {!loading && !error && providers.length === 0 && (
-        <div className="p-4 text-xs text-muted-foreground italic">
-          {query
-            ? "no matches"
-            : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+        <div className="p-4 text-xs text-muted-foreground">
+          {query || total > 0 ? (
+            <span className="italic">No providers match your search.</span>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>{NO_PROVIDERS_MESSAGE}</span>
+              <div className="flex flex-wrap gap-2">
+                <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Open Keys
+                </Link>
+                <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Sign in to a provider
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {providers.map((p) => {
         const active = p.slug === selectedSlug;
+        const isCurrentProvider =
+          p.slug === currentProviderSlug &&
+          !isAutoPickerCurrent({ model: "", provider: currentProviderSlug });
         return (
           <ListItem
             key={p.slug}
@@ -531,7 +574,7 @@ function ProviderColumn({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-medium truncate">{p.name}</span>
-                {p.is_current && <CurrentTag />}
+                {isCurrentProvider && <CurrentTag />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models

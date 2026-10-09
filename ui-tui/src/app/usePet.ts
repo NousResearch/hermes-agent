@@ -5,7 +5,7 @@ import type { PetGrid } from '../components/petSprite.js'
 import { createPetSingleFlight, requestPetUpdate } from '../lib/petPolling.js'
 
 import { useGateway } from './gatewayContext.js'
-import { $overlayState, getOverlayState } from './overlayStore.js'
+import { $overlayState, getOverlayState, hasSensitivePrompt } from './overlayStore.js'
 import { $petFlash } from './petFlashStore.js'
 import { $turnState } from './turnStore.js'
 import { $uiState } from './uiStore.js'
@@ -50,7 +50,7 @@ export function derivePetState({ busy, toolRunning, reasoning, awaitingInput }: 
 function isAwaitingInput(): boolean {
   const o = getOverlayState()
 
-  return Boolean(o.clarify || o.approval || o.sudo || o.secret || o.vaultUnlock || o.confirm)
+  return Boolean(o.clarify || o.approval || o.confirm || hasSensitivePrompt(o))
 }
 
 // A kitty Unicode-placeholder frame set: a static placeholder grid (painted by

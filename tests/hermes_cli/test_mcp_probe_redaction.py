@@ -5,7 +5,7 @@ import itertools
 import json
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 SYNTHETIC = "SYNTHETIC_MCP_BEARER_NOT_A_SECRET_123456"
@@ -368,7 +368,7 @@ class TestCmdMcpTestRedaction:
         out = capsys.readouterr().out
         _assert_fully_redacted(out)
         assert "Connection failed" in out
-        assert "Bearer ***" in out
+        assert "***" in out  # credential span masked, whichever redactor got it first
 
 
 class TestDashboardMcpTestRedaction:
@@ -379,7 +379,7 @@ class TestDashboardMcpTestRedaction:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},
@@ -410,7 +410,7 @@ class TestDashboardMcpTestRedaction:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},
@@ -452,7 +452,7 @@ class TestSiblingProbeConsumersRedact:
         out = capsys.readouterr().out
         _assert_fully_redacted(out)
         assert "Failed to connect" in out
-        assert "Bearer ***" in out
+        assert "***" in out  # credential span masked, whichever redactor got it first
 
     def test_mcp_login_redacts_probe_exception(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {

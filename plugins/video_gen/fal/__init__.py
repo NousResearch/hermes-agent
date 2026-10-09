@@ -1,7 +1,7 @@
 """FAL.ai video generation backend.
 
 The user picks a **model family** (e.g. "Pixverse v6"); the plugin routes to its text-to-video endpoint without
-``image_url`` and to its image-to-video endpoint otherwise (gemini-omni-flash is i2v only). Active-family precedence:
+``image_url`` and to its image-to-video endpoint otherwise. Active-family precedence:
 tool ``model=`` → ``FAL_VIDEO_MODEL`` env → ``video_gen.fal.model`` → ``video_gen.model`` (family id or an endpoint
 path containing one) → ``DEFAULT_MODEL``. Auth via ``FAL_KEY`` or the managed Nous gateway; output is an HTTPS URL.
 """
@@ -18,11 +18,13 @@ from agent.video_gen_provider import VideoGenProvider, error_response, success_r
 logger = logging.getLogger(__name__)
 
 # Family catalog. Capability flags gate which keys reach the payload — keys a family doesn't advertise are never sent (the
-# managed gateway forwards everything verbatim). Enums default to None (endpoint decides), flags to False. ``durations`` is an
-# enum tuple OR a ``(min, max)`` range (2 ints with gap > 1). Extras: audio_native (always on; description line only),
+# managed gateway forwards everything verbatim). Enums default to None (endpoint decides), flags to False. ``durations`` is always a
+# ``(min, max)`` range (clamp); a family whose endpoint only accepts discrete values adds ``duration_enum`` (snap to nearest; None
+# stays None so the endpoint default applies); ``duration_cap_by_resolution`` lowers the ceiling per resolution enum (applied after
+# the snap/clamp). Extras: audio_native (always on; description line only),
 # duration_int (JSON int, default queue-API string), duration_suffix ("4s"), image_param_key (i2v key when not `image_url`),
-# image_drop_keys (i2v endpoint rejects), resolution_aliases (tool value → endpoint enum), static_payload (always required).
-def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> Dict[str, Any]:
+# image_drop_keys (i2v endpoint rejects), audio_param_key (toggle key when not `generate_audio`), resolution_aliases (tool value → endpoint enum), static_payload (always required).
+def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> dict[str, Any]:
     return {"display": display, "speed": speed, "price": tier, "tier": tier, "strengths": strengths, "text_endpoint": text, "image_endpoint": image,
             "aspect_ratios": None, "resolutions": None, "durations": None, "audio": False, "negative": False, "seed": False, **caps}
 
@@ -33,10 +35,15 @@ _H3_ALIASES = {"480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P", "
 _H3_MAX_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "768P", "2k": "768P", "4k": "768P", "2160p": "768P"}
 _H3_MAX_TURBO_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P", "2k": "1080P", "4k": "1080P", "2160p": "1080P"}
 
-FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
+FAL_FAMILIES: dict[str, dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
     "ltx-2.3": _family("LTX 2.3 (22B)", "~30-60s", "cheap", "22B model with native audio generation. Affordable.",  # docs expose no enums
                        "fal-ai/ltx-2.3-22b/text-to-video", "fal-ai/ltx-2.3-22b/image-to-video", audio=True, negative=True, seed=True),
+    # Fast endpoints: duration is an integer enum (6..20 even) — snapped, sent as JSON int; i2v ladders 720p→2160p; no `seed` key.
+    "ltx-2.5": _family("LTX 2.5", "~30-90s", "cheap", "Lightricks open-source audio-video model. Native audio, up to 20s / 4K (i2v), camera-motion presets.",
+                       "lightricks/ltx-2.5/text-to-video/fast", "lightricks/ltx-2.5/image-to-video/fast", duration_int=True, aspect_ratios=("16:9", "9:16"),
+                       resolutions=("720p", "1080p", "1440p", "2160p"), resolution_aliases={"2k": "1440p", "4k": "2160p"},
+                       durations=(6, 20), duration_enum=tuple(range(6, 21, 2)), duration_cap_by_resolution={"1440p": 10, "2160p": 10}, audio=True),
     "pixverse-v6": _family("Pixverse v6", "~30-90s", "cheap", "Affordable. Negative prompts. 1-15s durations.", "fal-ai/pixverse/v6/text-to-video",
                            "fal-ai/pixverse/v6/image-to-video", resolutions=("360p", "540p", "720p", "1080p"), durations=(1, 15), audio=True, negative=True, seed=True),
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
@@ -44,7 +51,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                                  resolutions=("480p", "720p"), durations=(4, 15), audio=True),
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": _family("Veo 3.1", "~60-120s", "premium", "Google DeepMind. Cinematic, native audio, strong prompt adherence.", "fal-ai/veo3.1",
-                      "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 6, 8),
+                      "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 8), duration_enum=(4, 6, 8),
                       duration_suffix="s", audio=True, negative=True, seed=True),  # wants "4s" not "4"
     "seedance-2.0": _family("Seedance 2.0", "~60-120s", "premium", "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",  # no "auto" aspect, no `seed`
                             "bytedance/seedance-2.0/text-to-video", "bytedance/seedance-2.0/image-to-video", aspect_ratios=_SIX_ASPECTS,
@@ -74,27 +81,64 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                                 "xai/grok-imagine-video/v1.5/text-to-video", "xai/grok-imagine-video/v1.5/image-to-video", duration_int=True,
                                 image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),  # aspect is t2v-only
                                 resolutions=("480p", "720p", "1080p"), durations=(1, 15), audio_native=True),
-    "gemini-omni-flash": _family("Gemini Omni Flash (via FAL)", "~60-120s", "premium", "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
-                                 None, "google/gemini-omni-flash/image-to-video", duration_int=True, aspect_ratios=("16:9", "9:16"), durations=(3, 10), audio_native=True),
+    # v1.1 (Aug 2026) added text-to-video and a 360p-4k resolution enum; v1.0 was image-only.
+    "gemini-omni-flash": _family("Gemini Omni Flash 1.1 (via FAL)", "~60-120s", "premium", "Google. Text & image to video with native audio, physics-grounded motion, up to 4K, 3-10s.",
+                                 "google/gemini-omni-flash/v1.1/text-to-video", "google/gemini-omni-flash/v1.1/image-to-video", duration_int=True,
+                                 aspect_ratios=("16:9", "9:16"), resolutions=("360p", "720p", "1080p", "4k"), durations=(3, 10), audio_native=True),
+    # Kling 3.0 core tiers: t2v declares aspect_ratio, i2v derives it from `start_image_url`; string duration enum "3".."15";
+    # generate_audio is a real toggle (default on, audio-on costs more); no resolution or seed keys in the v3 schemas.
+    "kling-v3": _family("Kling 3.0 (Standard)", "~60-180s", "premium", "Kuaishou frontier core model. Cinematic motion, native audio, 3-15s.",
+                        "fal-ai/kling-video/v3/standard/text-to-video", "fal-ai/kling-video/v3/standard/image-to-video", image_param_key="start_image_url",
+                        image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True, negative=True),
+    "kling-v3-pro": _family("Kling 3.0 Pro", "~60-180s", "premium", "Kling 3.0 top quality tier. Cinematic motion, native audio, 3-15s.",
+                            "fal-ai/kling-video/v3/pro/text-to-video", "fal-ai/kling-video/v3/pro/image-to-video", image_param_key="start_image_url",
+                            image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True, negative=True),
     "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
                            "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
                            durations=(3, 15), audio=True, negative=True, seed=True),
-    "happy-horse": _family("Happy Horse 1.0", "~60-120s", "premium", "Alibaba. New model, sparse public docs — conservative defaults.",
-                           "alibaba/happy-horse/text-to-video", "alibaba/happy-horse/image-to-video", audio_native=True, seed=True),
+    # Kling O3: t2v declares aspect_ratio, i2v derives it from the image; string duration 3-15; generate_audio is a real toggle
+    # (default off, audio-on costs more); no resolution or seed keys in the O3 schema.
+    "kling-o3": _family("Kling O3 (Standard)", "~60-180s", "premium", "Kuaishou frontier. Multi-shot native storytelling, optional audio, 3-15s.",
+                        "fal-ai/kling-video/o3/standard/text-to-video", "fal-ai/kling-video/o3/standard/image-to-video",
+                        image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True),
+    # Wan 3.0: i2v takes `start_image_url`; both modalities accept aspect_ratio (schema default "adaptive" is left to the endpoint);
+    # integer duration 2-30 (None = smart duration); the audio toggle key is `audio`, not `generate_audio`; `seed` on both endpoints.
+    "wan-3.0": _family("Wan 3.0", "~60-180s", "premium", "Alibaba latest gen. 2-30s clips, native audio, up to 1080p, lip-sync.",
+                       "alibaba/wan-3.0/text-to-video", "alibaba/wan-3.0/image-to-video", image_param_key="start_image_url", duration_int=True,
+                       audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"), resolutions=("480p", "720p", "1080p"),
+                       durations=(2, 30), audio=True, seed=True),
+    "wan-3.0-prime": _family("Wan 3.0 Prime", "~60-180s", "premium", "Alibaba premium tier. Faster iteration, higher fidelity, 2-30s, native audio.",
+                             "alibaba/wan-3.0-prime/text-to-video", "alibaba/wan-3.0-prime/image-to-video", image_param_key="start_image_url",
+                             duration_int=True, audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"),
+                             resolutions=("480p", "720p", "1080p"), durations=(2, 30), audio=True, seed=True),
+    # v1.1 publishes the full schema: integer duration 3-15, nine aspect ratios (t2v only — i2v follows the image), 720p/1080p,
+    # `seed` on both endpoints, audio always on (no generate_audio key).
+    "happy-horse": _family("Happy Horse 1.1", "~60-120s", "premium", "Alibaba flagship. 1080p, native audio + multilingual lip-sync, 3-15s, nine aspect ratios.",
+                           "alibaba/happy-horse/v1.1/text-to-video", "alibaba/happy-horse/v1.1/image-to-video", duration_int=True,
+                           image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "5:4", "4:5"),
+                           resolutions=("720p", "1080p"), durations=(3, 15), audio_native=True, seed=True),
 }
 
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
 
 
-def _clamp_duration(durations: Tuple[int, ...], duration: Optional[int]) -> Optional[int]:
-    """Clamp into a ``(min, max)`` range (None stays None: endpoint default) or snap to the nearest enum entry (None → first).
-    Range heuristic: a 2-tuple of ints with a gap > 1."""
-    if len(durations) == 2 and all(isinstance(d, int) for d in durations) and durations[1] - durations[0] > 1:
-        return None if duration is None else max(durations[0], min(durations[1], duration))
-    return durations[0] if duration is None else min(durations, key=lambda d: abs(d - duration))
+def _clamp_duration(family: dict[str, Any], duration: Optional[int], resolution: Optional[str] = None) -> Optional[int]:
+    """Snap to the nearest ``duration_enum`` entry when the family declares one, else clamp into the ``durations``
+    ``(min, max)`` range; None stays None (endpoint default). A ``duration_cap_by_resolution`` ceiling for the resolved
+    *resolution* is applied last (fal rejects LTX 2.5 >10s at 1440p/2160p)."""
+    if duration is None:
+        return None
+    enum = family.get("duration_enum")
+    if enum:
+        clamped = min(enum, key=lambda d: abs(d - duration))
+    else:
+        lo, hi = family["durations"]
+        clamped = max(lo, min(hi, duration))
+    cap = (family.get("duration_cap_by_resolution") or {}).get(resolution)
+    return clamped if cap is None else min(clamped, cap)
 
 
-def _modalities(meta: Dict[str, Any]) -> List[str]:
+def _modalities(meta: dict[str, Any]) -> list[str]:
     return [m for m in ("text", "image") if meta[f"{m}_endpoint"]]
 
 
@@ -114,7 +158,7 @@ def _normalize_family_key(c: str) -> Optional[str]:
     return hit[0] if hit else None
 
 
-def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+def _resolve_family(explicit: Optional[str]) -> tuple[str, dict[str, Any]]:
     """Decide which FAL family to use. Returns ``(family_id, meta)``."""
     import os
     try:
@@ -133,12 +177,12 @@ def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, FAL_FAMILIES[DEFAULT_MODEL]
 
 
-def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[str], duration: Optional[int], aspect_ratio: str,
-                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> Dict[str, Any]:
+def _build_payload(family: dict[str, Any], *, prompt: str, image_url: Optional[str], duration: Optional[int], aspect_ratio: str,
+                   resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare (unsupported enums → endpoint default)."""
     resolved = (family.get("resolution_aliases") or {}).get((resolution or "").lower(), resolution)
-    clamped = _clamp_duration(family["durations"], duration) if family["durations"] else None
-    payload: Dict[str, Any] = {key: value for ok, key, value in (
+    clamped = _clamp_duration(family, duration, resolved) if family["durations"] else None
+    payload: dict[str, Any] = {key: value for ok, key, value in (
         (prompt, "prompt", prompt),
         (image_url, family.get("image_param_key") or "image_url", image_url),
         # Newer endpoints declare no `seed` and the managed gateway forwards whatever we send — gate on the family.
@@ -147,7 +191,7 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
         (family["resolutions"] and resolved in family["resolutions"], "resolution", resolved),
         # FAL's queue API types duration as a string ("8" not 8) unless the family says int; veo3.1 also wants a unit suffix.
         (clamped is not None, "duration", clamped if family.get("duration_int") else f"{clamped}{family.get('duration_suffix', '')}"),
-        (family["audio"] and audio is not None, "generate_audio", bool(audio)),
+        (family["audio"] and audio is not None, family.get("audio_param_key") or "generate_audio", bool(audio)),  # Wan 3.0 calls it `audio`
         (family["negative"] and negative_prompt, "negative_prompt", negative_prompt),
     ) if ok}
     for key in family.get("image_drop_keys", ()) if image_url else ():  # keys the i2v endpoint rejects outright
@@ -157,7 +201,7 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
     return payload
 
 
-def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
+def _video_url_from_result(result: Any) -> tuple[Any, Optional[str]]:
     """Return ``(video_field, url)`` from a FAL result dict (url None if absent)."""
     video = result.get("video") if isinstance(result, dict) else None
     url = video.get("url") if isinstance(video, dict) else video if isinstance(video, str) else None
@@ -166,6 +210,10 @@ def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
 
 _fal_client: Any = None
 _fal_client_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Managed FAL gateway (Nous Subscription)
+# ---------------------------------------------------------------------------
 
 _managed_fal_video_client: Any = None
 _managed_fal_video_client_config: Any = None
@@ -219,17 +267,22 @@ def _get_managed_fal_video_client(managed_gateway):
         return _managed_fal_video_client
 
 
-def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
+def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
     """Submit via direct credentials or the managed queue gateway; ``.get()`` blocks."""
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_video_gateway()
     if managed_gateway is None:
         return client.submit(endpoint, arguments=arguments, headers=headers)
+    from tools.fal_common import (
+        _extract_http_status, _managed_fal_billing_error, submit_managed_fal_with_rate_limit_retry,
+    )
     try:
-        return _get_managed_fal_video_client(managed_gateway).submit(endpoint, arguments=arguments, headers=headers)
+        return submit_managed_fal_with_rate_limit_retry(
+            lambda request_headers: _get_managed_fal_video_client(managed_gateway).submit(
+                endpoint, arguments=arguments, headers=request_headers),
+            what="video endpoint", name=endpoint)
     except Exception as exc:
-        from tools.fal_common import _extract_http_status, _managed_fal_billing_error
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
             billing = _managed_fal_billing_error(exc, "endpoint")
@@ -251,13 +304,13 @@ def _upscale_video(video_url: str, source_request_id: Optional[str] = None) -> O
     """Best-effort SeedVR2 upscale; returns the new URL or None (never raises)."""
     try:
         logger.info("Upscaling video with SeedVR2 (%dx)...", UPSCALER_FACTOR)
-        arguments: Dict[str, Any] = {"video_url": video_url, "upscale_mode": "factor", "upscale_factor": UPSCALER_FACTOR}
+        arguments: dict[str, Any] = {"video_url": video_url, "upscale_mode": "factor", "upscale_factor": UPSCALER_FACTOR}
         if _resolve_managed_fal_video_gateway() is not None:
             if not source_request_id:
                 raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
             arguments["source_request_id"] = source_request_id
         result = _submit_fal_video_request(UPSCALER_ENDPOINT, arguments).get()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Video upscale failed: %s", exc)
         return None
     _video, url = _video_url_from_result(result)
@@ -274,7 +327,7 @@ _MODALITY_MISSING_MSG = {
 }
 
 
-def _fal_error(error: str, error_type: str, prompt: str, model: str = "", aspect_ratio: str = "") -> Dict[str, Any]:
+def _fal_error(error: str, error_type: str, prompt: str, model: str = "", aspect_ratio: str = "") -> dict[str, Any]:
     return error_response(error=error, error_type=error_type, provider="fal", model=model, prompt=prompt, aspect_ratio=aspect_ratio)
 
 
@@ -288,10 +341,10 @@ class FALVideoGenProvider(VideoGenProvider):
         # A stored-but-broken selection raises the selection-naming ValueError; report unavailable, never break the picker.
         try:
             return _fal_video_available()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": fid, **{k: meta[k] for k in ("display", "speed", "strengths", "price", "tier")}, "modalities": _modalities(meta),
                  **({"min_duration": min(d), "max_duration": max(d)} if (d := meta["durations"]) else {})}
                 for fid, meta in FAL_FAMILIES.items()]
@@ -299,17 +352,17 @@ class FALVideoGenProvider(VideoGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Happy Horse, Grok Imagine, "
+                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # RESOLVED family's surface so the dynamic tool schema gates params on what the selected model honors; union fallback (never raises).
         try:
             # Falls back to the cross-family union if resolution fails (never raises). See #97057.
             _family_id, family = _resolve_family(None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             family = None
         if family:
             durations = family["durations"] or (1, 1)
@@ -324,10 +377,10 @@ class FALVideoGenProvider(VideoGenProvider):
                 "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
 
     def generate(
-        self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         duration: Optional[int] = None, aspect_ratio: str = "16:9", resolution: str = "720p", negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None, seed: Optional[int] = None, upscale: Optional[bool] = None, **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:  # a stored selection that cannot run gets the honest selection-naming error from the strict resolver
             if not _fal_video_available():
                 return _fal_error(_NO_BACKEND_MSG, "auth_required", prompt)
@@ -363,7 +416,7 @@ class FALVideoGenProvider(VideoGenProvider):
         if upscale and not upscaled:
             logger.warning("Video upscale pass failed — returning native-resolution video")
         url = upscaled_url or url
-        extra: Dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled, **({"upscale_factor": UPSCALER_FACTOR} if upscaled else {})}
+        extra: dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled, **({"upscale_factor": UPSCALER_FACTOR} if upscaled else {})}
         if isinstance(video, dict):  # native-resolution file_size no longer applies after an upscale
             extra.update({k: video[k] for k in (("content_type",) if upscaled else ("file_size", "content_type")) if video.get(k)})
         return success_response(
@@ -376,11 +429,3 @@ class FALVideoGenProvider(VideoGenProvider):
 def register(ctx) -> None:
     """Plugin entry point — wire ``FALVideoGenProvider`` into the registry."""
     ctx.register_video_gen_provider(FALVideoGenProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

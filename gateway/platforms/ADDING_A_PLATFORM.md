@@ -83,6 +83,13 @@ plugin guide with code examples and hook documentation.
 
 ---
 
+Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, factory)`): call
+`self._wire_plugin_handlers(native_client)` once in `connect()` before your own catch-all handlers. The base
+class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
+plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
+adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
+catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
+
 ## Built-in Path (Core Contributors Only)
 
 Checklist for integrating a platform directly into the Hermes core.
@@ -141,11 +148,18 @@ def check_<platform>_requirements() -> bool:
 
 ### Key patterns to follow
 
-- Use `self.build_source(...)` to construct `SessionSource` objects
+- Use `self.build_source(...)` to construct `SessionSource` objects (never `SessionSource(...)`
+  directly — the transport provenance and profile route are stamped there)
+- Derive every adapter-side session key (batching, per-chat queues, busy detection) through
+  `self._event_session_key(event)` / `self._source_session_key(source)`, never the free
+  `build_session_key()` — the seam keys in the owning profile's namespace under a multiplexed
+  gateway; the advisory lint (`scripts/check_profile_scope_patterns.py`, pattern P32) flags both
 - Call `self.handle_message(event)` to dispatch inbound messages to the gateway
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
+- Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter
+  attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
 - Implement reconnection with exponential backoff + jitter for streaming connections
@@ -163,17 +177,20 @@ class Platform(Enum):
     YOUR_PLATFORM = "your_platform"
 ```
 
-Add env var loading in `_apply_env_overrides()`:
+Add a row to `_ENV_STEPS` in `gateway/config_env.py` (source order = application order);
+`_Cred` enables the platform when the named env vars resolve and copies them into `extra`:
 
 ```python
-# Your Platform
-your_token = os.getenv("YOUR_PLATFORM_TOKEN")
-if your_token:
-    if Platform.YOUR_PLATFORM not in config.platforms:
-        config.platforms[Platform.YOUR_PLATFORM] = PlatformConfig()
-    config.platforms[Platform.YOUR_PLATFORM].enabled = True
-    config.platforms[Platform.YOUR_PLATFORM].token = your_token
+_Cred(Platform.YOUR_PLATFORM, ("YOUR_PLATFORM_TOKEN",), token="YOUR_PLATFORM_TOKEN"),
+_Home(Platform.YOUR_PLATFORM, "YOUR_PLATFORM_HOME_CHANNEL"),
 ```
+
+Every read goes through `gateway/config.py::_getenv` (the active profile's secret scope when one
+is bound, `os.environ` otherwise). **Never `os.getenv` here and never write `os.environ`**: under
+`gateway.multiplex_profiles` the process env is the DEFAULT profile's, so a raw read enables your
+platform for the wrong profile with the wrong credentials, and a write pins one profile's policy
+process-wide (first profile wins). Adapter-side reads use `gateway.platforms._shared.get_scoped_secret`
+/ `extra_or_secret`.
 
 Update `get_connected_platforms()` if your platform doesn't use token/api_key
 (e.g., WhatsApp uses `enabled` flag, Signal uses `extra` dict).
@@ -200,20 +217,22 @@ before `connect()`.
 
 ---
 
-## 4. Authorization Maps (`gateway/run.py`)
+## 4. Authorization Maps (`gateway/pairing.py`, `gateway/authz_mixin.py`)
 
-Add to BOTH dicts in `_is_user_authorized()`:
+Add the allowlist var to `_PLATFORM_ALLOWLIST_ENV` in `gateway/pairing.py`;
+`authz_mixin.py` derives `_ALLOWED_USERS_ENV` / `_ALLOW_ALL_ENV` from it (the `*_ALLOW_ALL_USERS`
+name is computed, not hand-listed):
 
 ```python
-platform_env_map = {
+_PLATFORM_ALLOWLIST_ENV = {
     ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOWED_USERS",
-}
-platform_allow_all_map = {
-    ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOW_ALL_USERS",
+    "your_platform": "YOUR_PLATFORM_ALLOWED_USERS",
 }
 ```
+
+Plugin adapters declare `allowed_users_env` / `allow_all_env` on `ctx.register_platform` instead.
+`_is_user_authorized()` reads every gate through `_shared.platform_gate_env` (`_auth_env`), which
+answers from the routed profile's secret scope under multiplex — never add an `os.getenv` here.
 
 ---
 

@@ -28,13 +28,18 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 #: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
-#: both (clamps to low); ``max`` is gpt-5.6-only.
+#: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
 # GPT-6 Astra is account-gated and its Responses API accepts no disable/minimal
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
+#: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
+GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
+#: GPT-6.1 Sol takes Astra's ``low..max`` ladder (``none`` 400s, live 2026-09-29) without Astra's
+#: account gating, so it stays in the static catalogs.
+NO_DISABLE_TIER_PREFIXES: tuple[str, ...] = ("gpt-6.1-sol",)
 DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
     {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
 )
@@ -94,12 +99,12 @@ def is_astra_model(model: Optional[str]) -> bool:
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
-    if is_astra_model(model):
-        return CODEX_ASTRA_EFFORTS
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
+        return CODEX_ASTRA_EFFORTS
     return (
         CODEX_GPT56_EFFORTS
-        if "gpt-5.6" in bare or bare in DAYBREAK_MODEL_IDS
+        if "gpt-5.6" in bare or bare.startswith(GPT6_TIER_PREFIXES) or bare in DAYBREAK_MODEL_IDS
         else CODEX_LEGACY_EFFORTS
     )
 
@@ -148,12 +153,73 @@ def clamp_effort(
     return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)
 
 
+def route_supported_efforts(
+    provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
+    model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
+    downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
+    accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
+    ``max`` rejects it), so it is sent verbatim there."""
+    if (provider or "").strip().lower() == "openai-codex":
+        supported = codex_supported_efforts(model)
+        return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
+    return OPENAI_COMPAT_WIRE_EFFORTS
+
+
+def effort_display_label(
+    effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> str:
+    """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
+    it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
+    ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
+    requested = str(effort or "").strip().lower()
+    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
+    return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
+
+
 def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     """The user's explicit effort, or None (absent/malformed config, no effort, or reasoning
     disabled) — callers then omit the wire field."""
     if not isinstance(reasoning_config, dict) or reasoning_config.get("enabled") is False:
         return None
     return str(reasoning_config.get("effort") or "").strip().lower() or None
+
+
+def tokenhub_effort(requested: Optional[str]) -> str:
+    """TokenHub's top-level ``reasoning_effort``: ``high`` when no level was chosen, else the
+    request clamped to low/medium/high. Shared by the tencent-tokenhub profile and the host-based
+    branch base_url-only agents take; callers handle thinking-off themselves."""
+    return "high" if requested is None else clamp_effort(requested, TOKENHUB_EFFORTS)
+
+
+def generic_nested_reasoning(reasoning_config: Optional[dict]) -> dict:
+    """The OpenAI-compatible ``extra_body`` fallback for a route whose profile declares no
+    reasoning shape: ``{}`` with no config, ``{"reasoning": {"enabled": False}}`` when disabled,
+    else ``{"reasoning": {"enabled": True, "effort": <effort or medium>}}``. Used by auxiliary
+    calls, and by a profile hook that wants that fallback (``handles_reasoning`` skips it for any
+    profile overriding ``build_api_kwargs_extras``)."""
+    if not reasoning_config or not isinstance(reasoning_config, dict):
+        return {}
+    if reasoning_config.get("enabled") is False:
+        return {"reasoning": {"enabled": False}}
+    return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}
+
+
+def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
+    """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
+    configs without an effort pass through untouched).
+
+    The entry clamp for an OpenAI-compatible chat-completions request builder: Hermes-internal
+    ``ultra`` never reaches a wire (#89503 main transport, #112010 aux/MoA), while provider
+    profiles with narrower vocabularies clamp again downstream. Unset stays unset.
+    """
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    clamped = clamp_effort(effort, supported) if effort else effort
+    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
 
 
 def thinking_toggle_extras(
@@ -182,19 +248,10 @@ def thinking_toggle_extras(
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
-    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation, shared by the
-    opencode-zen and opencode-free profiles (low/high/max only; anything else 400s)."""
+    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation for the
+    opencode-zen profile (low/high/max only; anything else 400s)."""
     if (model or "").strip().rsplit("/", 1)[-1].lower() != "x-preview-f-free":
         return {}, {}
     effort = requested_effort(reasoning_config)
     clamped = clamp_effort(None if effort == "none" else effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
     return ({}, {"reasoning_effort": clamped}) if clamped in OX_ALPHA_EFFORTS else ({}, {})
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CODEX_RESPONSES_EFFORTS: tuple[str, ...] = CODEX_GPT56_EFFORTS
-# ---- END PLUGIN-COMPAT ----

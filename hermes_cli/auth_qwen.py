@@ -26,13 +26,13 @@ def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
 
 
-def _read_qwen_cli_tokens() -> Dict[str, Any]:
+def _read_qwen_cli_tokens() -> dict[str, Any]:
     from hermes_cli.auth import _qwen_cli_auth_path
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
         raise _qwen_err("Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.", "qwen_auth_missing")
     try:
-        data = json.loads(auth_path.read_text(encoding="utf-8"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise _qwen_err(
             f"Failed to read Qwen CLI credentials from {auth_path}: {exc}", "qwen_auth_read_failed",
@@ -42,7 +42,7 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     return data
 
 
-def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
+def _save_qwen_cli_tokens(tokens: dict[str, Any]) -> Path:
     from hermes_cli.auth import _qwen_cli_auth_path, _save_private_json
     auth_path = _qwen_cli_auth_path()
     _save_private_json(auth_path, tokens, sort_keys=True)
@@ -57,7 +57,7 @@ def _qwen_access_token_is_expiring(expiry_date_ms: Any, skew_seconds: int = QWEN
     return (time.time() + max(0, int(skew_seconds))) * 1000 >= expiry_ms
 
 
-def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20.0) -> Dict[str, Any]:
+def _refresh_qwen_cli_tokens(tokens: dict[str, Any], timeout_seconds: float = 20.0) -> dict[str, Any]:
     refresh_token = str(tokens.get("refresh_token", "") or "").strip()
     if not refresh_token:
         raise _qwen_err(f"Qwen OAuth refresh token missing. {_RERUN}", "qwen_refresh_token_missing")
@@ -101,12 +101,12 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     return refreshed
 
 
-def _mark_qwen_oauth_active(creds: Dict[str, Any]) -> None:
+def _mark_qwen_oauth_active(creds: dict[str, Any]) -> None:
     """Set active_provider to qwen-oauth with a minimal state entry (tokens stay in the Qwen CLI file)."""
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _save_provider_state
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state: Dict[str, Any] = {"base_url": str(creds["base_url"])} if creds.get("base_url") else {}
+        state: dict[str, Any] = {"base_url": str(creds["base_url"])} if creds.get("base_url") else {}
         _save_provider_state(auth_store, "qwen-oauth", state)
         _save_auth_store(auth_store)
 
@@ -114,7 +114,7 @@ def _mark_qwen_oauth_active(creds: Dict[str, Any]) -> None:
 def resolve_qwen_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from hermes_cli.auth import _qwen_cli_auth_path, _refresh_qwen_cli_tokens
     tokens = _read_qwen_cli_tokens()
     should_refresh = bool(force_refresh)
@@ -134,7 +134,7 @@ def resolve_qwen_runtime_credentials(
     }
 
 
-def get_qwen_auth_status() -> Dict[str, Any]:
+def get_qwen_auth_status() -> dict[str, Any]:
     from hermes_cli.auth import _qwen_cli_auth_path, resolve_qwen_runtime_credentials
     auth_path = _qwen_cli_auth_path()
     try:

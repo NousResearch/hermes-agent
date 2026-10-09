@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 from agent.turn_context import _reset_per_turn_agent_state
 from agent.turn_request_assembly import assemble_api_request
@@ -71,7 +72,7 @@ def test_chat_projection_heals_genuinely_empty_nonfinal_rows(monkeypatch, conten
     agent.api_mode = "chat_completions"
     assert _request(agent, rows) == [
         {"role": "user", "content": "do it"},
-        {"role": "assistant", "content": "[response interrupted]"},
+        {"role": "assistant", "content": _INTERRUPTED_PLACEHOLDER},
         {"role": "user", "content": "finish"},
     ]
     assert rows == before

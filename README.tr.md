@@ -224,7 +224,7 @@ Katkılarınızı bekliyoruz! Geliştirme kurulumu, kod stili ve PR süreci içi
 
 Aktivasyon, günlük kullanım, bağımlılık değişiklikleri ve ortamdan çıkış için
 [PM geliştirici iş akışı](website/docs/reference/package-management.md#developer-workflow) ile başlayın.
-[Ayrı test ortamı ve doğrulama komutları](CONTRIBUTING.md#development-setup) bölümünü takip edin.
+[Ayrı test ortamı ve doğrulama komutları](CONTRIBUTING.tr.md#gelistirme-kurulumu) bölümünü takip edin.
 
 ---
 

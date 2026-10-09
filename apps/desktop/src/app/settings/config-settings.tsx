@@ -95,6 +95,55 @@ interface ConfigSettingsProps {
   importInputRef: React.RefObject<HTMLInputElement | null>
 }
 
+// The ElevenLabs voice list behind the speech picker, fetched per scope; best-effort — an
+// unavailable or failed lookup leaves the picker on its free-text fallback.
+function useElevenLabsVoices(scopeProfile: string | undefined) {
+  const [options, setOptions] = useState<string[] | null>(null)
+  const [labels, setLabels] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+
+    getElevenLabsVoices(scopeProfile)
+      .then(result => {
+        if (cancelled || !result.available) {
+          return
+        }
+
+        setOptions(result.voices.map(voice => voice.voice_id))
+        setLabels(Object.fromEntries(result.voices.map(voice => [voice.voice_id, voice.label])))
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOptions(null)
+          setLabels({})
+        }
+      })
+
+    return () => void (cancelled = true)
+    // scopeProfile is constant per mount (the inner component is keyed on it).
+  }, [scopeProfile])
+
+  return [options, labels] as const
+}
+
+// Base key when following the active profile (matches every pre-existing consumer); suffixed only
+// for an explicit scope override.
+function schemaQueryKey(scopeProfile: string | undefined) {
+  return scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)]
+}
+
+// Which bespoke section block this view shows; within a section, `subpage` narrows to one group.
+function configSectionFlags(sectionId: ConfigSettingsProps['activeSectionId'], subpage: string | undefined) {
+  return {
+    showAttachments: sectionId === 'chat' && (subpage === undefined || subpage === 'attachments'),
+    showDesktopSettings: sectionId === 'advanced' && (subpage === undefined || subpage === 'desktop'),
+    showModelSettings: sectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage)),
+    showRepoScan: sectionId === 'workspace' && subpage === 'projects',
+    showSharedMetrics: sectionId === 'safety' && subpage === 'privacy'
+  }
+}
+
 function ConfigSettingsInner({
   activeSectionId,
   subpage,
@@ -136,17 +185,13 @@ function ConfigSettingsInner({
     isError: schemaFailed,
     refetch: refetchSchema
   } = useQuery({
-    // Base key when following the active profile (matches every pre-existing
-    // consumer); suffixed only for an explicit scope override.
-    queryKey:
-      scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
+    queryKey: schemaQueryKey(scopeProfile),
     queryFn: () => getHermesConfigSchema(scopeProfile),
     staleTime: 5 * 60 * 1000
   })
 
   const schema = schemaResponse?.fields ?? null
-  const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
-  const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
+  const [elevenLabsVoiceOptions, elevenLabsVoiceLabels] = useElevenLabsVoices(scopeProfile)
   const saveVersionRef = useRef(0)
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
@@ -187,29 +232,6 @@ function ConfigSettingsInner({
     setSaveVersion(0)
     saveQueueRef.current = Promise.resolve()
   })
-
-  useEffect(() => {
-    let cancelled = false
-
-    getElevenLabsVoices(scopeProfile)
-      .then(result => {
-        if (cancelled || !result.available) {
-          return
-        }
-
-        setElevenLabsVoiceOptions(result.voices.map(voice => voice.voice_id))
-        setElevenLabsVoiceLabels(Object.fromEntries(result.voices.map(voice => [voice.voice_id, voice.label])))
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setElevenLabsVoiceOptions(null)
-          setElevenLabsVoiceLabels({})
-        }
-      })
-
-    return () => void (cancelled = true)
-    // scopeProfile is constant per mount (the inner component is keyed on it).
-  }, [scopeProfile])
 
   // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
@@ -310,13 +332,8 @@ function ConfigSettingsInner({
     ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
-  const showModelSettings =
-    activeSectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage))
-
-  const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
-  const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
-  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
-  const showRepoScan = activeSectionId === 'workspace' && subpage === 'projects'
+  const { showAttachments, showDesktopSettings, showModelSettings, showRepoScan, showSharedMetrics } =
+    configSectionFlags(activeSectionId, subpage)
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.

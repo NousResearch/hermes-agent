@@ -680,3 +680,104 @@ class TestStatusEndpointTopology:
             monkeypatch.setattr(
                 web_server.app.state, "auth_required", False, raising=False
             )
+
+
+# ---------------------------------------------------------------------------
+# Writer-identity filtering on the OWN-profile map (card t_bca1c81e, B2)
+# ---------------------------------------------------------------------------
+
+class TestOwnProfilePlatformOwnership:
+    """A platform verdict may not survive a gateway life boundary (reader side).
+
+    The boot write restamps the record's ``pid``/``start_time`` for the NEW life while a
+    FLAT platform entry (the default profile's own adapters, ``api_server`` included) can
+    still carry the previous, dead life's verdict. ``_project_gateway_platforms`` reads the
+    RAW map, so a live-pid record with a foreign-life ``api_server`` entry used to certify a
+    dead API server healthy. The single ownership predicate now filters the own-profile map
+    before projection, so the docstring's claim is finally true.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_status_does_not_count_a_foreign_life_platform_healthy(self, monkeypatch):
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 4242)
+        monkeypatch.setattr(
+            _gw_status,
+            "read_runtime_status",
+            lambda path=None: {
+                "pid": 4242, "start_time": 777, "gateway_state": "starting",
+                "platforms": {
+                    # The flat key the boot write preserves; written by a DEAD life (P1/T1).
+                    "api_server": {"state": "connected", "writer_pid": 999,
+                                   "writer_start_time": 111},
+                    # Written by the CURRENT life (P2/T2) — untouched.
+                    "telegram": {"state": "connected", "writer_pid": 4242,
+                                 "writer_start_time": 777},
+                    # A current-life entry the writer already downgraded across the boundary:
+                    # it projects its honest ``starting`` state, and the process-recon
+                    # ``stale_*`` keys never reach the public endpoint.
+                    "slack": {"state": "starting", "stale_state": "connected",
+                              "stale_writer_pid": 999, "stale_writer_start_time": 111,
+                              "writer_pid": 4242, "writer_start_time": 777},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            _web_server_gateway, "_load_configured_gateway_platforms",
+            lambda: {"api_server", "telegram", "slack"},
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        platforms = data["gateway_platforms"]
+        assert platforms.get("api_server", {}).get("state") != "connected"
+        assert platforms["telegram"]["state"] == "connected"
+        assert "writer_pid" not in platforms["telegram"]
+        assert platforms["slack"]["state"] == "starting"
+        assert "stale_state" not in platforms["slack"]
+        assert "stale_writer_pid" not in platforms["slack"]
+        # The verdict path counts only the current life's live entries as healthy.
+        assert data["components"]["platforms"]["configured"] == 2
+        assert data["components"]["platforms"]["connected"] == 1
+
+    def test_messaging_payload_does_not_report_a_foreign_life_platform_connected(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.status import GatewayLiveness
+        import hermes_cli.web_routers.messaging as messaging
+
+        entry = next(e for e in messaging._messaging_platform_catalog()
+                     if e["id"] == "telegram")
+        runtime = {
+            "pid": 4242, "start_time": 777, "gateway_state": "starting",
+            "platforms": {"telegram": {"state": "connected", "writer_pid": 999,
+                                       "writer_start_time": 111}},
+        }
+        monkeypatch.setattr(
+            messaging, "resolve_gateway_liveness",
+            lambda **kwargs: GatewayLiveness(running=True, pid=4242, source="pid"))
+
+        payload = messaging._messaging_platform_payload(
+            entry, {"TELEGRAM_BOT_TOKEN": "x"}, runtime,
+            scoped=True, profile_home=tmp_path)
+
+        # The dead life's verdict is not the current config's: the platform is not served.
+        assert payload["state"] != "connected"
+        assert payload["state"] == "pending_restart"

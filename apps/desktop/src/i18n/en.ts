@@ -10,8 +10,8 @@ import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
+import { enSettingsRepoScan } from './en_repo_scan'
 import { enSharedMetrics } from './en_shared_metrics'
-import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -1159,21 +1159,7 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
-    uninstallSection: enUninstallSection,
-    repoScan: {
-      title: 'Repository Discovery Scan',
-      hint: 'The same scan the sidebar runs when the Projects view opens or the window regains focus.',
-      scanNow: 'Scan now',
-      scanning: 'Scanning...',
-      found: (count: number) => `Found ${count} repositories.`,
-      foundOne: 'Found 1 repository.',
-      disabled: 'Turn on Automatic Repository Discovery to scan.',
-      noRoots: 'Nothing to scan: set a Working Directory above, or add a discovery root.',
-      noBridge: 'This build cannot read the local disk, so there is nothing to scan.',
-      rejected: 'The backend refused the scan: its discovery settings differ from this page.',
-      failed: 'The scan failed. Try again.',
-      failedWith: (detail: string) => `The scan failed: ${detail}`
-    },
+    ...enSettingsRepoScan,
     poolLimits: {
       warmBotBackendsAria: 'Warm bot backends',
       warmBotBackendsTitle: 'Warm Bot Backends',

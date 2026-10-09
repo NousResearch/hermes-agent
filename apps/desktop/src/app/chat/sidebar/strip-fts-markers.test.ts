@@ -4,7 +4,7 @@
 // rows titled ">>>foo<<<" (Aug 2026 desktop audit).
 import { describe, expect, it } from 'vitest'
 
-import { stripFtsMarkers } from './index'
+import { stripFtsMarkers } from './search-results'
 
 describe('stripFtsMarkers', () => {
   it('strips highlight markers around the matched term', () => {

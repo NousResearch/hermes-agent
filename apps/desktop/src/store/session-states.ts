@@ -1470,7 +1470,14 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
     }
 
     visibleTileScope = nextScope
-    $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+    const incoming = tilesByProfile[nextScope] ?? []
+
+    // Stored tiles are runtime-less, but the wiring cache still maps each to
+    // the runtime it had before this scope was swapped out — one the backend
+    // has since detached — and resumeTile's warm path would repaint that
+    // frozen snapshot. Drop the bindings so each tile re-resumes.
+    sessionTileDelegate()?.dropRuntimeBindings?.(new Set(incoming.map(tile => tile.storedSessionId)))
+    $sessionTiles.set([...incoming, ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
   }
 
   $activeGatewayProfile.subscribe(restoreVisibleTiles)

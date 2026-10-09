@@ -22,7 +22,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     from pm.packages import uv_cache_dir
     from pm.runtime import runtime_environment
 
-    project = project or Path(__file__).resolve().parent
+    project = (project or Path(__file__).resolve().parent).resolve()
     destination = destination.absolute()
     env = runtime_environment()
     environment = PythonEnvironment(
@@ -38,7 +38,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
         environment.create()
         if wheelhouse is None:
             environment.sync(snapshot, locked=True, no_default_groups=True,
-                             no_install_project=True, timeout=600)
+                             no_install_project=True, timeout=600, lockfile=project / "uv.lock")
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)
     checked = subprocess.run(

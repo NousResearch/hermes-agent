@@ -246,7 +246,8 @@ text, the focus topic or error messages.
   `blocked:ineffective`). Under the session lease, `session_ownership_lost`
   (`skipped`) means another path already rotated the session, and
   `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
-  mean that state could not be read.
+  mean that state could not be read. `empty_transcript` (`aborted`) means the
+  engine returned no messages, so nothing was committed.
 - `attempt_id` names this attempt and `session_id` the session it started
   in, even when the attempt then adopts a rotated child session or unwinds
   after a newer attempt (a stall fallback) has begun. An attempt

@@ -1850,7 +1850,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.26.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.0.10" },
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
-    { name = "mistralai", marker = "extra == 'mistral'", url = "https://files.pythonhosted.org/packages/1b/48/2c5c4f853dec32a625c1a3d23809b80cf2e135c3441fe1764f72910dfea9/mistralai-2.4.5-py3-none-any.whl" },
+    { name = "mistralai", marker = "extra == 'mistral'", url = "https://files.pythonhosted.org/packages/74/2a/d9952a97596ff9570ff7f486084ebfc5637b1bcf62084b97c0f8415713fc/mistralai-2.4.8-py3-none-any.whl" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "nemo-relay", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.6.0,<0.7" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
@@ -2472,8 +2472,8 @@ wheels = [
 
 [[package]]
 name = "mistralai"
-version = "2.4.5"
-source = { url = "https://files.pythonhosted.org/packages/1b/48/2c5c4f853dec32a625c1a3d23809b80cf2e135c3441fe1764f72910dfea9/mistralai-2.4.5-py3-none-any.whl" }
+version = "2.4.8"
+source = { url = "https://files.pythonhosted.org/packages/74/2a/d9952a97596ff9570ff7f486084ebfc5637b1bcf62084b97c0f8415713fc/mistralai-2.4.8-py3-none-any.whl" }
 dependencies = [
     { name = "eval-type-backport" },
     { name = "httpx" },
@@ -2485,7 +2485,7 @@ dependencies = [
     { name = "typing-inspection" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/48/2c5c4f853dec32a625c1a3d23809b80cf2e135c3441fe1764f72910dfea9/mistralai-2.4.5-py3-none-any.whl", hash = "sha256:bf3b6550258ab16dec8547b90e9c18bebf9099f55b7fc25a884bf0bbeffced0f" },
+    { url = "https://files.pythonhosted.org/packages/74/2a/d9952a97596ff9570ff7f486084ebfc5637b1bcf62084b97c0f8415713fc/mistralai-2.4.8-py3-none-any.whl", hash = "sha256:edc445c8b5edf332d45db6c708cd1e4d3f62e6eba5d2e8bf3969bdc5117f6472" },
 ]
 
 [package.metadata]
@@ -2493,6 +2493,8 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'workflow-payload-offloading'", specifier = ">=12.4.0,<13.0.0" },
     { name = "aioboto3", marker = "extra == 'workflow-payload-offloading-s3'", specifier = ">=12.4.0,<13.0.0" },
     { name = "authlib", marker = "extra == 'agents'", specifier = ">=1.5.2,<2.0" },
+    { name = "azure-identity", extras = ["aio"], marker = "extra == 'workflow-payload-offloading'", specifier = ">=1.25.0,<2.0.0" },
+    { name = "azure-identity", extras = ["aio"], marker = "extra == 'workflow-payload-offloading-azure'", specifier = ">=1.25.0,<2.0.0" },
     { name = "azure-storage-blob", extras = ["aio"], marker = "extra == 'workflow-payload-offloading'", specifier = ">=12.28.0,<13.0.0" },
     { name = "azure-storage-blob", extras = ["aio"], marker = "extra == 'workflow-payload-offloading-azure'", specifier = ">=12.28.0,<13.0.0" },
     { name = "cryptography", marker = "extra == 'workflow-payload-encryption'", specifier = ">=41.0.0,<47.0.0" },
@@ -2504,15 +2506,19 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jsonpath-python", specifier = ">=1.0.6" },
     { name = "mcp", marker = "extra == 'agents'", specifier = ">=1.0,<2.0" },
+    { name = "msgpack", marker = "extra == 'workflow-payload-compression'", specifier = ">=1.1.0,<2.0.0" },
     { name = "opentelemetry-api", specifier = ">=1.33.1,<2.0.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'telemetry'", specifier = ">=1.33.1,<2.0.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'telemetry'", specifier = ">=1.33.1,<2.0.0" },
     { name = "opentelemetry-semantic-conventions", specifier = ">=0.60b1,<0.61" },
     { name = "pydantic", specifier = ">=2.11.2" },
     { name = "python-dateutil", specifier = ">=2.8.2" },
     { name = "requests", marker = "extra == 'gcp'", specifier = ">=2.32.3" },
     { name = "typing-inspection", specifier = ">=0.4.0" },
     { name = "websockets", marker = "extra == 'realtime'", specifier = ">=13.0" },
+    { name = "zstandard", marker = "extra == 'workflow-payload-compression'", specifier = ">=0.25.0,<0.26" },
 ]
-provides-extras = ["agents", "gcp", "realtime", "workflow-payload-encryption", "workflow-payload-offloading", "workflow-payload-offloading-azure", "workflow-payload-offloading-gcs", "workflow-payload-offloading-s3"]
+provides-extras = ["agents", "gcp", "realtime", "telemetry", "workflow-payload-compression", "workflow-payload-encryption", "workflow-payload-offloading", "workflow-payload-offloading-azure", "workflow-payload-offloading-gcs", "workflow-payload-offloading-s3"]
 
 [[package]]
 name = "modal"
@@ -2694,6 +2700,7 @@ wheels = [
 name = "nemo-relay"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/db/44d7258ee620c5cce6dc588983fcb11be3ee03ae71089a65686c14d9ee02/nemo_relay-0.6.0.tar.gz", hash = "sha256:f3d3088019609bc953357b5598a47481dc3e7dc8f11ecf27002ede251f37eb7b", size = 1071046, upload-time = "2026-08-03T14:55:49.702Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/25/65/d320016505457cc30971f575e8dadffb923b7cfc780ab8bb25a4ce9d305c/nemo_relay-0.6.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:ad5dae6febf6532d7b113abc2a404679c8feffc499df3034b93d9a078185d2bb", size = 9917779, upload-time = "2026-07-22T20:07:48.961Z" },
     { url = "https://files.pythonhosted.org/packages/ae/c0/f33250e71c4206da1b339072893f9a1e39295fe1aceb9a2fef4b8620a0f2/nemo_relay-0.6.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c0cd9570f64c6956fe3bfb82af1cdb3ee70cb50b51098cdb0de831c3f9b4e904", size = 8888375, upload-time = "2026-07-22T20:07:51.049Z" },

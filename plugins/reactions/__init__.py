@@ -67,11 +67,9 @@ def _read_config() -> Tuple[bool, bool, str, str, str]:
     failure = os.getenv("HERMES_REACTIONS_FAILURE", DEFAULT_FAILURE)
 
     try:
-        import yaml
+        from hermes_cli.config import load_config_readonly
 
-        config_path = os.path.join(os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")), "config.yaml")
-        with open(config_path, encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
+        config = load_config_readonly()
         plugins_enabled = config.get("plugins", {}).get("enabled") or []
         if plugins_enabled:
             enabled = "reactions" in plugins_enabled

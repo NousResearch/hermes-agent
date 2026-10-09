@@ -60,23 +60,14 @@ logger = logging.getLogger(__name__)
 def _read_immediate_ack_config() -> Tuple[bool, str]:
     """Return ``(enabled, ack_text)`` from the live config.
 
-    Reads the YAML directly so this works in any environment (gateway,
-    CLI, test harness) without depending on a loaded config singleton.
+    Uses the canonical read-only config loader in gateway, CLI, and tests.
     Failure to read returns ``(False, "On it…")`` — the plugin is
     opt-in and the default-off behaviour is the safe fallback.
     """
     try:
-        import yaml  # type: ignore[import-untyped]
+        from hermes_cli.config import load_config_readonly
 
-        # ``HERMES_HOME`` is the env var the gateway sets; fall back to
-        # ``~/.hermes`` which is the canonical runtime root.
-        hermes_home = os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        config_path = os.path.join(hermes_home, "config.yaml")
-        if not os.path.isfile(config_path):
-            return False, "On it…"
-
-        with open(config_path, "r", encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
+        cfg = load_config_readonly()
 
         extra = (
             cfg.get("platforms", {})

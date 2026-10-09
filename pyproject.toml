@@ -373,7 +373,7 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 [tool.uv.sources]
 # uv 0.11 cannot currently resolve mistralai from the simple index, while pip
 # publishing still requires the public version specifier in [project.optional-dependencies].
-mistralai = { url = "https://files.pythonhosted.org/packages/1b/48/2c5c4f853dec32a625c1a3d23809b80cf2e135c3441fe1764f72910dfea9/mistralai-2.4.5-py3-none-any.whl" }
+mistralai = { url = "https://files.pythonhosted.org/packages/74/2a/d9952a97596ff9570ff7f486084ebfc5637b1bcf62084b97c0f8415713fc/mistralai-2.4.8-py3-none-any.whl" }
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json"]

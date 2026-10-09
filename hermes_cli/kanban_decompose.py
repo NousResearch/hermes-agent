@@ -137,7 +137,7 @@ def _resolve_profile_from_cfg(
     fan-out; ``default_assignee`` catches children the decomposer can't route.
 
     A board value naming an unknown profile is skipped and the chain continues
-    to the global key rather than falling straight to ``fallback`` — a typo'd
+    to the global key rather than falling straight to ``fallback``, so a typo'd
     board override must not silently discard a valid global.
 
     The root's assignee sits before the active profile because the decomposer

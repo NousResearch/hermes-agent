@@ -118,7 +118,7 @@ def test_get_pin_collapsed_board_suppresses_override(client, home, monkeypatch):
     from hermes_cli import profiles as profiles_mod
     monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
     _make_board("tsa-mgmt")
-    # Point the pin at this board's own kanban.db — the pin-collapse topology.
+    # Point the pin at this board's own kanban.db, the pin-collapse topology.
     monkeypatch.setenv("HERMES_KANBAN_DB", str(kanban_db.kanban_db_path(board="tsa-mgmt")))
     _write_config(
         home,

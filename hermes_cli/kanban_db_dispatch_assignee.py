@@ -37,7 +37,7 @@ def resolve_default_assignee(
 
     Candidates are validated one at a time, in order: the board value (unless
     pin-collapsed) then the caller's global. A board value naming an unknown
-    profile no longer swallows that valid global — it falls through to it,
+    profile no longer swallows that valid global; it falls through to it,
     matching the ``board -> global -> built-in`` chain the other readers use.
     """
     # Late import: kanban_db_dispatch owns ``_kb`` / ``_profile_exists_fn`` and

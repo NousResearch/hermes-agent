@@ -61,7 +61,7 @@ const mount = () =>
 
 describe('orchestration panel (board scope)', () => {
   it('scopes to the effective board when no explicit selection is made', async () => {
-    // $boardSlug '' means "follow boards.current" — the panel must scope the
+    // $boardSlug '' means "follow boards.current": the panel must scope the
     // request there rather than silently reading the global.
     $boardSlug.set('')
     mount()

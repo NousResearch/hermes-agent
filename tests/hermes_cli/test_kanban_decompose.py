@@ -323,7 +323,7 @@ def test_resolve_profile_from_cfg_board_beats_global(kanban_home):
 
 def test_resolve_profile_from_cfg_board_unknown_profile_falls_back(kanban_home):
     """Review #135651: a board value naming no profile is skipped and the chain
-    continues to a valid global — it must not fall straight to the root."""
+    continues to a valid global; it must not fall straight to the root."""
     cfg = {"kanban": {
         "orchestrator_profile": "global-planner",
         "boards": {"tsa-mgmt": {"orchestrator_profile": "ghost"}},

@@ -190,9 +190,13 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     return prompt, injected
 
 
-def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
-    """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice."""
+def _load_cron_skill_parts(job: dict, skill_names: list[str], run_task_id: Optional[str] = None) -> list[str]:
+    """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice.
+    ``run_task_id``: the agent's tool task id for this run. Each loaded skill is recorded in the
+    skill_view dedup cache under it, so a later bare ``skill_view`` of the same unchanged skill
+    returns the short stub instead of re-sending content already in the prompt."""
     from tools.skills_tool import skill_view
+    from tools.skills_tool_dedup import _record_skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
     from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
@@ -221,7 +225,8 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             continue
 
         try:
-            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
+            lookup_name = normalize_skill_lookup_name(skill_name)
+            loaded = json.loads(skill_view(lookup_name))
         except (json.JSONDecodeError, TypeError):
             _skip("skill '%s' returned invalid JSON, skipping", skill_name)
             continue
@@ -246,6 +251,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             "",
             str(loaded.get("content") or "").strip()])
         _inject_skill_config(loaded, parts)
+        _record_skill_view(run_task_id, lookup_name, None, loaded)
 
     if skipped:
         parts.insert(0, (
@@ -282,7 +288,7 @@ _CRON_HINT = (
 
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
-    runtime_data_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None, run_task_id: Optional[str] = None,
 ) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
@@ -341,7 +347,7 @@ def _build_job_prompt(
             user_prompt=user_prompt,
         )
 
-    parts = _load_cron_skill_parts(job, skill_names)
+    parts = _load_cron_skill_parts(job, skill_names, run_task_id=run_task_id)
     stable_prefix = None
     if prompt:
         from agent.skill_commands import append_user_instruction

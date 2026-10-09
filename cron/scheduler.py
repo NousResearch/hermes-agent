@@ -2223,7 +2223,7 @@ _RunResult = tuple[bool, str, str, Optional[str]]
 
 def _prepare_job_prompt(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str], cancel_event,
-) -> tuple[Optional[_RunResult], Optional[str]]:
+    run_task_id: Optional[str] = None) -> tuple[Optional[_RunResult], Optional[str]]:
     """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
     result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
     injection block, empty prompt); otherwise ``prompt`` is set."""
@@ -2281,10 +2281,8 @@ def _prepare_job_prompt(
             return (True, silent_doc, SILENT_MARKER, None), None
 
     try:
-        prompt = _build_job_prompt(
-            job, prerun_script=prerun_script, extra_prompt=extra_prompt,
-            runtime_data_prompt=monitor_context,
-        )
+        prompt = _build_job_prompt(job, prerun_script=prerun_script, extra_prompt=extra_prompt,
+                                   runtime_data_prompt=monitor_context, run_task_id=run_task_id)
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
         logger.warning(
@@ -2545,7 +2543,9 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    execution_id = execution_id or job.get("execution_id") or uuid.uuid4().hex  # preloaded-skill dedup + scope
+    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event,
+                                        f"cron:{job_id}:{execution_id}")
     if early is not None:
         return early
     from run_agent import AIAgent

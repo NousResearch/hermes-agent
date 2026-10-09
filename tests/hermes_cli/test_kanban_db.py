@@ -202,6 +202,184 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+def test_promote_expired_scheduled_promotes_past_marker_and_leaves_future(kanban_home):
+    """``promote_expired_scheduled`` walks ``scheduled`` rows and only fires
+    on a ``SCHEDULED_UNTIL=<ISO8601>Z`` marker that has already elapsed.
+    Regression for t_76ca260a: the dispatcher tick used to skip the
+    ``scheduled`` lane entirely, so cards parked with an expired marker sat
+    there until a manual ``hermes kanban unblock``.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    with kbc.connect() as conn:
+        # 1. Expired marker — must auto-promote.
+        expired = kb.create_task(conn, title="expired", assignee="ops")
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime(
+            "SCHEDULED_UNTIL=%Y-%m-%dT%H:%M:%SZ past")
+        assert kb.schedule_task(conn, expired, reason=past) is True
+        assert kb.get_task(conn, expired).status == "scheduled"
+
+        # 2. Future marker — must stay parked.
+        future = kb.create_task(conn, title="future", assignee="ops")
+        ahead = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+            "SCHEDULED_UNTIL=%Y-%m-%dT%H:%M:%SZ future")
+        assert kb.schedule_task(conn, future, reason=ahead) is True
+        assert kb.get_task(conn, future).status == "scheduled"
+
+        # 3. No marker — purely manual schedule; must stay parked.
+        manual = kb.create_task(conn, title="manual", assignee="ops")
+        assert kb.schedule_task(conn, manual, reason="wait for human") is True
+        assert kb.get_task(conn, manual).status == "scheduled"
+
+        promoted = kb.promote_expired_scheduled(conn)
+        assert promoted == 1
+
+        assert kb.get_task(conn, expired).status == "ready"
+        assert kb.get_task(conn, future).status == "scheduled"
+        assert kb.get_task(conn, manual).status == "scheduled"
+
+        # The auto-promote is logged with the kernel's documented event
+        # taxonomy: the canonical ``unblocked`` event (from unblock_task)
+        # followed by our explicit ``auto_promoted_from_scheduled`` marker
+        # that records the marker expiry and how long past it we ran.
+        events = kb.list_events(conn, expired)
+        kinds = [e.kind for e in events]
+        assert "unblocked" in kinds
+        assert "auto_promoted_from_scheduled" in kinds
+        promo = next(e for e in events if e.kind == "auto_promoted_from_scheduled")
+        assert promo.payload is not None
+        assert "scheduled_until" in promo.payload
+        assert promo.payload["expired_by"] >= 0
+
+
+def test_promote_expired_scheduled_idempotent_on_second_call(kanban_home):
+    """A second tick must not re-promote or re-emit events: once the row is
+    out of ``scheduled``, the lookup misses and ``unblock_task`` returns
+    False (no row to update)."""
+    from datetime import datetime, timedelta, timezone
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="once", assignee="ops")
+        past = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
+            "SCHEDULED_UNTIL=%Y-%m-%dT%H:%M:%SZ past")
+        kb.schedule_task(conn, t, reason=past)
+
+        assert kb.promote_expired_scheduled(conn) == 1
+        assert kb.get_task(conn, t).status == "ready"
+        first_count = sum(
+            1 for e in kb.list_events(conn, t)
+            if e.kind == "auto_promoted_from_scheduled"
+        )
+
+        # Second call: nothing scheduled any more, nothing to do.
+        assert kb.promote_expired_scheduled(conn) == 0
+        second_count = sum(
+            1 for e in kb.list_events(conn, t)
+            if e.kind == "auto_promoted_from_scheduled"
+        )
+        assert second_count == first_count == 1
+
+
+def test_promote_expired_scheduled_rejects_naive_and_malformed_markers(kanban_home):
+    """Ambiguous timestamps (``2026-01-01T00:00:00`` with no zone, ``not-a-
+    date``, garbage) must NOT fire auto-promotion. The reason text is the
+    only source of truth and we must not guess."""
+    with kbc.connect() as conn:
+        naive = kb.create_task(conn, title="naive", assignee="ops")
+        assert kb.schedule_task(
+            conn, naive, reason="SCHEDULED_UNTIL=2026-01-01T00:00:00 no zone"
+        ) is True
+
+        garbage = kb.create_task(conn, title="garbage", assignee="ops")
+        assert kb.schedule_task(
+            conn, garbage, reason="SCHEDULED_UNTIL=not-a-date garbage"
+        ) is True
+
+        sibling = kb.create_task(conn, title="sibling-name", assignee="ops")
+        # The ``(?<![A-Z_])`` lookbehind must reject ``SCHEDULED_UNTIL_FOO=...``
+        # even though it shares the leading characters.
+        assert kb.schedule_task(
+            conn, sibling, reason="SCHEDULED_UNTIL_FOO=2020-01-01T00:00:00Z nope"
+        ) is True
+
+        assert kb.promote_expired_scheduled(conn) == 0
+        for tid in (naive, garbage, sibling):
+            assert kb.get_task(conn, tid).status == "scheduled"
+
+
+def test_promote_expired_scheduled_respects_blocked_parent_re_gate(kanban_home):
+    """A scheduled task with a still-open parent must land in ``todo``,
+    not ``ready`` — the parent-gate in ``unblock_task`` is what made the
+    auto-promote safe to wire in without skipping the dependency check.
+    After the parent reaches ``done`` the child is moved to ``ready``
+    (the same gate that produced ``todo`` is replayed)."""
+    from datetime import datetime, timedelta, timezone
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="ops")
+        child = kb.create_task(conn, title="child", assignee="ops")
+        kb.link_tasks(conn, parent, child)
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
+            "SCHEDULED_UNTIL=%Y-%m-%dT%H:%M:%SZ past")
+        kb.schedule_task(conn, child, reason=past)
+        assert kb.get_task(conn, child).status == "scheduled"
+
+        promoted = kb.promote_expired_scheduled(conn)
+        assert promoted == 1
+        # Parent is still in ready (not done/archived), so the child lands in todo.
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Complete the parent — the dependency-gate replays and the child
+        # lands in ready (this is the path ``link_tasks`` plus
+        # ``complete_task`` implement, not the auto-promote path).
+        kb.complete_task(conn, parent, result="parent done", summary="completed for child gate test")
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_dispatch_once_auto_promotes_expired_scheduled(kanban_home):
+    """End-to-end: ``dispatch_once`` is what the gateway cron ticks every
+    60s; it must run the auto-promote in the reclaim phase so the
+    promotion lands in the same tick that would otherwise observe an empty
+    ``ready`` lane. Acceptance criterion for t_76ca260a — ``scheduled`` rows
+    expire within one dispatcher tick (~90s).
+
+    The assignee must be a real installed profile so the dispatch lane
+    actually spawns it (``skipped_nonspawnable`` is reserved for unknown
+    assignees and would mask the assertion).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from hermes_cli.profiles import profile_exists
+
+    assignee = "ultron" if profile_exists("ultron") else next(
+        iter([p for p in ("default", "ultron", "friday") if profile_exists(p)]), None
+    )
+    if assignee is None:
+        pytest.skip("no installed profile available for end-to-end dispatch")
+
+    spawns: list[str] = []
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="auto-promote me", assignee=assignee)
+        past = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime(
+            "SCHEDULED_UNTIL=%Y-%m-%dT%H:%M:%SZ past")
+        kb.schedule_task(conn, t, reason=past)
+        assert kb.get_task(conn, t).status == "scheduled"
+
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert res.scheduled_promoted == 1, (
+            "dispatch_once must report the auto-promoted count so dashboards "
+            "and the cron can see the timer fired"
+        )
+        assert kb.get_task(conn, t).status == "running"
+        assert spawns == [t], "promoted card must be spawned in the same tick"
+
+
 
 
 

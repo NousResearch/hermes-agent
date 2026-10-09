@@ -2265,6 +2265,109 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     return promoted
 
 
+# Regex for the ``SCHEDULED_UNTIL=<ISO8601>`` marker in the ``reason`` text passed
+# to :func:`kanban_schedule`. The leading ``(?<![A-Z_])`` lookbehind prevents
+# partial matches like ``SCHEDULED_UNTIL_FOO=...`` from firing (a sibling marker
+# name a future spec might add); the trailing timezone group accepts ``Z``,
+# ``+HH:MM``, or fractional seconds.
+_SCHEDULED_UNTIL_RE = re.compile(
+    r"(?<![A-Z_])SCHEDULED_UNTIL=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
+)
+
+
+def _parse_scheduled_until(reason: Optional[str]) -> Optional[int]:
+    """Extract the ``SCHEDULED_UNTIL=<ISO8601>`` marker from a schedule reason.
+
+    Returns the absolute UTC epoch seconds for the marker, or ``None`` if the
+    reason is missing, the marker is absent, or the timestamp is unparseable.
+    The reason text is treated as a marker-only convention; unknown formats are
+    silently dropped (no parser fires when the timer contract is broken, so an
+    operator typo doesn't cascade into auto-promote failures).
+    """
+    if not reason:
+        return None
+    match = _SCHEDULED_UNTIL_RE.search(reason)
+    if match is None:
+        return None
+    raw = match.group(1)
+    # ``datetime.fromisoformat`` accepts the ``Z`` suffix only on Python 3.11+,
+    # so swap it for an explicit UTC offset to keep the parser hermetic across
+    # Python versions. The regex already pins the trailing ``Z`` or
+    # ``+HH:MM`` / ``+HHMM`` form so this branch only runs when needed.
+    iso = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+    try:
+        from datetime import datetime
+        parsed = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        # Naive timestamps in free text are ambiguous (UTC vs local);
+        # refuse to guess. The kernel contract is "ISO 8601 with offset" — a
+        # bare ``2026-01-01T00:00:00`` without ``Z`` is operator error.
+        return None
+    return int(parsed.timestamp())
+
+
+def promote_expired_scheduled(conn: sqlite3.Connection, *, now: Optional[int] = None) -> int:
+    """Auto-promote ``scheduled`` tasks whose ``SCHEDULED_UNTIL`` has elapsed.
+
+    ``recompute_ready`` only walks ``('todo', 'blocked')``, so a task parked in
+    ``scheduled`` (e.g. by a soak/heartbeat cron parking a hand-off until a
+    verification timestamp) sits there indefinitely until a human runs
+    ``hermes kanban unblock``. This closes the loop for the documented
+    ``SCHEDULED_UNTIL=<ISO8601>`` marker on the schedule reason (see
+    ``kanban_tools_schemas.KANBAN_SCHEDULE_SCHEMA``).
+
+    For every task with ``status='scheduled'``:
+
+    1. Find the most recent ``scheduled`` event and parse the reason text.
+    2. If the marker is absent or unparseable, leave the task parked — the
+       schedule was deliberate and the operator decides when to ``unblock``.
+    3. If the marker is in the future (``> now``), leave it parked.
+    4. Otherwise call :func:`unblock_task` (the canonical ``scheduled``-exit
+       path) which already handles parent re-gating and writes an ``unblocked``
+       event with the resumed status.
+
+    Returns the number of tasks promoted on this call.
+
+    Opens its own IMMEDIATE txn — call OUTSIDE any write txn (same contract
+    as :func:`recompute_ready`). Safe to call every dispatcher tick: the row
+    scan is bounded by the cardinality of ``scheduled`` tasks (typically 0-3
+    per board) and each event lookup uses ``idx_events_task``.
+    """
+    if now is None:
+        now = int(time.time())
+    promoted = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE status = 'scheduled' "
+            "ORDER BY id ASC"
+        ).fetchall()
+        for row in rows:
+            task_id = row["id"]
+            ev = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'scheduled' "
+                "ORDER BY id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            if ev is None:
+                # No recorded schedule event (legacy or hand-rolled UPDATE).
+                # The contract requires a reason; leave it for an operator.
+                continue
+            payload = _json_dict(ev["payload"])
+            reason = payload.get("reason") if isinstance(payload, dict) else None
+            until = _parse_scheduled_until(reason)
+            if until is None or until > now:
+                continue
+            if unblock_task(conn, task_id, allow_nested=True):
+                promoted += 1
+                _append_event(
+                    conn, task_id, "auto_promoted_from_scheduled",
+                    {"scheduled_until": until, "expired_by": now - until},
+                )
+    return promoted
+
+
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3721,11 +3824,17 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, allow_nested: bool = False,
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first.
+
+    ``allow_nested=True`` opens the write txn as a savepoint — used by the
+    dispatcher tick's ``promote_expired_scheduled`` loop, which batches many
+    such transitions under one outer txn (t_76ca260a)."""
     now = int(time.time())
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=allow_nested):
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

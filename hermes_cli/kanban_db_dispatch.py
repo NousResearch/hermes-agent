@@ -105,6 +105,11 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    scheduled_promoted: int = 0
+    """``scheduled`` cards whose ``SCHEDULED_UNTIL`` marker elapsed and were
+    auto-promoted to ``ready``/``todo`` this tick (t_76ca260a). Distinct from
+    ``promoted`` so dashboards / telemetry can distinguish parent-gating
+    promotions from time-based schedule promotions."""
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
@@ -2203,6 +2208,11 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    # Auto-promote ``scheduled`` rows whose SCHEDULED_UNTIL marker has elapsed
+    # (see kanban_db.promote_expired_scheduled). One tick in the reclaim phase
+    # so the promotions land before the dispatch lane considers ready work this
+    # tick — a 60s gap is the documented acceptance criterion (t_76ca260a).
+    result.scheduled_promoted = _kb.promote_expired_scheduled(conn)
 
 
 def _tick_spawn_budget(

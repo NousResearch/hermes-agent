@@ -297,7 +297,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
     """Changing profile context cannot inherit another store's lock depth."""
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile_b = profile_env["global"] / "profiles" / "reviewer"

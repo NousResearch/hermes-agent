@@ -49,7 +49,7 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
-def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Path) -> Dict[str, Any]:
+def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
     Stays in the dashboard adapter layer on purpose: cron/jobs.py is the source
@@ -122,7 +122,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
     # profile's copy over per-iteration order (#51721): collect all jobs first,
     # then resolve duplicates by id with default-profile priority, rather than
     # keeping whichever copy happened to be seen first during the profile loop.
-    all_jobs: List[Dict[str, Any]] = []
+    all_jobs: list[dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
@@ -132,8 +132,8 @@ def _list_cron_jobs_sync(profile: str = "all"):
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
 
-    by_id: Dict[str, Dict[str, Any]] = {}
-    unkeyed: List[Dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
     for job in all_jobs:
         if not isinstance(job, dict):
             continue
@@ -233,7 +233,7 @@ def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
     return preview[: max_chars - 1].rstrip() + "…"
 
 
-def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+def _cron_job_last_run_timestamp(job: Optional[dict[str, Any]]) -> Optional[float]:
     if not isinstance(job, dict):
         return None
     raw = job.get("last_run_at")
@@ -250,7 +250,7 @@ def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[floa
     return None
 
 
-def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+def _cron_output_status_label(job: Optional[dict[str, Any]]) -> str:
     if not isinstance(job, dict):
         return ""
     status = str(job.get("last_status") or "").strip()
@@ -259,7 +259,7 @@ def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
     return status.replace("_", " ").upper()
 
 
-def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> Dict[str, Any]:
+def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> dict[str, Any]:
     return {
         "title": title,
         "preview": preview or None,
@@ -287,7 +287,7 @@ def _iso_to_epoch(text: Any) -> Optional[float]:
         return None
 
 
-def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
+def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     """Terminal execution-ledger rows for the job, newest first.
 
     Each script-only fire creates exactly one ledger row (claimed → completed /
@@ -301,7 +301,7 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
         return []
-    terminal: List[Dict[str, Any]] = []
+    terminal: list[dict[str, Any]] = []
     for row in rows:
         if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
             continue
@@ -316,7 +316,7 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
 
 
 def _execution_contains(
-    attempt: Dict[str, Any], started_at: float, grace_seconds: float = 300.0,
+    attempt: dict[str, Any], started_at: float, grace_seconds: float = 300.0,
 ) -> bool:
     """Whether an output doc's timestamp falls inside a ledger attempt's window.
 
@@ -344,11 +344,11 @@ def _execution_status_title(status: str, error: str, fallback: str) -> str:
 
 
 def _list_cron_output_runs(
-    job: Optional[Dict[str, Any]],
+    job: Optional[dict[str, Any]],
     canonical_job_id: str,
     profile: Optional[str],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """SessionDB-less run history for jobs that never create agent sessions.
 
     Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
@@ -375,7 +375,7 @@ def _list_cron_output_runs(
 
     executions = _owner_profile_executions(canonical_job_id)
     represented: set = set()
-    runs: List[Dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
 
     for path in files[:limit]:
         started_at = _cron_output_run_timestamp(path)
@@ -450,7 +450,7 @@ _CRON_RUN_SESSION_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
 _OWNERSHIP_CLAIM_GRACE_SECONDS = 5.0
 
 
-def _live_inflight_execution(canonical_job_id: str) -> Optional[Dict[str, Any]]:
+def _live_inflight_execution(canonical_job_id: str) -> Optional[dict[str, Any]]:
     """The job's claimed/running ledger attempt under a live owner, or None (fail closed).
 
     Must run inside the owner-home scope so it reads the OWNER's executions.db.
@@ -463,7 +463,7 @@ def _live_inflight_execution(canonical_job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _run_owned_by(session: Dict[str, Any], inflight: Optional[Dict[str, Any]]) -> bool:
+def _run_owned_by(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -> bool:
     """Whether the scheduler still OWNS this never-closed run session (#88443).
 
     ``is_active`` is a 300s activity window, so a live run inside a long tool call
@@ -482,7 +482,7 @@ def _run_owned_by(session: Dict[str, Any], inflight: Optional[Dict[str, Any]]) -
     return claimed_at is not None and started_at >= claimed_at - _OWNERSHIP_CLAIM_GRACE_SECONDS
 
 
-def cron_run_scheduler_owned(session: Dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
+def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
     """``scheduler_owned`` for one session row, or None when it is not a cron run session.
 
     The session-detail endpoint stamps this so a client re-checking a run it
@@ -554,10 +554,10 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
 
 def _reconcile_cron_runs(
-    session_runs: List[Dict[str, Any]],
-    doc_runs: List[Dict[str, Any]],
+    session_runs: list[dict[str, Any]],
+    doc_runs: list[dict[str, Any]],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Merge session rows and output-doc rows per execution, newest first.
 
     An agent fire writes BOTH a session and an output doc for the same
@@ -581,7 +581,7 @@ def _reconcile_cron_runs(
     return merged[:limit]
 
 
-def _doc_matches_session(doc_ts: float, session: Dict[str, Any], grace_seconds: float) -> bool:
+def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: float) -> bool:
     """Whether an output doc belongs to a session's run.
 
     The doc is written when the run FINISHES, so its filename timestamp sits

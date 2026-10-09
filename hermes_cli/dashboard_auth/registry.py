@@ -77,20 +77,20 @@ def restore_registration(
     return True
 
 
-def list_providers(*, scope: Optional[str] = None) -> List[DashboardAuthProvider]:
+def list_providers(*, scope: Optional[str] = None) -> list[DashboardAuthProvider]:
     """All registered providers, in registration order."""
     with _lock:
         return list(_merged(scope).values())
 
 
-def list_token_providers() -> List[DashboardAuthProvider]:
+def list_token_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_token`` True, in registration order. The ``token_auth`` seam
     consults only these, so OAuth/password-only providers are never asked to ``verify_token``;
     empty => a token-authable route fails closed (401)."""
     return [p for p in list_providers() if getattr(p, "supports_token", False)]
 
 
-def list_session_providers() -> List[DashboardAuthProvider]:
+def list_session_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_session`` True (interactive cookie sessions); the login page,
     /auth/login and the gate's verify/refresh loops use only these."""
     return [p for p in list_providers() if getattr(p, "supports_session", True)]

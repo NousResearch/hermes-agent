@@ -68,6 +68,45 @@ It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
 
+## Local test build
+
+To build the commit you have checked out, without a tag and without pushing:
+
+```sh
+scripts/build-bundle.sh            # macOS DMG/ZIP, Linux AppImage
+```
+
+```powershell
+scripts\build-bundle.ps1           # Windows sideload MSIX
+scripts\build-bundle.ps1 -Store    # Windows Store MSIX
+```
+
+The checkout must be clean, because the build packages `HEAD`. Both scripts pass
+`--clean` to the driver. The driver removes the previous outputs only after it holds
+the checkout lock, so a second run cannot delete a build that is still going. Output
+goes to `apps/desktop/release/`.
+
+The scripts do not sign or notarize. They remove `AZURE_SIGN_*` (Windows) and the
+`CSC_*`/`APPLE_*` signing variables (macOS, Linux) from the build, and restore your
+Windows shell afterward. macOS can still sign nested binaries when it finds a
+Developer ID in your keychain.
+
+`-Store` allocates a local claim tag `rc.<N>-vX.Y.Z` (N starts at 900) for the
+next patch after the newest published stable tag, and deletes it when the
+build ends. The tag is never pushed. Each architecture builds on its own host.
+`-Store` prints the claim timestamp as `HERMES_RELEASE_EPOCH=<n>`. To combine the
+x64 and arm64 Store packages, copy both `Store-*.msix` files into one
+`apps/desktop/release`, then run this on that host:
+
+```powershell
+$env:HERMES_RELEASE_EPOCH = '<n from the build>'
+node scripts/bundle-store-msixbundle.mjs --tag vX.Y.Z
+```
+
+Use the epoch from ONE claim for both architectures. The tag is already deleted, so
+without the epoch the bundle step finds no release timestamp. On Windows, use a
+short checkout path such as `C:\hsb`.
+
 ## Complete native build
 
 From a clean checkout whose `HEAD` equals the release tag, run:
@@ -280,15 +319,17 @@ relaunch waiter is registered before the install request. Unknown checks,
 cancellation and request failures do not count as successful updates. Native
 acceptance requires a Store-acquired package or flight, not a sideloaded MSIX.
 
-On Windows bundles, every dependency generation is built on the bundled Python
-and nothing runs a venv's own executables. A venv's `Scripts\python.exe` is a
-redirector outside the package that starts the packaged interpreter, which
-Windows refuses (WinError 5) to a process without package identity. The app and
-execution aliases keep their signed bundled launchers, and children that need a
+On Windows bundles, PM builds dependency generations on a verified writable
+copy of the bundled Python in its user store. A venv's `Scripts\python.exe` is a
+redirector outside the package. Windows refuses it (WinError 5) when it starts the
+packaged interpreter, and uv runs that redirector during every lock, sync and
+`pip check`. Hermes never runs a venv's own executables. The app and execution
+aliases keep their signed bundled launchers, and children that need a
 generation's packages start through `pm.environments.venv_command`: the bundled
 Python with `-S` plus `pm/_venv_entry.py`, which attaches the generation's
-site-packages. The new venv's generated console scripts must not replace the
-launchers, and are kept off `PATH`.
+site-packages. Processes started from the bundled Python keep package access to
+the bundled git, rg and the PM worker. The new venv's generated console scripts
+must not replace the launchers, and are kept off `PATH`.
 
 Sideload stable versions are `X.Y.Z.0`. Canary revisions derive from elapsed
 minutes after the stable baseline. The release script rejects ambiguous or

@@ -147,7 +147,7 @@ def _sale_pct(current: Any, original: Any) -> int | None:
     cur, orig = _price_float(current, positive=True), _price_float(original, positive=True)
     if cur is None or orig is None or cur >= orig:
         return None
-    return int(round((1.0 - (cur / orig)) * 100))
+    return round((1.0 - (cur / orig)) * 100)
 
 
 def compute_sale_discount(prompt: str, completion: str, original: Any) -> tuple[int, str, str] | None:

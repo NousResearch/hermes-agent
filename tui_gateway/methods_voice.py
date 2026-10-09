@@ -784,7 +784,7 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        import hermes_cli.voice  # noqa: F401  (a missing module must answer 5026, not die in a thread)
+        import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()

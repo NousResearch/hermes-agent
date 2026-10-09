@@ -42,7 +42,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: ARG002 — quiet
+    def log_message(self, *args):
         pass
 
 

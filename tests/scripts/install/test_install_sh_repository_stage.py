@@ -97,6 +97,55 @@ def test_commit_pin_must_come_from_the_installed_branch(tmp_path):
     assert _git(tmp_path / "install", "rev-parse", "HEAD") == on_branch
 
 
+def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
+    """A pinned install (the desktop bootstrap passes --commit) checks out only the pin.
+
+    Every file the tip changed is fetched and written once for the tip, then again for the pin.
+    """
+    origin = _origin(tmp_path / "origin")
+    pin = _git(origin, "rev-parse", "HEAD")
+    _commit(origin, "tip")
+    _git(origin, "config", "uploadpack.allowFilter", "true")
+    trace = tmp_path / "trace.log"
+    tracer = f'git() {{ printf "%s\\n" "$*" >> {shlex.quote(trace.as_posix())}; command git "$@"; }}'
+    result = _stage(tmp_path, origin, commit=pin, prelude=tracer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    install = tmp_path / "install"
+    assert _git(install, "rev-parse", "HEAD") == pin
+    assert (install / "README").read_text() == "one"
+    assert _git(install, "status", "--porcelain") == ""
+    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    assert "--no-checkout" in clone.split()
+    unpinned_root = tmp_path / "unpinned"
+    unpinned_root.mkdir()
+    trace.unlink()
+    result = _stage(unpinned_root, origin, prelude=tracer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (unpinned_root / "install" / "README").read_text() == "tip"
+    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    assert "--no-checkout" not in clone.split()
+
+
+def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
+    """A pinned fresh clone pins before it publishes: a refused or failed pin leaves no empty checkout."""
+    origin = _origin(tmp_path / "origin")
+    pin = _git(origin, "rev-parse", "HEAD")
+    _commit(origin, "tip")
+    _git(origin, "checkout", "-qb", "side")
+    off_branch = _commit(origin, "side")
+    _git(origin, "checkout", "-q", "main")
+    refused = _stage(tmp_path, origin, commit=off_branch)
+    assert refused.returncode != 0
+    assert "is not on branch main" in refused.stdout + refused.stderr
+    assert not (tmp_path / "install").exists()
+    failing_checkout = 'git() { [ "${3:-}" = checkout ] && return 1; command git "$@"; }'
+    failed = _stage(tmp_path, origin, commit=pin, prelude=failing_checkout)
+    assert failed.returncode != 0
+    assert "no checkout published" in failed.stdout + failed.stderr
+    assert not (tmp_path / "install").exists()
+    assert not list(tmp_path.glob(".hermes-clone-*"))
+
+
 def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"

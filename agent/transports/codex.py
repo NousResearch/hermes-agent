@@ -207,7 +207,7 @@ def _openai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "openai-native"
-    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+    except Exception:
         return False
 
 
@@ -907,6 +907,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)

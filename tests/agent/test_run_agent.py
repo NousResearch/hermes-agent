@@ -2279,7 +2279,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+        monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
 
         class _NoInstallBackend:
             def required_env(self, name):
@@ -2780,7 +2780,7 @@ class TestHandleMaxIterations:
             # on user/assistant messages.
             if m.get("role") == "tool":
                 assert "name" not in m, m
-        assert [m for m in sent_msgs if m.get("role") == "user"][0]["name"] == "sylvain"
+        assert next(m for m in sent_msgs if m.get("role") == "user")["name"] == "sylvain"
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
@@ -4196,7 +4196,7 @@ class TestRunConversation:
         protect_first = agent.context_compressor.protect_first_n
         protect_last = agent.context_compressor.protect_last_n
         prefill = []
-        for _i in range((protect_first + protect_last + 4)):
+        for _i in range(protect_first + protect_last + 4):
             prefill.append({"role": "user", "content": f"q{_i}"})
             prefill.append({"role": "assistant", "content": f"a{_i}"})
 
@@ -6154,7 +6154,7 @@ class TestStreamingApiCall:
             headers={"x-request-id": "req-plain-text"},
             content=(
                 f"event: error\ndata: {provider_message}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 
@@ -6196,7 +6196,7 @@ class TestStreamingApiCall:
             content=(
                 "event: error\n"
                 f"data: request validation failed: token={secret}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 

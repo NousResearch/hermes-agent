@@ -8,6 +8,7 @@ import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
+import { esRepoScanDescriptions, esRepoScanLabels } from './es_repo_scan'
 import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
@@ -1205,12 +1206,7 @@ export const esOverrides = {
         personality: 'Personalidad',
         showReasoning: 'Bloques de razonamiento'
       },
-      desktop: {
-        repoScanEnabled: 'Detección automática de repositorios',
-        repoScanNested: 'Detectar también repositorios anidados',
-        repoScanRoots: 'Carpetas de búsqueda de repositorios',
-        repoScanExcludePaths: 'Rutas de repositorio excluidas'
-      },
+      ...esRepoScanLabels,
       agent: {
         maxTurns: 'Pasos máximos del agente',
         imageInputMode: 'Adjuntos de imagen',
@@ -1383,13 +1379,7 @@ export const esOverrides = {
         personality: 'Estilo predeterminado del asistente para sesiones nuevas.',
         showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.'
       },
-      desktop: {
-        repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',
-        repoScanNested: 'Mostrar los repositorios dentro de otro que ya tengas como subproyectos.',
-        repoScanRoots: 'Carpetas adicionales que buscar. Si está vacío se busca tu Directorio de trabajo.',
-        repoScanExcludePaths:
-          'Carpetas que se omitirán, junto con todos sus subdirectorios, durante la detección de repositorios.'
-      },
+      ...esRepoScanDescriptions,
       timezone: 'Identificador de zona horaria IANA. Vacío usa la zona horaria del sistema.',
       browser: {
         useRealProfile:

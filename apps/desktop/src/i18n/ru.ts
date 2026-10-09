@@ -7,6 +7,7 @@ import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
+import { ruRepoScanDescriptions, ruRepoScanLabels } from './ru_repo_scan'
 import { ruSharedMetrics } from './ru_shared_metrics'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
@@ -739,12 +740,7 @@ export const ruOverrides = {
         personality: 'Личность',
         showReasoning: 'Блоки рассуждений'
       },
-      desktop: {
-        repoScanEnabled: 'Автоматическое обнаружение репозиториев',
-        repoScanNested: 'Также находить вложенные репозитории',
-        repoScanRoots: 'Корни обнаружения репозиториев',
-        repoScanExcludePaths: 'Исключаемые пути репозиториев'
-      },
+      ...ruRepoScanLabels,
       agent: {
         maxTurns: 'Макс. шагов агента',
         imageInputMode: 'Вложения изображений',
@@ -911,12 +907,7 @@ export const ruOverrides = {
         personality: 'Стиль ассистента по умолчанию для новых сеансов.',
         showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.'
       },
-      desktop: {
-        repoScanEnabled: 'Сканировать локальные папки на Git-репозитории, чтобы показывать их в Проектах.',
-        repoScanNested: 'Показывать репозитории внутри уже добавленного как подпроекты.',
-        repoScanRoots: 'Дополнительные папки для сканирования. Пусто — сканируется Рабочий каталог.',
-        repoScanExcludePaths: 'Папки и их вложенные, которые нужно пропускать при обнаружении репозиториев.'
-      },
+      ...ruRepoScanDescriptions,
       timezone: 'Идентификатор часового пояса IANA. Пустое значение — системный часовой пояс.',
       agent: {
         imageInputMode: 'Управляет тем, как вложения изображений отправляются модели.',

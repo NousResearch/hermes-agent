@@ -76,11 +76,17 @@ def _pin_route_rejection(pinned_row: Dict[str, Any], session_entry: SessionEntry
 class GatewayNotificationRouteGuardMixin:
     """Route ownership for pinned async-delegation completions."""
 
+    async def _watch_owner_db_for_key(self, session_key: str):
+        """Open the process event's owning profile DB, independent of ambient runtime scope."""
+        from hermes_state import AsyncSessionDB
+
+        owner_db = await asyncio.to_thread(self.session_store._db_for_key, session_key)
+        return AsyncSessionDB(owner_db) if owner_db is not None else None
+
     async def _watch_event_route_verdict(self, evt: dict) -> str:
         """Return owned, drop, or retry for a queued process watch event's spawning route."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
         from gateway.run_notifications import _raw_process_event_session_id
-        from hermes_state import AsyncSessionDB
 
         if evt.get("type") not in {
             "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released", "heartbeat",
@@ -95,11 +101,10 @@ class GatewayNotificationRouteGuardMixin:
                 generation = self._current_session_run_generation(key)
                 entry = await self.async_session_store.lookup_by_session_key(key)
                 if entry is None:
-                    return "drop"
-                owner_db = await asyncio.to_thread(self.session_store._db_for_key, key)
-                if owner_db is None:
+                    return "retry" if not getattr(self.session_store, "_routing_db_loaded", True) else "drop"
+                session_db = await self._watch_owner_db_for_key(key)
+                if session_db is None:
                     return "retry"
-                session_db = AsyncSessionDB(owner_db)
                 row = await session_db.get_session(pin)
                 if row is None:
                     return "drop"
@@ -137,10 +142,12 @@ class GatewayNotificationRouteGuardMixin:
         async with self._completion_event_scope(watcher):
             generation = self._current_session_run_generation(key)
             entry = await self.async_session_store.lookup_by_session_key(key)
-            session_db = self._session_db
-            if entry is None or session_db is None:
+            if entry is None:
                 return False
             try:
+                session_db = await self._watch_owner_db_for_key(key)
+                if session_db is None:
+                    return False
                 row = await session_db.get_session(pin)
             except Exception:
                 logger.debug("Process watcher parent lookup failed for %s", pin, exc_info=True)

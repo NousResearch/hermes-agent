@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_reclaim import CredentialPoolReclaimMixin
 
 import logging
 import os
@@ -979,7 +980,9 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(
+    CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolReclaimMixin,
+):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -2138,13 +2141,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way
         ``select`` would), else ``None``. Never bumps ``request_count`` or round-robin order: a
         live session asking "may I go back?" every turn is not a request."""
-        with self._lock:
-            available, pending = self._available_entries(clear_expired=True, refresh=True, model=model)
-        if any(e.id == credential_id for e in pending):
-            self._refresh_pending_entries([e for e in pending if e.id == credential_id])
-            with self._lock:
-                available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
-        return next((e for e in available if e.id == credential_id), None)
+        ticket = self.prepare_reclaim(credential_id, model=model)
+        return ticket.commit() if ticket is not None else None
 
     # ---- rotation ----------------------------------------------------------
 

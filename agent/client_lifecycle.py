@@ -21,6 +21,19 @@ _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
 
 
+class _CredentialRouteView:
+    """Read-only owner view whose client kwargs/route are isolated from the live agent."""
+
+    def __init__(self, owner: Any, client_kwargs: dict, base_url: Any, api_mode: str) -> None:
+        self._owner = owner
+        self._client_kwargs = client_kwargs
+        self.base_url = base_url
+        self.api_mode = api_mode
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._owner, name)
+
+
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
     from hermes_cli import __version__ as _HERMES_VERSION
@@ -494,8 +507,12 @@ class ClientLifecycleMixin:
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        return self._derive_anthropic_oauth_flag(token, getattr(self, "_anthropic_base_url", None))
+
+    def _derive_anthropic_oauth_flag(self, token: str, base_url: Any) -> bool:
+        """Derive the OAuth flag for an unpublished Anthropic route."""
         from agent.anthropic_credentials import anthropic_route_is_oauth
-        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
+        return anthropic_route_is_oauth(base_url, token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
@@ -943,7 +960,100 @@ class ClientLifecycleMixin:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
+    def _derive_credential_swap_client_kwargs(
+        self,
+        *,
+        runtime_key: str,
+        runtime_base: Any,
+        api_mode: str,
+        route_changed: bool,
+    ) -> dict:
+        """Derive route-scoped kwargs for a replacement without touching live fields."""
+        client_kwargs = dict(getattr(self, "_client_kwargs", {}))
+        client_kwargs["api_key"] = runtime_key
+        client_kwargs["base_url"] = runtime_base
+        client_kwargs.pop("ssl_verify", None)
+        client_kwargs.pop("ssl_ca_cert", None)
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config_readonly,
+            )
+
+            apply_custom_provider_tls_to_client_kwargs(
+                client_kwargs,
+                str(runtime_base or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug("custom-provider TLS resolution skipped on credential rotation", exc_info=True)
+
+        route_view = _CredentialRouteView(self, client_kwargs, runtime_base, api_mode)
+        for host, build in _ROUTE_DEFAULT_HEADERS:
+            if base_url_host_matches(runtime_base, host):
+                client_kwargs["default_headers"] = build(route_view, runtime_base)
+                break
+        else:
+            client_kwargs.pop("default_headers", None)
+            with suppress(Exception):
+                from providers import get_provider_profile
+
+                profile = get_provider_profile(getattr(self, "provider", ""))
+                if profile and profile.default_headers and (
+                    profile_headers := dict(profile.default_headers)
+                ):
+                    client_kwargs["default_headers"] = profile_headers
+        if not route_changed:
+            from agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
+
+            merged = _merge_user_headers(client_kwargs.get("default_headers"))
+            if merged:
+                client_kwargs["default_headers"] = merged
+        if api_mode not in ("anthropic_messages", "bedrock_converse"):
+            try:
+                from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+
+                apply_custom_provider_extra_headers_to_client_kwargs(
+                    client_kwargs, runtime_base,
+                )
+            except Exception:
+                logger.debug("custom-provider extra_headers skipped", exc_info=True)
+        return client_kwargs
+
+    def _prepare_credential_swap(self, entry):
+        from agent.credential_swap import prepare_credential_swap
+
+        return prepare_credential_swap(self, entry)
+
     def _swap_credential(self, entry) -> bool:
+        """Adopt *entry* through a staged replacement when the full lifecycle is available."""
+        staged_capable = all(
+            callable(getattr(self, name, None))
+            for name in (
+                "_create_openai_client",
+                "_close_openai_client",
+                "_retire_shared_openai_client",
+                "_derive_credential_swap_client_kwargs",
+            )
+        )
+        if not staged_capable:
+            # Compatibility for narrow plugin/test doubles that implement only the legacy rebuild seam.
+            return ClientLifecycleMixin._swap_credential_legacy(self, entry)
+        ticket = ClientLifecycleMixin._prepare_credential_swap(self, entry)
+        if ticket is None:
+            return False
+        try:
+            committed = ticket.commit(entry)
+        except Exception as exc:
+            logger.warning("Credential replacement failed: %s", exc)
+            ticket.abort()
+            return False
+        if not committed:
+            ticket.abort()
+        return committed
+
+    def _swap_credential_legacy(self, entry) -> bool:
         """Adopt *entry* as the live credential. Returns False, changing nothing, when the entry's
         route cannot serve this conversation's model (a conversation's model is never rewritten by a
         rotation; the caller treats a refused swap as "no entry")."""

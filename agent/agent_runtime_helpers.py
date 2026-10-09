@@ -1203,19 +1203,31 @@ def _revert_credential_rotation(agent) -> None:
     if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
         agent._credential_pool_revert_id = None
         return
+    pool_ticket = None
+    swap_ticket = None
     try:
-        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
+        pool_ticket = pool.prepare_reclaim(revert_id, model=getattr(agent, "model", None))
+        if pool_ticket is None:
+            return  # still cooling down; check again next turn
+        swap_ticket = agent._prepare_credential_swap(pool_ticket.candidate)
+        if swap_ticket is None:
+            pool_ticket.abort()
+            return
+        entry = pool_ticket.commit()
+        if swap_ticket.commit(entry) is False:
+            raise RuntimeError("credential replacement was refused")
     except Exception as exc:
+        if swap_ticket is not None:
+            swap_ticket.abort()
+        if pool_ticket is not None:
+            pool_ticket.abort()
         logger.warning("Credential revert check failed: %s", exc)
         return
-    if entry is None:
-        return  # still cooling down; check again next turn
-    if agent._swap_credential(entry) is not False:
-        logger.info(
-            "Credential %s (%s) available again — reverted pool rotation",
-            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
-        )
     agent._credential_pool_revert_id = None
+    logger.info(
+        "Credential %s (%s) available again — reverted pool rotation",
+        getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+    )
 
 
 def restore_primary_runtime(agent) -> bool:

@@ -1,6 +1,7 @@
 """Session lifecycle contracts (``tui_gateway/methods_session.py``): create / resume / activate /
 close, the live-session snapshot those share, history + compression + undo, mid-turn corrections,
 listing/browsing stored rows, spawn-tree snapshots, event replay and the stateless one-shot LLM call.
+``session.start_chat`` lives in ``tui_gateway/methods_start_chat.py``.
 """
 
 from __future__ import annotations
@@ -119,6 +120,9 @@ class SessionCreateParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #52589: provenance for ``cwd`` — true only for a deliberate workspace pick;
+    # an inherited app-global workspace must yield to a named profile's terminal.cwd.
+    cwd_explicit: bool | None = None
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None
@@ -126,10 +130,14 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # #65410: stable caller-chosen key so a retried create (response lost in
+    # transit) returns the SAME session instead of a duplicate child.
+    idempotency_key: str | None = None
 
 
 class SessionCreateResult(Result):
@@ -142,6 +150,31 @@ class SessionCreateResult(Result):
 
 method("session.create", params=SessionCreateParams, result=SessionCreateResult,
        doc="Mint a live session (agent builds after the reply); a DB row appears on the first prompt unless seeded.")
+
+
+class SessionBranchStoredParams(ProfileParams):
+    parent_session_id: str = Field(min_length=1)
+    cols: int | None = None
+    source: str | None = None
+    cwd: str | None = None
+    # #65410: the desktop's whole-session branch rides the same create plumbing and
+    # now always sends the caller's stable key (its retry path reuses it). Optional
+    # so an older client that omits it keeps the historic behaviour.
+    idempotency_key: str | None = None
+
+
+class SessionBranchStoredResult(Result):
+    session_id: str
+    stored_session_id: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_stored", params=SessionBranchStoredParams, result=SessionBranchStoredResult,
+       doc="Whole-session branch of a stored parent: the owning backend reads and copies the transcript, "
+           "which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty "
+           "branch).")
 
 
 # ── session.resume / activate ─────────────────────────────────────────────────────────────────
@@ -157,6 +190,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
+    # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):
@@ -199,7 +235,11 @@ class SessionListRow(Result):
     preview: str = ""
     started_at: float = 0
     message_count: int = 0
+    live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):
@@ -285,7 +325,7 @@ class SessionSetHiddenParams(Params):
     """``session_id`` is a live runtime id first, else a stored id / key / title."""
 
     session_id: str
-    hidden: bool = True
+    hidden: bool
     profile: str | None = None
 
 
@@ -296,6 +336,24 @@ class SessionSetHiddenResult(Result):
 
 method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHiddenResult,
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
+
+
+class SessionArchiveParams(Params):
+    """``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title."""
+
+    session_id: str | None = None
+    session_key: str | None = None
+    archived: bool = True
+    profile: str | None = None
+
+
+class SessionArchiveResult(Result):
+    archived: bool
+    session_key: str
+
+
+method("session.archive", params=SessionArchiveParams, result=SessionArchiveResult,
+       doc="Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.")
 
 
 class SessionWorkspaceMoveParams(ProfileParams):
@@ -334,6 +392,8 @@ class SessionCloseParams(SessionParams):
 
 class SessionCloseResult(Result):
     closed: bool  # False when the runtime id was already gone
+    # Plugin ``on_session_finalize`` text for the user; shown out-of-band, never a model turn.
+    messages: list[str] = Field(default_factory=list)
 
 
 method("session.close", params=SessionCloseParams, result=SessionCloseResult,
@@ -343,6 +403,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
+    # lost-response retry returns the SAME child instead of a duplicate.
+    idempotency_key: str | None = None
 
 
 class SessionBranchResult(Result):
@@ -359,8 +422,34 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
        doc="Fork a live session into a new stored child that shares the parent's history so far.")
 
 
+class SessionBranchWholeParams(SessionParams):
+    name: str | None = None
+    # #65410: same retry contract as session.branch.
+    idempotency_key: str | None = None
+
+
+class SessionBranchWholeResult(Result):
+    session_id: str
+    stored_session_id: str
+    title: str
+    parent: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,
+       doc="session.branch of the whole history without echoing the copied transcript back.")
+
+
+class UndoIntent(WireEnum):
+    RETRY = "retry"
+    UNDO = "undo"
+
+
 class SessionUndoParams(SessionParams):
-    pass
+    # ``retry``: the client resends the dropped turn (Ink /retry), so metrics count a retry, not an undo.
+    intent: UndoIntent | None = None
 
 
 class SessionUndoResult(Result):
@@ -689,3 +778,43 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+
+
+# ── start_chat ────────────────────────────────────────────────────────────────────────────────
+
+
+class StartChatArgs(Params):
+    """The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``)."""
+
+    message: str
+    title: str | None = None
+    profile: str | None = None
+
+
+class SessionStartChatParams(SessionParams):
+    """``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only)."""
+
+    tool_call_id: str
+    args: StartChatArgs
+
+
+class StartChatStatus(WireEnum):
+    started = "started"
+    rejected = "rejected"
+
+
+class SessionStartChatResult(Result):
+    """``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same
+    arguments may succeed on another try (``retryable``). A call already retried returns that retry's result."""
+
+    status: StartChatStatus
+    session_id: str | None = None
+    profile: str | None = None
+    title: str | None = None
+    message: str | None = None
+    reason: str | None = None
+    retryable: bool | None = None
+
+
+method("session.start_chat", params=SessionStartChatParams, result=SessionStartChatResult,
+       doc="Run a start_chat request again from the session that made it (the handoff card's Retry).")

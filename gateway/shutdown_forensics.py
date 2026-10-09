@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
 import contextlib
 
-_SIGNAL_NAME_BY_NUM: Dict[int, str] = {
+_SIGNAL_NAME_BY_NUM: dict[int, str] = {
     int(getattr(signal, _name)): _name
     for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2")
     if getattr(signal, _name, None) is not None
@@ -47,10 +48,10 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
     return None
 
 
-def _proc_summary(pid: int) -> Dict[str, Any]:
+def _proc_summary(pid: int) -> dict[str, Any]:
     """Compact /proc/<pid> identity (pid, name, state, ppid, uid). Never reads cmdline/argv —
     those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays)."""
-    summary: Dict[str, Any] = {"pid": pid}
+    summary: dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
     for out_key, proc_key in (("name", "Name"), ("state", "State")):
@@ -67,17 +68,17 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
 def _read_marker(path: Path) -> Optional[str]:
     """Return the marker file's text, or None if absent/unreadable."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
 
 
-def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
+def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down: signal name/number, own + parent
     /proc summaries, systemd parentage, takeover/planned-stop markers, TracerPid, 1-min load,
     timestamps. Pure stdlib, never raises, never blocks."""
     pid, ppid = os.getpid(), os.getppid()
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "ts": time.time(), "ts_monotonic": time.monotonic(),
         "signal": _signal_name(received_signal),
         "signal_num": int(received_signal) if received_signal is not None else None,
@@ -100,7 +101,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # Race hint: a takeover marker on disk that does NOT name us is a smoking gun for "another
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
-    with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
+    with contextlib.suppress(Exception):
         hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
         if hermes_home_str:
             raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
@@ -120,9 +121,11 @@ def _async_diagnostic_script(signal_name: str, self_pid: int) -> str:
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
         "echo '--- ps (top 60 by cpu, comm only) ---'; "
-        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -60; "
+        # ``sort`` instead of GNU ``--sort=-pcpu`` so BSD ps (macOS) produces a listing too; the header
+        # line is echoed first so ``sort`` does not bury it among the 0.0-cpu rows.
+        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm 2>/dev/null | { IFS= read -r h; echo \"$h\"; sort -nrk4; } | head -60; "
         f"echo '--- pstree of self ---'; pstree -pl {self_pid} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
+        "echo '--- loadavg ---'; cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null || true; "
         "echo '--- recent dmesg (oom/killed) ---'; "
         "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
         "echo '=== end ==='"
@@ -150,9 +153,13 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         return None
     with contextlib.suppress(OSError):  # tighten logs created 0644 by earlier releases
         os.fchmod(fd, 0o600)
+    # GNU ``timeout`` (Homebrew: ``gtimeout``) is absent from stock macOS; without it the detached
+    # script still cannot block teardown, so run it unbounded rather than skip the diagnostic.
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    bound = [timeout_bin, f"{timeout_seconds:.0f}"] if timeout_bin else []
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
+            [*bound, "bash", "-c", script], stdout=fd,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:
@@ -162,11 +169,11 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
             os.close(fd)
 
 
-def format_context_for_log(ctx: Dict[str, Any]) -> str:
+def format_context_for_log(ctx: dict[str, Any]) -> str:
     """Render a shutdown context dict as one scannable log line (parent identity, never argv)."""
     parent = ctx.get("parent") or {}
     load_str = f"{load:.2f}" if isinstance(load := ctx.get("loadavg_1m"), (int, float)) else "?"
-    extras: List[str] = []
+    extras: list[str] = []
     if ctx.get("takeover_marker") is not None:
         who = 'self' if ctx.get('takeover_marker_for_self') else 'other'
         extras.append(f"takeover_marker_present={who}")
@@ -182,7 +189,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     )
 
 
-def context_as_json(ctx: Dict[str, Any]) -> str:
+def context_as_json(ctx: dict[str, Any]) -> str:
     """JSON-serialise a context dict for structured ingestion.  Never raises."""
     try:
         return json.dumps(ctx, default=str, sort_keys=True)
@@ -192,7 +199,7 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
 
 def check_systemd_timing_alignment(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
     (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
     budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the

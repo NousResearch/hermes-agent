@@ -30,7 +30,7 @@ def custom_profile():
     honest — if the registered class is ever downgraded to a plain
     ``ProviderProfile``, the assertions below collapse.
     """
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("custom")
@@ -168,6 +168,25 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": True, "effort": "high"}, model="glm-5.2"
         )
         assert eb.get("think") is not True
+
+    @pytest.mark.parametrize(
+        "reasoning_config, expected",
+        [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],
+    )
+    def test_groq_host_clamps_effort_to_groq_vocabulary(self, custom_profile, reasoning_config, expected):
+        """api.groq.com accepts top-level reasoning_effort only as 'none' / 'default' (#75089).
+
+        Drives the main transport so the clamp is proven where production reads it.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="qwen/qwen3.6-27b", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config=reasoning_config,
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
 
 class TestCustomReasoningWithNumCtx:

@@ -3,6 +3,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
@@ -421,25 +422,20 @@ export function imageFilenameFromPath(filePath: string): string {
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
 //
-// `cachedDataUrl` is the attachment's `previewUrl` when the composer already
-// read the file for the chip thumbnail — that preview is the FULL file as a
-// base64 data URL (attachmentPreviewDataUrl → readFileDataUrl), not a
-// downscaled copy, so reusing it skips a second disk read + IPC round-trip of
-// the same bytes at submit. Only a `;base64,` data URL qualifies; anything
-// else falls through to the disk read.
+// Always re-reads from disk rather than trusting `attachment.previewUrl` as a
+// cache: once a thumbnail is generated, `attachImagePath` keeps only the
+// bounded (≤512px) `thumbnailUrl` and drops `previewUrl` — so a cached
+// `previewUrl` is never guaranteed to be the full-resolution bytes the model
+// needs, and trusting it here would risk silently uploading a downscaled copy.
 export async function readImageForRemoteAttach(
-  filePath: string,
-  cachedDataUrl?: string
+  filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
-  if (cachedDataUrl?.includes(';base64,')) {
-    const cached = base64FromDataUrl(cachedDataUrl)
+  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
 
-    if (cached) {
-      return { contentBase64: cached, filename: imageFilenameFromPath(filePath) }
-    }
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
   }
 
-  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
   return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
@@ -457,6 +453,10 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   }
 
   const dataUrl = await reader(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
 
   return dataUrl || null
 }
@@ -523,7 +523,7 @@ export function slashStatusText(command: string, output: string): string {
  *   because it needs transcript replacement)
  * - `session.status`:   { output: "<multi-line plain text>" }
  * - `session.save`:     { file: "<absolute path>" }
- * - `session.usage`:    { calls, input, output, total, credits_lines? }
+ * - `session.usage`:    { calls, input, output, total, account_lines?, credits_lines? }
  * - `session.steer`:    { status: 'queued' | 'rejected', text }
  * - `process.stop`:     { killed: boolean }
  * - `agents.list`:      { processes: [{ session_id, command, status, uptime }] }
@@ -582,7 +582,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     return r.output
   }
 
-  // session.usage — { calls, input, output, total, credits_lines? }
+  // session.usage — { calls, input, output, total, account_lines?, credits_lines? }
   if ('total' in r || 'input' in r || 'output' in r || 'calls' in r) {
     const calls = Number(r.calls ?? 0)
     const input = Number(r.input ?? 0)
@@ -593,10 +593,13 @@ export function renderRpcResult(response: unknown, name: string): string {
       `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
     ]
 
-    if (Array.isArray(r.credits_lines)) {
-      for (const credit of r.credits_lines) {
-        if (typeof credit === 'string' && credit.trim()) {
-          lines.push(credit.trim())
+    // Provider account limits (e.g. Codex quota windows) first, then Nous credits — same order as CLI /usage.
+    for (const extra of [r.account_lines, r.credits_lines]) {
+      if (Array.isArray(extra)) {
+        for (const line of extra) {
+          if (typeof line === 'string' && line.trim()) {
+            lines.push(line.trim())
+          }
         }
       }
     }
@@ -710,6 +713,8 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** This submit's fresh draft acquired a stored key. Never fired for navigation. */
+  onComposerScopeAssigned?: (scope: string) => void
   /** What the transcript shows for this send, when it differs from the text
    *  the agent receives. A `/skill` invocation expands into the whole skill
    *  body — model-facing scaffolding the UI must never render — so the slash
@@ -726,7 +731,17 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** A spoken turn from the chained voice conversation: the gateway runs it on
+   *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
+  voiceTurn?: boolean
   fromQueue?: boolean
+  /** Called once with the EXACT session identity the backend accepted the
+   *  prompt into — the live runtime id after any stale-runtime recovery, plus
+   *  the durable stored id when the caller knows it. A caller that must prove
+   *  delivery to another surface (Quick Entry) uses this instead of guessing
+   *  from the foreground session. Never called for a rejected or aborted
+   *  submit, and never for slash commands, which never reach prompt.submit. */
+  onAccepted?: (identity: { runtimeSessionId: string; storedSessionId: null | string }) => void
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

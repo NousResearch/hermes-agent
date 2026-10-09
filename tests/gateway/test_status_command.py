@@ -3,6 +3,7 @@ from hermes_state import AsyncSessionDB, SessionDB
 
 from datetime import datetime
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -624,7 +625,14 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     result = await runner._handle_profile_command(event)
 
     assert "**Profile:** `milo`" in result
-    assert f"**Home:** `{profile_home}`" in result
+    # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
+    # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import display_hermes_home
+
+    with _profile_runtime_scope(profile_home):
+        expected_home = display_hermes_home()
+    assert f"**Home:** `{expected_home}`" in result
 
 
 # ── /context command tests ────────────────────────────────────────────────

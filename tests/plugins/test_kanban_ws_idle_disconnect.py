@@ -115,6 +115,9 @@ async def test_stream_events_exits_on_idle_disconnect(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
 
     ws = _IdleDisconnectingWebSocket()
+    # Disconnects before any poll. Name a cursor so the handler does not open
+    # the board DB just to find the tail.
+    ws.query_params = {"since": "0"}
 
     # The disconnect must terminate the handler even though the board is idle
     # and no event is ever sent. Before the fix this call never returned
@@ -162,6 +165,9 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _poll_twice_then_disconnect)
     ws = _PollingWebSocket()
+    # A named cursor skips the connect-time tail read, so the execute counts
+    # below stay the polls alone.
+    ws.query_params = {"since": "0"}
 
     await mod.stream_events(ws)
 
@@ -214,6 +220,9 @@ async def test_stream_events_closes_connection_when_cancelled(monkeypatch):
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _poll_once_then_wait)
     ws = _PollingWebSocket()
+    # A named cursor skips the connect-time tail read, so the execute count
+    # below stays the poll alone.
+    ws.query_params = {"since": "0"}
     task = asyncio.create_task(mod.stream_events(ws))
 
     await real_wait_for(first_fetch_done.wait(), timeout=5)

@@ -8,7 +8,7 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -93,10 +93,8 @@ class TestGatewayPinningFailsClosed:
 
     @staticmethod
     def _assert_no_route_change(runner):
-        getattr(runner.session_store, "switch_session").assert_not_called()
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_not_called()
+        runner.session_store.switch_session.assert_not_called()
+        runner.session_store.advance_compression_session.assert_not_called()
 
 
     @pytest.mark.asyncio
@@ -113,7 +111,7 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once_with(
+        runner.session_store.switch_session.assert_called_once_with(
             current.session_key, "sess_live", expected_session_id=current.session_id,
         )
 
@@ -170,9 +168,7 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is tip
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
+        runner.session_store.advance_compression_session.assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
 
     @pytest.mark.asyncio
     async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
@@ -203,20 +199,9 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is tip
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+        runner.session_store.advance_compression_session.assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
 
 
-class TestResetHandlerInterruptsDelegations:
-    def test_reset_command_calls_interrupt_for_session(self):
-        """The /new handler must sever the old conversation's delegations."""
-        import inspect
-        from gateway import slash_commands
-
-        src = inspect.getsource(slash_commands.GatewaySlashCommandsMixin._handle_reset_command)
-        assert "interrupt_for_session" in src
-        assert "session_reset" in src
 
 
 @pytest.mark.asyncio

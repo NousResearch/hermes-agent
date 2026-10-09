@@ -61,9 +61,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
-        is_env_passthrough = lambda _: False  # noqa: E731
-        resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
-        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
+        is_env_passthrough = lambda _: False
+        resolve_passthrough_value = lambda _name, _fallback: None
+        scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -114,9 +114,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
 
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
-                     child_python: str) -> Dict[str, str]:
+                     child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+    from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
     child_env = _scrub_child_env(os.environ)
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
@@ -144,18 +144,35 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     _home_override = get_hermes_home_override()
     if _home_override:
         child_env["HERMES_HOME"] = _home_override
+        apply_scratch_tmp_env(child_env)  # TMPDIR follows the routed home, like HOME does
     # PYTHONPATH: the staging dir (hermes_tools.py) must always be importable even when project
     # mode changes CWD. Hermes's root is added ONLY when the child runs in Hermes's Python env —
     # exposing Hermes's site-packages to an external interpreter can mix incompatible compiled
     # extensions (3.12 NumPy under a 3.9 venv). Inherited Hermes-owned entries are stripped first.
     # Before re-injecting PYTHONPATH, strip Hermes-owned entries that leaked through _scrub_child_env
-    # (PYTHONPATH is in _SAFE_ENV_PREFIXES so it passes the scrub). They are redundant for same-Hermes-
-    # environment children and may be incompatible with external interpreters (project mode can select a
-    # different venv), so they must not shadow or poison the child's sys.path (#74817).
-    from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+    # (PYTHONPATH is in _SAFE_ENV_PREFIXES so it passes the scrub). External project interpreters
+    # must not inherit Hermes dependencies (#74817). PM's own interpreter, however, can be a
+    # bare bundled Python whose dependencies live in the selected generation, not sys.prefix.
+    from tools.environments.local_pythonpath import (
+        _strip_hermes_owned_pythonpath, _validated_runtime_venv, _same_path,
+    )
+    _runtime_path = None
+    if child_python == sys.executable:
+        runtime_venv = _validated_runtime_venv(child_env)
+        if runtime_venv is not None:
+            from pathlib import Path
+            from pm.environments import site_packages
+            candidate = site_packages(runtime_venv)
+            # Restore only a dependency path the launcher actually supplied, not a newly
+            # selected generation that this still-running interpreter has never loaded.
+            if any(_same_path(Path(entry), candidate)
+                   for entry in child_env.get("PYTHONPATH", "").split(os.pathsep) if entry):
+                _runtime_path = str(candidate)
     _strip_hermes_owned_pythonpath(child_env)
     _existing_pp = child_env.get("PYTHONPATH", "")
     _pp_parts = [tmpdir]
+    if _runtime_path is not None:
+        _pp_parts.append(_runtime_path)
     if _uses_hermes_python_environment(child_python):
         _pp_parts.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     elif child_python not in _external_env_logged:

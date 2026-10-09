@@ -71,7 +71,7 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
-def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
+def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
     downstream failure makes cheap models loop. Required-field probe first, then the same
@@ -136,7 +136,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
-def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
     Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
@@ -163,7 +163,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     if not isinstance(raw_calls, list) or not raw_calls:
         return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
 
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for position, raw in enumerate(raw_calls):
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
@@ -173,7 +173,11 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None:
+        if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+            # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
+            # parameterless tool (#83937); the loop already treats an empty outer arguments string
+            # as {} (turn_tool_validation), and a missing required param still surfaces below via
+            # validate_deferred_call_args instead of an opaque JSON parse error.
             raw_args = {}
         if isinstance(raw_args, str):
             try:
@@ -189,7 +193,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
 _ECHO_ARGS_MAX_CHARS = 1500
 
 
-def local_batch_error(entries: List[Dict[str, Any]]) -> str:
+def local_batch_error(entries: list[dict[str, Any]]) -> str:
     """Rejection for a multi-entry batch that names a local tool. Restates the valid
     shape with the caller's OWN first entry: small models re-send an identical batch
     when told only the constraint, and the echoed payload is what gets them unstuck."""
@@ -210,7 +214,7 @@ def not_deferrable_error(name: str) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
-    cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
+    cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
     the second group 'call it directly' is the opposite of what they must do."""
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
@@ -225,4 +229,4 @@ def not_deferrable_error(name: str) -> str:
     hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
             else " Use tool_search to find the exact name.")
     return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "
-            f"by the exact name tool_search returns (e.g. mcp__<server>__<tool>).{hint}")
+            f"by the exact name tool_search returns (e.g. mcp__<server>__{{tool}}).{hint}")

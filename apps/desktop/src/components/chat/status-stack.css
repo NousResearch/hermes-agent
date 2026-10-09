@@ -80,23 +80,6 @@
   padding-bottom: 0.375rem;
 }
 
-/* The first row owns the extra inset so its hover fill still reaches the shell. */
-[data-slot='status-stack-section']:first-child > [data-slot='status-section'] > .status-section-header > button,
-[data-slot='status-stack-section']:first-child > :first-child > [data-slot='status-section'] > .status-section-header > button {
-  padding-top: 0.5rem;
-}
-
-[data-slot='status-stack-section']:first-child > [data-slot='status-section'] > .status-section-header > div,
-[data-slot='status-stack-section']:first-child > :first-child > [data-slot='status-section'] > .status-section-header > div {
-  align-self: start;
-  padding-top: 0.25rem;
-}
-
-[data-slot='status-stack-section']:first-child > .status-artifacts > .status-row:first-child,
-[data-slot='status-stack-section']:first-child > .status-row {
-  padding-top: 0.625rem;
-}
-
 [data-slot='composer-status-stack'] .status-control-row {
   min-height: 0;
   padding-top: 0.125rem;

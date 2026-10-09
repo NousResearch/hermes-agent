@@ -613,8 +613,9 @@ def auth_refresh_command(args) -> None:
     """`hermes auth refresh <provider> [target]`: force one pooled OAuth entry to refresh.
 
     A successful refresh rotates the stored tokens and clears the entry's local
-    exhaustion block, returning it to rotation before its persisted
-    ``last_error_reset_at`` elapses. It proves the grant is alive, not that the
+    credential-wide exhaustion block before its persisted
+    ``last_error_reset_at`` elapses. Model cooldowns remain until expiry or an
+    explicit auth reset. It proves the grant is alive, not that the
     provider's quota is back: if the account is still capped, the next request
     429s and benches it again. Failure leaves the pool's own verdict in place.
     """
@@ -663,6 +664,21 @@ def auth_refresh_command(args) -> None:
         # A peer already rotated this grant and the pool adopted it without clearing status.
         print(f"Adopted current tokens for {provider} credential #{index} ({refreshed.label}); "
               f"status still: {status}")
+    _print_remaining_model_cooldowns(provider, refreshed)
+
+
+def _print_remaining_model_cooldowns(provider: str, entry: PooledCredential) -> None:
+    from agent.credential_pool_model_cooldowns import model_cooldown_until
+
+    remaining = []
+    now = time.time()
+    for model in sorted(entry.model_cooldowns or {}):
+        until = model_cooldown_until(entry, model)
+        if until is not None:
+            remaining.append(f"{model} ({math.ceil(until - now)}s remaining)")
+    if remaining:
+        print(f"Model cooldowns remain: {', '.join(remaining)}. "
+              f"To clear them explicitly, run `hermes auth reset {provider} {entry.id}`.")
 
 
 def _moved_auth_hint(action: str, provider: str) -> str:

@@ -460,7 +460,19 @@ class FileSyncManager:
                 remote_path)
 
         os.makedirs(os.path.dirname(host_path), exist_ok=True)
-        shutil.copy2(staged_file, host_path)
+        # Copying directly onto the live file truncates it before any bytes arrive;
+        # an I/O error then leaves readers (and exhausted retries) with a partial file.
+        # Resolve first to preserve linked skill files and stage on their filesystem.
+        from utils import _preserve_file_owner, _restore_file_owner
+
+        target = Path(host_path).resolve()
+        owner = _preserve_file_owner(target)
+        with tempfile.TemporaryDirectory(prefix=".hermes-sync-", dir=target.parent) as copying:
+            prepared = Path(copying) / "payload"
+            shutil.copy2(staged_file, prepared)
+            # Do not fall back to an in-place copy if publication is refused.
+            os.replace(prepared, target)
+            _restore_file_owner(target, owner)
         return 1
 
     def _resolve_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None) -> str | None:

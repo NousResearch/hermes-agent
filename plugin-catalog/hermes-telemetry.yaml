@@ -23,4 +23,4 @@ capabilities:
   - subagent_stop
   provides_middleware: []
   requires_env: []
-version: 0.9.0
+version: "0.9.0"

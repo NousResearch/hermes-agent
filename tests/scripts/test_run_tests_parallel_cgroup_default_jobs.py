@@ -50,22 +50,37 @@ def test_explicit_env_override_is_never_clamped(runner, monkeypatch):
     assert runner._default_job_count() == 200
 
 
-@pytest.mark.parametrize("raw,expected", [("4294967296\n", 4294967296), ("max\n", None)])
-def test_reads_memory_max_of_the_process_cgroup(monkeypatch, tmp_path, raw, expected):
+def _fake_cgroup_tree(tmp_path, limits):
+    """Build /proc/self/cgroup + /sys/fs/cgroup stand-ins under tmp_path.
+
+    ``limits`` maps a cgroup path relative to the root ("" is the root) to
+    its memory.max text; the process sits in the deepest path.
+    """
+    root = tmp_path / "sys_fs_cgroup"
+    for rel, raw in limits.items():
+        level = root.joinpath(*rel.split("/")) if rel else root
+        level.mkdir(parents=True, exist_ok=True)
+        level.joinpath("memory.max").write_text(raw, encoding="utf-8")
+    leaf = max(limits, key=lambda rel: rel.count("/") + bool(rel))
+    proc_cgroup = tmp_path / "cgroup"
+    proc_cgroup.write_text(f"0::/{leaf}\n", encoding="utf-8")
+    return proc_cgroup, root
+
+
+@pytest.mark.parametrize(
+    "limits,expected",
+    [
+        ({"user.slice": "max\n", "user.slice/job.scope": "4294967296\n"}, 4 * _GIB),
+        ({"user.slice": "max\n", "user.slice/job.scope": "max\n"}, None),
+        # cgroup-v2 limits are hierarchical: a leaf of "max" under a finite
+        # ancestor is still capped by that ancestor.
+        ({"user.slice": "4294967296\n", "user.slice/job.scope": "max\n"}, 4 * _GIB),
+        ({"user.slice": "2147483648\n", "user.slice/job.scope": "8589934592\n"}, 2 * _GIB),
+        # A cgroup-namespaced container sees its own cap at the visible root.
+        ({"": "4294967296\n", "job.scope": "max\n"}, 4 * _GIB),
+    ],
+)
+def test_effective_memory_max_is_the_tightest_visible_ancestor(tmp_path, limits, expected):
     mod = _load_runner()
-    cgroup_file = tmp_path / "cgroup"
-    cgroup_file.write_text("0::/user.slice/job.scope\n", encoding="utf-8")
-    sys_fs_cgroup = tmp_path / "sys_fs_cgroup"
-    (sys_fs_cgroup / "user.slice" / "job.scope").mkdir(parents=True)
-    (sys_fs_cgroup / "user.slice" / "job.scope" / "memory.max").write_text(raw, encoding="utf-8")
-    real_read_text = Path.read_text
-
-    def fake_read_text(self, *args, **kwargs):
-        if str(self) == "/proc/self/cgroup":
-            return real_read_text(cgroup_file, *args, **kwargs)
-        if str(self).startswith("/sys/fs/cgroup/"):
-            return real_read_text(sys_fs_cgroup / str(self)[len("/sys/fs/cgroup/"):], *args, **kwargs)
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", fake_read_text)
-    assert mod._cgroup_memory_max_bytes() == expected
+    proc_cgroup, root = _fake_cgroup_tree(tmp_path, limits)
+    assert mod._cgroup_memory_max_bytes(proc_cgroup, root) == expected

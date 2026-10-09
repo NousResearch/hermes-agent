@@ -171,26 +171,37 @@ _DURATIONS_FILE = "test_durations.json"
 _ASSUMED_WORKER_RSS_BYTES = 300 * 1024 * 1024
 
 
-def _cgroup_memory_max_bytes() -> "int | None":
-    """cgroup-v2 ``memory.max`` of this process's own cgroup, or ``None`` if
-    unavailable/unlimited. Self-contained on purpose: this script runs
-    standalone without importing the package.
+def _cgroup_memory_max_bytes(
+    proc_cgroup: Path = Path("/proc/self/cgroup"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> "int | None":
+    """Effective cgroup-v2 memory cap of this process, or ``None`` if
+    unavailable/unlimited.
+
+    cgroup-v2 limits are hierarchical: a leaf whose own ``memory.max`` is
+    ``max`` is still bound by any finite ancestor. So walk from this
+    process's cgroup up to the visible root and take the smallest finite
+    ``memory.max``. Levels without the file (the host root) or with ``max``
+    are skipped. Self-contained on purpose: this script runs standalone
+    without importing the package.
     """
     try:
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        lines = proc_cgroup.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return None
     v2 = next((ln for ln in lines if ln.startswith("0::")), None)
     if v2 is None:
         return None
-    relative = v2.partition("::")[2].lstrip("/")
-    try:
-        raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not raw_limit.isdigit():
-        return None  # "max" (unlimited) or unreadable
-    return int(raw_limit)
+    parts = [p for p in v2.partition("::")[2].split("/") if p]
+    limits = []
+    for depth in range(len(parts), -1, -1):
+        try:
+            raw_limit = cgroup_root.joinpath(*parts[:depth], "memory.max").read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            continue
+        if raw_limit.isdigit():  # "max" means no cap at this level
+            limits.append(int(raw_limit))
+    return min(limits) if limits else None
 
 
 def _default_job_count() -> int:
@@ -1319,10 +1330,7 @@ def main() -> int:
         "--jobs",
         type=int,
         default=_default_job_count(),
-        help=(
-            "Parallel worker count (default: $HERMES_TEST_WORKERS, else "
-            "cpu_count clamped to fit a detected cgroup memory.max cap)"
-        ),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS, else cpu_count capped by cgroup memory.max)",
     )
     parser.add_argument(
         "--paths",

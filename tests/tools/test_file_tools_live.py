@@ -11,6 +11,7 @@ asserts zero contamination from shell noise via _assert_clean().
 import pytest
 
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -32,6 +33,19 @@ _ALL_NOISE_PATTERNS = [
     "Inappropriate ioctl",
     "Auto-suggestions:",
 ]
+
+
+def _sh(path) -> str:
+    """Spell a path as a shell WORD the environment's bash keeps intact.
+
+    ``env.execute`` hands the string to bash. Interpolating a bare native
+    Windows path let bash consume every backslash as an escape, so ``cat``
+    was asked for ``C:Users...AppData...`` and reported "No such file or
+    directory" — the test failed on the spelling, never on the behaviour it
+    exists to check. On POSIX this is the identity.
+    """
+    return shlex.quote(Path(path).as_posix())
+
 
 def _assert_clean(text: str, context: str = "output"):
     """Assert text contains zero shell noise contamination."""
@@ -88,8 +102,10 @@ class TestLocalEnvironmentExecute:
 
     def test_cat_deterministic_content(self, env, tmp_path):
         f = tmp_path / "det.txt"
-        f.write_text(SIMPLE_CONTENT)
-        result = env.execute(f"cat {f}")
+        # newline="": the assertion below pins exact bytes, and text mode
+        # would write every newline as CRLF on Windows.
+        f.write_text(SIMPLE_CONTENT, newline="")
+        result = env.execute(f"cat {_sh(f)}")
         assert result["returncode"] == 0
         assert result["output"] == SIMPLE_CONTENT
         _assert_clean(result["output"])
@@ -172,8 +188,23 @@ class TestSearch:
 class TestExpandPath:
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
-        expected = f"{Path.home()}/test.txt"
-        assert result == expected
+        assert "~" not in result
+        assert result.endswith("/test.txt")
+        home = result[: -len("/test.txt")]
+        # The guarantee is that ``~`` becomes the environment's REAL home
+        # directory, not that it is spelled the way Python spells it: the
+        # expansion comes from the terminal's own ``echo $HOME``, and Git Bash
+        # reports ``C:\Users\x`` as ``/c/Users/x``. Comparing the strings pinned
+        # os.sep. Compare what the two spellings IDENTIFY instead — ``test -ef``
+        # is true only when both name the same directory, and it is false for a
+        # different one, so this still fails if the expansion goes wrong.
+        same = ops._exec(
+            f"test {shlex.quote(home)} -ef {shlex.quote(Path.home().as_posix())}"
+        )
+        assert same.exit_code == 0, (
+            f"~ expanded to {home!r}, which is not the user's home "
+            f"{str(Path.home())!r}"
+        )
         _assert_clean(result)
 
     def test_tilde_injection_blocked(self, ops):

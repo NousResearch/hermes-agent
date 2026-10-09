@@ -621,7 +621,11 @@ def cmd_mcp_add(args):
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
     command = getattr(args, "mcp_command", None)
-    cmd_args = getattr(args, "args", None) or []
+    # `--args ""` from a shell/UI invocation arrives as [""] (argparse nargs="*"
+    # materialises the empty placeholder as a real element). Drop exact-empty
+    # placeholders only: a whitespace-only arg such as " " is a legitimate value
+    # for some stdio servers and must survive verbatim (see issue #26886).
+    cmd_args = [a for a in (getattr(args, "args", None) or []) if a != ""]
     if cmd_args and cmd_args[0] == "--":
         cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)

@@ -28,7 +28,7 @@ def db(tmp_path):
 
 @pytest.mark.parametrize("query", [
     ".env", "~/.env", "git push --force", "rm -rf", "-rf build", "fixed it.", "fixed it...",
-    "`deploy`", "push AND NOT pull", "push OR OR force",
+    "the deploy step fixed it.", "`deploy`", "push AND NOT pull", "push OR OR force",
 ])
 def test_punctuated_query_finds_its_row(db, query):
     rows = db.search_messages(query)
@@ -51,6 +51,11 @@ def test_sanitize_punctuation_contract():
     assert s("push AND NOT pull") == "push NOT pull"
     assert s("push OR OR force") == "push OR force"
     assert s("my-app.config") == '"my-app.config"'
+    # A dot between word characters stays (step 5 quotes it as a phrase); only a dot that
+    # is not between word characters goes — 'P2.2' must not degrade to the two-token 'P2 2'.
+    assert s("P2.2") == '"P2.2"'
+    assert s("docker networking tls.").split() == ["docker", "networking", "tls"]
+    assert s("e.g. docker").split() == ['"e.g"', "docker"]
 
 
 def test_corruption_on_the_quoted_retry_still_fails_open(db, monkeypatch):

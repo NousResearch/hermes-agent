@@ -9,6 +9,7 @@ The status-update path must:
   5. Edit in the thread channel when the status was sent into a thread.
 """
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 def _ensure_discord_mock():
@@ -119,6 +121,96 @@ async def test_first_call_sends_then_repeats_edit_in_place():
         "⏳ Still waiting (46s)...",
     ]
     assert all(mid == int(first_id) for (mid, _c) in channel.edits)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_status_updates_share_one_bubble():
+    channel = FakeChannel(555)
+    adapter = _make_adapter_with({555: channel})
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+    original_send = channel.send.side_effect
+
+    async def held_send(*, content, reference=None):
+        send_started.set()
+        await release_send.wait()
+        return await original_send(content=content, reference=reference)
+
+    channel.send.side_effect = held_send
+    first = asyncio.create_task(adapter.send_or_update_status("555", "lease_wait", "waiting"))
+    await asyncio.wait_for(send_started.wait(), timeout=2)
+    second = asyncio.create_task(adapter.send_or_update_status("555", "lease_wait", "still waiting"))
+    try:
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert channel.send.await_count == 1
+    finally:
+        release_send.set()
+        results = await asyncio.gather(first, second)
+
+    assert all(result.success for result in results)
+    assert len(channel.sends) == 1
+    assert channel.edits == [(int(results[0].message_id), "still waiting")]
+
+
+@pytest.mark.asyncio
+async def test_distinct_status_destinations_send_in_parallel():
+    channels = {555: FakeChannel(555), 900: FakeChannel(900)}
+    adapter = _make_adapter_with(channels)
+    started = {target: asyncio.Event() for target in channels}
+    release = asyncio.Event()
+
+    def hold_send(channel: FakeChannel, target: int):
+        original_send = channel.send.side_effect
+
+        async def send(*, content, reference=None):
+            started[target].set()
+            await release.wait()
+            return await original_send(content=content, reference=reference)
+
+        return send
+
+    for target, channel in channels.items():
+        channel.send.side_effect = hold_send(channel, target)
+
+    first = asyncio.create_task(adapter.send_or_update_status("555", "lease_wait", "parent"))
+    second = asyncio.create_task(adapter.send_or_update_status(
+        "555", "lease_wait", "thread", metadata={"thread_id": "900"},
+    ))
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), timeout=2)
+    finally:
+        release.set()
+        results = await asyncio.gather(first, second)
+
+    assert all(result.success for result in results)
+    assert [len(channel.sends) for channel in channels.values()] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_failed_edit_does_not_remove_a_replaced_status_id():
+    channel = FakeChannel(555)
+    adapter = _make_adapter_with({555: channel})
+    key = ("555", "lease_wait")
+    adapter._status_message_ids[key] = "101"
+    edit_started = asyncio.Event()
+    release_edit = asyncio.Event()
+
+    async def failed_edit(*args, **kwargs):
+        edit_started.set()
+        await release_edit.wait()
+        return SendResult(success=False, error="deleted")
+
+    adapter.edit_message = AsyncMock(side_effect=failed_edit)
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="offline"))
+    update = asyncio.create_task(adapter.send_or_update_status("555", "lease_wait", "waiting"))
+    await asyncio.wait_for(edit_started.wait(), timeout=2)
+    adapter._status_message_ids[key] = "202"
+    release_edit.set()
+    result = await update
+
+    assert not result.success
+    assert adapter._status_message_ids[key] == "202"
 
 
 @pytest.mark.asyncio

@@ -235,7 +235,8 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
 def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
-        return _ok(rid, {"items": []})
+        # Read-only base inspection for a fresh composer, without walking files.
+        return _ok(rid, {"items": [], "sourceCwd": _completion_cwd(params)})
     session = _sessions.get(params.get("session_id", ""))
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's

@@ -27,6 +27,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerSubmitArgs {
+  cwd?: string | null
   activeQueueSessionKey: string | null
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
@@ -63,6 +64,7 @@ interface UseComposerSubmitArgs {
  * external-submit listener ref.
  */
 export function useComposerSubmit({
+  cwd,
   activeQueueSessionKey,
   activeQueueSessionKeyRef,
   attachments,
@@ -136,9 +138,15 @@ export function useComposerSubmit({
             attachments,
             composerScope: submittedScope,
             ...assignment,
+            ...(cwd !== undefined ? { referenceCwd: cwd } : {}),
             ...(displayKind ? { displayKind } : {})
           })
-        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
+        : onSubmit(text, {
+            composerScope: submittedScope,
+            ...assignment,
+            ...(cwd !== undefined ? { referenceCwd: cwd } : {}),
+            ...(displayKind ? { displayKind } : {})
+          })
     )
       .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
       .catch(rejected)

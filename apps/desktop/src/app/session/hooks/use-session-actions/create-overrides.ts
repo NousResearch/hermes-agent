@@ -19,7 +19,8 @@ export interface SessionCreateOverrides {
 export type CreateBackendSessionForSend = (
   preview?: string | null,
   seedMessages?: SessionSeedMessage[],
-  createOverrides?: SessionCreateOverrides
+  createOverrides?: SessionCreateOverrides,
+  draftKey?: string | null
 ) => Promise<string | null>
 
 export interface SessionSeedMessage {

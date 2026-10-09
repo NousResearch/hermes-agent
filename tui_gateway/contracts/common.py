@@ -53,6 +53,39 @@ class ProjectRef(Result):
     primary_path: str | None = None
 
 
+class CodingWorkspaceMode(WireEnum):
+    worktree = "worktree"
+    existing = "existing"
+    current = "current"
+    folder = "folder"
+
+
+class CodingWorkspaceBinding(Result):
+    """``tui_gateway/coding_workspaces.py::prepare_workspace`` receipt. The desktop sends it back
+    verbatim as ``session.create`` ``coding_workspace``; the session echoes it in ``info`` with the
+    server-owned ``artifactsPath``. The wire keys are camelCase, exactly as they travel."""
+
+    requestId: str
+    cwd: str
+    projectId: str | None = None
+    sourcePath: str | None = None
+    projectName: str | None = None
+    mode: CodingWorkspaceMode | None = None
+    branch: str | None = None
+    repoRoot: str | None = None
+    artifactsPath: str | None = None
+
+
+class AgentWorktree(Result):
+    """``tui_gateway/session_agent_worktree.py::_linked_worktree_for`` — the linked worktree the
+    agent's terminal settled in when it is not the session's own workspace (display-only)."""
+
+    cwd: str
+    branch: str | None = None
+    repoRoot: str
+    projectName: str
+
+
 class McpServerStatus(OpenModel):
     name: str = ""
     status: str | None = None
@@ -79,6 +112,8 @@ class SessionLiveInfo(OpenModel):
     cwd: str = ""
     branch: str | None = None
     project: ProjectRef | None = None
+    coding_workspace: CodingWorkspaceBinding | None = None
+    agent_worktree: AgentWorktree | None = None
     terminal_backend: str = ""
     personality: str = ""
     running: bool = False
@@ -263,7 +298,8 @@ class EmptyPayload(Payload):
 
 
 __all__ = [
-    "TERMINAL_SUBAGENT_STATUSES", "AccountOwner", "ConnectorOwner", "EmptyPayload", "EmptyResult", "McpServerStatus",
+    "TERMINAL_SUBAGENT_STATUSES", "AccountOwner", "AgentWorktree", "CodingWorkspaceBinding", "CodingWorkspaceMode",
+    "ConnectorOwner", "EmptyPayload", "EmptyResult", "McpServerStatus",
     "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",

@@ -23,9 +23,10 @@ function rejectedField(params: Record<string, unknown>, error: unknown): string 
   )
 }
 
-/** `session.create` on the captured owner route (or the window's gateway). */
+/** `session.create` on the captured owner route (or the window's gateway).
+ *  A null `connectionId` is a legacy named-profile owner (coding workspaces). */
 export async function createGatewaySession(
-  route: AgentProfileRoute | null,
+  route: (Omit<AgentProfileRoute, 'connectionId'> & { connectionId: null | string }) | null,
   params: Record<string, unknown>,
   requestGateway: RequestGateway
 ): Promise<SessionCreateResponse> {

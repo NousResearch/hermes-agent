@@ -35,6 +35,7 @@ import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-con
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import { ScopedCodingWorkspaceSetting } from './coding-workspace-setting-scope'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import { DeveloperSettings } from './developer-settings'
@@ -493,6 +494,7 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {activeSectionId === 'workspace' ? <ScopedCodingWorkspaceSetting /> : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}

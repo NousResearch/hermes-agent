@@ -42,6 +42,92 @@ def _comparison_content(message: dict[str, Any]) -> Any:
 class SessionRewindMixin:
     """``SessionDB`` mixin: soft-delete from one user turn onward, validated against the warm history."""
 
+    def _split_rewind_target(self, target_row: dict[str, Any], expected_target_content: Any, preserve_compaction_handoff: bool):
+        """Validate an active rewind target; return its handoff scaffold (or None). ``ValueError``: inactive /
+        non-user-originated / missing composite carrier; ``RuntimeError``: live payload changed."""
+        from agent.context_compressor import split_user_originated_turn
+        from agent.memory_manager import sanitize_context
+        if not target_row.get("active"):
+            raise ValueError("rewind target is not active")
+        handoff, live_view = split_user_originated_turn({
+            **target_row, "content": target_row["content"],
+            "display_metadata": self._decode_display_metadata(target_row.get("display_metadata"))})
+        if live_view is None:
+            raise ValueError("rewind target is not a user-originated turn")
+        live_content = live_view.get("content")
+        if isinstance(live_content, str):
+            live_content = sanitize_context(live_content).strip()
+        if expected_target_content is not None and live_content != expected_target_content:
+            raise RuntimeError("rewind target changed before it could be persisted")
+        if preserve_compaction_handoff and handoff is None:
+            raise ValueError("preserve_compaction_handoff requires an active composite carrier")
+        return handoff if preserve_compaction_handoff else None
+
+    def rewind_to_message(self, session_id: str, target_message_id: int, *, preserve_compaction_handoff: bool = False,
+                          expected_active_ids: Optional[list[int]] = None,
+                          expected_target_content: Any = None) -> dict[str, Any]:
+        """Soft-delete (``active=0``) every message with id >= *target_message_id*, target included (the caller
+        pre-fills it as the next prompt). Returns ``{"rewound_count", "target_message", "new_head_id"}``, plus
+        ``replacement_message_id`` with ``preserve_compaction_handoff`` (archives a composite summary carrier,
+        inserts its hidden handoff scaffold as the new head). ``ValueError``: target missing or not ``user``.
+        ``expected_active_ids`` / ``expected_target_content`` pin the active set and canonical live payload
+        in-txn before any mutation (presentation-only metadata changes don't invalidate a rewind). A live turn
+        lease refuses; expired/dead holders are reclaimed. ``rewind_count`` always increments."""
+        from agent.message_metadata import message_uid_or_none
+        from hermes_state_common import _placeholders
+        from hermes_state_media import restore_media_content
+        from hermes_state_messages import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL
+        # The target's image is read before BEGIN IMMEDIATE; the txn only checks its sidecar is unchanged.
+        pre = self._read_one("SELECT content, media_content FROM messages WHERE id = ? AND session_id = ?",
+                             (target_message_id, session_id))
+        pre_sidecar = pre["media_content"] if pre is not None else None
+        pre_content = restore_media_content(
+            self.db_path, pre_sidecar, self._decode_content(pre["content"]), model=False) if pre_sidecar else None
+
+        def _do(conn):
+            from hermes_state_media import clear_inactive_media
+            self._check_transcript_write_guards(
+                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+            if expected_active_ids is not None:
+                active_rows = conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
+                if [int(r[0]) for r in active_rows] != expected_active_ids:
+                    raise RuntimeError("active transcript changed before the rewind could be persisted")
+            row = conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_message_id, session_id)).fetchone()
+            if row is None:
+                raise ValueError(f"message {target_message_id} not found in session {session_id}")
+            target_row = dict(row)
+            if target_row.get("media_content") != pre_sidecar:
+                raise RuntimeError("rewind target changed before it could be persisted")
+            target_row["content"] = pre_content if pre_sidecar else self._decode_content(target_row.get("content"))
+            if target_row.get("role") != "user":
+                raise ValueError(
+                    f"rewind target must be a 'user' message (got role={target_row.get('role')!r}, id={target_message_id})")
+            replacement = None
+            if preserve_compaction_handoff or expected_target_content is not None:
+                replacement = self._split_rewind_target(target_row, expected_target_content, preserve_compaction_handoff)
+            ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
+                                             (session_id, target_message_id)).fetchall()]
+            if ids:
+                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
+            if replacement is not None:
+                self._insert_message_rows(conn, session_id, [replacement])  # stamps _row_id and message_uid
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
+            message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
+            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            head_id = conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
+            clear_inactive_media(conn)
+            return target_row, ids, head_id, replacement
+        target_row, rewound, new_head_id, replacement = self._execute_write(_do)
+        from hermes_state_media import try_sweep_transcript_media
+        try_sweep_transcript_media(self)  # after the prefill holds its pixels
+        return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
+                **({"replacement_message_id": replacement and replacement["_row_id"],
+                    "replacement_message_uid": replacement and message_uid_or_none(replacement)}
+                   if preserve_compaction_handoff else {})}
+
     def rewind_user_turn(
         self, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,
         require_retryable: bool = False, require_composite: bool = False, adopt_row_ids: bool = False,

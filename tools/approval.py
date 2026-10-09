@@ -379,14 +379,17 @@ def load_permanent(patterns: set):
         governing.update(patterns)
 
 
-def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
-    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+def _persist_choice(session_key: str, choice: str, keys: list[str], *, allow_permanent: bool = True) -> None:
+    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing.
+
+    ``always`` is session-max for guardrail keys and whenever the caller opted out of the permanent
+    allowlist (``allow_permanent=False``, e.g. a plugin escalation that must be decided each time)."""
     for key in keys:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
         # LOCAL PATCH: guardrail keys (approval self-disable) are session-max; `always` downgrades to session.
-        if choice == "always" and not is_guardrail_key(key):
+        if choice == "always" and allow_permanent and not is_guardrail_key(key):
             approve_permanent(key)
             with _lock:
                 snapshot = set(_permanent_set())
@@ -775,7 +778,8 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None,
+                    allow_permanent: bool = True) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -794,7 +798,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    # Caller may opt out of the permanent allowlist (a plugin escalation that must be decided each time).
+    allow_permanent = allow_permanent and not smart_denied
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -809,7 +814,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
-            _persist_choice(session_key, choice, pattern_keys)
+            _persist_choice(session_key, choice, pattern_keys, allow_permanent=allow_permanent)
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
@@ -953,6 +958,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    allow_permanent: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1017,6 +1023,7 @@ def _run_approval_gate(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        allow_permanent=allow_permanent,
     )
 
 
@@ -1100,7 +1107,8 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
-def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
+def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
+                          allow_permanent: bool = True) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1125,6 +1133,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         fail_closed_when_no_human=True,
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "
                                 "to approve it. A plugin flagged this action for human confirmation."),
+        allow_permanent=allow_permanent,
     )
 
 

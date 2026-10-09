@@ -120,6 +120,7 @@ class TestSessionStoreProfileResolution:
         config = GatewayConfig(**cfg_kw)
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
+        s.close_all_db_handles()
         s._db = None
         s._loaded = True
         return s
@@ -150,6 +151,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         config = GatewayConfig(**cfg_kw)
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
+        store.close_all_db_handles()
         store._db = _RecoveringDB(row)
         store._loaded = True
         return store

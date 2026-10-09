@@ -213,7 +213,8 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
         reset_hermes_home_override(token)
 
     loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    worker = threading.Thread(target=loop.run_forever, daemon=True)
+    worker.start()
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _profile_adapters={"satellite": {}})
     monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("satellite", satellite_home)])
     try:
@@ -222,6 +223,9 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
             _drain_restart_safe_cron_deliveries({Platform.DISCORD: PrimaryDiscord()}, loop, runner)
     finally:
         loop.call_soon_threadsafe(loop.stop)
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+        loop.close()
 
     token = set_hermes_home_override(str(satellite_home))
     try:

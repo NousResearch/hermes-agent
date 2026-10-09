@@ -59,7 +59,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.slack import SlackAdapter
+from plugins.platforms.slack.adapter import SlackAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 

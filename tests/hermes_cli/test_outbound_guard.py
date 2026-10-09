@@ -362,7 +362,7 @@ def _make_slack_adapter_for_guard_test():
     """Construct a SlackAdapter instance with the minimum attributes
     the `send` method touches, so the OutboundGuard wiring can be
     exercised end-to-end without spinning up a real Slack client."""
-    from gateway.platforms.slack import SlackAdapter
+    from plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter._app = object()  # truthy, so the early-return path is skipped

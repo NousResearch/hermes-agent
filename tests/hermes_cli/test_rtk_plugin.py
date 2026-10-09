@@ -173,105 +173,104 @@ class TestRTKPlugin:
         assert result is not None
 
 
-# ── 2. Core: get_pre_tool_call_arg_overrides ──────────────────────────────
+# ── 2. Core: pre-tool-call rewrite directives ───────────────────────────
 
 
-class TestPreToolCallArgOverrides:
+class TestPreToolCallRewriteDirectives:
     """Tests for the arg-override extraction from pre_tool_call hook results."""
 
     def test_rewrite_directive_collected(self):
         """A hook returning {"action": "rewrite", "args": {...}} is collected."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         hook_results = [
             {"action": "rewrite", "args": {"command": "rtk git status"}},
         ]
-        overrides = get_pre_tool_call_arg_overrides(hook_results)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
         assert overrides == {"command": "rtk git status"}
 
     def test_block_directive_not_collected(self):
         """A hook returning {"action": "block", ...} is not collected as override."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         hook_results = [
             {"action": "block", "message": "forbidden"},
         ]
-        overrides = get_pre_tool_call_arg_overrides(hook_results)
-        assert overrides == {}
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
+        assert overrides is None
 
     def test_none_returns_ignored(self):
         """Hook callbacks returning None are skipped."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         hook_results = [None, {"action": "rewrite", "args": {"x": "y"}}]
-        overrides = get_pre_tool_call_arg_overrides(hook_results)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
         assert overrides == {"x": "y"}
 
     def test_non_dict_returns_ignored(self):
         """Hook callbacks returning non-dict values are skipped."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         hook_results = ["some string", 42, {"action": "rewrite", "args": {"z": "1"}}]
-        overrides = get_pre_tool_call_arg_overrides(hook_results)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
         assert overrides == {"z": "1"}
 
     def test_multiple_rewrite_directives_last_wins(self):
         """Multiple rewrite directives: last one wins (simple merge, last key wins)."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         hook_results = [
             {"action": "rewrite", "args": {"command": "rtk git log"}},
             {"action": "rewrite", "args": {"command": "rtk git status"}},
         ]
-        overrides = get_pre_tool_call_arg_overrides(hook_results)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=hook_results):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
         assert overrides == {"command": "rtk git status"}
 
     def test_empty_hook_results(self):
         """Empty hook results produce empty overrides."""
-        from hermes_cli.plugins import get_pre_tool_call_arg_overrides
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
-        overrides = get_pre_tool_call_arg_overrides([])
-        assert overrides == {}
-
-
-# ── 3. Core: get_pre_tool_call_block_message returns hook_results ────────
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _, overrides = get_pre_tool_call_directives("terminal", {})
+        assert overrides is None
 
 
-class TestBlockMessageReturnsHookResults:
-    """get_pre_tool_call_block_message should return (block_message, hook_results)
-    so callers can reuse the hook results for arg overrides without double-firing."""
+# ── 3. Core: block and rewrite directives share one hook invocation ───────
 
-    def test_returns_tuple_when_no_block(self):
-        """When no block directive, returns (None, hook_results)."""
-        from hermes_cli.plugins import get_pre_tool_call_block_message
 
-        # We need a live PluginManager, so patch invoke_hook
+class TestSingleFireDirectives:
+    """Collect block and rewrite directives without invoking hooks twice."""
+
+    def test_returns_rewrite_without_block(self):
+        from hermes_cli.plugins import get_pre_tool_call_directives
+
         with patch("hermes_cli.plugins.invoke_hook", return_value=[
             {"action": "rewrite", "args": {"command": "rtk git status"}}
-        ]):
-            result = get_pre_tool_call_block_message(
+        ]) as invoke:
+            block_msg, rewrite = get_pre_tool_call_directives(
                 "terminal", {"command": "git status"},
             )
-        assert isinstance(result, tuple)
-        block_msg, hook_results = result
         assert block_msg is None
-        assert len(hook_results) == 1
-        assert hook_results[0]["action"] == "rewrite"
+        assert rewrite == {"command": "rtk git status"}
+        invoke.assert_called_once()
 
-    def test_returns_tuple_with_block(self):
-        """When block directive found, returns (message, hook_results)."""
-        from hermes_cli.plugins import get_pre_tool_call_block_message
+    def test_returns_block_without_rewrite(self):
+        from hermes_cli.plugins import get_pre_tool_call_directives
 
         with patch("hermes_cli.plugins.invoke_hook", return_value=[
             {"action": "block", "message": "forbidden"},
-        ]):
-            result = get_pre_tool_call_block_message(
+        ]) as invoke:
+            block_msg, rewrite = get_pre_tool_call_directives(
                 "terminal", {"command": "rm -rf /"},
             )
-        assert isinstance(result, tuple)
-        block_msg, hook_results = result
         assert block_msg == "forbidden"
-        assert len(hook_results) == 1
+        assert rewrite is None
+        invoke.assert_called_once()
 
 
 # ── 4. Integration: handle_function_call applies arg overrides ───────────

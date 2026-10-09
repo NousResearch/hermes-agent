@@ -1,11 +1,20 @@
 """Runtime tests for tool-call loop guardrails."""
 
+from __future__ import annotations
+
 import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _load_agent_after_home_isolation(_isolate_hermes_home, monkeypatch):
+    from run_agent import AIAgent
+
+    monkeypatch.setitem(globals(), "AIAgent", AIAgent)
 
 
 def _make_tool_defs(*names: str) -> list[dict]:

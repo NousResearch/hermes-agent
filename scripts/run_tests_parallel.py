@@ -460,6 +460,36 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _kill_detached_leftovers(temproot: str) -> None:
+    """SIGKILL every process whose environment still points into this attempt's temp root.
+
+    ``_kill_tree`` reaches the attempt's process group only. A detached child
+    (``start_new_session=True``: an auto-started ``gateway run``, a ``setsid``
+    server) leaves that group, is reparented to init when its parent exits, and
+    used to run forever: 215 orphan gateways (~52 GB RSS) piled up on one host.
+    Every descendant carries the attempt's unique temproot in its environment
+    (``PYTEST_DEBUG_TEMPROOT``/``TMPDIR``, or a ``HOME``/``HERMES_HOME`` a fixture
+    made under it), so it names exactly this attempt's processes and nothing else.
+    Linux-only (``/proc``); elsewhere the process-group kill is all there is.
+    """
+    if not os.path.isdir("/proc"):
+        return
+    import signal as _signal
+
+    root = os.fsencode(temproot)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/environ", "rb") as fh:
+                values = [item.partition(b"=")[2] for item in fh.read().split(b"\0")]
+            if not any(v == root or v.startswith(root + b"/") for v in values):
+                continue
+            os.kill(int(entry), _signal.SIGKILL)  # windows-footgun: ok — /proc exists only on Linux
+        except OSError:
+            continue
+
+
 def _effective_file_timeout(
     file: Path,
     repo_root: Path,
@@ -669,6 +699,7 @@ def _run_one_file_once(
 
         output +=  "\n"
     finally:
+        _kill_detached_leftovers(temproot)
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite. Permission fixtures leave read-only dirs

@@ -10,12 +10,12 @@ import secrets
 import threading
 import time
 from contextlib import suppress
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from tools.connectors.mcp_oauth import (
     _validate_client_redirect_uri,
     choose_callback_receiver,
-    run_worker,
 )
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
@@ -49,6 +49,90 @@ def register_flow(flow, *, httpd=None) -> dict[str, Any]:
     with _sessions_lock:
         _sessions[flow.flow_id] = rec
     return rec
+
+
+def _probe_with_rollback(
+    server_name: str, cfg: dict, hermes_home: str, flow, reconnect_live: bool,
+) -> None:
+    """Commit new OAuth tokens only after a complete authorization probe."""
+    from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
+    from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout, oauth_reauth_staging
+    from tools.mcp_oauth_manager import get_manager
+
+    manager = get_manager()
+    storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
+    original_snapshot = storage.snapshot()
+    with oauth_reauth_staging(server_name, hermes_home=hermes_home) as staged_storage:
+        previous_entry = manager.evict(server_name, hermes_home=hermes_home)
+        manager.set_entry_persistence_suspended(previous_entry, True)
+        try:
+            tools = _probe_single_server(
+                server_name, cfg, connect_timeout=login_connect_timeout(cfg)
+            )
+            if not staged_storage.has_cached_tokens():
+                raise RuntimeError(
+                    "The server responded, but no OAuth token was obtained — "
+                    "this provider may require a manually-registered OAuth client.")
+            storage.restore(staged_storage.snapshot())
+            manager.evict(server_name, hermes_home=hermes_home)
+            _save_mcp_server(server_name, cfg)
+            if flow is not None:
+                flow.tools = [{"name": tool, "description": description} for tool, description in tools]
+                flow.mark_approved()
+            if reconnect_live:
+                from tools.mcp_tool_loop import reconnect_mcp_server
+                reconnect_mcp_server(server_name)
+        except Exception:
+            storage.restore(original_snapshot)
+            manager.evict(server_name, hermes_home=hermes_home)
+            manager.set_entry_persistence_suspended(previous_entry, False)
+            manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
+            raise
+
+
+def _worker(
+    session_id: str, hermes_home: str, server_name: str, cfg: dict, reconnect_live: bool,
+) -> None:
+    """Run TUI OAuth under the owning profile and staged-token transaction."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    rec = _sessions.get(session_id)
+    flow = rec["flow"] if rec else None
+    home_token = secret_token = None
+    try:
+        from agent.secret_scope import (
+            build_profile_secret_scope, reset_secret_scope, set_secret_scope,
+        )
+        from tools.mcp_dashboard_oauth import dashboard_oauth_flow
+        from tools.mcp_oauth import (
+            force_interactive_oauth, oauth_reauth_transaction,
+        )
+
+        home_token = set_hermes_home_override(hermes_home)
+        secret_token = set_secret_scope(
+            build_profile_secret_scope(Path(hermes_home)), profile_home=hermes_home,
+        )
+        with oauth_reauth_transaction(server_name, hermes_home=hermes_home), \
+                force_interactive_oauth(), dashboard_oauth_flow(flow):
+            _probe_with_rollback(server_name, cfg, hermes_home, flow, reconnect_live)
+    except Exception as exc:
+        from tools.mcp_dashboard_oauth import exception_message
+        msg = exception_message(exc)
+        with suppress(Exception):
+            from tools.mcp_oauth import humanize_oauth_registration_error
+            msg = humanize_oauth_registration_error(
+                server_name, exc, server_url=cfg.get("url") if isinstance(cfg, dict) else None,
+            ) or msg
+        if flow is not None:
+            flow.mark_error(msg)
+    finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+        if flow is not None:
+            flow.mark_worker_done()
+        if rec is not None:
+            _shutdown_listener(rec)
 
 
 def finish_flow(session_id: str) -> None:
@@ -86,8 +170,7 @@ def start_flow(
     httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
     rec = register_flow(flow, httpd=httpd)
     threading.Thread(
-        target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
-        kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec)},
+        target=_worker, args=(session_id, hermes_home, server_name, dict(cfg), reconnect_live),
         daemon=True, name=f"mcp-oauth-{server_name}").start()
     try:
         auth_url = None

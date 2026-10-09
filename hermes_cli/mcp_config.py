@@ -898,19 +898,6 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     if selected_flow not in {"browser", "device"}:
         _error("oauth.flow must be browser or device")
         return False
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        if selected_flow == "browser":
-            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
-            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
-            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
-            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
-            from tools.mcp_oauth import HermesTokenStorage
-            get_manager().evict(name)
-            HermesTokenStorage(name).remove(keep_metadata=True)
-    except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
-
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
@@ -921,16 +908,43 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     # login` is explicitly user-initiated even when stdin isn't a TTY (desktop / agent-spawned
     # terminals), where _is_interactive() alone would refuse to open a browser.
     try:
-        from tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
+        from tools.mcp_oauth import (
+            HermesTokenStorage,
+            force_interactive_oauth,
+            login_connect_timeout,
+            oauth_reauth_staging,
+            oauth_reauth_transaction,
+        )
+        from tools.mcp_oauth_manager import get_manager
 
-        if selected_flow == "device":
-            from tools.mcp_oauth_device import login_device
-            asyncio.run(login_device(name, url, oauth_cfg))
-        probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
-        with force_interactive_oauth():
-            tools = _probe_single_server(
-                name, probe_config, connect_timeout=login_connect_timeout(probe_config)
-            )
+        manager = get_manager()
+        storage = HermesTokenStorage(name)
+        with oauth_reauth_transaction(name):
+            original_snapshot = storage.snapshot()
+            with oauth_reauth_staging(name) as staging_storage:
+                previous_entry = manager.evict(name)
+                manager.set_entry_persistence_suspended(previous_entry, True)
+                try:
+                    if selected_flow == "device":
+                        from tools.mcp_oauth_device import login_device
+                        asyncio.run(login_device(name, url, oauth_cfg))
+                    probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
+                    with force_interactive_oauth():
+                        tools = _probe_single_server(
+                            name, probe_config, connect_timeout=login_connect_timeout(probe_config)
+                        )
+                    if not staging_storage.has_cached_tokens():
+                        raise RuntimeError(
+                            "The server responded, but no OAuth token was obtained — "
+                            "authentication did not complete.")
+                    storage.restore(staging_storage.snapshot())
+                    manager.evict(name)
+                except Exception:
+                    storage.restore(original_snapshot)
+                    manager.evict(name)
+                    manager.set_entry_persistence_suspended(previous_entry, False)
+                    manager.restore_entry(name, previous_entry)
+                    raise
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.

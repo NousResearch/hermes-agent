@@ -152,7 +152,7 @@ def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fle
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):
     """The fleet the boot guard refuses is exactly the one ``hermes gateway migrate --multiplex`` folds:
     an unset flag must not read as "already multiplexed" or the migration would short-circuit."""
-    root, services, pids = fleet
+    _root, services, pids = fleet
     pids.update({"coder": 4101, "ops": 4102})
     services.update({"coder": [("systemd", False)], "ops": [("systemd", False)]})
     plan = gm.build_migration_plan()
@@ -164,7 +164,7 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     """A CLI process asks the LIVE default gateway (which settled the unset default itself) before
     reading config; a gateway that stayed standalone recorded an empty served set."""
     root, _services, _pids = fleet
-    import gateway.status as status
+    from gateway import status
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     record = {"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running", "served_profiles": []}
@@ -185,3 +185,58 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
     record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
     assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None
+
+
+def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(tmp_path, monkeypatch):
+    """Dead or stale gateway_state.json must not emit standalone warnings (#120991)."""
+    import gateway.status as gw_status
+    from datetime import datetime, timezone
+
+    state_file = tmp_path / "gateway_state.json"
+    monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: state_file)
+    # A multi-profile host: without unserved profiles the box is empty regardless of liveness,
+    # so the dead/stale cases below would pass vacuously.
+    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["other_profile"])
+
+    # 1. Stopped gateway
+    state_file.write_text(json.dumps({
+        "gateway_state": "stopped",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 2. Dead PID
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": 999999999,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 3. Stale heartbeat but LIVE PID: a paused/wedged standalone gateway still warns (the
+    # heartbeat is a health signal, not liveness).
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": "2020-01-01T00:00:00Z",
+        "multiplex_standalone_reason": "wedged reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    assert any("wedged reason" in line for line in mode.recorded_standalone_warning_lines())
+
+    # 4. Live and fresh record emits warning
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "real standalone reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    monkeypatch.setattr(gw_status, "runtime_status_is_stale", lambda r: False)
+    lines = mode.recorded_standalone_warning_lines()
+    assert any("STANDALONE" in line for line in lines)
+    assert any("real standalone reason" in line for line in lines)

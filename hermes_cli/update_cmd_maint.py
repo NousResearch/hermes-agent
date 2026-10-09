@@ -142,7 +142,7 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        needs_upgrade = bool(row) and getattr(db, "_db_needs_fts_storage_upgrade")(db._conn)
+        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -268,8 +268,9 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
-def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
+    """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
+    stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
@@ -288,21 +289,23 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort
         # the fleet matrix, reconciliation and the inner receipt finalize that follow it. A
         # dashboard/serve left on pre-update code is still caught by the survivor probe →
-        # reconciliation (exit 1).
+        # reconciliation (an owed gateway_restart follow-up).
         logger.warning("Post-update dashboard cleanup failed: %s", exc)
         _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
         print()
         print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
-        return
-    if not stop_result.get("unrecovered"):
-        return
+        return set()
+    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    if not unrecovered:
+        return unrecovered
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return unrecovered
 
 
 def _print_update_completion(message: str) -> None:
@@ -500,6 +503,25 @@ def _verify_and_restore_state_dbs_post_update() -> None:
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
 
 
+def _invalidate_live_plugin_catalog_caches() -> None:
+    """Drop the cached live plugin catalog under the active home AND every sibling profile's.
+
+    The checkout is shared across profiles, so an update's code swap changes every profile's
+    catalog truth at once: a live snapshot cached before the swap would out-vote the newer
+    in-tree catalog (the pin it just bumped, the entry it just added) for the rest of the cache
+    TTL (#119340). Mirrors the state.db guard's home + siblings iteration. Never raises —
+    :func:`plugin_catalog.invalidate_live_cache_for_home` is best-effort per home.
+    """
+    from hermes_cli.update_cmd import get_hermes_home
+    home = get_hermes_home()
+    from hermes_cli.plugin_catalog import invalidate_live_cache_for_home
+    invalidate_live_cache_for_home(home)
+    with suppress(Exception):
+        from hermes_cli.backup import _sibling_profile_homes
+        for _name, profile_home in _sibling_profile_homes(home):
+            invalidate_live_cache_for_home(profile_home)
+
+
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills
@@ -680,7 +702,7 @@ def _run_quick_snapshots() -> Optional[str]:
             keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
         if _sibling_snaps:
-            print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
+            print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
             _record_update_step(
                 "sibling_profile_snapshots",
                 True,
@@ -787,14 +809,26 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
 def _sweep_bytecode_after_update(branch: str) -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
-    bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
+    bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts.
+
+    Never fails the committed update: a failed sweep is a ``bytecode_sweep`` follow-up and the
+    fingerprint stays un-stamped, so the launch-time sweep (fingerprint mismatch) retries it.
+    """
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_receipt import record_followup
     # Timestamp-based .pyc validation can accept old bytecode after the source swap.
-    removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
-    if removed:
-        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
-    _m()._record_bytecode_fingerprint()
-    _m()._refresh_bootstrap_cache_scripts(branch)
+    try:
+        removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
+        if removed:
+            print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        _m()._record_bytecode_fingerprint()
+    except Exception as exc:  # health: allow BLE001 -- owed to the next launch's fingerprint sweep
+        record_followup("bytecode_sweep", str(exc) or type(exc).__name__)
+    try:
+        _m()._refresh_bootstrap_cache_scripts(branch)
+    except Exception as exc:  # health: allow BLE001 -- refreshed again by the next update
+        record_followup("bootstrap_scripts", str(exc) or type(exc).__name__,
+                        retry="the next `hermes update` refreshes them")
 
 
 def _profile_skill_sync_status(r) -> str:
@@ -870,12 +904,13 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+    """Give the install its optional default tools: the PM defaults (agent-browser +
+    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
 
-    A source update re-syncs only the venv, so a tool that became a default after
-    this install was created would never arrive and browser tools would stay
-    missing. The installers' PM stage runs the same selection. Declined packages
-    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    Runs at the end of both the installers (via the source completion) and
+    ``hermes update``: a source update re-syncs only the venv, so a tool that became
+    a default after this install was created would never arrive otherwise. Declined
+    packages stay declined (pm/defaults.py). A failed download warns and never fails.
     """
     import pm
     from pm.defaults import default_packages
@@ -890,7 +925,7 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
             pm.ensure(name, explicit=True)
         except (pm.InstallError, OSError) as exc:
@@ -904,16 +939,6 @@ def _print_checkpoint_footprint_notice() -> None:
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
-
-
-def _print_plugin_compat_notice() -> None:
-    """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
-    from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
-    lines = summary_lines(compat_report(force=True))
-    if not lines:
-        return
-    colour = "\033[1;31m" if removal_in_effect() else "\033[1;33m"
-    print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
 
 
 def _print_post_update_notices_and_self_heals() -> None:
@@ -939,7 +964,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
-        ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
@@ -955,12 +979,28 @@ def _migrate_relay_exporter_env() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version, completion_message=None,
+    pre_update_version, completion_message=None, followups=None,
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
-    Ancillary repairs and notices are best-effort; an unsafe runtime withholds success.
+    Ancillary repairs and notices are best-effort. The profile sync and the config migration run
+    after a failed build too and never fail the committed update. A config-migration failure is
+    printed as ``⚠``, recorded as a receipt follow-up and appended to ``followups`` so the tail
+    stays owed. Profile sync is best-effort per profile (``_sync_profiles_after_update`` prints
+    that profile's error and carries on); only a sync that escapes the step is owed. An unsafe
+    runtime withholds success (and is reported) but is not tail work.
     """
+    from hermes_cli.update_receipt import record_followup
+
+    def owed_step(name, run):
+        try:
+            run()
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- the code is committed; retry later
+            reason = str(exc) or type(exc).__name__
+            record_followup(name, reason)
+            if followups is not None:
+                followups.append((name, reason))
+
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
@@ -1007,16 +1047,22 @@ def _run_post_update_maintenance(
         if seed_cache_from_checkout(_m().PROJECT_ROOT):
             print("  ✓ Model catalog cache refreshed from checkout")
 
+    # Drop the cached live plugin catalog under every profile: the checkout is shared, so a
+    # pre-update snapshot must not out-vote the pins/entries this update just installed for the
+    # rest of the cache TTL (#119340).
+    with _best_effort('Live plugin catalog cache invalidation failed: %s'):
+        _invalidate_live_plugin_catalog_caches()
+
     with _best_effort('Skills sync during update failed: %s'):
         print()
         print("→ Syncing bundled skills...")
         _print_bundled_skills_sync_report()
 
-    _sync_profiles_after_update()
+    owed_step("profile_sync", _sync_profiles_after_update)
 
-    _check_and_apply_config_migration(
+    owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
-    )
+    ))
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
@@ -1027,5 +1073,11 @@ def _run_post_update_maintenance(
         for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
             print(line)
 
-    _print_post_update_notices_and_self_heals()
+    with _best_effort('Post-update notices failed: %s'):
+        _print_post_update_notices_and_self_heals()
+    # A non-✓ completion message (parked local changes) withholds success on its own; only a
+    # ✓ message that still came back False is the SQLite verdict.
+    if not update_complete and (completion_message or "✓").startswith("✓"):
+        record_followup("sqlite_runtime", "the selected Python links an unsafe SQLite runtime",
+                        retry="run the installer again")
     return update_complete

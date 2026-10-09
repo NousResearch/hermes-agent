@@ -416,7 +416,7 @@ def _staged_venv_dir() -> "Path | None":
     doctor must not read an empty directory as staged dependencies.
     """
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm.packages import Venv
 
         venv_dir = Venv().venv_dir()
@@ -499,10 +499,88 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
                 _fail_and_issue(name, "(missing)", f"Repair {name}: {_python_repair_hint()}", f.issues)
 
 
+def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
+    """Windows: the gateway must start at logon from ONE mechanism — a Scheduled Task and a
+    Startup-folder entry side by side launch it twice (#80569)."""
+    if sys.platform != "win32":
+        return
+    from hermes_cli import gateway_windows
+    redundant = gateway_windows.redundant_autostart_entries()
+    if not redundant:
+        return
+    _section("Windows Gateway Autostart")
+    if not should_fix:
+        for path in redundant:
+            check_warn("Redundant gateway login item", f"({path})")
+        f.issues.append("Remove duplicate Windows gateway autostart entries: hermes doctor --fix")
+        return
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+    for message in done:
+        check_ok(message)
+    for message in warnings:
+        check_warn(message)
+    if done and not warnings:
+        f.fixed += 1
+    if warnings:
+        f.manual_issues.extend(warnings)
+
+
+@doctor_check()
+def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
+    """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.
+
+    When starlette is updated past the fastapi pinned beside it (the CVE starlette pin ships in
+    several extras on its own), ``hermes dashboard`` dies constructing ``FastAPI(...)`` with a
+    TypeError — not an ImportError — so the module's own lazy-install fallback never fires and the
+    process exits before a single log line. Importing in a subprocess keeps a dead web surface
+    from taking the doctor down with it; lazy installs stay off so the probe never mutates the
+    environment it is diagnosing.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli.web_server"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        _fail_and_issue(
+            "Dashboard web surface",
+            "(import probe timed out)",
+            "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+            f.issues,
+        )
+        return
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return check_ok("Dashboard web surface", "(imports cleanly)")
+    if "Web UI requires fastapi and uvicorn" in stderr:
+        # The optional web extra is simply absent; anyone who never opens the dashboard
+        # should not be told their install is broken.
+        return check_warn("Dashboard web surface", "(optional web extra not installed)")
+    detail = (
+        stderr.splitlines()[-1] if stderr else f"(exited with code {proc.returncode})"
+    )
+    _fail_and_issue(
+        "Dashboard web surface",
+        detail,
+        "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+        f.issues,
+    )
+
+
 @doctor_check()
 def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_gateway_service_linger(f.issues)
     _check_s6_supervision(f.issues)
+    _check_windows_gateway_autostart(should_fix, f)
 
 
 @doctor_check()

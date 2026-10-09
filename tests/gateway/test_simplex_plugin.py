@@ -55,7 +55,7 @@ def test_check_requirements_true_when_configured(monkeypatch):
     # check_requirements() gate also asserts the package imports.
     websockets_present = True
     try:
-        import websockets  # noqa: F401
+        import websockets
     except ImportError:
         websockets_present = False
     assert check_requirements() is websockets_present
@@ -307,7 +307,6 @@ async def test_standalone_send_missing_websockets(monkeypatch):
         def find_spec(name, path=None, target=None):
             if name == "websockets" or name.startswith("websockets."):
                 raise ImportError("websockets blocked for test")
-            return None
 
     sys.meta_path.insert(0, _Blocker())
     try:
@@ -483,3 +482,64 @@ def test_multiplex_scope_reads_profile_own_env_not_default(
     seeded = _env_enablement()
     assert seeded == {"ws_url": "ws://profile:5225", "group_allowed": "g1"}
     assert check_requirements() is True
+
+
+@pytest.mark.asyncio
+async def test_name_allowlist_warning_once_scoped_even_if_first_connect_fails(monkeypatch, caplog):
+    """Name entries in SIMPLEX_ALLOWED_USERS are ignored by authz, so connect()
+    warns -- exactly once per process for this profile/value, read the way authz
+    reads it (the profile scope, not the default profile's os.environ), and even
+    when the first connect fails. Reconnects build a FRESH adapter each attempt
+    (gateway/run_adapters.py), so the dedup cannot live on the instance."""
+    import logging
+
+    import websockets
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "bob")  # default profile's bridge output
+    monkeypatch.setattr(_simplex, "_NAME_ALLOWLIST_WARNED", set())
+
+    class DummyWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    attempts = []
+
+    def fake_connect(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise OSError("daemon down")
+        return DummyWs()
+
+    async def _idle():
+        return None
+
+    def _fresh_adapter():
+        adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+        monkeypatch.setattr(adapter, "_ws_listener", _idle)
+        monkeypatch.setattr(adapter, "_health_monitor", _idle)
+        return adapter
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+
+    # Scope set inside the test: a sync fixture's ContextVar token can't be reset from here.
+    set_multiplex_active(True)
+    token = set_secret_scope({"SIMPLEX_ALLOWED_USERS": "4, alice"})
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert await _fresh_adapter().connect() is False  # cold boot, daemon down
+            retry = _fresh_adapter()  # the reconnect watcher builds a new adapter
+            assert await retry.connect(is_reconnect=True) is True
+        await retry.disconnect()
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+    warnings = [r.getMessage() for r in caplog.records if "not numeric contactIds" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "['alice']" in warnings[0]
+    assert "bob" not in warnings[0]

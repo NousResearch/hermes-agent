@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
@@ -36,7 +37,7 @@ def _is_micro_marker(entry: Any) -> bool:
 class MicroCompactionMixin:
     """Rolling micro-compaction; host must be a ``ContextCompressor``."""
 
-    def _resolve_compact_cursor(self, messages: List[Dict[str, Any]], head_end: int, tail_start: int) -> int:
+    def _resolve_compact_cursor(self, messages: list[dict[str, Any]], head_end: int, tail_start: int) -> int:
         """Index of the first message not yet absorbed into the rolling summary: the in-memory
         cursor when valid, else just past the last summary marker."""
         if head_end < self._micro_compact_cursor < tail_start:
@@ -60,7 +61,7 @@ class MicroCompactionMixin:
         return cursor
 
     def _find_one_exchange(
-        self, messages: List[Dict[str, Any]], start: int, tail_start: int,
+        self, messages: list[dict[str, Any]], start: int, tail_start: int,
     ) -> Optional[tuple[int, int]]:
         """Find the next complete exchange (full agent turn) starting at *start*; returns
         ``(exchange_start, exchange_end)`` or ``None``. Spans assistant+tool rows up to the next
@@ -89,7 +90,7 @@ class MicroCompactionMixin:
             return None
         return (exchange_start, idx)
 
-    def _build_micro_summary_prompt(self, existing_summary: str, exchange_text: str) -> List[Dict[str, str]]:
+    def _build_micro_summary_prompt(self, existing_summary: str, exchange_text: str) -> list[dict[str, str]]:
         """Build the prompt messages for a single-exchange micro-summary."""
         summary_block = existing_summary if existing_summary.strip() else "(No previous summary yet.)"
         user_prompt = (
@@ -123,8 +124,7 @@ class MicroCompactionMixin:
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
+        self._apply_summary_route(call_kwargs)
         if self.model:
             call_kwargs.setdefault("main_runtime", {
                 "model": self.model, "provider": self.provider or "", "base_url": self.base_url or "",
@@ -163,7 +163,7 @@ class MicroCompactionMixin:
         """Return True when the rolling summary is large enough to defrag."""
         return estimate_tokens_rough(self._micro_compact_rolling_summary) >= self._micro_compact_defrag_threshold_tokens
 
-    def _defrag_rolling_summary(self, messages: List[Dict[str, Any]]) -> bool:
+    def _defrag_rolling_summary(self, messages: list[dict[str, Any]]) -> bool:
         """Re-summarize the rolling summary text and rewrite the marker in place.
         Transcript-shape-neutral (no splice, no cursor move). Returns True when it rewrote."""
         old_summary = self._micro_compact_rolling_summary
@@ -200,7 +200,7 @@ class MicroCompactionMixin:
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
 
-    def _micro_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _micro_compact(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Run one round of micro-compaction (entry point from ``finalize_turn()``). Returns the
         (possibly modified) list and syncs the session DB via ``archive_and_compact`` (the
         append-only flush alone would double-load on resume)."""
@@ -231,7 +231,7 @@ class MicroCompactionMixin:
         _held = list(messages)
         _skip, _start_watermark = self._micro_start_watermark(_held)
 
-        def _telemetry(outcome: str, result: List[Dict[str, Any]], **extra: Any) -> None:
+        def _telemetry(outcome: str, result: list[dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
                 outcome=outcome, messages_before=n_messages, messages_after=len(result),
                 tokens_before=_tokens_before, duration_ms=int((time.monotonic() - _started_at) * 1000), **extra,
@@ -310,7 +310,7 @@ class MicroCompactionMixin:
         self._reset_micro_failure_tracking()
         return "exchange_skipped"
 
-    def _next_exchange(self, messages: List[Dict[str, Any]]) -> Optional[tuple[int, int]]:
+    def _next_exchange(self, messages: list[dict[str, Any]]) -> Optional[tuple[int, int]]:
         """The next un-absorbed exchange inside the compressible window, or None."""
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start, allow_split_turn=False)
@@ -331,7 +331,7 @@ class MicroCompactionMixin:
         end = body.find(cc._SUMMARY_END_MARKER)
         return (body[:end] if end != -1 else body).strip()
 
-    def _cursor_after_splice(self, result: List[Dict[str, Any]], fallback: int) -> int:
+    def _cursor_after_splice(self, result: list[dict[str, Any]], fallback: int) -> int:
         """Cursor position just past the summary marker in *result*. Must derive from the SPLICED
         list: a splice collapses several rows into one marker (and may drop a superseded one), so
         pre-splice indices land inside a later exchange and silently skip it."""
@@ -371,7 +371,7 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _micro_start_watermark(self, held: List[Dict[str, Any]]) -> "tuple[Optional[str], Optional[int]]":
+    def _micro_start_watermark(self, held: list[dict[str, Any]]) -> "tuple[Optional[str], Optional[int]]":
         """``(skip_outcome, watermark)`` taken before a pass's slow step; *skip_outcome* is the telemetry
         label of a pass that must not run, or None.
 
@@ -399,7 +399,7 @@ class MicroCompactionMixin:
         return None, watermark
 
     def _sync_micro_compact_to_db(
-        self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,
+        self, compacted_messages: list[dict[str, Any]], *, held: Optional[list[dict[str, Any]]] = None,
         start_watermark: Optional[int] = None,
     ) -> bool:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
@@ -445,8 +445,8 @@ class MicroCompactionMixin:
         return True
 
     def _splice_micro_compact_result(
-        self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,
-    ) -> List[Dict[str, Any]]:
+        self, messages: list[dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,
+    ) -> list[dict[str, Any]]:
         """Replace *messages[splice_start:splice_end]* with an assistant-role summary marker.
         Merges user turns left adjacent by a superseded marker so the result is alternation-valid."""
         cc = _cc()
@@ -480,7 +480,7 @@ class MicroCompactionMixin:
         cc = _cc()
         return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
 
-    def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_adjacent_user_turns(self, result: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
         ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
         damage of the downstream repair. Lists untouched."""
@@ -492,7 +492,7 @@ class MicroCompactionMixin:
                 and isinstance(m.get("content"), str)
             )
 
-        merged: List[Dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
         for msg in result:
             prev = merged[-1] if merged else None
             if _plain_user(msg) and _plain_user(prev):
@@ -508,6 +508,7 @@ class MicroCompactionMixin:
                 # as the defrag rewrite site above.
                 prev.pop(_cc()._DB_PERSISTED_MARKER, None)
                 self._flush_scan_cursor_invalidated = True
+                record_absorbed_message(prev, msg)  # merge witness: prev keeps its uid, records msg's
             else:
                 merged.append(msg)
         return merged

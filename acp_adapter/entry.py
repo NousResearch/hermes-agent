@@ -11,7 +11,7 @@ Usage::
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not).
     if exc.name != "hermes_bootstrap":
@@ -111,8 +111,8 @@ def _print_version() -> None:
 
 
 def _run_check() -> None:
-    import acp  # noqa: F401
-    from acp_adapter.server import HermesACPAgent  # noqa: F401
+    import acp
+    from acp_adapter.server import HermesACPAgent
 
     print("Hermes ACP check OK")
 
@@ -223,6 +223,12 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("ACP agent crashed")
         sys.exit(1)
+    finally:
+        # The stdio client that drove these conversations is gone. Without an
+        # ended_at writer here, source='acp' rows stay open forever and the
+        # ended-session guard keeps prune/archive away from them (#118216). A
+        # later load/resume reopens the row (acp_adapter.session._restore).
+        agent.session_manager.end_all_sessions()
 
 
 if __name__ == "__main__":

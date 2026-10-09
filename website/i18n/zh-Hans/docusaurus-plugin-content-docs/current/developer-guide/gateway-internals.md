@@ -163,7 +163,6 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── irc/adapter.py          # IRC（作用域锁的标准示例）
-├── homeassistant/adapter.py # Home Assistant 对话集成
 └── …                       # google_chat、ntfy、photon、raft、simplex 等
 
 gateway/platforms/                  # 核心 base 与旧的直接适配器

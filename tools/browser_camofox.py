@@ -94,14 +94,14 @@ _backend_resolution_logged = False
 
 
 def _log_backend_resolution_once(camofox: bool, gateway: bool) -> None:
-    """Observability for the backend split (t_ca2f1811): one INFO naming the
+    """Observability for the backend split: one INFO naming the
     resolved browser backend family for this session/process, logged once."""
     global _backend_resolution_logged
     if _backend_resolution_logged:
         return
     _backend_resolution_logged = True
     if gateway:
-        backend = "SaaS gateway (MCP transport)"
+        backend = "hosted gateway (MCP transport)"
     elif camofox:
         backend = "Camofox REST"
     else:
@@ -128,7 +128,7 @@ def is_camofox_mode() -> bool:
         _log_backend_resolution_once(selected == "camofox", False)
         return selected == "camofox"
     # Legacy auto-detect: a Camofox-family URL activates the lane. CAMOFOX_URL is the local
-    # sidecar address; a tenant-key gateway configured only via SEKRETO_URL speaks the same
+    # sidecar address; a hosted gateway URL speaks the same
     # compat API and must resolve to the same lane (transport routes it MCP-only).
     _log_backend_resolution_once(bool(get_camofox_url()), False)
     if get_camofox_url():
@@ -430,8 +430,8 @@ def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[dict[str, A
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
-        # SEK-70 SaaS gateways serve tenant keys MCP-only — route through the
-        # MCP transport there (REST /tabs is tenant-denied).
+        # Hosted gateway backends are MCP-only — route through the
+        # MCP transport there (REST /tabs is unavailable).
         from tools.browser_mcp_transport import _is_gateway_backend
         if _is_gateway_backend():
             from tools.browser_mcp_transport import mcp_navigate
@@ -535,7 +535,7 @@ def _tab_action(task_id: Optional[str], guard_action: Optional[str], suffix: str
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
     """Accessibility tree snapshot. ``user_task`` is deprecated and ignored —
     oversized snapshots always truncate-and-store (no LLM summarization)."""
-    # SEK-70: SaaS gateway → MCP transport.
+    # Hosted gateway → MCP transport.
     route = _mcp_verb_route("snapshot")
     if route:
         from tools.browser_mcp_transport import mcp_snapshot
@@ -549,7 +549,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_tas
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click an element by ref via Camofox."""
     clean_ref = ref.lstrip("@")  # our tool convention prefixes refs with @
-    # SEK-70: SaaS gateway → MCP transport.
+    # Hosted gateway → MCP transport.
     route = _mcp_verb_route("click")
     if route:
         from tools.browser_mcp_transport import mcp_click
@@ -561,7 +561,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     """Type text into an element by ref via Camofox."""
     try:
-        # SEK-70: SaaS gateway → MCP transport.
+        # Hosted gateway → MCP transport.
         route = _mcp_verb_route("type")
         if route:
             from tools.browser_mcp_transport import mcp_type
@@ -585,7 +585,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
     """Scroll the page via Camofox."""
-    # SEK-70: SaaS gateway → MCP transport.
+    # Hosted gateway → MCP transport.
     route = _mcp_verb_route("scroll")
     if route:
         from tools.browser_mcp_transport import mcp_scroll
@@ -596,7 +596,7 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
 
 def camofox_back(task_id: Optional[str] = None) -> str:
     """Navigate back via Camofox."""
-    # SEK-70: SaaS gateway → MCP transport.
+    # Hosted gateway → MCP transport.
     route = _mcp_verb_route("back")
     if route:
         from tools.browser_mcp_transport import mcp_back
@@ -606,7 +606,7 @@ def camofox_back(task_id: Optional[str] = None) -> str:
 
 def camofox_press(key: str, task_id: Optional[str] = None) -> str:
     """Press a keyboard key via Camofox."""
-    # SEK-70: SaaS gateway → MCP transport.
+    # Hosted gateway → MCP transport.
     route = _mcp_verb_route("press")
     if route:
         from tools.browser_mcp_transport import mcp_press
@@ -617,7 +617,7 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
 def camofox_close(task_id: Optional[str] = None) -> str:
     """Close the browser session via Camofox."""
     try:
-        # SEK-70: SaaS gateway → MCP transport (per-tab close; tenant tabs are
+        # Hosted gateway → MCP transport (per-tab close; gateway tabs are
         # server-side and ephemeral — the browser_close MCP verb handles it).
         route = _mcp_verb_route("close")
         if route:
@@ -634,7 +634,7 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox (parsed from the snapshot)."""
-    # SEK-70: SaaS gateway → snapshot via MCP then parse locally.
+    # Hosted gateway → snapshot via MCP, parse locally.
     route = _mcp_verb_route("snapshot")
     if route:
         from tools.browser_mcp_transport import mcp_snapshot
@@ -703,7 +703,7 @@ def _mcp_vision_flow(question: str, annotate: bool) -> str:
 
 def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
-    # SEK-70: on SaaS gateway backends the whole flow runs MCP-side (implicit tab
+    # On hosted gateway backends the whole flow runs MCP-side (implicit tab
     # addressing) — no local session row exists, so _require_tab/_with_tab cannot
     # gate this verb. Duplicate the annotation+LLM tail for the routed path.
     if _mcp_verb_route("screenshot"):

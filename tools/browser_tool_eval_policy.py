@@ -156,7 +156,7 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
     on probe failure, matching the snapshot/vision guards — do not make fail-closed without the sibling."""
     _bt = _origin()
     try:
-        # Tenant-key gateways deny raw REST /tabs (MCP-only); route the probe through MCP there.
+        # Hosted gateways deny raw REST /tabs (MCP-only); route the probe through MCP there.
         from tools.browser_mcp_transport import _is_gateway_backend
         if _is_gateway_backend():
             import json as _json

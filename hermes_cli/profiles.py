@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #131874: tighten permissions of cloned memory stores and .env to 0600
 """Profile management for multiple isolated Hermes instances."""
 
 import contextlib
@@ -1198,8 +1199,14 @@ def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> 
             os.chmod(str(path), mode)
 
 
+# Files a clone tightens to owner-only permissions (0o600). ``copy2`` / ``copytree``
+# preserve source mode bits, so a loose source store (umask 0o644) would otherwise leak
+# plaintext secrets or agent memory into every newly cloned profile.
+_PRIVATE_CLONE_FILES = frozenset({".env", "memories/MEMORY.md", "memories/USER.md"})
+
+
 def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
-    """Copy one profile-relative file if it exists. ``.env`` is tightened to owner-only:
+    """Copy one profile-relative file if it exists. Private files are tightened to owner-only:
     ``copy2`` preserves source mode bits, so a loose source (umask 0o644) would leak."""
     src = source_dir / relpath
     if not src.exists():
@@ -1207,9 +1214,10 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
     dst = profile_dir / relpath
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    if relpath == ".env":
+    if relpath in _PRIVATE_CLONE_FILES:
         with contextlib.suppress(OSError):
-            os.chmod(str(dst), 0o600)
+            if not dst.is_symlink():
+                os.chmod(str(dst), 0o600)
 
 
 # Files a clone edits in place after copying. A ``--clone-all`` copy preserves symlinks
@@ -1301,6 +1309,11 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
             "profile %s: dropped cloned single-use OAuth grants %s "
             "(inherits the root grant instead)", canon, stripped,
         )
+    for rel in _PRIVATE_CLONE_FILES:
+        target = profile_dir / rel
+        if target.is_file() and not target.is_symlink():
+            with contextlib.suppress(OSError):
+                os.chmod(str(target), 0o600)
 
 
 def _clone_plugins_ignore(plugins_root: Path):

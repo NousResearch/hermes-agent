@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# health: allow FILE_LINES -- security fix for #131874: tighten permissions of migrated memory stores and .env to 0600
 """OpenClaw -> Hermes migration helper.
 
 This script migrates the parts of an OpenClaw user footprint that map cleanly
@@ -9,6 +10,7 @@ reports exactly what was skipped and why.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import hashlib
 import json
@@ -44,6 +46,10 @@ SUPPORTED_SECRET_TARGETS={
     "VOICE_TOOLS_OPENAI_KEY",
 }
 WORKSPACE_INSTRUCTIONS_FILENAME = "AGENTS" + ".md"
+# Destination paths (relative to ``target_root``) that hold private data and must be
+# owner-only (0o600) after every write path touches them: ``.env`` carries plaintext
+# provider API keys, the memory stores carry private user data.
+_PRIVATE_MIGRATION_FILES = frozenset({".env", "memories/MEMORY.md", "memories/USER.md"})
 MIGRATION_OPTION_METADATA: dict[str, dict[str, str]] = {
     "soul": {
         "label": "SOUL.md",
@@ -472,6 +478,68 @@ def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def atomic_write_private(path: Path, data: str) -> None:
+    """Write ``data`` to ``path`` atomically with owner-only (0o600) permissions.
+
+    ``.env`` holds plaintext provider API keys and merged memory stores can
+    hold private user data; either file landing world-readable on first create
+    (the default ``open(path, "w")`` mode under a typical 0o022 umask) is a
+    real exposure during migration, which frequently runs as root over a
+    freshly created target home.  The mode applies to every file written
+    through this helper — a re-run also tightens a previously loose
+    destination instead of preserving its old bits.
+
+    Inlined rather than importing ``utils.atomic_write_text``: this script is
+    standalone and runs with only the stdlib on its path.  The symlink and
+    cross-device handling mirrors :func:`dump_yaml_file` above.
+    """
+    ensure_parent(path)
+    target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(target) or ".", prefix=".tmp_", suffix=".private"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates the temp file at 0o600; chmod explicitly anyway so
+        # the guarantee does not depend on platform mkstemp/umask behavior,
+        # then rename into place.
+        os.chmod(tmp_path, 0o600)
+        try:
+            os.replace(tmp_path, target)
+        except OSError as exc:
+            # Cross-device or bind-mount deployments cannot rename into place.
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            try:
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                os.close(fd)
+            except OSError:
+                pass
+            shutil.copyfile(tmp_path, target)
+            with contextlib.suppress(OSError):
+                os.chmod(target, 0o600)
+            try:
+                shutil.copystat(tmp_path, target)
+            except OSError:
+                pass
+            # Keep the explicit chmod last: copystat carries the temp file's
+            # mode anyway, but the guarantee must survive even if copystat is
+            # interrupted or ignored.
+            with contextlib.suppress(OSError):
+                os.chmod(target, 0o600)
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def parse_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -492,9 +560,8 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 
 def save_env_file(path: Path, data: dict[str, str]) -> None:
-    ensure_parent(path)
-    lines = [f"{key}={value}" for key, value in data.items()]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    # .env holds plaintext provider API keys — owner-only on create/rename.
+    atomic_write_private(path, "\n".join(f"{k}={v}" for k, v in data.items()) + ("\n" if data else ""))
 
 
 def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
@@ -506,7 +573,14 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
     if path.is_dir():
         shutil.copytree(path, dest, dirs_exist_ok=True)
     else:
+        # copy2 preserves the source's mode; a world-readable live file would
+        # be snapshotted world-readable.  Backups can hold the same secrets as
+        # the original (.env, memory stores) — tighten to owner-only.
         shutil.copy2(path, dest)
+        try:
+            os.chmod(dest, 0o600)
+        except OSError:
+            pass  # non-posix or restricted fs; backup stays as-copied
     return dest
 
 
@@ -1247,7 +1321,7 @@ class Migrator:
         self.overflow_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{kind.replace('-', '_')}_overflow.txt"
         path = self.overflow_dir / filename
-        path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        atomic_write_private(path, "\n".join(entries) + "\n")
         return path
 
     def copy_file(self, source: Path, destination: Path, kind: str,
@@ -1273,6 +1347,16 @@ class Migrator:
                 shutil.copystat(source, destination)
             else:
                 shutil.copy2(source, destination)
+            if not destination.is_symlink():
+                try:
+                    rel_dest = str(destination.relative_to(self.target_root))
+                    if rel_dest in _PRIVATE_MIGRATION_FILES:
+                        # write_text/copy2 above preserve or derive the source's mode; a loose
+                        # source (umask 0o644) must not leak into the migrated profile.
+                        with contextlib.suppress(OSError):
+                            os.chmod(str(destination), 0o600)
+                except ValueError:
+                    pass
             self.record(kind, source, destination, "migrated", backup=str(backup_path) if backup_path else None)
         else:
             self.record(kind, source, destination, "migrated", "Would copy")
@@ -1329,7 +1413,8 @@ class Migrator:
                 return
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            # Merged memory stores hold private user data — owner-only on create.
+            atomic_write_private(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""))
             self.record(
                 kind,
                 source,
@@ -2087,7 +2172,8 @@ class Migrator:
                 return
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            # Merged memory stores hold private user data — owner-only on create.
+            atomic_write_private(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""))
             self.record(
                 "daily-memory",
                 source_dir,

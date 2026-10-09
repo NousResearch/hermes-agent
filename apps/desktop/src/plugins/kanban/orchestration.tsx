@@ -17,11 +17,13 @@ import {
   Switch,
   useMutation,
   useQuery,
-  useQueryClient
+  useQueryClient,
+  useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import {
+  $boardSlug,
   autoDescribeProfile,
   fetchOrchestration,
   fetchProfiles,
@@ -135,43 +137,79 @@ export function OrchestrationPanel() {
   const k = useKanban()
   const qc = useQueryClient()
   const scope = useKanbanScope()
-  const { data: settings } = useQuery({ queryKey: orchestrationKey(scope), queryFn: fetchOrchestration })
+  const slug = useValue($boardSlug)
+  const key = orchestrationKey(scope, slug)
+  const { data: settings } = useQuery({ queryKey: key, queryFn: fetchOrchestration })
   const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   const save = useMutation({
     mutationFn: (patch: Record<string, unknown>) => saveOrchestration(patch),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: orchestrationKey(scope) })
+    onSuccess: () => void qc.invalidateQueries({ queryKey: key })
   })
 
   if (!settings || !roster) {
     return null
   }
 
+  // With a board in view the two profile knobs are board-first: the picker value
+  // is the effective (board -> global) value and the tag says which one won.
+  const boardOrchestrator = settings.board_orchestrator_profile ?? ''
+  const boardDefault = settings.board_default_assignee ?? ''
+  const boardScoped = Boolean(slug)
+  const hasBoardOverride = boardScoped && Boolean(boardOrchestrator || boardDefault)
+  const scopeTag = (overridden: boolean) => (overridden ? k.boardOverrideLabel : k.boardInheritLabel)
+
+  const orchestratorLabel = boardScoped
+    ? `${k.orchestratorProfile} · ${scopeTag(Boolean(boardOrchestrator))}`
+    : k.orchestratorProfile
+
+  const assigneeLabel = boardScoped
+    ? `${k.defaultAssignee} · ${scopeTag(Boolean(boardDefault))}`
+    : k.defaultAssignee
+
   return (
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
+      {boardScoped && (
+        <div className="flex items-center justify-between gap-2">
+          <span className={FIELD_LABEL}>{k.boardSettingsLabel}</span>
+          {hasBoardOverride && (
+            <Button
+              onClick={() => save.mutate({ orchestrator_profile: '', default_assignee: '' })}
+              size="xs"
+              variant="ghost"
+            >
+              {k.clearBoardOverride}
+            </Button>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-end gap-4">
         <ProfilePicker
-          label={k.orchestratorProfile}
+          label={orchestratorLabel}
           onSave={name => save.mutate({ orchestrator_profile: name })}
           profiles={roster.profiles}
           value={settings.orchestrator_profile}
         />
         <ProfilePicker
-          label={k.defaultAssignee}
+          label={assigneeLabel}
           onSave={name => save.mutate({ default_assignee: name })}
           profiles={roster.profiles}
           value={settings.default_assignee}
         />
-        <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[0.75rem] text-(--ui-text-secondary)">
-          <Switch
-            aria-label={k.autoDecompose}
-            checked={settings.auto_decompose}
-            onCheckedChange={checked => save.mutate({ auto_decompose: checked })}
-            size="xs"
-          />
-          {k.autoDecompose}
-        </label>
+        {/* auto_decompose / auto_promote_children stay global in v1, so the
+            switch is only offered on the global (no board in view) panel. */}
+        {!boardScoped && (
+          <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[0.75rem] text-(--ui-text-secondary)">
+            <Switch
+              aria-label={k.autoDecompose}
+              checked={settings.auto_decompose}
+              onCheckedChange={checked => save.mutate({ auto_decompose: checked })}
+              size="xs"
+            />
+            {k.autoDecompose}
+          </label>
+        )}
       </div>
 
       <div className="flex flex-col gap-1.5">

@@ -209,6 +209,11 @@ type KanbanMessages = {
   profileDescriptionsHint: string
   profileGoodAt: string
   auto: string
+  // per-board orchestration overrides
+  boardSettingsLabel: string
+  boardOverrideLabel: string
+  boardInheritLabel: string
+  clearBoardOverride: string
   // native/toast notifications for terminal worker events (completion-notify)
   notify: {
     completedTitle: string
@@ -439,6 +444,10 @@ export const en: KanbanMessages = {
     'Descriptions guide the decomposer’s routing. Auto-generate with the auxiliary model, or write your own.',
   profileGoodAt: 'What is this profile good at?',
   auto: 'Auto',
+  boardSettingsLabel: 'This board',
+  boardOverrideLabel: 'overridden here',
+  boardInheritLabel: 'inherited from global',
+  clearBoardOverride: 'Clear board override',
   notify: {
     completedTitle: 'Task completed',
     blockedTitle: 'Task blocked — needs your input',
@@ -666,6 +675,10 @@ const ja: KanbanMessages = {
     '説明はデコンポーザーのルーティングを導きます。補助モデルで自動生成するか、自分で書いてください。',
   profileGoodAt: 'このプロフィールの得意分野は？',
   auto: '自動',
+  boardSettingsLabel: 'このボード',
+  boardOverrideLabel: 'このボードで上書き',
+  boardInheritLabel: 'グローバルを継承',
+  clearBoardOverride: 'ボードの上書きを解除',
   notify: {
     completedTitle: 'タスク完了',
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
@@ -890,6 +903,10 @@ const zh: KanbanMessages = {
   profileDescriptionsHint: '说明用于引导分解器的路由。可用辅助模型自动生成，或自行填写。',
   profileGoodAt: '这个配置档擅长什么？',
   auto: '自动',
+  boardSettingsLabel: '本看板',
+  boardOverrideLabel: '本看板已覆盖',
+  boardInheritLabel: '继承全局',
+  clearBoardOverride: '清除本看板覆盖',
   notify: {
     completedTitle: '任务已完成',
     blockedTitle: '任务受阻 — 需要你的输入',
@@ -1114,6 +1131,10 @@ const zhHant: KanbanMessages = {
   profileDescriptionsHint: '說明用於引導分解器的路由。可用輔助模型自動產生，或自行填寫。',
   profileGoodAt: '這個設定檔擅長什麼？',
   auto: '自動',
+  boardSettingsLabel: '本看板',
+  boardOverrideLabel: '本看板已覆寫',
+  boardInheritLabel: '繼承全域',
+  clearBoardOverride: '清除本看板覆寫',
   notify: {
     completedTitle: '任務已完成',
     blockedTitle: '任務受阻 — 需要你的輸入',

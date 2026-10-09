@@ -13,11 +13,12 @@ import {
   profileColor,
   profileColorSoft,
   relativeTime,
-  useQuery
+  useQuery,
+  useValue
 } from '@hermes/plugin-sdk'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
+import { $boardSlug, fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
 import { columnLabel, useKanban } from './i18n'
 import { columnMeta, type KanbanTask } from './types'
 
@@ -32,11 +33,13 @@ export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } fro
  *  persisted, so a remount can't reopen a dialog the user already dismissed. */
 export const $newTaskLane = atom<null | string>(null)
 
-/** Orchestration knobs (cached app-wide; the settings panel invalidates). */
+/** Orchestration knobs (cached per connection + board; the settings panel
+ *  invalidates). The board in view scopes the key so switching boards refetches. */
 export function useOrchestration() {
   const scope = useKanbanScope()
+  const slug = useValue($boardSlug)
 
-  return useQuery({ queryKey: orchestrationKey(scope), queryFn: fetchOrchestration, staleTime: 60_000 }).data
+  return useQuery({ queryKey: orchestrationKey(scope, slug), queryFn: fetchOrchestration, staleTime: 60_000 }).data
 }
 
 /** The dispatcher's configured fallback for unassigned ready cards

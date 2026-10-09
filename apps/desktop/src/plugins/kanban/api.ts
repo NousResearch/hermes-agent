@@ -381,7 +381,8 @@ export const logKey = (scope: string, slug: string, id: string) => ['kanban', 'l
 export const boardsKey = (scope: string) => ['kanban', 'boards', scope] as const
 export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as const
 export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
-export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
+export const orchestrationKey = (scope: string, slug: string) =>
+  ['kanban', 'orchestration', scope, slug] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
@@ -405,7 +406,7 @@ export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profile
 /** First-class Hermes projects, for scoping a board's default workspace. */
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
 
-export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
+export const fetchOrchestration = () => call<OrchestrationSettings>(withBoard('/orchestration'))
 
 // ── writes ────────────────────────────────────────────────────────────────────
 
@@ -506,7 +507,7 @@ export const importBoard = (archive: string) =>
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 
 export const saveOrchestration = (patch: Record<string, unknown>) =>
-  call<OrchestrationSettings>('/orchestration', { method: 'PUT', body: patch })
+  call<OrchestrationSettings>(withBoard('/orchestration'), { method: 'PUT', body: patch })
 
 export const saveProfileDescription = (name: string, description: string) =>
   call(`/profiles/${encodeURIComponent(name)}`, { method: 'PATCH', body: { description } })

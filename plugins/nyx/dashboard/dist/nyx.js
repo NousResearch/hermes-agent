@@ -398,8 +398,9 @@ function gerarBusto(densidade) {
     if (nx * sg < 0) { nx = -nx; ny = -ny; nz = -nz; }   // face de fora: aponta pra longe da cabeça
     return { p, pt, pr, nx, ny, nz, area };              // normal em px da foto (y pra baixo)
   };
-  const pontoOrelha = (x, y, z, nx, nyFoto, nz) => put(x, y, z, nx, -nyFoto, nz, 1.1 + 0.4 * rnd(), 0.45 + 0.15 * rnd(), corPonto());
-  const densOrelha = porPx2 * 1.8;   // a orelha é pequena e quase sempre vista de raspão: mais pontos que a pele
+  // a orelha tem a mesma cor, o mesmo brilho de ponto e a mesma densidade da pele
+  const pontoOrelha = (x, y, z, nx, nyFoto, nz) => put(x, y, z, nx, -nyFoto, nz, 0.7 + 0.3 * rnd(), 0.45 + 0.15 * rnd(), corPonto());
+  const densOrelha = porPx2;
   for (const sg of [-1, 1]) {
     // área da placa (r de 0,05 a 0,92) por amostragem, pra saber quantos pontos cabem e aceitar por área
     let somaA = 0, maxA = 0;
@@ -418,7 +419,7 @@ function gerarBusto(densidade) {
       }
     }
     // hélice: tubo em volta da borda (r ≈ 0,96), da frente de cima até o lóbulo
-    const ta = -0.7 * Math.PI, tb = 0.75 * Math.PI, R = 3.5, densHelice = densOrelha * 1.3;
+    const ta = -0.7 * Math.PI, tb = 0.75 * Math.PI, R = 3.5, densHelice = densOrelha;
     let compr = 0;
     for (let i = 0; i < 200; i++) { const d = derivadas(sg, ta + (tb - ta) * (i + 0.5) / 200, 0.96); compr += Math.hypot(d.pt[0], d.pt[1], d.pt[2]) * (tb - ta) / 200; }
     for (let k = 0, quer = Math.round(compr * 2 * Math.PI * R * densHelice); k < quer; k++) {
@@ -723,7 +724,7 @@ function pontos(dados, material) {
 }
 
 // Lente de câmera, por cima de tudo: aberração cromática que cresce pros cantos (~2 px no canto da tela cheia),
-// vinheta, grão de filme proporcional à luz (o fundo continua preto puro) e a exposição final (×1,2)
+// vinheta, grão de filme proporcional à luz (o fundo continua preto puro) e a exposição final (×1,44)
 const LENTE = {
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
@@ -737,7 +738,7 @@ const LENTE = {
       float r2 = dot(c, c);
       vec2 ca = c * r2 * 0.006;
       vec3 cor = vec3(texture2D(tDiffuse, vUv + ca).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ca).b);
-      cor *= 1.2 * (1.0 - 0.4 * smoothstep(0.12, 0.55, r2));
+      cor *= 1.44 * (1.0 - 0.4 * smoothstep(0.12, 0.55, r2));
       cor += cor * (grao(gl_FragCoord.xy + floor(fract(uTime * 12.0) * 997.0)) - 0.5) * 0.12;
       gl_FragColor = vec4(cor, 1.0);
     }`,

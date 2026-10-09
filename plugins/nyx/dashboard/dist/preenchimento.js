@@ -155,7 +155,6 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     bool cabeca = parte > 0.94, corpo = parte > 0.82 && !cabeca, orelha = parte <= 0.82;
     float ganho = corpo ? 1.3 : 1.0, dens = 1.0;
     if (corpo) dens *= sombraPescoco(P);
-    if (orelha) { dens *= 1.8; ganho = 1.45; }           // a orelha é pequena e quase sempre vista de raspão
     if (parte <= 0.7) {                                  // placa: concha e escafa na sombra, antélice na luz
       float r = (parte - 0.02) / 0.48;
       dens *= (0.3 + 0.7 * suave(0.45, 0.65, r)) * (1.0 - 0.65 * suave(0.74, 0.8, r) * (1.0 - suave(0.88, 0.93, r)));
@@ -164,14 +163,14 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     if (P.y > 932.0) dens *= max(0.0, 1.0 - (P.y - 932.0) / 9.0);   // só a borda de baixo se desfaz
     float ouro = (cabeca && P.z > 40.0 && P.y > 400.0 && P.y < 700.0) ? exp(-((P.x / 46.0) * (P.x / 46.0) + ((P.y - 548.0) / 50.0) * ((P.y - 548.0) / 50.0))) : 0.0;
     // foto-realismo: a oclusão tira pontos e brilho das dobras; a textura varia a densidade em manchas; a luz
-    // principal (alto à esquerda, na frente) faz um brilho acetinado; a orelha, fina, deixa a luz atravessar
+    // principal (alto à esquerda, na frente) faz um brilho acetinado. A orelha tem a mesma cor e o mesmo brilho da pele
     float ao = oclusao(uv, vp.xyz, n, hash43(floor(P / 3.0)).w);
     float tex = textura(P);
     float spec = pow(max(dot(n, normalize(normalize(vec3(-0.45, 0.7, 0.55)) + normalize(-vp.xyz))), 0.0), 36.0);
     dens *= mix(0.5, 1.0, ao) * (0.6 + 0.8 * tex);
     float vd = vis * dens + 0.06 * spec * ao;
-    float luzMat = mix(0.6, 1.0, ao) * (1.0 + 0.45 * spec) * (0.85 + 0.3 * tex) * (orelha ? 1.2 : 1.0);
-    float clareia = 0.3 * spec + 0.2 * suave(0.6, 0.85, tex) + (orelha ? 0.15 : 0.0);
+    float luzMat = mix(0.6, 1.0, ao) * (1.0 + 0.45 * spec) * (0.85 + 0.3 * tex);
+    float clareia = 0.3 * spec + 0.2 * suave(0.6, 0.85, tex);
 
     // os pontos: cada célula da grade tem um ponto sorteado no miolo dela ([0,25; 0,75] da célula, mais o tremor
     // de 0,1), então um ponto de uma célula a duas de distância fica a pelo menos 1,15 célula de P: tudo que um

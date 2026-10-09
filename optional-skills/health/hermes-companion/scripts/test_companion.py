@@ -413,6 +413,20 @@ def test_discover_installed_hermes_profiles() -> None:
         check("fitness discovered and added", "fitness" in prof_ids)
 
 
+def test_clean_hermes_chat_output() -> None:
+    raw = (
+        "Warning: model foo is deprecated\n"
+        "⚠️ Normalized model to gpt-4o\n"
+        "↻ Resumed session post_th_123 (6 messages)\n"
+        "session_id: 9a8b-123\n"
+        "Hola mi amor, te extraño mucho.\n"
+        "Espero que tengas un buen dia."
+    )
+    cleaned = companion.clean_hermes_chat_output(raw)
+    expected = "Hola mi amor, te extraño mucho.\nEspero que tengas un buen dia."
+    check("cleaned chat output matches", cleaned == expected)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -430,10 +444,12 @@ def main() -> int:
     test_dispatch_threads_roundtrip()
     test_profiles_registration_and_filtering()
     test_discover_installed_hermes_profiles()
+    test_clean_hermes_chat_output()
     print("ok")
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
 

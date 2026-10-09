@@ -1772,8 +1772,30 @@ def ensure_launch_agent_installed(icloud_dir: Optional[str] = None) -> None:
         install_launch_agent(icloud_dir)
 
 
+def clean_hermes_chat_output(raw: str) -> str:
+    """Filter out CLI banners and session markers to extract pure LLM response."""
+    lines = raw.strip().splitlines()
+    cleaned: List[str] = []
+    in_banner = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Warning:") or stripped.startswith("⚠️"):
+            in_banner = True
+            continue
+        if in_banner:
+            if "for custom." in stripped or stripped.startswith("'"):
+                continue
+            in_banner = False
+        if stripped.startswith("Session ") or stripped.startswith("↻ Resumed session"):
+            continue
+        if stripped.startswith("session_id:"):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
 def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
-    """Scan for pending user letters and automatically invoke Hermes to reply (0 tokens if none)."""
+    """Scan for pending user letters and automatically invoke Hermes to reply with dedicated per-thread session context."""
     threads_dir = get_threads_dir(args.icloud_dir)
     if not threads_dir:
         return 0
@@ -1813,35 +1835,42 @@ def command_dispatch_pending(args: argparse.Namespace, now: datetime) -> int:
             if last_msg.get("sender") != "user":
                 continue
 
-            # Build conversation history context
-            history_lines: List[str] = []
-            for m in messages[-5:]:
-                sender_label = "Daniel (User)" if m.get("sender") == "user" else "You (Hermes Agent)"
-                history_lines.append(f"[{sender_label}]:\n{m.get('body', '')}")
+            # Check if this is the initial letter or a follow-up ("repregunta")
+            is_initial_turn = len(messages) <= 1
+            user_body = last_msg.get("body", "").strip()
 
-            history_block = "\n\n".join(history_lines)
+            if is_initial_turn:
+                prompt = (
+                    f"You have received a new asynchronous letter in Hermes Post from Daniel.\n"
+                    f"Subject: {subject}\n\n"
+                    f"Letter content:\n{user_body}\n\n"
+                    f"Instruction:\n"
+                    f"Reply thoughtfully to Daniel's letter in your own natural persona and voice. "
+                    f"Write ONLY the exact text of your letter reply without meta preamble or quotes."
+                )
+            else:
+                prompt = (
+                    f"Daniel replied to the letter thread (Subject: '{subject}'):\n\n"
+                    f"{user_body}\n\n"
+                    f"Instruction:\n"
+                    f"Continue this thread conversation in your natural voice. "
+                    f"Write ONLY the exact text of your reply letter."
+                )
 
-            prompt = (
-                f"You have received an asynchronous letter in Hermes Post from Daniel.\n"
-                f"Subject: {subject}\n\n"
-                f"Conversation:\n{history_block}\n\n"
-                f"Instruction:\n"
-                f"Reply thoughtfully to Daniel's letter in your own natural voice. "
-                f"Write ONLY the exact text of your letter reply without meta text or enclosing quotes."
-            )
-
+            # Isolate each thread into its own dedicated, persistent Hermes session
+            session_title = f"post_{thread_id}"
             cmd = [hermes_bin]
             if target_profile and target_profile != "default":
                 cmd.extend(["-p", target_profile])
-            cmd.extend(["-z", prompt])
+            cmd.extend(["chat", "-c", session_title, "--create-if-missing", "-Q", "-q", prompt])
 
-            log("INFO", f"auto-replying to thread '{thread_id}' with profile '{target_profile}'...")
+            log("INFO", f"auto-replying to thread '{thread_id}' with profile '{target_profile}' in session '{session_title}'...")
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    reply_body = proc.stdout.strip()
-                    reply_to_thread(threads_dir, thread_id, reply_body, sender="agent", now=now)
-                    log("INFO", f"successfully auto-replied to thread '{thread_id}'")
+                cleaned_reply = clean_hermes_chat_output(proc.stdout)
+                if proc.returncode == 0 and cleaned_reply:
+                    reply_to_thread(threads_dir, thread_id, cleaned_reply, sender="agent", now=now)
+                    log("INFO", f"successfully auto-replied to thread '{thread_id}' in session '{session_title}'")
                     dispatched_count += 1
                 else:
                     err = proc.stderr.strip() or f"exit code {proc.returncode}"

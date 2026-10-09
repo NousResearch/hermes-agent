@@ -49,9 +49,6 @@ _UMA_HEADROOM_FRACTION = 0.20
 _POOL_DISAGREEMENT_FACTOR = 1.5
 _POOL_RAM_FRACTION = 0.75
 
-# cuDeviceGetAttribute enum: device is integrated with host memory.
-_CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
-
 # One probe per process once a device answers (silicon doesn't change); a miss retries after this
 # long so a runtime installed mid-session gets picked up by the engine fallback.
 _POOL_NEGATIVE_TTL_S = 60.0
@@ -265,37 +262,18 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
 
 
 def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
-    """(allocator_total_bytes, integrated_or_None) from the CUDA driver API via ctypes against the
-    driver's own DLL/SO — no toolkit, no subprocess, ~ms. INTEGRATED is the vendor's own
-    unified-memory declaration; total is the pool the allocator will actually hand out (on
-    carve-out devices, several times what nvidia-smi reports)."""
-    import ctypes
+    """(allocator_total_bytes, integrated_or_None) read in a disposable child process.
 
-    for name in ("nvcuda.dll", "libcuda.so.1", "libcuda.so"):
-        try:
-            cuda = ctypes.CDLL(name)
-            break
-        except OSError:
-            continue
-    else:
-        return None
-    with suppress(OSError, AttributeError):
-        if cuda.cuInit(0) != 0:
-            return None
-        dev = ctypes.c_int()
-        if cuda.cuDeviceGet(ctypes.byref(dev), 0) != 0:
-            return None
-        total = ctypes.c_size_t()
-        getter = getattr(cuda, "cuDeviceTotalMem_v2", None) or cuda.cuDeviceTotalMem
-        if getter(ctypes.byref(total), dev) != 0 or total.value <= 0:
-            return None
-        integrated: bool | None = None
-        attr = ctypes.c_int()
-        if cuda.cuDeviceGetAttribute(
-                ctypes.byref(attr), _CU_DEVICE_ATTRIBUTE_INTEGRATED, dev) == 0:
-            integrated = bool(attr.value)
-        return total.value, integrated
-    return None
+    The driver API is the one source for the allocator's real pool, but ``cuInit`` makes the
+    CALLER a CUDA client for its whole lifetime (handles stay open until it exits, and a
+    client that never allocates still blocks the GPU's runtime suspend) — and this probe feeds
+    an endpoint the Desktop backend polls every few seconds (#133426). The driver work runs in
+    a short-lived child (``cuda_probe``) exactly as the engine device list does, so only
+    plain data crosses back into the long-lived process.
+    """
+    from hermes_cli.local_runtime.cuda_probe import probe_pool
+
+    return probe_pool()
 
 
 def _configured_engine():

@@ -10,14 +10,16 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import shutil
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
-    PluginCatalogEntry, RemovedEntry, entry_capability_summary, filter_entries, find_removed,
-    get_live_catalog_entry, load_catalog_live, load_removed_list, match_removed, resolved_removed_entries,
-    _NAME_RE,
+    PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
+    find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
+    _NAME_RE, _normalize_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,11 +62,12 @@ def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     return entry
 
 
-def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
-    """``.hermes-catalog.json`` inside the install dir — how ``update``/``list``/dashboards know the plugin
-    came from the catalog and at which pin."""
+def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry, sha: Optional[str] = None) -> None:
+    """Human/Desktop-readable ``.hermes-catalog.json`` inside the install dir. It is a CONVENIENCE COPY:
+    the authoritative provenance is the ``catalog`` block on the ``.install-metadata.json`` record (see
+    :func:`read_catalog_sidecar`), because anything inside the tree is under the repo's control."""
     sidecar = {
-        "catalog_name": entry.name, "repo": entry.repo, "sha": entry.sha, "tier": entry.tier,
+        "catalog_name": entry.name, "repo": entry.repo, "sha": sha or entry.sha, "tier": entry.tier,
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
@@ -74,16 +77,62 @@ def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
         logger.warning("Failed to write catalog sidecar in %s: %s", target, exc)
 
 
-def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
-    """Parsed sidecar, or ``None`` (absent/corrupt = a non-catalog install)."""
-    path = Path(plugin_dir) / CATALOG_SIDECAR if plugin_dir else None
-    if path is None or not path.is_file():
+def _install_record(plugin_dir: Path) -> Optional[dict]:
+    """The installer-owned ``.install-metadata.json`` record for a dir under the plugins dir, else ``None``."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir, _read_install_metadata
+    if plugin_dir.parent != _plugins_dir():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        record = _read_install_metadata().get(plugin_dir.name)
+    except PluginOperationError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
+    """Installs made before provenance moved out of the tree carry only the in-tree file. Trust it once —
+    only when the installer record agrees (pinned at that sha, cloned from that catalog entry's repo) —
+    and copy it onto the record so later reads never consult the tree again."""
+    from hermes_cli.plugins_cmd import _read_install_metadata, _write_install_metadata
+    path = plugin_dir / CATALOG_SIDECAR
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
     except Exception:
         return None
-    return data if isinstance(data, dict) and data.get("catalog_name") else None
+    if not isinstance(data, dict) or not data.get("catalog_name"):
+        return None
+    sha = str(data.get("sha") or "").lower()
+    entry = get_live_catalog_entry(str(data["catalog_name"]))
+    if entry is None or record.get("pinned") is not True or record.get("revision") != sha:
+        return None
+    source = str(record.get("source") or "").split("#", 1)[0]
+    if _normalize_repo(source) != _normalize_repo(entry.repo):
+        return None
+    block = {"name": entry.name, "repo": entry.repo, "tier": str(data.get("tier") or entry.tier), "pin": sha, "sha": sha}
+    metadata = _read_install_metadata()
+    metadata[plugin_dir.name] = {**record, "catalog": block}
+    _write_install_metadata(metadata)
+    return block
+
+
+def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
+    """Catalog provenance of an installed plugin (``catalog_name``/``repo``/``sha``/``tier``), or ``None``
+    for a non-catalog install. Read from the installer-owned metadata record, never from the tree: a
+    URL-installed repo that ships its own ``.hermes-catalog.json`` must not render as a reviewed
+    catalog install nor mark the real entry installed."""
+    if not plugin_dir:
+        return None
+    plugin_dir = Path(plugin_dir)
+    record = _install_record(plugin_dir)
+    if record is None:
+        return None
+    block = record.get("catalog")
+    if not isinstance(block, dict):
+        block = _adopt_legacy_sidecar(plugin_dir, record)
+    if not block or not block.get("name"):
+        return None
+    return {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
+            "tier": block.get("tier") or "community", "pin": block.get("pin", "")}
 
 
 def catalog_annotation(dir_path) -> Optional[str]:
@@ -113,22 +162,101 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
-    """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
-    Returns the core's ``(target, manifest, installed_name)``."""
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
+    install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
+    pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
+    from hermes_cli.plugins_cmd import _install_plugin_core, pinned_revision
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps)
-    write_catalog_sidecar(target, entry)
+        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed,
+        catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
+    write_catalog_sidecar(target, entry, sha=pinned_revision(target.name))
     return target, manifest, installed_name
 
 
-def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
-    """Re-pin a catalog install to the current catalog SHA (never ``git pull``). Returns
-    ``(new_sha, changed)``; raises ``PluginOperationError`` when the entry left the catalog."""
-    from hermes_cli.plugins_cmd import PluginOperationError, _get_enabled_set, _save_enabled_set
+def installed_plugin_removal(name: str, plugin_dir) -> Optional[RemovedEntry]:
+    """Kill-list verdict for an INSTALLED plugin (manifest name, dir name, catalog name or recorded
+    source), or ``None``. A record carrying ``allow_removed`` (the user bypassed the list at install) is
+    honoured; the check is offline (in-tree list + cached live copy) so load time never blocks on the
+    catalog host."""
+    plugin_dir = Path(plugin_dir) if plugin_dir else None
+    record = (_install_record(plugin_dir) if plugin_dir else None) or {}
+    if record.get("allow_removed") is True:
+        return None
+    block = record.get("catalog") if isinstance(record.get("catalog"), dict) else {}
+    source = str(record.get("source") or "").split("#", 1)[0]
+    candidates = [name, source, block.get("name"), block.get("repo"), plugin_dir.name if plugin_dir else None]
+    entries = cached_removed_entries()
+    for candidate in candidates:
+        removed = match_removed(str(candidate), entries) if candidate else None
+        if removed is not None:
+            return removed
+    return None
+
+
+def refuse_if_installed_removed(name: str, plugin_dir) -> None:
+    """``PluginOperationError`` form of :func:`installed_plugin_removal` for ``update``/``enable``, which
+    otherwise keep pulling and activating code the catalog recalled."""
+    from hermes_cli.plugins_cmd import PluginOperationError
+    removed = installed_plugin_removal(name, plugin_dir)
+    if removed is not None:
+        raise PluginOperationError(
+            f"Plugin '{name}' was removed from the Hermes plugin catalog: "
+            f"{removed.reason or 'no reason recorded'}. Remove it with `hermes plugins remove {name}`, "
+            "or reinstall with `hermes plugins install <source> --force --allow-removed` if you trust it.")
+
+
+_PRESERVE_SKIP = ("__pycache__",)
+
+
+def _local_changes(target: Path) -> tuple[list[str], list[str]]:
+    """``(untracked_or_ignored, modified_tracked)`` relative paths in a git checkout; empty for a
+    non-git tree (subdir installs carry no ``.git``, so nothing can be told apart from the clone)."""
+    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
+    git_exe = _resolve_git_executable()
+    if not git_exe or not (target / ".git").exists():
+        return [], []
+    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
+                             "--ignored=matching", timeout=30)
+    if status.returncode != 0:
+        return [], []
+    local, modified = [], []
+    for item in status.stdout.split("\0"):
+        if len(item) < 4:
+            continue
+        code, rel = item[:2], item[3:]
+        if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in Path(rel).parts):
+            continue
+        (local if code in ("??", "!!") else modified).append(rel)
+    return local, modified
+
+
+def _stash_local_files(target: Path, rels: list[str], stash: Path) -> None:
+    for rel in rels:
+        src = target / rel
+        if src.is_file():
+            dst = stash / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+class RepinResult(NamedTuple):
+    sha: str
+    changed: bool
+    installed_name: str
+    warnings: list[str]
+
+
+def repin_catalog_plugin(target: Path, sidecar: dict) -> RepinResult:
+    """Re-pin a catalog install to the current catalog SHA (never ``git pull``). The force reinstall
+    replaces the whole tree, so the user's untracked/ignored files (installer-created ``config.yaml``,
+    data) are carried into the new tree and edits to TRACKED files are saved under
+    ``<HERMES_HOME>/plugins-backup/<name>-<sha8>/`` with a warning. A manifest rename between pins moves the
+    enabled flag and removes the stale dir. Raises ``PluginOperationError`` when the entry left the catalog."""
+    from hermes_cli.plugins_cmd import (
+        PluginOperationError, _get_enabled_set, _plugins_dir, _remove_plugin_core, _save_enabled_set)
     catalog_name = str(sidecar["catalog_name"])
     entry = get_live_catalog_entry(catalog_name)
     if entry is None:
@@ -136,26 +264,47 @@ def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
             f"Plugin '{catalog_name}' is no longer in the catalog — it may have been removed. "
             "See `hermes plugins info` and the removed blocklist.")
     if str(sidecar.get("sha") or "").strip().lower() == entry.sha:
-        return entry.sha, False
+        return RepinResult(entry.sha, False, target.name, [])
     was_enabled = _get_enabled_set()  # the force reinstall must not flip activation state
-    install_catalog_entry(entry, force=True)
+    local, modified = _local_changes(target)
+    old_sha8 = str(sidecar.get("sha") or "old")[:8]
+    with tempfile.TemporaryDirectory(prefix=".repin-", dir=_plugins_dir()) as tmp:
+        stash = Path(tmp) / "local"
+        _stash_local_files(target, local, stash)
+        # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
+        backup = _plugins_dir().parent / "plugins-backup" / f"{target.name}-{old_sha8}"
+        _stash_local_files(target, modified, backup)
+        new_target, _manifest, installed_name = install_catalog_entry(entry, force=True)
+        if stash.exists():
+            shutil.copytree(stash, new_target, dirs_exist_ok=True)
+    warnings: list[str] = []
+    if modified:
+        warnings.append(f"Local edits to {len(modified)} tracked file(s) were not carried over; copies are under "
+                        f"{backup} (the previous version's files, re-apply by hand).")
+    if new_target != target and target.exists():
+        _remove_plugin_core(target)
+        if target.name in was_enabled:
+            was_enabled = (was_enabled - {target.name}) | {installed_name}
+        warnings.append(f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory was removed.")
     _save_enabled_set(was_enabled)
-    return entry.sha, True
+    return RepinResult(entry.sha, True, installed_name, warnings)
 
 
 def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
     from hermes_cli.plugins_cmd import PluginOperationError, _fail
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
     try:
-        sha, changed = repin_catalog_plugin(target, sidecar)
+        result = repin_catalog_plugin(target, sidecar)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
         raise SystemExit(1)
-    verb = "updated to" if changed else "is already at catalog pin"
-    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] {verb} {sha[:8]}.")
-    if changed:
+    verb = "updated to" if result.changed else "is already at catalog pin"
+    console.print(f"[green]✓[/green] Plugin [bold]{result.installed_name}[/bold] {verb} {result.sha[:8]}.")
+    for warning in result.warnings:
+        console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if result.changed:
         from hermes_cli.plugins_cmd import _install_python_dependencies
-        _install_python_dependencies(target, console)
+        _install_python_dependencies(target.parent / result.installed_name, console)
 
 
 # ── search / browse / info / validate ────────────────────────────────────────
@@ -291,7 +440,7 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
         })
     return {
         "entries": entries,
-        "removed": [{"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date} for r in load_removed_list()],
+        "removed": [{"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date} for r in resolved_removed_entries()],
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 

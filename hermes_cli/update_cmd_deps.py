@@ -386,8 +386,9 @@ def _refresh_active_memory_provider_dependencies() -> None:
             return
         provider = str(memory_cfg.get("provider") or "").strip()
 
-    # "default"/empty is the built-in file store — no pip deps.
-    if not provider or provider in {"default", "builtin", "none"}:
+    # The built-in file store has no pip deps.
+    from agent.memory_provider import is_core_memory_provider
+    if is_core_memory_provider(provider):
         return
 
     try:

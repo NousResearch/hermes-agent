@@ -43,6 +43,28 @@ class TestRegisterAndDispatch:
         result = json.loads(reg.dispatch("alpha", {}))
         assert result == {"ok": True}
 
+    def test_dispatch_withholds_injected_kwargs_from_narrow_plugin_handler(self):
+        """model_tools injects task_id/session_id/user_task on every call; a third-party ``handle(args)``
+        must receive only what its signature declares, and a ``**kwargs`` handler everything (#68318)."""
+        reg = ToolRegistry()
+        seen = {}
+
+        def narrow(args, session_id=None):
+            seen["narrow"] = session_id
+            return json.dumps({"ok": True})
+
+        def wide(args, **kwargs):
+            seen["wide"] = kwargs
+            return json.dumps({"ok": True})
+
+        reg.register(name="narrow", toolset="core", schema=_make_schema("narrow"), handler=narrow)
+        reg.register(name="wide", toolset="core", schema=_make_schema("wide"), handler=wide)
+        injected = {"task_id": "t1", "session_id": "s1", "user_task": "do it"}
+        assert json.loads(reg.dispatch("narrow", {}, **injected)) == {"ok": True}
+        assert seen["narrow"] == "s1"
+        assert json.loads(reg.dispatch("wide", {}, **injected)) == {"ok": True}
+        assert seen["wide"] == injected
+
     def test_register_rejects_non_dict_parameters(self):
         """A list/str ``parameters`` fails at registration, not in a provider request (pi acaa253cc)."""
         reg = ToolRegistry()

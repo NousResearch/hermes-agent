@@ -49,7 +49,18 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
-
+    @pytest.mark.parametrize("stdout, expected", [
+        ('{"action": "approve", "message": "  needs a human ", "rule_key": " terminal:rm "}',
+         {"action": "approve", "message": "needs a human", "rule_key": "terminal:rm"}),
+        ('{"action": "approve", "message": "", "rule_key": 7}', {"action": "approve"}),
+        # Claude-Code's ``decision: approve`` means auto-ALLOW, not "ask a human": never mapped.
+        ('{"decision": "approve", "reason": "ok"}', None),
+        ('{"action": "approve", "decision": "block", "reason": "no"}', {"action": "block", "message": "no"}),
+    ])
+    def test_approve_is_parsed_like_the_plugin_directive(self, stdout, expected):
+        """The documented ``approve`` action used to parse to None, so the tool ran with no
+        approval prompt (#92553). It now yields the same shape Python plugins return."""
+        assert shell_hooks._parse_response("pre_tool_call", stdout) == expected
 
     def test_empty_stdout_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "") is None
@@ -200,6 +211,32 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
+        """End to end: a shell hook's approve directive escalates to request_tool_approval with its
+        message and rule_key, and the gate's denial blocks the tool (#92553)."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "approve.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "approve", "message": "risky", "rule_key": "terminal:rm"}\\n\'\n',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        seen = []
+
+        def _gate(tool_name, reason, **kwargs):
+            seen.append((tool_name, reason, kwargs.get("rule_key")))
+            return {"approved": False, "message": "denied by human"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _gate)
+        assert plugins.resolve_pre_tool_block("terminal", {"command": "rm"}) == "denied by human"
+        assert seen == [("terminal", "risky", "terminal:rm")]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""

@@ -1473,6 +1473,7 @@ export interface ProfileRow {
   description?: string
   display_name?: string
   skill_count?: number
+  previous_names?: string[]
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -3687,13 +3688,15 @@ export interface PluginsManageParams {
   ref?: string | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
   bundled_count?: number | null
   ok?: boolean | null
   unchanged?: boolean | null
+  restart_required?: boolean | null
+  cleared_memory_provider?: boolean | null
   name?: string | null
   plugin?: AgentPluginRow | null
   plugin_name?: string | null

@@ -39,6 +39,15 @@ PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
 # Default glyph for recall indicators; providers may use their own brand mark.
 INDICATOR_GLYPH = "🧠"
 
+# ``memory.provider`` values that mean "the built-in store, no external plugin". The built-in
+# store is core: doctor, migration and dependency refresh must never look these up as plugins.
+CORE_MEMORY_PROVIDER_SENTINELS = frozenset({"", "default", "builtin", "built-in", "none"})
+
+
+def is_core_memory_provider(name: Optional[str]) -> bool:
+    """True when ``memory.provider`` selects the built-in store rather than an external plugin."""
+    return str(name or "").strip().lower() in CORE_MEMORY_PROVIDER_SENTINELS
+
 
 @dataclass(frozen=True)
 class RecallStatus:

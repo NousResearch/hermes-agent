@@ -613,15 +613,18 @@ class AgentPluginRow(Result):
 
 
 class PluginsManageResult(Result):
-    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``;
-    ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` →
-    ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name``."""
+    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
+    (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
+    ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name`` plus
+    ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
 
     plugins: list[AgentPluginRow] | None = None
     user_count: int | None = None
     bundled_count: int | None = None
     ok: bool | None = None
     unchanged: bool | None = None
+    restart_required: bool | None = None
+    cleared_memory_provider: bool | None = None
     name: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None

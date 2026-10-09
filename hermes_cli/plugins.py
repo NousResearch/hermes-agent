@@ -43,7 +43,7 @@ from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
 )
 from hermes_cli.plugins_discovery import (  # noqa: F401 — re-exported
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, scan_directory,
+    discover_entrypoint_manifests, gate_manifest, resolve_manifest_winners, scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -1007,6 +1007,10 @@ class PluginContext:
                              f"plugin name '{self.manifest.name}' automatically).")
         if not name or not _NAMESPACE_RE.match(name):
             raise ValueError(f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+.")
+        # Plugin register() helpers commonly pass the SKILL.md location as str
+        # (PluginManifest.path is stored as str); the registry and find_plugin_skill()
+        # promise a Path downstream.
+        path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
         namespace = self.manifest.skill_namespace or self.manifest.name
@@ -1332,9 +1336,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
                            "remove it and configure native Relay plugins with %s",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
-        # Later sources win on key collision (project > user > bundled); gate the winners, then
+        # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
+        # bundled key from another directory (resolve_manifest_winners); gate the winners, then
         # load survivors in requires_plugins order (see resolve_plugin_load_order).
-        winners = {manifest_key(m): m for m in manifests}
+        winners = resolve_manifest_winners(manifests)
         to_load = {k: m for k, m in winners.items() if self._gate_manifest(m, disabled, enabled)}
         for lookup_key in resolve_plugin_load_order(to_load):
             manifest = to_load[lookup_key]
@@ -1711,6 +1716,12 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return _delivery_manager().invoke_hook(hook_name, **kwargs)
 
 
+async def ainvoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
+    there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
+    return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
+
+
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
@@ -1805,8 +1816,10 @@ def _get_pre_tool_call_directive_details(
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). Precedence is
+    ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
+    earlier plugin's request for human confirmation (#87420); among approves the first valid one
+    wins. Irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1818,6 +1831,7 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
     modified_args: Optional[Dict[str, Any]] = None
+    first_approve: Optional[Tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -1838,9 +1852,15 @@ def _get_pre_tool_call_directive_details(
         # A block directive requires a message (it becomes the tool result); approve's is optional.
         if action == "block" and not message:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        if action == "block":
+            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+        # approve is held back until the whole list has been scanned for a veto.
+        if first_approve is None:
+            rule_key = result.get("rule_key")
+            first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    if first_approve is not None:
+        return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
+                                     modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 

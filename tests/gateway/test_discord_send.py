@@ -497,6 +497,9 @@ async def test_send_video_under_guild_boost_limit_uploads(tmp_path, monkeypatch)
         SimpleNamespace(id=777, guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024), send=send))
 
     result = await adapter.send_video("777", str(video))
+    assert send.await_args is not None
+    for attachment in send.await_args.kwargs["files"]:
+        attachment.close()
 
     assert result.success is True and result.message_id == "42"
     assert send.await_count == 1 and send.await_args.kwargs.get("files")
@@ -518,6 +521,9 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
 
     mixed = await adapter.send_multiple_images("9", [(f"file://{small}", ""), (f"file://{big}", "")])
+    assert send.await_args is not None
+    for attachment in send.await_args.kwargs["files"]:
+        attachment.close()
     assert mixed.success is True
     kwargs = send.await_args.kwargs
     assert len(kwargs["files"]) == 1  # only the small image made it

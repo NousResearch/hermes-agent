@@ -28,7 +28,9 @@ def managed_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "hermes.exe").write_bytes(b"MZ launcher")
-    (bin_dir / "hermes-acp.cmd").write_text("@echo off\r\n", encoding="ascii")
+    # write_bytes: write_text's newline translation would turn the CRLF into
+    # CR CR LF on Windows, as in the fixture below.
+    (bin_dir / "hermes-acp.cmd").write_bytes(b"@echo off\r\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     return bin_dir
 
@@ -46,7 +48,10 @@ def test_leaves_the_pre_pm_uv_and_user_files_behind(managed_bin: Path):
     the launcher sweep taking the whole dir would silently delete what that
     policy keeps — and a keep-data PATH entry would dangle on the emptied dir."""
     (managed_bin / "uv.exe").write_bytes(b"MZ" + b"\0" * 64)
-    (managed_bin / "my-script.cmd").write_text("@echo off\r\n", encoding="ascii")
+    # write_bytes: write_text's newline translation would turn the CRLF into
+    # CR CR LF on Windows, so the byte assertion below would fail on a file
+    # nothing touched.
+    (managed_bin / "my-script.cmd").write_bytes(b"@echo off\r\n")
 
     removed = uninstall.remove_windows_bin_launchers(windows=True)
 

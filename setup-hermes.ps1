@@ -39,18 +39,20 @@ function Expand-HermesHomeValue {
     })
     if ($Value.StartsWith('~')) {
         # ntpath.expanduser: USERPROFILE, else HOMEDRIVE+HOMEPATH, else unchanged;
-        # '~user' resolves only for the current account (or a same-named profile dir).
+        # PRESENCE, not truthiness: an empty USERPROFILE still substitutes ('~/x'
+        # -> '/x', exactly like Python), and '~user' resolves only for the current
+        # account (or a same-named profile dir).
         $idx = $Value.IndexOfAny([char[]]@('/', '\'), 1)
         if ($idx -lt 0) { $idx = $Value.Length }
-        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE }
-                    elseif ($env:HOMEPATH) { Join-Path $env:HOMEDRIVE $env:HOMEPATH }
-                    elseif ($HOME) { $HOME }
-                    else { '' }
-        if ($userHome) {
+        $userHome = if ($null -ne $env:USERPROFILE) { $env:USERPROFILE }
+                    elseif ($null -ne $env:HOMEPATH -and $null -ne $env:HOMEDRIVE) { Join-Path $env:HOMEDRIVE $env:HOMEPATH }
+                    elseif ($null -ne $HOME) { $HOME }
+                    else { $null }
+        if ($null -ne $userHome) {
             if ($idx -ne 1) {
                 $targetUser = $Value.Substring(1, $idx - 1)
                 if ($targetUser -ne $env:USERNAME) {
-                    if ($env:USERNAME -ne (Split-Path -Leaf $userHome)) { return $Value }
+                    if (-not $userHome -or $env:USERNAME -ne (Split-Path -Leaf $userHome)) { return $Value }
                     $userHome = Join-Path (Split-Path -Parent $userHome) $targetUser
                 }
             }
@@ -190,20 +192,25 @@ function _HermesResolvePath {
     }
     return $resolved
 }
-function Get-HermesRoot {
-    $sep = [string][System.IO.Path]::DirectorySeparatorChar
-    $suffix = if ($env:HERMES_DATA_DIR_SUFFIX) { $env:HERMES_DATA_DIR_SUFFIX } else { '' }
+function Get-HermesDefaultHome {
     # _get_platform_default_hermes_home(): LOCALAPPDATA first, else the platform
     # default -- AppData\Local on Windows, ~/.hermes on POSIX; the suffix is
     # appended LITERALLY. This assembled default must NOT go through
     # Expand-HermesHomeValue: a %/$ variable in the suffix would expand there
-    # while pm treats the suffix as a fixed string. (Only the explicit HERMES_HOME
-    # below is expanded, matching _expand_hermes_home.)
+    # while pm treats the suffix as a fixed string.
+    $suffix = if ($env:HERMES_DATA_DIR_SUFFIX) { $env:HERMES_DATA_DIR_SUFFIX } else { '' }
     $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA.Trim() } else { '' }
     $accountHome = if ($HOME) { [string]$HOME } else { '~' }
-    $default = if ($localAppData) { Join-Path $localAppData "hermes$suffix" }
-               elseif ($sep -eq '\') { Join-Path $accountHome "AppData/Local/hermes$suffix" }
-               else { Join-Path $accountHome ".hermes$suffix" }
+    $sep = [string][System.IO.Path]::DirectorySeparatorChar
+    if ($localAppData) { return (Join-Path $localAppData "hermes$suffix") }
+    if ($sep -eq '\') { return (Join-Path $accountHome "AppData/Local/hermes$suffix") }
+    return (Join-Path $accountHome ".hermes$suffix")
+}
+function Get-HermesRoot {
+    $sep = [string][System.IO.Path]::DirectorySeparatorChar
+    # The default home carries the literal suffix (Get-HermesDefaultHome); only
+    # the explicit HERMES_HOME below is expanded, matching _expand_hermes_home.
+    $default = Get-HermesDefaultHome
     # Containment is decided on RESOLVED paths but the lexical form (keeping "..")
     # is returned, mirroring get_default_hermes_root().
     $defaultLex = _HermesNormPath $default $sep
@@ -246,7 +253,35 @@ function Get-HermesRoot {
     }
     return $root
 }
+function Test-HermesFullyQualifiedPath {
+    # Whether the path needs no cwd to name one directory. [System.IO.Path]
+    # ::IsPathFullyQualified is .NET Core-only (missing from Windows
+    # PowerShell 5.1), and IsPathRooted is NOT its answer: a drive-relative
+    # ``C:rest`` and a root-relative ``\rest`` are both rooted yet still
+    # anchor at a current directory, so both must be bound first.
+    param([string]$Value)
+    if (-not [System.IO.Path]::IsPathRooted($Value)) { return $false }
+    if ([string][System.IO.Path]::DirectorySeparatorChar -ne '\') { return $true }
+    if ($Value -match '^[A-Za-z]:(?![\\/])') { return $false }
+    if ($Value -match '^[\\/](?![\\/])') { return $false }
+    return $true
+}
 # --- END store-root resolver ---
+
+# A relative HERMES_HOME names different roots before and after Push-Location:
+# Get-HermesRoot deliberately returns its lexical form, but the child re-resolves
+# it from the checkout. Bind one absolute home first, so the uv-state pins, the
+# store slot, and PM's child all name the same root.
+# Whitespace-only trims to '' — "unset" for pm (get_hermes_home strips the raw
+# value before deciding); fold it to the empty home instead of dying on
+# GetFullPath('').
+if ($env:HERMES_HOME) {
+    $e = Expand-HermesHomeValue $env:HERMES_HOME.Trim()
+    if ($e -and -not (Test-HermesFullyQualifiedPath $e)) {
+        $e = [System.IO.Path]::GetFullPath($e)
+    }
+    $env:HERMES_HOME = $e
+}
 
 # --- BEGIN uv state pins (mirrored in scripts/install.ps1) ---
 function Set-UvStatePins {
@@ -292,7 +327,7 @@ $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+)
 # A relative HERMES_RUNTIME_DIR names two stores across the Push-Location
 # (this script reads it here, PM's child resolves it from the repo dir).
 # Anchor it once so both sides bind one store.
-if ($env:HERMES_RUNTIME_DIR -and -not [System.IO.Path]::IsPathRooted($env:HERMES_RUNTIME_DIR)) {
+if ($env:HERMES_RUNTIME_DIR -and -not (Test-HermesFullyQualifiedPath $env:HERMES_RUNTIME_DIR)) {
     $env:HERMES_RUNTIME_DIR = [System.IO.Path]::GetFullPath($env:HERMES_RUNTIME_DIR)
 }
 $store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path (Get-HermesRoot) 'tools' }
@@ -377,12 +412,14 @@ if (-not (Test-Path $envFile)) {
 # ---------------------------------------------------------------------------
 # Seed bundled skills into ~/.hermes/skills/
 # ---------------------------------------------------------------------------
-$skillsDir = if ($env:HERMES_HOME) {
+$skillsDir = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
     $e = Expand-HermesHomeValue $env:HERMES_HOME.Trim()
-    if (-not [System.IO.Path]::IsPathRooted($e)) { $e = [System.IO.Path]::GetFullPath($e) }
+    if (-not (Test-HermesFullyQualifiedPath $e)) { $e = [System.IO.Path]::GetFullPath($e) }
     Join-Path $e 'skills'
 } else {
-    Join-Path $HOME '.hermes/skills'
+    # Unset home: the platform default (LOCALAPPDATA, suffix), exactly what the
+    # child's get_hermes_home() seeds — $HOME\.hermes is only the POSIX answer.
+    Join-Path (Get-HermesRoot) 'skills'
 }
 New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
 $sync = Join-Path $repo 'tools/skills_sync.py'

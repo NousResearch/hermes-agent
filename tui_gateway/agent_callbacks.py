@@ -266,17 +266,35 @@ def _wire_callbacks(sid: str):
         "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name}, timeout=120))
 
     def save_login_cb(origin, site):
-        # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
-        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
-        try:
-            data = json.loads(raw) if raw else None
-        except ValueError:
-            return None
-        return data if isinstance(data, dict) and data.get("password") else None
+        return _save_login_prompt(sid, origin, site)
 
     set_save_login_prompt_callback(save_login_cb)
     set_code_prompt_callback(lambda site, hint: _ask(
         "vault.code", sid, {"site": site, "hint": hint}, timeout=180))
+
+
+def _save_login_prompt(sid: str, origin: str, site: str):
+    """Bridge the surface's save-login card onto one ``vault.save_login`` server request: the renderer
+    shows identifier + masked password, and the JSON answer goes straight to the vault store.
+
+    None = the user was asked and declined (the card answers an empty value). Raises
+    SaveLoginPromptUnavailable when NO renderer answered at all — a client build without the card, no
+    handler for the method, cancelled before delivery — so the tool reports the limitation instead of
+    "the user chose not to save" on hosted surfaces where no card ever appeared (#135420)."""
+    from agent.vault_backends.unlock import SaveLoginPromptUnavailable
+    from tui_gateway import server_requests
+
+    # _ask folds "nobody answered" into "" just like an explicit decline; ask server_requests directly
+    # to keep the two apart (an answered {"value": ""} IS a decline).
+    result = server_requests.send("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
+    if result is None:
+        raise SaveLoginPromptUnavailable
+    raw = result.get("value") if isinstance(result.get("value"), str) else ""
+    try:
+        data = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) and data.get("password") else None
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

@@ -291,7 +291,8 @@ def browser_vault_unlock(backend_name: str) -> str:
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
-    from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
+    from agent.vault_backends.unlock import (SaveLoginPromptUnavailable, can_prompt_here,
+                                              get_save_login_prompt_callback)
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
@@ -302,13 +303,19 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
+    unavailable = json.dumps({"success": False, "error_type": "prompt_unavailable",
+                              "error": (f"This session cannot ask the user for a login (headless/cron/API, or the connected "
+                                        f"client cannot show its save-login card). Tell them to run `hermes vault add` or use "
+                                        f"Desktop → Settings → Passwords & Logins for {origin}.")})
     if prompt is None or not can_prompt_here():
-        return json.dumps({"success": False, "error_type": "prompt_unavailable",
-                           "error": (f"This session cannot ask the user for a login (headless/cron/API). Tell them to run "
-                                     f"`hermes vault add` or use Desktop → Settings → Passwords & Logins for {origin}.")})
+        return unavailable
     host = origin.split("://", 1)[-1]
     site = label.strip() or host
-    answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
+    try:
+        answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
+    except SaveLoginPromptUnavailable:
+        # No renderer could be asked (e.g. a hosted TUI client without the card): not a user decline.
+        return unavailable
     if not answer or not answer.get("password") or not answer.get("identifier"):
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
@@ -650,8 +657,9 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
         "bound to the page origin, and fills the password immediately; you receive only the handle and the "
         "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
         "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
-        "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
-        "Logins / `hermes vault add`."
+        "the user was asked and said no — stop asking for this turn and tell the user they can retry, or add it "
+        "later in Settings → Passwords & Logins / `hermes vault add`. A prompt_unavailable result means this "
+        "session's client cannot show the save prompt at all: pass the workaround from the error to the user."
     ),
     "parameters": {
         "type": "object",

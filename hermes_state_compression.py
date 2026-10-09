@@ -22,6 +22,8 @@ _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
 )
 
+_COMPRESSOR_ROUTE_REVISION_KEY = "_compressor_route_revision"
+
 # One forward step of get_compression_chain: the preferred continuation child of ``?``. A reset
 # fork is a separate user-visible conversation (_LISTABLE_CHILD_SQL already surfaces it as its
 # own row), so following it here would hijack the lineage tip projection onto the reset sibling
@@ -424,13 +426,17 @@ class SessionCompressionMixin:
         fallback_streak: Optional[int] = None,
         clear_failure_cooldown: bool = False,
         clear_proactive_prune_rearm: bool = False,
-    ) -> None:
+        advance_route_revision: bool = False,
+    ) -> Optional[int]:
         """Atomically persist a compressor route's owned healthy-reset state.
 
         ``fallback_streak=None`` and false clear flags intentionally leave their
         respective fields alone.  A route reset that touches several guards must
         commit as one row update so an aborted write cannot expose a partial
-        healthy state to a concurrently rebuilt compressor.
+        healthy state to a concurrently rebuilt compressor. Transactional route
+        tickets may also advance an internal revision in this same write; legacy
+        callers leave that marker untouched and retain the original ``None``
+        return value.
         """
         if not session_id:
             return
@@ -442,6 +448,7 @@ class SessionCompressionMixin:
         def _do(conn):
             assignments = ["compression_ineffective_count = ?"]
             params = [normalized_ineffective_count]
+            route_revision = None
             if normalized_fallback_streak is not None:
                 assignments.append("compression_fallback_streak = ?")
                 params.append(normalized_fallback_streak)
@@ -450,7 +457,7 @@ class SessionCompressionMixin:
                     "compression_failure_cooldown_until = NULL",
                     "compression_failure_error = NULL",
                 ))
-            if clear_proactive_prune_rearm:
+            if clear_proactive_prune_rearm or advance_route_revision:
                 row = conn.execute(
                     "SELECT model_config FROM sessions WHERE id = ?", (session_id,)
                 ).fetchone()
@@ -463,16 +470,27 @@ class SessionCompressionMixin:
                     model_config = {}
                 if not isinstance(model_config, dict):
                     model_config = {}
-                model_config.pop("_proactive_prune_rearm_tokens", None)
+                if clear_proactive_prune_rearm:
+                    model_config.pop("_proactive_prune_rearm_tokens", None)
+                if advance_route_revision:
+                    try:
+                        previous_revision = int(
+                            model_config.get(_COMPRESSOR_ROUTE_REVISION_KEY, 0)
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        previous_revision = 0
+                    route_revision = max(0, previous_revision) + 1
+                    model_config[_COMPRESSOR_ROUTE_REVISION_KEY] = route_revision
                 assignments.append("model_config = ?")
                 params.append(json.dumps(model_config) if model_config else None)
             params.append(session_id)
-            conn.execute(
+            cursor = conn.execute(
                 f"UPDATE sessions SET {', '.join(assignments)} WHERE id = ?",
                 params,
             )
+            return route_revision if cursor.rowcount == 1 else None
 
-        self._execute_write(_do)
+        return self._execute_write(_do)
 
     def get_compression_recovery_deadline(self, session_id: str) -> float:
         """Persisted anti-thrash recovery deadline (epoch; ``0.0`` = not armed). Durable

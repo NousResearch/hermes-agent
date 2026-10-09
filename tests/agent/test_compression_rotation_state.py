@@ -161,7 +161,7 @@ class TestAtomicCompressorRouteReset:
         db.set_compression_fallback_streak(session_id, 2)
         db.record_compression_failure_cooldown(session_id, time.time() + 60, "rate limited")
 
-        db.apply_compressor_route_reset(
+        result = db.apply_compressor_route_reset(
             session_id,
             ineffective_count=0,
             fallback_streak=0,
@@ -179,9 +179,48 @@ class TestAtomicCompressorRouteReset:
         assert row["compression_fallback_streak"] == 0
         assert row["compression_failure_cooldown_until"] is None
         assert row["compression_failure_error"] is None
+        assert result is None
         model_config = json.loads(row["model_config"])
         assert "_proactive_prune_rearm_tokens" not in model_config
         assert model_config["unrelated_key"] == unrelated_value
+
+    def test_apply_compressor_route_reset_advances_internal_revision_atomically(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """Ticket callers can stamp each otherwise identical reset with a newer revision."""
+        db = refresh_state_db
+        session_id = "ATOMIC_COMPRESSOR_ROUTE_RESET_REVISION"
+        db.create_session(
+            session_id,
+            source="telegram",
+            model_config={"unrelated_key": "preserve"},
+        )
+
+        first = db.apply_compressor_route_reset(
+            session_id,
+            ineffective_count=0,
+            fallback_streak=0,
+            clear_failure_cooldown=True,
+            clear_proactive_prune_rearm=True,
+            advance_route_revision=True,
+        )
+        second = db.apply_compressor_route_reset(
+            session_id,
+            ineffective_count=0,
+            fallback_streak=0,
+            clear_failure_cooldown=True,
+            clear_proactive_prune_rearm=True,
+            advance_route_revision=True,
+        )
+
+        row = db._conn.execute(
+            "SELECT model_config FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        model_config = json.loads(row["model_config"])
+        assert (first, second) == (1, 2)
+        assert model_config["_compressor_route_revision"] == 2
+        assert model_config["unrelated_key"] == "preserve"
 
     def test_apply_compressor_route_reset_rolls_back_the_whole_row_on_failure(
         self,
@@ -222,6 +261,7 @@ class TestAtomicCompressorRouteReset:
                 fallback_streak=0,
                 clear_failure_cooldown=True,
                 clear_proactive_prune_rearm=True,
+                advance_route_revision=True,
             )
 
         after = dict(db._conn.execute(

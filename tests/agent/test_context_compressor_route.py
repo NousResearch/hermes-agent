@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from unittest.mock import MagicMock, patch
@@ -220,6 +221,49 @@ def test_abort_does_not_overwrite_newer_commit_from_another_instance(tmp_path):
 
         assert _durable_snapshot(db, session_id) == durable_after_newer_commit
         assert older.model == "primary/model"
+    finally:
+        db.close()
+
+
+def test_abort_does_not_overwrite_equal_valued_newer_commit_from_another_instance(tmp_path):
+    """A durable revision must distinguish an ABA-equivalent newer reset."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        older = _new_compressor()
+        newer = _new_compressor()
+        session_id = "CROSS_INSTANCE_ABA"
+        _seed_bound_route_state(db, older, session_id)
+        newer.bind_session_state(db, session_id)
+
+        older_ticket = older.prepare_route_update(
+            "older/replacement", 64_000, provider="older-route", max_tokens=8_000
+        )
+        newer_ticket = newer.prepare_route_update(
+            "newer/replacement", 96_000, provider="newer-route", max_tokens=12_000
+        )
+
+        older_ticket.commit()
+        durable_after_older_commit = _durable_snapshot(db, session_id)
+        newer_ticket.commit()
+        durable_after_newer_commit = _durable_snapshot(db, session_id)
+
+        # Both ordinary route changes write the same business reset values.
+        for column in (
+            "compression_ineffective_count",
+            "compression_fallback_streak",
+            "compression_failure_cooldown_until",
+            "compression_failure_error",
+        ):
+            assert durable_after_newer_commit[column] == durable_after_older_commit[column]
+        older_config = json.loads(durable_after_older_commit["model_config"])
+        newer_config = json.loads(durable_after_newer_commit["model_config"])
+        assert newer_config["_compressor_route_revision"] > older_config[
+            "_compressor_route_revision"
+        ]
+
+        older_ticket.abort()
+
+        assert _durable_snapshot(db, session_id) == durable_after_newer_commit
     finally:
         db.close()
 

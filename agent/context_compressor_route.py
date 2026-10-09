@@ -13,6 +13,7 @@ _DURABLE_ROUTE_SQL = (
     "compression_failure_cooldown_until, compression_failure_error, model_config "
     "FROM sessions WHERE id = ?"
 )
+_COMPRESSOR_ROUTE_REVISION_KEY = "_compressor_route_revision"
 
 
 class CompressorRouteTicketState(Enum):
@@ -163,7 +164,10 @@ class ContextCompressorRouteMixin:
 
     @staticmethod
     def _derive_committed_durable_snapshot(
-        snapshot: _DurableRouteSnapshot | None, *, runtime_changed: bool,
+        snapshot: _DurableRouteSnapshot | None,
+        *,
+        runtime_changed: bool,
+        route_revision: int,
     ) -> _DurableRouteSnapshot | None:
         if snapshot is None:
             return None
@@ -174,6 +178,7 @@ class ContextCompressorRouteMixin:
         if not isinstance(model_config, dict):
             model_config = {}
         model_config.pop("_proactive_prune_rearm_tokens", None)
+        model_config[_COMPRESSOR_ROUTE_REVISION_KEY] = route_revision
         return _DurableRouteSnapshot(
             store=snapshot.store,
             session_id=snapshot.session_id,
@@ -266,22 +271,25 @@ class ContextCompressorRouteMixin:
         ticket._durable_snapshot = self._capture_durable_route_snapshot(
             ticket._store, ticket._session_id
         )
-        committed_durable_snapshot = self._derive_committed_durable_snapshot(
-            ticket._durable_snapshot,
-            runtime_changed=ticket.target.runtime_changed,
-        )
         try:
             for name, value in ticket.target.live_values:
                 setattr(self, name, value)
             if bound and callable(atomic_reset):
-                atomic_reset(
+                route_revision = atomic_reset(
                     ticket._session_id,
                     ineffective_count=0,
                     fallback_streak=0 if ticket.target.runtime_changed else None,
                     clear_failure_cooldown=ticket.target.runtime_changed,
                     clear_proactive_prune_rearm=True,
+                    advance_route_revision=True,
                 )
-                ticket._committed_durable_snapshot = committed_durable_snapshot
+                if type(route_revision) is not int:
+                    raise RuntimeError("atomic compressor route reset did not advance revision")
+                ticket._committed_durable_snapshot = self._derive_committed_durable_snapshot(
+                    ticket._durable_snapshot,
+                    runtime_changed=ticket.target.runtime_changed,
+                    route_revision=route_revision,
+                )
             elif bound:
                 self._apply_legacy_route_reset(ticket)
         except Exception:

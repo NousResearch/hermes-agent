@@ -112,13 +112,13 @@ def _explicit_channel_claims(home: Path) -> Set[str]:
     try:
         from utils import fast_safe_load
 
-        data = fast_safe_load(path.read_text(encoding="utf-8"))
+        data = fast_safe_load(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return set()
     except Exception as exc:
         # Fail open for THIS profile only, but loudly: a silent empty set
         # makes every explicit claim vanish without trace.
-        logger.warning("slash-relay: cannot read %s: %s", path, exc)
+        logger.warning("slash-relay: cannot read %s: %s", path, exc, exc_info=True)
         return set()
     if not isinstance(data, dict):
         return set()
@@ -142,11 +142,11 @@ def _observed_channel_claims(home: Path) -> Set[str]:
     entries like ``C123:171...`` collapse to the base channel id."""
     path = home / "channel_directory.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return set()
     except Exception as exc:
-        logger.warning("slash-relay: cannot read %s: %s", path, exc)
+        logger.warning("slash-relay: cannot read %s: %s", path, exc, exc_info=True)
         return set()
     if not isinstance(data, dict):
         return set()
@@ -330,7 +330,7 @@ def claim_pending(
     for row_id, payload_json in rows:
         try:
             claimed.append({"id": int(row_id), "payload": json.loads(payload_json)})
-        except Exception:
+        except (TypeError, ValueError):
             logger.warning("slash-relay: dropping undecodable row %s", row_id)
             mark_done(int(row_id), root=root_path)
     return claimed

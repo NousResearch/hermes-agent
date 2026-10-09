@@ -26,8 +26,8 @@ from tools.browser_camofox import (
 class TestCamofoxMode:
     def test_disabled_by_default(self, monkeypatch):
         # every lane that can auto-activate the gateway mode must be cleared —
-        # SEKRETO_URL/BROWSER_MCP_URL also resolve via _backend_url() on this branch
-        for var in ("CAMOFOX_URL", "SEKRETO_URL", "BROWSER_MCP_URL"):
+        # BROWSER_MCP_URL also resolves via _backend_url() on this branch
+        for var in ("CAMOFOX_URL", "BROWSER_MCP_URL"):
             monkeypatch.delenv(var, raising=False)
         assert is_camofox_mode() is False
 
@@ -313,14 +313,14 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 # ---------------------------------------------------------------------------
-# SEK-70: SaaS gateway (MCP-only) transport routing
+# Hosted gateway (MCP-only) transport routing
 # ---------------------------------------------------------------------------
 
 
 class TestGatewayMcpRouting:
-    """When the browser backend is the SaaS gateway (non-loopback + API key),
+    """When the browser backend is a hosted gateway (non-loopback + API key),
     verbs route through browser_mcp_transport (MCP tools/call) instead of the
-    tenant-denied REST /tabs endpoints."""
+    REST /tabs endpoints (403 on hosted gateways)."""
 
     def test_gateway_detect_loopback_is_mcp_no(self, monkeypatch):
         from tools.browser_mcp_transport import _is_gateway_backend
@@ -328,19 +328,19 @@ class TestGatewayMcpRouting:
         monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
         assert _is_gateway_backend() is False
 
-    def test_gateway_detect_sekreto_api_key_lane(self, monkeypatch):
-        """kinyras-style profiles carry only SEKRETO_URL + SEKRETO_API_KEY -
-        the transport must treat that as a gateway backend too."""
+    def test_gateway_detect_generic_lane(self, monkeypatch):
+        """Profiles configuring only BROWSER_MCP_URL + BROWSER_MCP_API_KEY (a hosted-gateway
+        lane) - the transport must treat that as a gateway backend too."""
         from tools.browser_mcp_transport import _is_gateway_backend
-        monkeypatch.setenv("SEKRETO_URL", "https://api.sekreto.ai")
-        monkeypatch.setenv("SEKRETO_API_KEY", "k_saas")
+        monkeypatch.setenv("BROWSER_MCP_URL", "https://api.browser-gw.example")
+        monkeypatch.setenv("BROWSER_MCP_API_KEY", "k_gateway")
         monkeypatch.delenv("CAMOFOX_URL", raising=False)
         monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
         assert _is_gateway_backend() is True
 
-    def test_gateway_detect_saas_with_key_is_mcp_yes(self, monkeypatch):
+    def test_gateway_detect_hosted_with_key_is_mcp_yes(self, monkeypatch):
         from tools.browser_mcp_transport import _is_gateway_backend
-        monkeypatch.setenv("CAMOFOX_URL", "https://api.sekreto.ai")
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.compat-gw.example")
         monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
         assert _is_gateway_backend() is True
 
@@ -349,7 +349,7 @@ class TestGatewayMcpRouting:
         import tools.browser_camofox as bc
         from tools import browser_mcp_transport as t
 
-        monkeypatch.setenv("CAMOFOX_URL", "https://api.sekreto.ai")
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.compat-gw.example")
         monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
 
         snap_text = 'Navigated to https://example.com\nStatus: 200\n\nSnapshot:\n- heading "Example Domain"\n- link "Learn more" [e1]'

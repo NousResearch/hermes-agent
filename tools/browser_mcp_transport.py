@@ -1,8 +1,8 @@
-"""MCP transport for the browser tool family against SEKRETO-gateway backends.
+"""MCP transport for the browser tool family against hosted gateway backends.
 
-The SaaS gateway (SEK-70) serves tenant keys MCP-only: REST `/tabs` returns
+Hosted gateway backends serve API-key callers MCP-only: REST `/tabs` returns
 403 `rest_not_available`. This module maps the hermes browser verbs onto the
-Wolverine MCP tool surface (`browser_navigate/snapshot/click/type/press/
+the gateway's MCP tool surface (`browser_navigate/snapshot/click/type/press/
 scroll/back/close/evaluate/screenshot`) with the stateless call shape proven
 by the centipede plugin's `mcp_transport.py`:
 
@@ -10,7 +10,7 @@ by the centipede plugin's `mcp_transport.py`:
 * headers: `Authorization: Bearer <key>`, `Mcp-Method: tools/call`,
   `Mcp-Name: <tool>`, full-SSE Accept
 * no initialize handshake / session id — the gateway treats each POST as an
-  isolated MCP exchange and binds tabs to the tenant via the key
+  isolated MCP exchange and binds tabs to the caller via the API key
 
 Result text is parsed back into the same JSON shapes the REST verbs return,
 so `browser_camofox.py` keeps its external contract (`success`, `snapshot`,
@@ -18,7 +18,7 @@ so `browser_camofox.py` keeps its external contract (`success`, `snapshot`,
 
 `browser_navigate` creates a NEW server-side tab per call on this transport.
 The hermes session layer tracks the returned tab's identity heuristically:
-the MCP server addresses "the most recently created tenant tab" when
+the MCP server addresses "the most recently created gateway tab" when
 `tab_id` is omitted, which matches single-session flows (the dominant case:
 cron jobs, one-thing-at-a-time agents). Multi-tab flows should pass explicit
 tab ids — the transport forwards `tab_id` verbatim when a verb supports it.
@@ -43,7 +43,7 @@ _REF_RE = re.compile(r"\[([a-zA-Z0-9_]+)\]")
 
 def _backend_url() -> str:
     # Generic MCP-browser backend first (any MCP server that speaks the browser-tool surface),
-    # then the tenant-key gateway lanes. `browser.mcp_url` config beats env names.
+    # then the Camofox-compat gateway lane. `browser.mcp_url` config beats env names.
     try:
         from tools.tool_backend_helpers import browser_mcp_backend_url
         url = browser_mcp_backend_url()
@@ -52,17 +52,15 @@ def _backend_url() -> str:
     except Exception:
         pass
     url = (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
-    if not url:
-        url = (get_secret("SEKRETO_URL", "") or "").rstrip("/")
     return url
 
 
 def _is_gateway_backend() -> bool:
     """True when the browser backend is a remote MCP gateway (MCP-only, topologically remote).
 
-    Covers the tenant-key SaaS lanes (credential env names below) AND the generic
-    ``browser.mcp_url`` lane (any MCP browser server configured by URL+key). A non-loopback
-    URL with an auth key = remote = MCP-only + SSRF-guard-active.
+    Covers the Camofox-compat gateway lane AND the generic ``browser.mcp_url`` lane
+    (any MCP browser server configured by URL+key). A non-loopback URL with an auth
+    key = remote = MCP-only + SSRF-guard-active.
     """
     url = _backend_url()
     if not url:
@@ -72,11 +70,8 @@ def _is_gateway_backend() -> bool:
     if (get_secret("BROWSER_MCP_API_KEY", "") or "").strip():
         # Generic browser-MCP lane (browser.mcp_url / BROWSER_MCP_URL): URL+key = remote lane.
         return not loopback
-    # Credential names in priority order: CAMOFOX_API_KEY (fleet browser lane)
-    # then SEKRETO_API_KEY (SaaS lane — kinyras-style profiles carry only this).
-    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
-        get_secret("SEKRETO_API_KEY", "") or ""
-    ).strip()
+    # Credential lane: CAMOFOX_API_KEY (the community compat gateway uses it too).
+    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
     gateway = bool(not loopback and key)
     _log_gateway_resolution_once(gateway)
     return gateway
@@ -86,7 +81,7 @@ _gateway_resolution_logged = False
 
 
 def _log_gateway_resolution_once(gateway: bool) -> None:
-    """t_ca2f1811 observability: one INFO naming the resolved browser backend."""
+    """Observability: one INFO naming the resolved browser backend."""
     global _gateway_resolution_logged
     if _gateway_resolution_logged:
         return
@@ -94,7 +89,7 @@ def _log_gateway_resolution_once(gateway: bool) -> None:
     import logging
     logging.getLogger(__name__).info(
         "Browser backend resolved: %s",
-        "SaaS gateway (MCP transport)" if gateway else "local/community (REST)")
+        "hosted gateway (MCP transport)" if gateway else "local/community (REST)")
 
 
 def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
@@ -115,7 +110,7 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
     }
     key = (get_secret("BROWSER_MCP_API_KEY", "") or "").strip() or (
         get_secret("CAMOFOX_API_KEY", "") or ""
-    ).strip() or (get_secret("SEKRETO_API_KEY", "") or "").strip()
+    ).strip()
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",

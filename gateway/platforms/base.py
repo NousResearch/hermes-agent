@@ -93,6 +93,8 @@ _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # can't exhaust the shared executor.
 _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
+# Session groups (#79198): one turn lock per shared key across all adapters; held by live turns only.
+_GROUP_TURN_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
 def _platform_name(platform) -> str:
@@ -431,7 +433,7 @@ from gateway.platforms.base_exec_approval import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, key_source_for
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -2562,7 +2564,7 @@ class BasePlatformAdapter(ABC):
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
         return build_session_key(
-            source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            key_source_for(source), group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
             profile=self._session_key_profile(source))
 
@@ -4074,6 +4076,15 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
             return
+        group_turn_lock = self._group_turn_lock(event, session_key)
+        if group_turn_lock is not None and group_turn_lock.locked():
+            # Another chat in the session group owns the key: commands and clarify answers act
+            # now, anything else queues as this chat's own next turn (behind the lock).
+            await self._handle_message_while_active(event, session_key)
+            queued = None if session_key in self._active_sessions else self.get_pending_message(session_key)
+            if queued is not None:
+                self._start_session_processing(queued, session_key)
+            return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
@@ -4559,9 +4570,22 @@ class BasePlatformAdapter(ABC):
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
+    def _group_turn_lock(self, event: MessageEvent, session_key: str) -> Optional[asyncio.Lock]:
+        """The per-key turn lock for a session-group event (#79198), else None. Chats on different
+        adapters that share one key take turns under it in arrival order, each holding it through
+        its own delivery, so no turn runs or replies while another chat's turn owns the key."""
+        source = getattr(event, "source", None)
+        if source is None or key_source_for(source) is source:
+            return None
+        lock = _GROUP_TURN_LOCKS.get(session_key)
+        if lock is None:
+            lock = _GROUP_TURN_LOCKS[session_key] = asyncio.Lock()
+        return lock
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        group_turn_lock, group_turn_locked = self._group_turn_lock(event, session_key), False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4575,6 +4599,9 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
+            if group_turn_lock is not None:
+                await group_turn_lock.acquire()
+                group_turn_locked = True
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
@@ -4683,6 +4710,8 @@ class BasePlatformAdapter(ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
+            if group_turn_locked:
+                group_turn_lock.release()
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot

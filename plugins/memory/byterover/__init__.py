@@ -101,7 +101,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     return env
 
 
-def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) -> dict:
+def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
     brv_path = _resolve_brv_path()

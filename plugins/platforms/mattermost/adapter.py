@@ -347,7 +347,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     else:
                         file_data, ct = await resp.read(), resp.content_type or "application/octet-stream"
                         break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, aiohttp.ClientError) as exc:
                 if attempt == 2:
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
                     return await fallback()

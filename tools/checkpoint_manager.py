@@ -1043,7 +1043,7 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        ok, _, err = _run_git(
+        ok, _, _err = _run_git(
             ["cat-file", "-t", commit_hash], store, abs_dir,
         )
         if not ok:
@@ -1117,7 +1117,7 @@ class CheckpointManager:
         self,
         working_dir: str,
         commit_hash: str,
-        file_path: str = None,
+        file_path: str | None = None,
         safe: bool = False,
     ) -> dict:
         """Restore files to a checkpoint state.
@@ -1313,9 +1313,9 @@ class CheckpointManager:
                     )
                     failed_deletes.append(rel)
             if not checkout_targets:
-                ok, stdout, err = True, "", ""
+                ok, _stdout, err = True, "", ""
             else:
-                ok, stdout, err = _run_git(
+                ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
@@ -1329,7 +1329,7 @@ class CheckpointManager:
             with tempfile.TemporaryDirectory(prefix="restore-select-", dir=store) as scratch:
                 spec_file = Path(scratch) / "pathspec"
                 spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in selected_paths))
-                ok, stdout, err = _run_git(
+                ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, f"--pathspec-from-file={spec_file}",
                      "--pathspec-file-nul"],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
@@ -1337,7 +1337,7 @@ class CheckpointManager:
                     extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         else:
-            ok, stdout, err = _run_git(
+            ok, _stdout, err = _run_git(
                 ["checkout", commit_hash, "--", file_path if file_path else "."],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,

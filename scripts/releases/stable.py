@@ -11,7 +11,7 @@ import tempfile
 import tomllib
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -83,6 +83,12 @@ SKIPPED_BY = {
 }
 
 
+# Each signed-package upgrade arm and the transitions job that plans it.
+PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
+               "macos-packaged-x64": "transitions-darwin-x64",
+               "windows-packaged": "transitions-win32"}
+
+
 def gate_expectations(required: list[str], *, skip_bundles: bool, skip_tests: bool) -> dict:
     """Each gated job's required result under the claim's flags."""
     active = {flag for flag, on in (("skipBundles", skip_bundles), ("skipTests", skip_tests)) if on}
@@ -95,6 +101,13 @@ def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_t
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
     expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests)
+    for packaged, planner in PACKAGED_BY.items():
+        # Without a published baseline there is no OLD package, so the planner
+        # skips the upgrade arm. Only that planner's own successful output can excuse it.
+        planned = needs.get(planner, {})
+        if (expected.get(packaged) == "success" and planned.get("result") == "success"
+                and (planned.get("outputs") or {}).get("baseline") == "none"):
+            expected[packaged] = "skipped"
     failures = [f"{name}={needs.get(name, {}).get('result', 'missing')} (expected {want})"
                 for name, want in expected.items() if needs.get(name, {}).get("result") != want]
     if failures:
@@ -132,8 +145,8 @@ def require_smokes_match_claim(manifest: dict, *, skip_tests: bool) -> None:
 def stable_windows_version(epoch: object) -> str:
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
         raise ValueError("Stable release epoch must be a non-negative integer")
-    instant = datetime.fromtimestamp(epoch, tz=timezone.utc)
-    start = datetime(instant.year, 1, 1, tzinfo=timezone.utc)
+    instant = datetime.fromtimestamp(epoch, tz=UTC)
+    start = datetime(instant.year, 1, 1, tzinfo=UTC)
     hour_of_year = (instant - start).days * 24 + instant.hour
     second_of_hour = instant.minute * 60 + instant.second
     return f"{instant.year}.{hour_of_year}.{second_of_hour}.0"
@@ -640,14 +653,21 @@ def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
             "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
 
 
-def _published_baseline(env: dict, base: str) -> dict:
+def _published_baseline(env: dict, base: str) -> dict | None:
+    """The previous stable package manifest, or None when no stable release shipped one.
+
+    A release that skipped bundles never writes the pointer, so its absence
+    only means there is no OLD package to upgrade from.
+    """
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
     except urllib.error.HTTPError as error:
-        if error.code == 404:
-            raise ValueError("No published stable package baseline. Supply baseline-manifest for an actual previous stable release; acceptance cannot be skipped.") from error
-        raise
+        if error.code != 404:
+            raise
+        if env.get("BASELINE_MANIFEST_URL"):
+            raise ValueError("The supplied baseline-manifest does not exist") from error
+        return None
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
     if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"]:
         raise ValueError("Upgrade baseline must be a published stable release")
@@ -671,16 +691,23 @@ def transitions(env: dict) -> None:
     receipt = env.get("RECEIPT", "")
     if receipt not in RECEIPT_TARGETS:
         raise ValueError(f"Unknown receipt: {receipt}")
-    tag, commit, claim = stable_context(env)
+    _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     previous = _published_baseline(env, base)
     receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
+    if previous is None:
+        # Native smokes still gate this release. Its packages become the
+        # baseline that the next bundle release must upgrade from.
+        validate_receipt(receipt_manifest, receipt, receipt_manifest.get("tag"),
+                         receipt_manifest.get("commit"), base, archive=receipt_manifest.get("archive"))
+        emit({**matrices, "baseline": "none"}, env)
+        return
     for row in plan_receipt_transitions(previous, receipt_manifest, receipt, base):
         matrices[row["transition"]["platform"]]["include"].append(
             _stage_transition(env, archive, base, row))
-    emit(matrices, env)
+    emit({**matrices, "baseline": "published"}, env)
 
 
 # The candidate manifest is written after the smokes (decision 23): the smoke

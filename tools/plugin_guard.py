@@ -11,7 +11,7 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -342,7 +342,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         summary = f"{plugin_dir.name}: clean scan, no threats detected"
     result = ScanResult(
         skill_name=plugin_dir.name, source=source or plugin_dir.name, trust_level="community",
-        verdict=verdict, findings=all_findings, scanned_at=datetime.now(timezone.utc).isoformat(),
+        verdict=verdict, findings=all_findings, scanned_at=datetime.now(UTC).isoformat(),
         summary=summary)
     result.scan_provenance = {
         "scanner_version": PLUGIN_SCANNER_VERSION, "verdict": verdict, "source": result.source}
@@ -365,4 +365,8 @@ def should_allow_plugin_install(
 
 
 __all__ = [
-    "scan_plugin", "should_allow_plugin_install", "format_scan_report", "PLUGIN_SCANNER_VERSION"]
+    "PLUGIN_SCANNER_VERSION",
+    "format_scan_report",
+    "scan_plugin",
+    "should_allow_plugin_install",
+]

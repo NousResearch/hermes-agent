@@ -321,16 +321,16 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     return _request("post", path, timeout, json=body).json()
 
 
-def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
+def _get(path: str, params: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("get", path, timeout, params=params).json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
+def _get_raw(path: str, params: dict | None = None, timeout: Optional[int] = None) -> requests.Response:
     """GET and return the raw response (for binary data)."""
     return _request("get", path, timeout, params=params)
 
 
-def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
+def _delete(path: str, body: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("delete", path, timeout, json=body).json()
 
 

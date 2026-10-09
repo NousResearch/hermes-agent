@@ -20,8 +20,8 @@ class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
     def run_conversation(
-        self, user_message: Any, system_message: str=None,
-        conversation_history: list[dict[str, Any]]=None, task_id: str=None,
+        self, user_message: Any, system_message: str | None=None,
+        conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
         stream_callback: Optional[callable]=None, persist_user_message: Optional[Any]=None,
         persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
         persist_user_display_metadata: Optional[dict[str, Any]]=None,

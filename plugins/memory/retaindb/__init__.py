@@ -17,7 +17,7 @@ import sqlite3
 import threading
 import time
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -224,7 +224,7 @@ class _WriteQueue:
         self._close(*([conn] if conn is not None else []))
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._shutdown_lock:
             if self._shutdown:
                 return
@@ -406,7 +406,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         """Queue turn for async ingest. Returns immediately."""
         if not self._queue or not user_content:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._queue.enqueue(self._user_id, session_id or self._session_id,
                             [{"role": "user", "content": user_content, "timestamp": now},
                              {"role": "assistant", "content": assistant_content, "timestamp": now}])

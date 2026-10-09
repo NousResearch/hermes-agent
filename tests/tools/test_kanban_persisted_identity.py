@@ -88,7 +88,7 @@ def test_a_dispatched_worker_keeps_its_pinned_identity_and_an_unnamed_caller_sta
     """Control: no override → the dispatcher's ``HERMES_PROFILE`` pin wins over the process home;
     absence: nothing names a profile and the home is not a profile → ``"worker"``."""
     from tools import kanban_tools as kt
-    root, tid = board_env
+    _root, tid = board_env
 
     monkeypatch.setenv("HERMES_PROFILE", "pinned-bot")
     assert json.loads(kt._handle_comment({"task_id": tid, "body": "from env"}))["ok"]

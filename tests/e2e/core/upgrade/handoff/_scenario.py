@@ -250,7 +250,7 @@ class WorkerSampler:
                 pass
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "WorkerSampler":
+    def __enter__(self) -> WorkerSampler:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -300,7 +300,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
 
             o.boots = len(X.gateway_starts(inst))
             o.target = X.publish_target(inst)
-            due = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
+            due = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(seconds=CRON_DUE_S + 5)
             cp = inst.cli("cron", "create", due.isoformat(), f"Reply with the word done. {model.cron_marker}",
                           "--name", model.cron_marker)
             assert cp.returncode == 0, "premise: cron create failed\n" + H.describe(cp)
@@ -333,7 +333,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.dash_new = back if back and back > 0 else None
 
             if o.ident:  # the cron ticker and the kanban dispatcher live in the gateway
-                _quiet_wait(lambda: dt.datetime.now(dt.timezone.utc) > due + dt.timedelta(seconds=5), timeout=600,
+                _quiet_wait(lambda: dt.datetime.now(dt.UTC) > due + dt.timedelta(seconds=5), timeout=600,
                             what="the cron due time")
                 _quiet_wait(lambda: model.cron_calls, timeout=240, what="the cron job's provider call")
                 _quiet_wait(lambda: card_status(inst, o.card1) == "done" and card_status(inst, o.card2) == "done",

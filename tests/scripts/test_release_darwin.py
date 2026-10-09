@@ -156,7 +156,7 @@ def test_finalize_uses_the_real_signed_transport_and_publishes_last(r2_server):
     methods = [m for m, _p, _h in r2_server.requests]
     assert methods.count("PUT") == 1
     assert "PUT" not in methods[:3]
-    put_headers = [h for m, _p, h in r2_server.requests if m == "PUT"][0]
+    put_headers = next(h for m, _p, h in r2_server.requests if m == "PUT")
     assert put_headers["If-None-Match"] == "*"
     assert put_headers["Cache-Control"] == "no-store"
     assert put_headers["Content-Type"] == "application/yaml"

@@ -107,7 +107,7 @@ def test_named_profile_install_and_start_refuse_without_force_when_no_multiplexe
 def test_force_installs_a_separate_profile_gateway_and_its_service_stays_startable(quiet_host):
     import hermes_cli.gateway as gw
     from hermes_cli.web_server_gateway import multiplexed_profile_refusal
-    root, calls, use = quiet_host
+    _root, calls, use = quiet_host
     use("coder")
 
     with contextlib.redirect_stdout(io.StringIO()):

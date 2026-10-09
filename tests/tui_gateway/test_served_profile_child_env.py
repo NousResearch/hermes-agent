@@ -120,7 +120,7 @@ def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     from gateway.run import _profile_runtime_scope
     from tools.browser_tool import _build_browser_env
 
-    a, b = mux_homes
+    _a, b = mux_homes
     helper = (f"{sys.executable} -c \"import os;print(os.environ.get('B_MARKER','-')+'|'"
               f"+os.environ.get('A_MARKER','-')+'|'+os.environ.get('HERMES_HOME',''))\"")
     with _profile_runtime_scope(b, hydrate_secrets=False):

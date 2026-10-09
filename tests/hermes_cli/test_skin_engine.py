@@ -110,7 +110,7 @@ class TestUserSkins:
         skins = list_skins()
         names = [s["name"] for s in skins]
         assert "pirate" in names
-        pirate = [s for s in skins if s["name"] == "pirate"][0]
+        pirate = next(s for s in skins if s["name"] == "pirate")
         assert pirate["source"] == "user"
 
 

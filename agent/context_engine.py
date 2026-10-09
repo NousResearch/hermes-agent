@@ -82,10 +82,10 @@ class ContextEngine(ABC):
         """
 
     @abstractmethod
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> tuple[bool, str | None]:
         """Return ``(should_compress, reason)``.
 
         Engines with block reasons (summary-LLM cooldown, anti-thrashing guard) override
@@ -119,8 +119,8 @@ class ContextEngine(ABC):
         return messages, 0
 
     def select_context(
-        self, request_messages: list[dict[str, Any]], *, conversation_messages: list[dict[str, Any]] = None,
-        incoming_message: dict[str, Any] = None, budget_tokens: int = 0,
+        self, request_messages: list[dict[str, Any]], *, conversation_messages: list[dict[str, Any]] | None = None,
+        incoming_message: dict[str, Any] | None = None, budget_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         """Optionally *select* (replace) the context for THIS request, pre-generation.
 
@@ -140,7 +140,7 @@ class ContextEngine(ABC):
         """
         return None
 
-    def on_turn_complete(self, messages: list[dict[str, Any]], usage: dict[str, Any] = None, **kwargs: Any) -> None:
+    def on_turn_complete(self, messages: list[dict[str, Any]], usage: dict[str, Any] | None = None, **kwargs: Any) -> None:
         """Observe a finished turn (complement of ``select_context()``) to index/update
         routing state for the next request.
 
@@ -223,7 +223,7 @@ class ContextEngine(ABC):
             "compression_count": self.compression_count,
         }
 
-    def clone_for_agent(self) -> "ContextEngine":
+    def clone_for_agent(self) -> ContextEngine:
         """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
         instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
         Override when the engine holds uncopyable state (locks, DB connections): return a fresh

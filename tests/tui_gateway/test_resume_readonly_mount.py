@@ -59,7 +59,7 @@ def _mount(monkeypatch, db, home, tmp_path, *, defer_history=False):
 @pytest.mark.parametrize("defer_history", [False, True])
 def test_resume_mount_keeps_finalized_row_ended(tmp_path, monkeypatch, defer_history):
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, built = _mount(monkeypatch, db, home, tmp_path)
     sid = None
     try:
         response = server.handle_request({"id": "resume", "method": "session.resume", "params": {
@@ -83,7 +83,7 @@ def test_resume_mount_keeps_finalized_row_ended(tmp_path, monkeypatch, defer_his
 
 def test_lazy_watch_mount_keeps_finalized_row_ended(tmp_path, monkeypatch):
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     sid = None
     try:
         response = server.handle_request({"id": "resume", "method": "session.resume", "params": {
@@ -103,7 +103,7 @@ def test_first_real_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     from tui_gateway import methods_prompt
 
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     reopened = []
     monkeypatch.setattr(db, "reopen_session", lambda sid: reopened.append(sid) or
                         SessionDB.reopen_session(db, sid))
@@ -118,7 +118,7 @@ def test_first_real_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
 
 
 def test_reopen_if_finalized_leaves_live_rows_untouched(tmp_path):
-    db, home = _finalized_db(tmp_path)
+    db, _home = _finalized_db(tmp_path)
     from tui_gateway import methods_prompt
 
     db.create_session("live", source="desktop")
@@ -138,7 +138,7 @@ def test_isolated_dispatch_reopens_a_finalized_row(tmp_path, monkeypatch):
     from tui_gateway import server
 
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda session, cfg=None: True)
     monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {"turn_isolation": True})
     dispatched = {}
@@ -179,7 +179,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     from tui_gateway.compute_host import ComputeHost
 
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     # The child-side session record: built from a turn.start frame, agent already attached.
     agent = types.SimpleNamespace(session_id="finalized", clear_interrupt=lambda: None)
     session = {

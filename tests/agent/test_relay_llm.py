@@ -1058,7 +1058,7 @@ def test_stream_refuses_replay_after_transformed_relay_output(
 ):
     """A transformed delivered chunk consumes an unknown provider source; replaying the
     pending raw list would emit that source a second time after its transformed form."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def transform_then_fail(
@@ -1111,7 +1111,7 @@ def test_stream_does_not_replay_chunks_relay_passed_over(
 ):
     """A match at index > 0 means Relay saw and skipped the earlier chunks — they were
     suppressed, not merely pending, and the fallback must not resurrect them."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def reorder_then_fail(

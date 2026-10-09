@@ -217,7 +217,7 @@ class TestExtractMedia:
 
     def test_single_media_tag(self):
         content = "MEDIA:/path/to/audio.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
+        media, _cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag

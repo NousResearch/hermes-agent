@@ -177,7 +177,7 @@ def _run_turn(monkeypatch, *, projected, iterations):
 
 
 def test_provider_work_lands_in_the_transcript_through_the_real_loop(monkeypatch):
-    _agent_, result = _run_turn(monkeypatch, projected=_projected_rows(), iterations=1)
+    _agent, result = _run_turn(monkeypatch, projected=_projected_rows(), iterations=1)
 
     messages = result["messages"]
     tool_rows = [
@@ -206,7 +206,7 @@ def test_provider_iterations_tick_the_skill_nudge_through_the_real_loop(monkeypa
 
 def test_ordinary_provider_turn_is_unchanged(monkeypatch):
     """A completion without the attributes must not gain rows or counter ticks."""
-    _agent_, result = _run_turn(monkeypatch, projected=[], iterations=0)
+    _agent, result = _run_turn(monkeypatch, projected=[], iterations=0)
     assert not [
         m for m in result["messages"]
         if isinstance(m, dict) and str(m.get("name") or "").startswith("acpagent_")

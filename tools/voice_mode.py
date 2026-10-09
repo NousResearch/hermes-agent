@@ -131,7 +131,7 @@ def _default_input_samplerate(sd) -> int:
         info = sd.query_devices(None, "input")
         rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
         if isinstance(rate, (int, float)) and rate > 0:
-            return int(round(rate))
+            return round(rate)
     return SAMPLE_RATE
 
 
@@ -448,7 +448,7 @@ def thinking_sound_enabled() -> bool:
         return True
 
 
-def _synth_thinking_blip(np, frequency: float) -> "Any":
+def _synth_thinking_blip(np, frequency: float) -> Any:
     """One soft 'blub': short sine with a downward glide and a click-free envelope."""
     duration = 0.16
     n = int(SAMPLE_RATE * duration)
@@ -1187,7 +1187,7 @@ def listen_for_speech(
     # from the opening TTS passage, but later louder passages exceed the
     # stale floor and false-trigger.  The rolling window keeps the floor
     # current so only genuinely louder-than-playback speech trips the VAD.
-    floor_window: "deque[float]" = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
+    floor_window: deque[float] = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     consecutive = 0
     min_floor = 0.0  # baseline from initial calibration; floor never drops below this
@@ -1337,7 +1337,7 @@ class _BargeDetector:
 
     def __init__(self, np, *, mult: float, calib_blocks: int, trip_blocks: int, grace_blocks: int) -> None:
         self._np, self.mult, self.calib_blocks, self.grace_blocks = np, mult, calib_blocks, grace_blocks
-        self.trip_needed = max(1, int(round(trip_blocks * 0.8)))
+        self.trip_needed = max(1, round(trip_blocks * 0.8))
         self.ambient: deque = deque(maxlen=100)  # ~3s of quiet-phase RMS
         self.recent_above: deque = deque(maxlen=trip_blocks)
         self.quiet_floor = float(SILENCE_RMS_THRESHOLD)

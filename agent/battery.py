@@ -55,7 +55,7 @@ def _read_battery_uncached() -> BatteryStatus:
     raw_percent = getattr(batt, "percent", None)
     if raw_percent is not None:
         try:
-            percent = max(0, min(100, int(round(float(raw_percent)))))
+            percent = max(0, min(100, round(float(raw_percent))))
         except (TypeError, ValueError):
             percent = None
     plugged = getattr(batt, "power_plugged", None)

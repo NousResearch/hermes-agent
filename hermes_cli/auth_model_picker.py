@@ -282,9 +282,18 @@ def _prompt_model_selection(
             return None
 
 
+_model_choice_saves = 0  # bumped per saved pick; `hermes model` reads it to know a pick landed
+
+
+def model_choice_save_count() -> int:
+    return _model_choice_saves
+
+
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
+    global _model_choice_saves
     from hermes_cli.config import save_config, load_config
+    _model_choice_saves += 1
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):

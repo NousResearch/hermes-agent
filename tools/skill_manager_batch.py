@@ -216,8 +216,8 @@ def _rollback(snapshots, find_skill, results):
 _ADVISORY_KEYS = ("lint_warnings", "lint_hint")
 
 
-def _skill_manage_batch(operations, default_name: str = None, task_id: str = None,
-                        session_id: str = None) -> str:
+def _skill_manage_batch(operations, default_name: str | None = None, task_id: str | None = None,
+                        session_id: str | None = None) -> str:
     """Apply operations atomically: every touched skill is snapshotted first and any
     failure rolls ALL of them back (batch-created skills are removed). ``delete`` is
     only legal as the SOLE op (its recoverable-archive path doesn't compose with

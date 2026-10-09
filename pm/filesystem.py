@@ -52,7 +52,7 @@ def native(path: str | os.PathLike[str]) -> str:
     text = os.fspath(path)
     if text.startswith(_VERBATIM_UNC):
         return "\\\\" + text[len(_VERBATIM_UNC):]
-    return text[len(_VERBATIM):] if text.startswith(_VERBATIM) else text
+    return text.removeprefix(_VERBATIM)
 
 
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:

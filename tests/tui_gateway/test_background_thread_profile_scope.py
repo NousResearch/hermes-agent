@@ -48,7 +48,7 @@ def test_auto_title_thread_runs_in_the_turns_profile_scope(served_home, monkeypa
     """``maybe_auto_title`` fires ``auto_title_session`` on a thread; it must see the turn's profile."""
     import agent.title_generator as tg
 
-    a, b = served_home
+    _a, b = served_home
     seen, done = {}, threading.Event()
     monkeypatch.setattr(tg, "auto_title_session", lambda *args, **kwargs: _observe_scope(seen, done))
     monkeypatch.setattr(tg, "apply_instant_title", lambda *args, **kwargs: None)

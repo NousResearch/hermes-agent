@@ -14,12 +14,14 @@
 name: frihet
 repo: https://github.com/Frihet-io/hermes-frihet
 # Pinned SHA — Frihet-io/hermes-frihet @ v0.1.0
-# (fix(security): canonical Frihet externalSideEffects drives classification).
+# (fix(deps): declare PyYAML as runtime dep with <7 cap, merged via PR #1.)
 #
 # This SHA supersedes ``f331208`` (the older doctor that read the OAuth
 # token cache), ``24a9612`` (first privacy fix), ``3c8325a`` (CI rename
-# + first default_enabled), AND ``b9a8067`` (slash-command + redact
-# per-line + first connector safety net). It pins:
+# + first default_enabled), ``b9a8067`` (slash-command + redact
+# per-line + first connector safety net), ``b77f5df4`` (canonical Frihet
+# externalSideEffects drives classification), AND ``e805bf2`` (source
+# head of the PyYAML branch before squash). It pins all of the above AND:
 #   * Hook dispatcher that passes the FULL tool name to the gate (no
 #     more silent bypass of the approval gate).
 #   * Doctor that derives auth evidence from ``ctx.call_mcp`` — the
@@ -45,10 +47,20 @@ repo: https://github.com/Frihet-io/hermes-frihet
 #     for tools the contract has not yet named.
 #   * CI renamed to manifest-validate (schema-only) plus a manual
 #     live-hermes-validate (workflow_dispatch) for maintainers.
+#   * Runtime PyYAML dependency declared in pyproject.toml at >=6.0,<7
+#     (catalog security recommendation). Closes the silent "unknown"
+#     report from `frihet.py` mcp_server_block_present() in clean venvs
+#     without PyYAML preinstalled (regression: 7 tests in tests/test_frihet.py).
+#   * New tests/test_pyyaml_dependency.py asserts that yaml is importable
+#     in the test environment, gating the runtime-dependency contract.
+#   * No code-path changes: frihet.py, hook dispatcher, doctor and
+#     /frihet slash command remain byte-identical to the b77f5df4 SHA;
+#     this bump only makes the existing tests pass on a clean venv.
+
 #
-# Tests: 84 pass + 3 pre-existing skips. hermes plugins validate
+# Tests: 87 pass + 3 pre-existing skips. hermes plugins validate
 # --install-deps 15/15 with security scan "safe".
-sha: b77f5df4b269ada5296ee07fc9c03d118933cbc0
+sha: 4f092d58398ab252ea1fa6b07bfefacec717abd9
 description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
 maintainer: Frihet-io
 tier: community

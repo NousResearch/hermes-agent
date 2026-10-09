@@ -1043,7 +1043,7 @@ def test_p4_load_hermes_dotenv_is_idempotent(seed, home, env_restore, monkeypatc
 
 @pytest.mark.parametrize("seed", P4_SEEDS)
 def test_p4_env_parser_sanitizer_and_writer_round_trip(seed, home, env_restore):
-    text, keys, _shell = gen_dotenv(seed)
+    text, _keys, _shell = gen_dotenv(seed)
     env_path = home / ".env"
     env_path.write_text(text, encoding="utf-8")
     C.invalidate_env_cache()

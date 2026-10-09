@@ -171,11 +171,6 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
-    "spotify": _ts(
-        "Native Spotify playback, search, playlist, album, and library tools",
-        ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-         "spotify_playlists", "spotify_albums", "spotify_library"],
-    ),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
@@ -370,7 +365,7 @@ def _plugin_platform_bundle(name: str) -> list[str]:
     return list(tools)
 
 
-def resolve_toolset(name: str, visited: set[str] = None, *, include_registry: bool = True) -> list[str]:
+def resolve_toolset(name: str, visited: set[str] | None = None, *, include_registry: bool = True) -> list[str]:
     """Recursively resolve a toolset (and its includes) to a sorted tool-name list.
     include_registry=False resolves the static TOOLSETS view only.
 
@@ -483,7 +478,7 @@ def validate_toolset(name: str) -> bool:
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 
-def create_custom_toolset(name: str, description: str, tools: list[str] = None, includes: list[str] = None) -> None:
+def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:
     """Register a runtime toolset in TOOLSETS."""
     TOOLSETS[name] = _ts(description, tools or [], includes or [])
 

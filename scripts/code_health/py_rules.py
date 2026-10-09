@@ -11,6 +11,7 @@ import ast
 import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+import itertools
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _CAPTURE_CALLS = {
@@ -716,7 +717,7 @@ def _reaped_after_kill(tree: ast.Module, kinds: dict[int, str]) -> set[int]:
             stmts = getattr(node, field, None)
             if not isinstance(stmts, list):
                 continue
-            for first, second in zip(stmts, stmts[1:]):
+            for first, second in itertools.pairwise(stmts):
                 kill = first.value if isinstance(first, ast.Expr) else None
                 wait = second.value if isinstance(second, _WAIT_STATEMENTS) else None
                 if not (isinstance(kill, ast.Call) and isinstance(wait, ast.Call)):

@@ -395,7 +395,7 @@ class TuiGateway:
         self._wlock = threading.Lock()
         self.stored: dict[str, str] = {}
 
-    def __enter__(self) -> "TuiGateway":
+    def __enter__(self) -> TuiGateway:
         self.proc = self.spawned.add(subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

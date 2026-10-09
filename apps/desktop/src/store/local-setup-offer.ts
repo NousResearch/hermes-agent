@@ -132,12 +132,13 @@ function pickLocalSetupFit(
     return { checkedAt: at, fit: null, reason: 'local models already set up' }
   }
 
-  const fitting = catalog.filter(model => model.fits)
-  const model = fitting.find(candidate => candidate.recommended) ?? fitting[0]
+  // The offer names the model the catalog recommends. A machine without a recommendation does not
+  // qualify, even when a model would run with part of its weights in system memory.
+  const model = catalog.find(candidate => candidate.recommended && candidate.fits)
 
   return model
     ? { checkedAt: at, fit: { model }, reason: `fits ${model.id}` }
-    : { checkedAt: at, fit: null, reason: 'no catalog model fits this machine' }
+    : { checkedAt: at, fit: null, reason: 'no catalog model is recommended for this machine' }
 }
 
 /** One status + catalog read per connection; a transient miss is retried on the next read. */

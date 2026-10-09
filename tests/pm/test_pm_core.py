@@ -89,7 +89,7 @@ def pm_env(tmp_path, served, monkeypatch):
     lockfile_path = lock_dir / "lock.json"
     monkeypatch.setattr(paths, "lockfile_path", lambda: lockfile_path)
 
-    name, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
+    _name, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
     lockfile = Lockfile(lockfile_path)
     lockfile.set_pin(
         "faketool", "1.0", {"any": {"url": f"{base_url}/faketool-1.0.tar.gz", "sha256": digest}}
@@ -177,9 +177,9 @@ def test_deps_compose_dependents_win(pm_env):
     from pm.install import ensure
 
     lockfile_path, _, docroot, _ = pm_env
-    name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
+    _name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
     _pin(lockfile_path, "deptool", "1.0", digest)
-    name, digest = make_tar(docroot, "toptool-1.0.tar.gz", {"bin/faketool": "z"})
+    _name, digest = make_tar(docroot, "toptool-1.0.tar.gz", {"bin/faketool": "z"})
     _pin(lockfile_path, "toptool", "1.0", digest)
 
     runner = ensure("toptool", base_env={})
@@ -338,7 +338,7 @@ def test_version_bump_selects_the_new_tool(pm_env):
     lockfile_path, _, docroot, _ = pm_env
 
     ensure("faketool", base_env={})
-    name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"bin/faketool": "#!2"})
+    _name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"bin/faketool": "#!2"})
     _pin(lockfile_path, "faketool", "2.0", digest)
     runner = ensure("faketool", base_env={})
     assert "faketool-2.0" in runner.env["PATH"]
@@ -356,7 +356,7 @@ def test_lazy_installs_disabled(pm_env, monkeypatch):
 def test_missing_platform_is_declared(pm_env):
     from pm.install import ensure
 
-    lockfile_path, *_ = pm_env
+    _lockfile_path, *_ = pm_env
     pkg = registry._packages["faketool"]
     pkg.gaps = {current_target(): "no artifact for this platform"}
     try:
@@ -382,7 +382,7 @@ def test_concurrent_installs_do_not_clobber(pm_env):
     from pm.install import ensure, is_installed
 
     lockfile_path, _, docroot, _ = pm_env
-    name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
+    _name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
     _pin(lockfile_path, "deptool", "1.0", digest)
 
     errors = []
@@ -870,9 +870,9 @@ def test_verify_arch_mismatch_reports_target(tmp_path):
 def test_install_verify_failure_reports_reason(pm_env):
     """The CI failure: an entry that installs but fails verification must
     surface WHY in the InstallError, not a bare status."""
-    lockfile_path, runtime, docroot, base_url = pm_env
+    lockfile_path, _runtime, docroot, _base_url = pm_env
     # Archive whose layout does not match binary_rel (bin/faketool).
-    name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"nope/x": "y"})
+    _name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"nope/x": "y"})
     _pin(lockfile_path, "faketool", "2.0", digest)
 
     from pm.install import ensure

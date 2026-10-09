@@ -229,7 +229,7 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     required = {"prompt"}
     if edit:  # a few edit endpoints (Kling Image v3) take a singular `image_url` string instead of the list
         image_param = meta.get("edit_image_param") or "image_urls"
-        payload[image_param] = list(image_urls)[0] if image_param != "image_urls" else list(image_urls)
+        payload[image_param] = next(iter(image_urls)) if image_param != "image_urls" else list(image_urls)
         required.add(image_param)
     size_key = _SIZE_KEY_BY_STYLE.get(meta["size_style"])
     if size_key is None and not edit:

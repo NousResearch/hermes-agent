@@ -110,8 +110,8 @@ def _where_sql(clauses: list[str], lead: str = "") -> str:
 
 
 def _session_filter_where(
-    *, exclude_children: bool = False, source: str = None, sources: list[str] = None,
-    session_key: str = None, exclude_sources: list[str] = None, cwd_prefix: str = None,
+    *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
+    session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False,
 ) -> tuple[list[str], list[Any]]:
@@ -357,11 +357,11 @@ class SessionSessionsMixin:
         conn.execute(_INHERIT_PARENT_ROUTING_SQL, (session_id,))
 
     def _insert_session_row(
-        self, session_id: str, source: str, model: str = None, model_config: dict[str, Any] = None,
-        system_prompt: str = None, user_id: str = None, session_key: Optional[str] = None,
-        chat_id: str = None, chat_type: str = None, thread_id: str = None,
-        parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
-        git_repo_root: str = None, origin_json: str = None, display_name: str = None,
+        self, session_id: str, source: str, model: str | None = None, model_config: dict[str, Any] | None = None,
+        system_prompt: str | None = None, user_id: str | None = None, session_key: Optional[str] = None,
+        chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
+        parent_session_id: str | None = None, cwd: str | None = None, profile_name: Optional[str] = None,
+        git_repo_root: str | None = None, origin_json: str | None = None, display_name: str | None = None,
         transport_profile: Optional[str] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
@@ -461,7 +461,7 @@ class SessionSessionsMixin:
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
-    def ensure_session(self, session_id: str, source: str = "unknown", model: str = None, **kwargs) -> str:
+    def ensure_session(self, session_id: str, source: str = "unknown", model: str | None = None, **kwargs) -> str:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
         return session_id
@@ -1165,10 +1165,10 @@ class SessionSessionsMixin:
         self,
         *,
         limit: int = 20,
-        exclude_sources: list[str] = None,
+        exclude_sources: list[str] | None = None,
         timeout_seconds: float = 3.0,
-        candidate_limit: int = None,
-        lineage_limit: int = None,
+        candidate_limit: int | None = None,
+        lineage_limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Latency-bounded recent-conversation browse (``session_search()``): preselect a small candidate set
         from the indexed durable activity timestamp (fallback ``started_at``), resolve only those across
@@ -1346,12 +1346,12 @@ class SessionSessionsMixin:
         return s
 
     def list_sessions_rich(
-        self, source: str = None, sources: list[str] = None, exclude_sources: list[str] = None,
-        cwd_prefix: str = None, limit: int = 20, offset: int = 0, include_children: bool = False,
+        self, source: str | None = None, sources: list[str] | None = None, exclude_sources: list[str] | None = None,
+        cwd_prefix: str | None = None, limit: int = 20, offset: int = 0, include_children: bool = False,
         min_message_count: int = 0, project_compression_tips: bool = True,
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
-        id_query: str = None, search_query: str = None, compact_rows: bool = False,
-        include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
+        include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
@@ -1547,8 +1547,8 @@ class SessionSessionsMixin:
         return list(reversed(chain)) or [session_id]
 
     def search_sessions(
-        self, source: Union[str, Sequence[str], None] = None, limit: int = 20, offset: int = 0,
-        workspace_key: str = None,
+        self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
+        workspace_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
@@ -1572,9 +1572,9 @@ class SessionSessionsMixin:
         )]
 
     def session_count(
-        self, source: str = None, sources: list[str] = None, cwd_prefix: str = None,
+        self, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
-        exclude_children: bool = False, exclude_sources: list[str] = None, include_subagents: bool = False,
+        exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
@@ -1901,7 +1901,7 @@ class SessionSessionsMixin:
         return count
 
     def archive_sessions(
-        self, older_than_days: Optional[float] = None, source: str = None, **filters,
+        self, older_than_days: Optional[float] = None, source: str | None = None, **filters,
     ) -> int:
         """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
         flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an

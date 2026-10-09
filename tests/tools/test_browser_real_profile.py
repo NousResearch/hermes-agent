@@ -315,7 +315,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
-            cdp, err = bt_real_profile._real_profile_cdp()
+            cdp, _err = bt_real_profile._real_profile_cdp()
         assert closed["n"] == 1  # stale wrong-dir session was closed
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
@@ -731,7 +731,7 @@ class TestReviewBugFixes:
         src = self._multi_profile(tmp_path / "real")
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
-        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        _dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # The copy's Default must carry PROFILE 6's session, not Default's.
         got = _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies")
@@ -753,7 +753,7 @@ class TestReviewBugFixes:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         bc.snapshot_real_profile("chrome", src=str(src))          # fresh
         _auth_db((src / "Profile 6" / "Cookies"), "PROFILE6-REFRESHED")
-        dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
+        _dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
         assert err is None
         assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "PROFILE6-REFRESHED"
 
@@ -820,7 +820,7 @@ class TestReviewRound3:
         # Simulate a torn first copy: Default exists but NO done marker.
         os.makedirs(os.path.join(dst, "Default"))
         open(os.path.join(dst, "Default", "Cookies"), "w").write("HALF-COPY-GARBAGE")
-        d, err = bc.snapshot_real_profile("chrome", src=str(src))
+        _d, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # Rebuilt from the active profile, not treated as populated.
         assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "PROFILE6-SESSION"
@@ -835,7 +835,7 @@ class TestReviewRound3:
         _auth_db((src / "Profile 3" / "Cookies"), "PROFILE3-SHOULD-NOT-COPY")
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
-        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        _dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         copy = home / "browser-profile" / "chrome"
         # Active profile (Profile 6) landed in Default; other profiles absent.
@@ -1011,7 +1011,7 @@ class TestWindowsLockedProfileCopy:
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         try:
-            dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+            _dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         finally:
             con.rollback(); con.close()
         assert err is None

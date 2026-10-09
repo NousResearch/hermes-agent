@@ -43,7 +43,7 @@ os.makedirs(hermes_home)
 os.makedirs(workspace)
 isolate_host(tmp_root, hermes_home)
 with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
-    f.write("model:\n  provider: openrouter\n  model: %s\n" % MODEL)
+    f.write(f"model:\n  provider: openrouter\n  model: {MODEL}\n")
 
 os.environ["HERMES_HOME"] = hermes_home
 os.environ["TERMINAL_CWD"] = workspace
@@ -157,8 +157,8 @@ def drive_preview_cb(payload):
     if action in ("snapshot", "read", "links"):
         return json.dumps({"success": True, "title": PREVIEW_TITLE,
                            "url": "https://example.com/docs/",
-                           "text": ("Page: %s\nLinks: [Docs]->/docs/ [ref=e3]\n"
-                                    "Search box: input#docs-search [ref=e12]") % PREVIEW_TITLE})
+                           "text": (f"Page: {PREVIEW_TITLE}\nLinks: [Docs]->/docs/ [ref=e3]\n"
+                                    "Search box: input#docs-search [ref=e12]")})
     return json.dumps({"success": True, "action": action, "title": PREVIEW_TITLE})
 
 def read_window_below_cb(**kw):
@@ -192,8 +192,8 @@ def computer_use_stub(args, **kw):
         f.write(b"\x89PNG\r\n\x1a\nstub")
     return json.dumps({
         "success": True, "action": action, "screenshot": shot,
-        "analysis": ("Focused window: %s. It shows a note titled 'Shadow feeding "
-                     "schedule' with a table of meal times. No error dialogs visible." % FOCUSED),
+        "analysis": (f"Focused window: {FOCUSED}. It shows a note titled 'Shadow feeding "
+                     "schedule' with a table of meal times. No error dialogs visible."),
     })
 
 def image_generate_stub(args, **kw):
@@ -232,7 +232,7 @@ agent = AIAgent(
 )
 
 PREAMBLE = ("You are running inside the Hermes desktop app on the user's machine. "
-            "Your working directory (the workspace) is: %s\n\nTask: " % workspace)
+            f"Your working directory (the workspace) is: {workspace}\n\nTask: ")
 
 t0 = time.time()
 error = None
@@ -331,14 +331,14 @@ ctx = {
     "todo_dump": todo_dump,
 }
 
-score, notes = 0.0, ["run errored: %s" % error] if error else (0.0, [])
+score, notes = 0.0, [f"run errored: {error}"] if error else (0.0, [])
 if not error:
     try:
         score, notes = TASK["grade"](ctx)
     except Exception as ge:
         score, notes = 0.0, [f"grader crashed: {ge}"]
 else:
-    score, notes = 0.0, ["run errored: %s" % error]
+    score, notes = 0.0, [f"run errored: {error}"]
 
 record = {
     "arm": ARM, "model": MODEL, "task": TASK_ID, "rep": REP,

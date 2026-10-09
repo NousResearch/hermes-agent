@@ -717,16 +717,21 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    if _activate_key(key, enable=True, console=console):
+    changed = _activate_key(key, enable=True, console=console)
+    if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+    if source != "bundled":
+        _enable_consent(console, key, allow_tool_override)
+    if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle
+        _toggle_plugin_toolset(key, enable=True)
 
-    # Built-in tool override is a privileged grant; bundled plugins are trusted.
-    if source == "bundled":
-        return
+
+def _enable_consent(console, key: str, allow_tool_override: Optional[bool]) -> None:
+    """Capability consent and the legacy tool-override grant for a non-bundled plugin's enable."""
     # When the manifest declares capabilities the consent screen is the canonical grant path
     # (it covers tools.override too); the legacy prompt then only runs on an explicit flag.
     # See #64228.
@@ -745,9 +750,11 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
+    toolset_key = _saved_list_toolset_key(key)  # resolve while the plugin still loads
     if not _activate_key(key, enable=False, console=console):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
+    _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -878,7 +885,7 @@ def _category_active_names() -> set:
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",
-                   dir_path=None, active: "frozenset | set" = frozenset()) -> str:
+                   dir_path=None, active: frozenset | set = frozenset()) -> str:
     """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
     disable wins, then the allow-list, then the activations that need no list entry — bundled
     backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers
@@ -939,12 +946,24 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
-def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
+def _saved_list_toolset_key(name: str) -> Optional[str]:
+    """The plugin's toolset key, or None without loading any plugin when no platform has a SAVED
+    ``platform_toolsets`` list (the only lists :func:`_toggle_plugin_toolset` edits)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    saved = load_config().get("platform_toolsets")
+    if not isinstance(saved, dict) or all(parse_platform_toolsets_value(v) is None for v in saved.values()):
+        return None
+    return _get_plugin_toolset_key(name)
+
+
+def _toggle_plugin_toolset(name: str, *, enable: bool, toolset_key: Optional[str] = None) -> None:
     """Add/remove a plugin's toolset in every SAVED ``platform_toolsets`` list (no-op when the plugin
     provides no tools). Platforms with no saved list are left alone: a plugin toolset is already on
     there by default, and seeding ``[<plugin_ts>]`` would replace the core composite and strip every
-    built-in tool."""
-    toolset_key = _get_plugin_toolset_key(name)
+    built-in tool. The key resolves only while the plugin is loaded, so enable calls this after the
+    plugin loads and disable resolves *toolset_key* before the disable is written."""
+    toolset_key = toolset_key or _saved_list_toolset_key(name)
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
@@ -974,6 +993,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
     from hermes_cli.plugins_admission import AdmissionRefused
 
+    toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
     except AdmissionRefused as exc:
@@ -984,13 +1004,17 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
             "unchanged": True,
             "restart_required": False,
         }
-    if changed:
-        _toggle_plugin_toolset(key, enable=enabled)
     if changed and enabled:
         # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
         # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now
-        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        result = {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        # Only now is the plugin loaded here, so its toolset key resolves: a backend that scanned
+        # while the plugin was off held a placeholder and the toolset was never re-added.
+        _toggle_plugin_toolset(key, enable=True)
+        return result
+    if changed:
+        _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
     # handlers until restart and every UI says so — #71595/#54941.
     return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}

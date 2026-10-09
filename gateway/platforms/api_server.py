@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -245,7 +245,7 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
     """``asyncio.Queue`` a non-loop thread (run_conversation's executor) can push into via
     ``put_threadsafe``; the SSE consumer's ``await get()`` is woken by ``call_soon_threadsafe``."""
 
-    def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop = None) -> None:
+    def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         (loop or self._loop_ref).call_soon_threadsafe(self.put_nowait, item)
 
     def __init__(self, *args, **kwargs):
@@ -256,7 +256,7 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
 
 
 def _sse_frame(
-    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+    data: Any, *, event: str | None = None, ensure_ascii: bool = True, id: Optional[int] = None
 ) -> bytes:
     """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
     every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
@@ -558,7 +558,7 @@ def _content_has_visible_payload(content: Any) -> bool:
     return False
 
 
-def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Response":
+def _multimodal_validation_error(exc: ValueError, *, param: str) -> web.Response:
     """Translate a ``_normalize_multimodal_content`` ValueError into a 400 response."""
     raw = str(exc)
     code, _, message = raw.partition(":")
@@ -633,7 +633,7 @@ def _clear_turn_process_ownership(agent: Any) -> None:
     agent._gateway_turn_process_epoch = None
 
 
-def _session_chat_user_message(body: dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
+def _session_chat_user_message(body: dict[str, Any], *, param: str = "message") -> tuple[Any, Optional[web.Response]]:
     """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
     user_message = body.get("message") or body.get("input")
     if not _content_has_visible_payload(user_message):
@@ -696,7 +696,7 @@ class ResponseStore:
     """SQLite-backed LRU store for Responses API state (full conversation history per response
     for ``previous_response_id`` chaining). Persists across restarts; in-memory fallback."""
 
-    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
+    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str | None = None):
         self._max_size = max_size
         if db_path is None:
             db_path = ":memory:"
@@ -884,7 +884,7 @@ def _resolve_media_to_data_urls(text: str) -> str:
             return None
         return f"![image](data:{_MEDIA_MIME[suffix]};base64,{b64})"
 
-    def _repl(m: "re.Match[str]") -> str:
+    def _repl(m: re.Match[str]) -> str:
         return _to_data_url(m.group("path")) or m.group(0)
     try:
         # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
@@ -903,7 +903,7 @@ def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     return redacted[:limit] if limit is not None else redacted
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> dict[str, Any]:
+def _openai_error(message: str, err_type: str = "invalid_request_error", param: str | None = None, code: str | None = None) -> dict[str, Any]:
     """OpenAI-style error envelope."""
     return {"error": {
         "message": _redact_api_error_text(message), "type": err_type, "param": param, "code": code}}
@@ -911,13 +911,13 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
 
 def _error_response(
     message: str, status: int, *, err_type: str = "invalid_request_error",
-    param: str = None, code: str = None, headers: Optional[dict[str, str]] = None,
-) -> "web.Response":
+    param: str | None = None, code: str | None = None, headers: Optional[dict[str, str]] = None,
+) -> web.Response:
     """``web.json_response(_openai_error(...), status=...)`` in one call."""
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
 
 
-def _invalid_request(message: str) -> "web.Response":
+def _invalid_request(message: str) -> web.Response:
     """400 with the bare ``{message, type}`` envelope the OpenAI-compatible validators use."""
     return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
@@ -988,7 +988,7 @@ class _IdempotencyCache:
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
         self._store = OrderedDict()
-        self._inflight: dict[tuple[str, str], "asyncio.Task[Any]"] = {}
+        self._inflight: dict[tuple[str, str], asyncio.Task[Any]] = {}
         self._ttl = ttl_seconds
         self._max = max_items
 
@@ -1016,7 +1016,7 @@ class _IdempotencyCache:
             task = asyncio.create_task(_compute_and_store())
             self._inflight[inflight_key] = task
 
-            def _clear_inflight(done_task: "asyncio.Task[Any]") -> None:
+            def _clear_inflight(done_task: asyncio.Task[Any]) -> None:
                 if self._inflight.get(inflight_key) is done_task:
                     self._inflight.pop(inflight_key, None)
             task.add_done_callback(_clear_inflight)
@@ -1124,7 +1124,7 @@ class _SessionEventQueue:
 
     def __init__(self, session_id: str, run_id: str):
         self.loop = asyncio.get_running_loop()
-        self.queue: "asyncio.Queue[Optional[tuple[str, dict[str, Any]]]]" = asyncio.Queue()
+        self.queue: asyncio.Queue[Optional[tuple[str, dict[str, Any]]]] = asyncio.Queue()
         self.session_id = session_id
         self.run_id = run_id
         self.seq = 0
@@ -1153,7 +1153,7 @@ class _SessionEventQueue:
 def _room_grant_delegate(name: str):
     """Adapter method forwarding to ``api_server_room_grants.<name>`` (looked up at call time so
     test patches on that module take effect) with this module's error/profile bindings."""
-    async def _handler(self, request: "web.Request") -> "web.Response":
+    async def _handler(self, request: web.Request) -> web.Response:
         return await getattr(_room_grants, name)(
             self, request, _openai_error=_openai_error, _api_request_profile=_api_request_profile)
     _handler.__name__ = name
@@ -1163,7 +1163,7 @@ def _room_grant_delegate(name: str):
 def _run_route_delegate(name: str):
     """Adapter method forwarding to ``api_server_runs.<name>`` (call-time lookup) with this
     module's namespace as ``_api_server``."""
-    async def _handler(self, request: "web.Request") -> "web.StreamResponse":
+    async def _handler(self, request: web.Request) -> web.StreamResponse:
         return await getattr(_api_runs, name)(self, request, _api_server=sys.modules[__name__])
     _handler.__name__ = name
     return _handler
@@ -1214,9 +1214,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # clients that choke on named events (#12020). Default on.
         self._tool_progress_events: bool = _coerce_request_bool(
             extra.get("tool_progress_events"), default=True)
-        self._app: Optional["web.Application"] = None
-        self._runner: Optional["web.AppRunner"] = None
-        self._site: Optional["web.TCPSite"] = None
+        self._app: Optional[web.Application] = None
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
         from hermes_constants import get_hermes_home
         self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
         self._response_store_home = str(get_hermes_home())
@@ -1310,7 +1310,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             return False
 
-    def _draining_response(self) -> Optional["web.Response"]:
+    def _draining_response(self) -> Optional[web.Response]:
         """Return a retryable response while the gateway drains existing work."""
         if not self._gateway_is_draining():
             return None
@@ -1380,7 +1380,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _iso_timestamp(timestamp: Optional[float]) -> Optional[str]:
         if timestamp is None:
             return None
-        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        return datetime.fromtimestamp(timestamp, UTC).isoformat()
 
     def _reset_metrics_if_needed(self) -> None:
         current_day = self._metrics_day_key()
@@ -1478,7 +1478,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return {**_CORS_HEADERS, "Access-Control-Allow-Origin": origin, "Vary": "Origin",
                 "Access-Control-Max-Age": "600"}
 
-    def _sse_headers(self, request: "web.Request", extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+    def _sse_headers(self, request: web.Request, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
         """Headers for an SSE StreamResponse prepared inside a handler: the CORS middleware only
         touches the response after the handler returns, by which point ``prepare()`` has already
         flushed the head, so CORS must be resolved up front (#72892, #6358)."""
@@ -1500,7 +1500,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         text = str(value).replace("\r", " ").replace("\n", " ").strip()
         return text[:max_len]
 
-    def _request_audit_context(self, request: "web.Request") -> dict[str, str]:
+    def _request_audit_context(self, request: web.Request) -> dict[str, str]:
         """Return non-secret source metadata for security/audit warnings."""
         peer_ip = ""
         with suppress(Exception):
@@ -1516,12 +1516,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "path": self._clean_log_value(request.path_qs, max_len=500),
             "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300)}
 
-    def _request_audit_log_suffix(self, request: "web.Request") -> str:
+    def _request_audit_log_suffix(self, request: web.Request) -> str:
         ctx = self._request_audit_context(request)
         fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
         return " ".join(fields) if fields else "source='unknown'"
 
-    def _cron_origin_from_request(self, request: "web.Request") -> dict[str, str]:
+    def _cron_origin_from_request(self, request: web.Request) -> dict[str, str]:
         """Persist safe API source metadata on cron jobs created over HTTP."""
         ctx = self._request_audit_context(request)
         origin = {"platform": "api_server", "chat_id": "api"}
@@ -1550,13 +1550,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
 
     @staticmethod
-    def _auth_failed_response() -> "web.Response":
+    def _auth_failed_response() -> web.Response:
         return web.json_response(
             {"error": {"message": "Invalid gateway API key (API_SERVER_KEY)", "type": "gateway_auth_error",
                        "code": "gateway_auth_failed"}},
             status=401)
 
-    def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
+    def _check_auth(self, request: web.Request) -> Optional[web.Response]:
         """Validate the Bearer token; None when OK, else a 401. The no-key branch (connect()
         refuses to start without API_SERVER_KEY) exists for tests/manual wiring on the default
         listener only; named profiles fail closed rather than inherit the owner's key."""
@@ -1586,7 +1586,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return normalized if re.fullmatch(r"[a-z0-9_]+", normalized) else ""
 
     def _get_platform_callback_adapter(
-        self, request: "web.Request", platform_name: str) -> Optional[Any]:
+        self, request: web.Request, platform_name: str) -> Optional[Any]:
         injected = request.app.get("platform_event_adapters")
         adapter = injected.get(platform_name) if isinstance(injected, dict) else None
         if adapter is None:
@@ -1605,7 +1605,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         return runner._authorization_adapter(platform, _api_request_profile.get())
 
-    async def _handle_platform_event_callback(self, request: "web.Request") -> "web.Response":
+    async def _handle_platform_event_callback(self, request: web.Request) -> web.Response:
         platform_name = self._normalize_callback_platform(request.match_info.get("platform", ""))
         if not platform_name:
             return _error_response("Invalid platform name", 400, code="invalid_platform")
@@ -1644,7 +1644,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
-    def _resolve_request_profile(self, request: "web.Request"):
+    def _resolve_request_profile(self, request: web.Request):
         """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
         off and the prefix names this gateway's own profile), the served profile name, or
         ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
@@ -1682,7 +1682,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
-    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+    async def _handle_profile_ingress(self, request: web.Request) -> web.StreamResponse:
         """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
         prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
         from gateway.platforms.shared_ingress import dispatch_profile_ingress
@@ -1694,7 +1694,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Reject unknown /p/<profile>/ prefixes and scope the request home."""
 
         @web.middleware
-        async def profile_prefix_middleware(request: "web.Request", handler):
+        async def profile_prefix_middleware(request: web.Request, handler):
             profile = self._resolve_request_profile(request)
             if profile is _PROFILE_REJECTED:
                 return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
@@ -1823,7 +1823,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "[%s] declared-conversation bind failed for %s", self.name, sid, exc_info=True)
 
     def _parse_session_key_header(
-        self, request: "web.Request") -> tuple[Optional[str], Optional["web.Response"]]:
+        self, request: web.Request) -> tuple[Optional[str], Optional[web.Response]]:
         """Validate ``X-Hermes-Session-Key`` (per-channel memory scope) -> ``(key_or_None, None)``
         or ``(None, error)``. Requires API-key auth so a client can't guess another scope."""
         raw = request.headers.get("X-Hermes-Session-Key", "").strip()
@@ -1845,7 +1845,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- Responses state ----------------------------------------------------------------
 
-    def _current_response_store(self) -> "ResponseStore":
+    def _current_response_store(self) -> ResponseStore:
         """Responses state of the routed profile's home. Conversation names are client-chosen, so one
         shared store let any profile's key read, chain onto and overwrite another's (#84253)."""
         from hermes_constants import get_hermes_home
@@ -2049,7 +2049,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return (cls._clean_runtime_id(requested.get("model")),
                 cls._clean_runtime_id(requested.get("provider"), max_len=80))
 
-    def _runtime_lock_error(self, runtime_request: dict[str, Any]) -> Optional["web.Response"]:
+    def _runtime_lock_error(self, runtime_request: dict[str, Any]) -> Optional[web.Response]:
         if not runtime_request.get("require_model_lock"):
             return None
         model, provider = self._requested_ids(runtime_request.get("requested"))
@@ -2422,12 +2422,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- HTTP handlers ----------------------------------------------------------------
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent", "version": _hermes_version()})
 
     @_require_auth
-    async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
+    async def _handle_health_detailed(self, request: web.Request) -> web.Response:
         """GET /health/detailed — gateway state, platforms, PID for dashboard probing (Bearer auth)."""
         from gateway.status import (
             derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
@@ -2472,7 +2472,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "updated_at": normalize_updated_at(runtime.get("updated_at")), "pid": os.getpid()})
 
     @_require_auth
-    async def _handle_models(self, request: "web.Request") -> "web.Response":
+    async def _handle_models(self, request: web.Request) -> web.Response:
         """GET /v1/models — hermes-agent plus configured model_routes aliases (alias + resolved
         model only, never credentials). Under /p/<profile>/ the primary id follows that profile."""
         now = int(time.time())
@@ -2489,7 +2489,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "list", "data": models})
 
     @_require_auth
-    async def _handle_model_options(self, request: "web.Request") -> "web.Response":
+    async def _handle_model_options(self, request: web.Request) -> web.Response:
         """GET /api/model/options — the dashboard/TUI model-picker inventory, so external clients
         can sync to the configured provider catalog instead of scraping /v1/models."""
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
@@ -2509,7 +2509,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Failed to list model options.", 500, code="model_options_failed")
 
     @_require_auth
-    async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
+    async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
@@ -2551,7 +2551,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- Browser-extension control (authenticated local/VPS API) ----------------------
 
-    async def _handle_browser_control_register(self, request: "web.Request") -> "web.Response":
+    async def _handle_browser_control_register(self, request: web.Request) -> web.Response:
         """POST /v1/browser-control/register — mint a short-lived single-use controller ticket.
 
         Identity is NOT taken from the body: the principal is a server-derived digest of the
@@ -2630,7 +2630,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "capabilities": sorted(scope.capabilities)}},
             status=201)
 
-    async def _handle_browser_control_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+    async def _handle_browser_control_ws(self, request: web.Request) -> web.WebSocketResponse:
         """GET /v1/browser-control/ws — controller WebSocket (one-shot ticket).
 
         The ticket rides in ``Sec-WebSocket-Protocol`` (never the query string: targets land in
@@ -2686,7 +2686,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return ws
 
     def _handle_browser_control_frame(
-        self, scope: "ControllerScope", frame: dict, *, owner: Any = None) -> Optional[dict]:
+        self, scope: ControllerScope, frame: dict, *, owner: Any = None) -> Optional[dict]:
         """Apply one controller->broker frame with exact-scope checks."""
         method = frame.get("method")
         params = frame.get("params")
@@ -2729,7 +2729,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         digest = hashlib.sha256(f"{profile}\x00{key}".encode()).hexdigest()
         return f"principal:{profile}:{digest[:32]}"
 
-    def _browser_control_transport_family(self, request: "web.Request") -> str:
+    def _browser_control_transport_family(self, request: web.Request) -> str:
         """``local-api`` for a loopback peer, else ``remote-api``; the broker treats the family as
         part of exact identity, so a remote controller never satisfies a local-only dispatch."""
         host = None
@@ -2830,7 +2830,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if limiter is not None:
             self._browser_control_artifact_limiter = limiter
 
-    def _artifact_route_prelude(self, request: "web.Request", action: str, *, check_enabled: bool = True) -> tuple:
+    def _artifact_route_prelude(self, request: web.Request, action: str, *, check_enabled: bool = True) -> tuple:
         """Shared upload/download gate (feature flag -> API key -> Bearer -> per-principal rate
         limit) -> ``((profile, principal), None)`` or ``(None, error_response)``."""
         if check_enabled and not self._browser_control_enabled():
@@ -2851,7 +2851,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 code="rate_limit_exceeded", headers={"Retry-After": "1"})
         return (profile, principal), None
 
-    async def _handle_artifact_upload(self, request: "web.Request") -> "web.Response":
+    async def _handle_artifact_upload(self, request: web.Request) -> web.Response:
         """POST /v1/artifacts/upload — one-shot bounded raw upload; ``Content-Type`` must be an
         allowed MIME type, ``X-Artifact-Filename`` is display-only. Returns a provenance receipt
         (never a filesystem path). Ladder: 404 disabled, 403 no API key, 401 bad Bearer, 429
@@ -2895,7 +2895,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response(
             receipt.to_dict(download_path=f"/v1/artifacts/download/{receipt.artifact_id}"), status=201)
 
-    async def _handle_artifact_download(self, request: "web.Request") -> "web.Response":
+    async def _handle_artifact_download(self, request: web.Request) -> web.Response:
         """GET /v1/artifacts/download/{artifact_id} — one-shot download (a second one 404s) with
         ``X-Artifact-Sha256``. Ladder: 404 disabled/unknown, 403 no API key, 401 bad Bearer, 429
         rate limited, 410 expired, 400 invalid id/scope mismatch, 200."""
@@ -2924,7 +2924,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                      "Content-Disposition": f'attachment; filename="{receipt.filename}"'})
 
     @_require_auth
-    async def _handle_skills(self, request: "web.Request") -> "web.Response":
+    async def _handle_skills(self, request: web.Request) -> web.Response:
         """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
         category), the same set ``/skills list`` shows."""
         try:
@@ -2940,7 +2940,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "list", "data": skills})
 
     @_require_auth
-    async def _handle_toolsets(self, request: "web.Request") -> "web.Response":
+    async def _handle_toolsets(self, request: web.Request) -> web.Response:
         """GET /v1/toolsets — each toolset the api_server agent exposes: enabled/configured state
         plus the concrete tool names it expands to."""
         try:
@@ -2979,7 +2979,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return default if parsed < 0 else min(parsed, maximum)
 
     @staticmethod
-    def _session_db_unavailable() -> "web.Response":
+    def _session_db_unavailable() -> web.Response:
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
     @staticmethod
@@ -3026,7 +3026,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "display_kind")
         return {key: message.get(key) for key in safe_keys if key in message}
 
-    async def _read_json_body(self, request: "web.Request") -> tuple[dict[str, Any], Optional["web.Response"]]:
+    async def _read_json_body(self, request: web.Request) -> tuple[dict[str, Any], Optional[web.Response]]:
         try:
             body = await request.json()
         except Exception:
@@ -3035,7 +3035,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return {}, _error_response("Request body must be a JSON object", 400)
         return body, None
 
-    async def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[dict[str, Any]], Optional["web.Response"]]:
+    async def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[dict[str, Any]], Optional[web.Response]]:
         db = await self._ensure_session_db_async()
         if db is None:
             return None, self._session_db_unavailable()
@@ -3063,7 +3063,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             notification_category=notification_category, _api_server=sys.modules[__name__])
 
     @_require_auth
-    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+    async def _handle_list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — list persisted Hermes sessions."""
         db = await self._ensure_session_db_async()
         if db is None:
@@ -3118,7 +3118,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "limit": limit, "offset": offset, "has_more": windowed >= limit})
 
     @_require_auth
-    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+    async def _handle_create_session(self, request: web.Request) -> web.Response:
         """POST /api/sessions -- create an empty Hermes session row. Existence check, insert and
         title handling run as ONE off-loop write so concurrent same-id creates can't both 201."""
         body, err = await self._read_json_body(request)
@@ -3186,7 +3186,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     @_require_auth
-    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+    async def _handle_get_session(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}."""
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
@@ -3194,7 +3194,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth
-    async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
+    async def _handle_patch_session(self, request: web.Request) -> web.Response:
         """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
@@ -3234,10 +3234,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth
-    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+    async def _handle_delete_session(self, request: web.Request) -> web.Response:
         """DELETE /api/sessions/{session_id}."""
         session_id = request.match_info["session_id"]
-        session, err = await self._get_existing_session_or_404(session_id)
+        _session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = await self._ensure_session_db_async()
@@ -3267,7 +3267,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
-    async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
+    async def _handle_session_messages(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}/messages."""
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
@@ -3303,7 +3303,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "returned": len(messages)}})
 
     @_require_auth
-    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+    async def _handle_fork_session(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         source_id = request.match_info["session_id"]
         source, err = await self._get_existing_session_or_404(source_id)
@@ -3344,7 +3344,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
-    async def _prepare_session_chat(self, request: "web.Request") -> tuple:
+    async def _prepare_session_chat(self, request: web.Request) -> tuple:
         """Shared prelude for /api/sessions/{id}/chat[/stream]: header/body validation, then
         runtime selection — a Browser model lock (body ``require_model_lock`` or a confirmed
         persisted lock) wins; else the session-persisted model routes via model_routes when an
@@ -3481,7 +3481,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         record = await asyncio.to_thread(_admit)
         return None if record is None else (home, record)
 
-    async def _answer_through_live_bot_chat(self, ctx: dict[str, Any]) -> Optional["web.Response"]:
+    async def _answer_through_live_bot_chat(self, ctx: dict[str, Any]) -> Optional[web.Response]:
         """Hand a turn aimed at a canonical Bot Chat that a Desktop holds live to that owner.
 
         This is the ``hermes peer dm`` transport. Running the turn here would make this process a
@@ -3528,7 +3528,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await keepalive()
         return record
 
-    async def _stream_through_live_bot_chat(self, request: "web.Request", ctx: dict[str, Any]) -> Optional["web.StreamResponse"]:
+    async def _stream_through_live_bot_chat(self, request: web.Request, ctx: dict[str, Any]) -> Optional[web.StreamResponse]:
         """``_answer_through_live_bot_chat`` for the SSE sibling route: the owner's settled receipt is
         the run's single ``assistant.completed`` event; a receipt still open at the budget is a
         ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
@@ -3567,7 +3567,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return response
 
     @_admit_api_agent_request
-    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+    async def _handle_session_chat(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
         one bounded re-run of a transient failure; ``hermes peer dm`` is the client)."""
         from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
@@ -3612,7 +3612,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             headers=headers)
 
     @_admit_api_agent_request
-    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+    async def _handle_session_chat_stream(self, request: web.Request) -> web.StreamResponse:
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -3644,7 +3644,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
-        def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+        def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
@@ -3720,7 +3720,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await response.write(b": keepalive\n\n")
                     continue
                 if item is None:
@@ -3740,7 +3740,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
 
-    def _register_session_stream_approval(self, run_id: str, events: "_SessionEventQueue", message_id: str):
+    def _register_session_stream_approval(self, run_id: str, events: _SessionEventQueue, message_id: str):
         """Route a session-stream turn's dangerous-command approvals to its SSE queue and to
         ``POST /v1/runs/{run_id}/approval`` (#58856). Keyed by the run id (never the shared
         session key) so concurrent turns on one session can't cross-resolve."""
@@ -3753,7 +3753,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return _approval_notify
 
     async def _drain_session_stream_task_on_disconnect(
-        self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool
+        self, run_id: str, task: asyncio.Task, *, interrupt_message: str, shield_wait: bool
     ) -> None:
         """Preserve live run control refs until the executor-backed turn actually exits."""
         agent = self._active_run_agents.get(run_id)
@@ -3770,7 +3770,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await (asyncio.shield(task) if shield_wait else task)
 
     @_require_auth
-    async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
+    async def _handle_session_model_lock(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/model — backend-ack a Browser model lock."""
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
@@ -3809,7 +3809,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _MAX_PROMPT_LENGTH = 5000
 
     def _cron_request_guard(
-        self, request: "web.Request", *, need_job_id: bool = False, check_draining: bool = False,
+        self, request: web.Request, *, need_job_id: bool = False, check_draining: bool = False,
     ) -> tuple:
         """Shared /api/jobs prelude: auth → (drain) → cron available → (job_id). Returns (job_id, err)."""
         auth_err = self._check_auth(request)
@@ -3831,10 +3831,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return job_id, None
 
     @staticmethod
-    def _cron_error_response(exc: BaseException) -> "web.Response":
+    def _cron_error_response(exc: BaseException) -> web.Response:
         return web.json_response({"error": _redact_api_error_text(exc)}, status=500)
 
-    def _validate_cron_prompt(self, prompt: str) -> Optional["web.Response"]:
+    def _validate_cron_prompt(self, prompt: str) -> Optional[web.Response]:
         """Length cap + injection scan shared by create/update/run."""
         if len(prompt) > self._MAX_PROMPT_LENGTH:
             return web.json_response({"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400)
@@ -3844,7 +3844,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return web.json_response({"error": scan_error}, status=400)
         return None
 
-    def _job_response(self, fn, job_id: str, *, notify: bool) -> "web.Response":
+    def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
         """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
         try:
             job = fn(job_id)
@@ -3856,11 +3856,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             return self._cron_error_response(e)
 
-    async def _job_lookup_or_mutate(self, request: "web.Request", fn, *, notify: bool) -> "web.Response":
+    async def _job_lookup_or_mutate(self, request: web.Request, fn, *, notify: bool) -> web.Response:
         job_id, err = self._cron_request_guard(request, need_job_id=True)
         return err if err else self._job_response(fn, job_id, notify=notify)
 
-    async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
+    async def _handle_list_jobs(self, request: web.Request) -> web.Response:
         """GET /api/jobs — list all cron jobs."""
         _, err = self._cron_request_guard(request)
         if err:
@@ -3871,7 +3871,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             return self._cron_error_response(e)
 
-    async def _handle_create_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_create_job(self, request: web.Request) -> web.Response:
         """POST /api/jobs — create a new cron job."""
         _, err = self._cron_request_guard(request)
         if err:
@@ -3913,11 +3913,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             return self._cron_error_response(e)
 
-    async def _handle_get_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_get_job(self, request: web.Request) -> web.Response:
         """GET /api/jobs/{job_id} — get a single cron job."""
         return await self._job_lookup_or_mutate(request, _cron_get, notify=False)
 
-    async def _handle_update_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_update_job(self, request: web.Request) -> web.Response:
         """PATCH /api/jobs/{job_id} — update a cron job."""
         job_id, err = self._cron_request_guard(request, need_job_id=True)
         if err:
@@ -3938,7 +3938,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return self._cron_error_response(e)
         return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
 
-    async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_delete_job(self, request: web.Request) -> web.Response:
         """DELETE /api/jobs/{job_id} — delete a cron job."""
         job_id, err = self._cron_request_guard(request, need_job_id=True)
         if err:
@@ -3951,15 +3951,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as e:
             return self._cron_error_response(e)
 
-    async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_pause_job(self, request: web.Request) -> web.Response:
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
         return await self._job_lookup_or_mutate(request, _cron_pause, notify=True)
 
-    async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_resume_job(self, request: web.Request) -> web.Response:
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
         return await self._job_lookup_or_mutate(request, _cron_resume, notify=True)
 
-    async def _handle_run_job(self, request: "web.Request") -> "web.Response":
+    async def _handle_run_job(self, request: web.Request) -> web.Response:
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
         job_id, err = self._cron_request_guard(request, need_job_id=True, check_draining=True)
         if err:
@@ -3980,7 +3980,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return self._job_response(
             lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
 
-    async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
+    async def _handle_cron_fire(self, request: web.Request) -> web.Response:
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a
         NAS-minted JWT via the pluggable verifier, NOT API_SERVER_KEY. 202 + background run so
         a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
@@ -4038,7 +4038,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if refusal is not None:
                 return refusal
 
-            def _detach_fire(fire_fn, *fire_args) -> "web.Response":
+            def _detach_fire(fire_fn, *fire_args) -> web.Response:
                 # The done callback owns the reservation once the task is detached.
                 task = asyncio.create_task(asyncio.to_thread(fire_fn, *fire_args, adapters=adapters, loop=loop))
                 reservation["detached"] = True
@@ -4077,7 +4077,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-    def _concurrency_limited_response(self) -> Optional["web.Response"]:
+    def _concurrency_limited_response(self) -> Optional[web.Response]:
         """429 when the concurrent-run cap is reached (0 disables), else None. Uses the same
         adapter-owned work count as shutdown draining (admitted requests included)."""
         limit = self._max_concurrent_runs
@@ -4361,29 +4361,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, Any]:
         return _api_runs._set_run_status(self, run_id, status, **fields)
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+    def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop):
         return _api_runs._make_run_event_callback(self, run_id, loop, _api_server=sys.modules[__name__])
 
-    def _run_idempotency_scope(self, request: "web.Request") -> str:
+    def _run_idempotency_scope(self, request: web.Request) -> str:
         return _api_runs._run_idempotency_scope(self, request, _api_server=sys.modules[__name__])
 
     @staticmethod
-    def _room_grant_token(request: "web.Request") -> str:
+    def _room_grant_token(request: web.Request) -> str:
         return _room_grants._room_grant_token(request)
 
     def _room_grant_secret(self) -> bytes:
         return _room_grants._room_grant_secret(self)
 
-    def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+    def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
         return _room_grants._room_grant_claims(self, request, permission=permission)
 
-    def _check_run_auth(self, request: "web.Request", *, permission: str) -> "web.Response | None":
+    def _check_run_auth(self, request: web.Request, *, permission: str) -> web.Response | None:
         return _api_runs._check_run_auth(self, request, permission=permission, _api_server=sys.modules[__name__])
 
     async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
         return await _room_dispatch._ensure_hosted_member_session(self, dispatch)
 
-    async def _normalize_room_dispatch(self, request: "web.Request", body: Any) -> tuple[Any, "web.Response | None"]:
+    async def _normalize_room_dispatch(self, request: web.Request, body: Any) -> tuple[Any, web.Response | None]:
         return await _room_dispatch._normalize_room_dispatch(self, request, body, _api_server=sys.modules[__name__])
 
     _handle_room_member_invitation = _room_grant_delegate("_handle_room_member_invitation")
@@ -4391,14 +4391,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_room_member_grant_refresh = _room_grant_delegate("_handle_room_member_grant_refresh")
     _handle_room_member_grant_revoke = _room_grant_delegate("_handle_room_member_grant_revoke")
 
-    def _durable_run_status(self, request: "web.Request", run_id: str) -> dict[str, Any] | None:
+    def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:
         return _api_runs._durable_run_status(self, request, run_id)
 
     @_admit_api_agent_request
-    async def _handle_runs(self, request: "web.Request") -> "web.Response":
+    async def _handle_runs(self, request: web.Request) -> web.Response:
         return await _api_runs._handle_runs(self, request, _api_server=sys.modules[__name__])
 
-    def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
+    def _request_owns_run(self, request: web.Request, run_id: str) -> bool:
         return _api_runs._request_owns_run(self, request, run_id)
 
     def _release_run_owner_if_forgotten(self, run_id: str) -> None:

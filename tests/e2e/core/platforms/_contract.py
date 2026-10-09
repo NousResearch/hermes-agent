@@ -249,7 +249,7 @@ def _split_seam(visible: list[Visible], aid: str) -> Optional[str]:
     """The seam, as the user reads it, where the answer's ending is cut mid-word across two
     consecutive messages (a continuation that resumed mid-word instead of at a word boundary)."""
     texts, end = [norm(v.text) for v in visible], foot(aid)
-    for a, b in zip(texts, texts[1:]):
+    for a, b in itertools.pairwise(texts):
         for i in range(1, len(end)):
             if a.endswith(end[:i]) and b.startswith(end[i:]):
                 return f"{a[-40:]!r} | {b[:40]!r}"

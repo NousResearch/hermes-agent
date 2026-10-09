@@ -175,7 +175,7 @@ def add_comment_xml(doc, runs, text, author, initials) -> str:
                                   encoding="UTF-8", standalone=True)
         part.__class__ = type("CommentsXmlPart", (Part,),
                               {"blob": property(lambda self: _blob(self))})
-    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     comment = etree.SubElement(root, q("comment"))
     comment.set(q("id"), cid)
     comment.set(q("author"), author)
@@ -257,7 +257,7 @@ def main() -> int:
         return 0
 
     if args.cmd == "add":
-        para, runs = find_anchor_runs(doc, args.target)
+        _para, runs = find_anchor_runs(doc, args.target)
         if not runs:
             print(json.dumps({"ok": False,
                               "error": f"target not found: {args.target}"}))

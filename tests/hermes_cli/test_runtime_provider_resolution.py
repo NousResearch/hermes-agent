@@ -2349,7 +2349,7 @@ def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monke
     monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: block if task == "background_review" else {})
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
 
-    aux_provider, aux_model, aux_base, aux_key, _ = aux._resolve_task_provider_model("background_review")
+    aux_provider, _aux_model, aux_base, aux_key, _ = aux._resolve_task_provider_model("background_review")
     runtime = rp.resolve_runtime_provider(requested=block["provider"], target_model=block["model"],
                                           explicit_api_key=block["api_key"], explicit_base_url=block["base_url"])
 

@@ -519,7 +519,7 @@ class GatewayNotificationsMixin:
             logger.debug("Skipping update notification watcher: no running event loop")
 
     @classmethod
-    def _update_paths(cls) -> "GatewayNotificationsMixin._UpdatePaths":
+    def _update_paths(cls) -> GatewayNotificationsMixin._UpdatePaths:
         from gateway.run import _hermes_home
         return cls._UpdatePaths(
             pending=_hermes_home / ".update_pending.json",
@@ -560,7 +560,7 @@ class GatewayNotificationsMixin:
         now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
         return (now - stamped).total_seconds()
 
-    def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
+    def _resolve_update_target(self, paths: _UpdatePaths) -> Optional[_UpdateTarget]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
             if not path.exists():
@@ -592,7 +592,7 @@ class GatewayNotificationsMixin:
             reply_to_message_id=data.get("message_id"), adapter=adapter,
         )
 
-    async def _watch_update_completion_only(self, paths: "_UpdatePaths", deadline: float, poll_interval: float) -> None:
+    async def _watch_update_completion_only(self, paths: _UpdatePaths, deadline: float, poll_interval: float) -> None:
         """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""
         logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
         # Poll until _send_update_notification delivers (it returns False while the platform reconnects).
@@ -606,7 +606,7 @@ class GatewayNotificationsMixin:
             await self._send_update_notification()
 
     @staticmethod
-    def _update_exit_code(paths: "_UpdatePaths") -> int:
+    def _update_exit_code(paths: _UpdatePaths) -> int:
         return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
 
     @staticmethod
@@ -620,7 +620,7 @@ class GatewayNotificationsMixin:
             return "", len(data)
         return data[offset:].decode("utf-8", errors="replace"), len(data)
 
-    async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
+    async def _send_update_output(self, target: _UpdateTarget, text: str) -> None:
         """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
         from tools.ansi_strip import strip_ansi
         clean = strip_ansi(text).strip()
@@ -631,7 +631,7 @@ class GatewayNotificationsMixin:
             with _log_suppressed(logging.DEBUG, "Update stream send failed: %s"):
                 await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
 
-    async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
+    async def _forward_update_prompt(self, target: _UpdateTarget, prompt_text: str, default: str) -> None:
         """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
         sent_buttons = False
         adapter = target.adapter
@@ -650,7 +650,7 @@ class GatewayNotificationsMixin:
         self._session_state(target.session_key).persistent.update_prompt_pending = True
         logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
 
-    def _clear_update_markers(self, paths: "_UpdatePaths", session_key: Optional[str]) -> None:
+    def _clear_update_markers(self, paths: _UpdatePaths, session_key: Optional[str]) -> None:
         paths.unlink_all()
         state = self._peek_session_state(session_key)
         if state is not None:
@@ -1480,7 +1480,7 @@ class GatewayNotificationsMixin:
                 return False
         return True
 
-    async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
+    async def _preflight_completion_delivery(self, evt: dict) -> _CompletionClaim:
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
         Adapter acceptance is not proof of delivery: the inner resolver can still fail closed inside

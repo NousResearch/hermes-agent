@@ -132,7 +132,7 @@ _SPENT_ROTATION_LOCK = threading.Lock()
 # Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
 # per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
 _DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
-_SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
+_SPENT_ROTATION_FINGERPRINTS: OrderedDict[str, None] = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
     "Non-secret one-way fingerprints of Anthropic OAuth credentials whose rotation was "
@@ -238,7 +238,7 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[dict[str, Any]]:
 _KEYCHAIN_ATTR = r'(?:0x(?P<hex>[0-9A-Fa-f]+)\b.*|"(?P<text>.*)")'
 
 
-def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
+def _decode_keychain_attr(match: Optional[re.Match[str]]) -> str:
     """``security`` prints an attribute as ``"text"`` when it is plain printable ASCII and as
     ``0x<HEX>  "<octal-escaped echo>"`` otherwise; the quoted form is NOT escaped (an embedded
     ``"`` appears raw), so the text group must run to the last quote on the line."""

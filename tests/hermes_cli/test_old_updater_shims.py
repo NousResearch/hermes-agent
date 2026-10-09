@@ -177,7 +177,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
     fresh_child.returncode = status
     with fresh_child.exits():
         if unpack:
-            uv, fresh_bootstrap = ensure_uv()
+            uv, _fresh_bootstrap = ensure_uv()
         else:
             uv = ensure_uv()
         # A falsy result is NOT inert: old callers install through pip instead.

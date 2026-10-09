@@ -118,7 +118,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     job = create_job(
         prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    success, _doc, _final_response, error = run_job(job)
     assert success is True
     assert error is None
     assert loaded_homes, "load_hermes_dotenv was not called on the no_agent path"

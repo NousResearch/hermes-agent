@@ -146,7 +146,7 @@ def test_a_session_created_in_a_checkout_still_follows_its_agent(session, repo_w
     ``session.create`` marks `explicit_cwd` for ANY session whose cwd exists on disk, so every
     desktop session starts that way — a cwd the chat merely STARTED in is not a pin.
     """
-    repo, worktree = repo_with_worktree
+    _repo, worktree = repo_with_worktree
     session["explicit_cwd"] = True
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 

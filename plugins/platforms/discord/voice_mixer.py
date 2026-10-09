@@ -50,7 +50,7 @@ class MixerChild:
         self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
         self._finished = False
 
-    def read_frame(self) -> "Optional[np.ndarray]":
+    def read_frame(self) -> Optional[np.ndarray]:
         """Next 20 ms frame as a float32 ndarray, or None when done."""
         if self._finished:
             return None
@@ -140,7 +140,7 @@ class VoiceMixer(discord.AudioSource):
             if self._closed:
                 return SILENCE_FRAME
             np = _require_numpy()
-            acc: "Optional[np.ndarray]" = None
+            acc: Optional[np.ndarray] = None
             # Speech children (drop exhausted ones; release duck when last ends)
             if self._speech:
                 still_live: list[MixerChild] = []

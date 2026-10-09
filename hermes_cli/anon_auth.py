@@ -28,7 +28,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
@@ -142,8 +142,8 @@ def friendly_wait(seconds: Any) -> str:
     if s < 90:
         return "about a minute"
     if s < 3600:
-        return f"about {int(round(s / 60))} minutes"
-    hours = int(round(s / 3600))
+        return f"about {round(s / 60)} minutes"
+    hours = round(s / 3600)
     return "about an hour" if hours <= 1 else f"about {hours} hours"
 
 
@@ -394,10 +394,10 @@ def apply_exchange_to_state(state: dict[str, Any], exchanged: dict[str, Any]) ->
     from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     exp = claims.get("exp")
     if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
+        expires_at = datetime.fromtimestamp(float(exp), tz=UTC)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
@@ -485,7 +485,7 @@ class MintFailure:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``
         with ``retry_after`` the seconds still to wait (whole, rounded up)."""
         return {"error_code": self.code, "error": self.message, "retryable": self.retryable,
-                "retry_after": int(math.ceil(self.remaining())) if self.retryable else 0}
+                "retry_after": math.ceil(self.remaining()) if self.retryable else 0}
 
 
 _mint_failures: dict[str, MintFailure] = {}
@@ -1019,7 +1019,7 @@ def _account_state_from_token(
     """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
     from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     inference_url = (
         _optional_base_url(token_data.get("inference_base_url"))

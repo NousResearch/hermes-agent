@@ -236,8 +236,8 @@ _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singul
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None, task_id: str = "default",
+                        ssh_config: dict | None = None, container_config: dict | None = None,
+                        local_config: dict | None = None, task_id: str = "default",
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is

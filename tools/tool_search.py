@@ -57,7 +57,7 @@ class ToolSearchConfig:
         return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
 
     @classmethod
-    def from_raw(cls, raw: Any) -> "ToolSearchConfig":
+    def from_raw(cls, raw: Any) -> ToolSearchConfig:
         """Build from a raw dict / legacy bool / None; every field is clamped and unknown
         values fall back to safe defaults — a config typo must not break the agent."""
         if not isinstance(raw, dict):  # legacy bool / None
@@ -190,7 +190,7 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
             return len(json.dumps(td, ensure_ascii=False, separators=(",", ":")))
         except (TypeError, ValueError):
             return len(str(td))
-    return int(math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN))
+    return math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN)
 
 
 def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
@@ -587,11 +587,32 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
 
 
 __all__ = [
-    "TOOL_SEARCH_NAME", "TOOL_DESCRIBE_NAME", "TOOL_CALL_NAME", "BRIDGE_TOOL_NAMES",
-    "ToolSearchConfig", "CatalogEntry", "AssemblyResult", "load_config", "is_deferrable_tool_name",
-    "classify_tools", "estimate_tokens_from_schemas", "should_activate", "build_catalog",
-    "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",
-    "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
-    "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
-    "out_of_scope_reason", "validate_deferred_call_args", "normalize_tool_call_entries",
-    "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
+    "BRIDGE_TOOL_NAMES",
+    "CONNECTOR_BATCH_SENTINEL",
+    "TOOL_CALL_NAME",
+    "TOOL_DESCRIBE_NAME",
+    "TOOL_SEARCH_NAME",
+    "AssemblyResult",
+    "CatalogEntry",
+    "ToolSearchConfig",
+    "assemble_tool_defs",
+    "bridge_tool_schemas",
+    "build_catalog",
+    "build_catalog_listing_with_form",
+    "classify_tools",
+    "dispatch_tool_describe",
+    "dispatch_tool_search",
+    "estimate_tokens_from_schemas",
+    "is_bridge_tool",
+    "is_connector_name",
+    "is_deferrable_tool_name",
+    "listing_token_budget",
+    "load_config",
+    "normalize_tool_call_entries",
+    "out_of_scope_reason",
+    "resolve_underlying_call",
+    "scoped_deferrable_names",
+    "search_catalog",
+    "should_activate",
+    "validate_deferred_call_args",
+]

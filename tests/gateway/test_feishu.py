@@ -1137,7 +1137,7 @@ class TestAdapterBehavior(unittest.TestCase):
             def __init__(self, *_a: object, **_k: object) -> None:
                 pass
 
-            async def __aenter__(self) -> "_FakeAsyncClient":
+            async def __aenter__(self) -> _FakeAsyncClient:
                 events.append("client_enter")
                 return self
 
@@ -1497,7 +1497,7 @@ class TestPendingInboundQueue(unittest.TestCase):
 class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
 
-    def _make_adapter(self, encrypt_key: str = "") -> "FeishuAdapter":
+    def _make_adapter(self, encrypt_key: str = "") -> FeishuAdapter:
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -2010,7 +2010,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
+        text, _inbound_type, _media_urls, _media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")

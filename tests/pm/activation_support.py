@@ -131,7 +131,7 @@ def fake_store(tmp_path: Path) -> tuple[Path, Path]:
     interpreter = entry / ("python.exe" if sys.platform.startswith("win") else "bin/python3")
     interpreter.parent.mkdir(parents=True, exist_ok=True)
     real = spawnable_python()
-    wrapper = "#!/bin/sh\nexec '%s' \"$@\"\n" % posix(real)
+    wrapper = f"#!/bin/sh\nexec '{posix(real)}' \"$@\"\n"
     interpreter.write_text(wrapper, encoding="utf-8")
     interpreter.chmod(0o755)
 

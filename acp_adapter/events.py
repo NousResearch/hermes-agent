@@ -130,7 +130,7 @@ def make_tool_progress_cb(
     ``tool.completed`` closes that call with its own result — the step callback
     only fires on the *next* step, which leaves a turn's last tools open."""
 
-    def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+    def _tool_progress(event_type: str, name: str | None = None, preview: str | None = None, args: Any = None, **kwargs) -> None:
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True

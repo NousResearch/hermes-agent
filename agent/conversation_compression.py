@@ -1790,7 +1790,7 @@ class _CompressionActivityHeartbeat:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-activity-heartbeat", daemon=True)
 
-    def start(self) -> "_CompressionActivityHeartbeat":
+    def start(self) -> _CompressionActivityHeartbeat:
         # A new compression episode always republishes agent.compression even
         # if a prior timeout/cooldown stamp is still on the agent.
         self._suppressed = False
@@ -1908,7 +1908,7 @@ class _CompressionLockLeaseRefresher:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-lock-refresh", daemon=True)
 
-    def start(self) -> "_CompressionLockLeaseRefresher":
+    def start(self) -> _CompressionLockLeaseRefresher:
         self._thread.start()
         return self
 
@@ -4572,9 +4572,15 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 
 __all__ = [
-    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
-    "check_compression_model_feasibility", "ensure_compression_feasibility_checked",
-    "revalidate_compression_feasibility", "replay_compression_warning",
+    "COMPACTION_DONE_STATUS",
+    "COMPACTION_HEARTBEAT_STATUS",
+    "COMPACTION_STATUS",
+    "COMPACTION_STATUS_MARKER",
+    "check_compression_model_feasibility",
     "compress_context",
+    "ensure_compression_feasibility_checked",
+    "is_compaction_progress_status",
+    "replay_compression_warning",
+    "revalidate_compression_feasibility",
     "try_shrink_image_parts_in_messages",
 ]

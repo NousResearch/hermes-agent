@@ -149,7 +149,7 @@ def _selection_attempt_tokens(text: str, choices: Optional[list[str]] = None) ->
         return None
     tokens = _split_tokens(stripped)
     if tokens is None:
-        digits = stripped[1:] if stripped.startswith("-") else stripped
+        digits = stripped.removeprefix("-")
         return [stripped] if digits.isdigit() or _is_int(stripped) else None
     if "," not in stripped or not tokens:
         return tokens or None

@@ -951,7 +951,7 @@ class KawaiiSpinner:
         redirect_stdout(devnull) because _write targets the stdout captured at creation."""
         self._write(f"\r{self._clear_line_blanks()}\r  {text}" if self.running else f"  {text}", flush=True)
 
-    def stop(self, final_message: str = None):
+    def stop(self, final_message: str | None = None):
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)

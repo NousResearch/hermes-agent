@@ -33,6 +33,7 @@ from agent.conversation_compression import (
 )
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
+import itertools
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -302,7 +303,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -344,7 +345,7 @@ class TestRotationChildFlushDedup:
             "publish_compression_child",
             side_effect=RuntimeError("simulated publish failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -405,7 +406,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -508,7 +509,7 @@ class TestRotationChildFlushDedup:
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
         ]
 
-        returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+        _returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
         agent._flush_messages_to_session_db(messages, conversation_history=loaded)
 
         child_rows = db.get_messages_as_conversation(
@@ -1289,7 +1290,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         assert "task A" in tail["content"]
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
 
@@ -1356,7 +1357,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
         db_msgs = db.get_messages(agent.session_id)
@@ -1369,7 +1370,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(db_msgs, db_msgs[1:])
+            for previous, current in itertools.pairwise(db_msgs)
         )
 
 
@@ -1426,7 +1427,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in tail
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
@@ -1621,7 +1622,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in repaired
         assert not any(
             previous.get("role") == current.get("role")
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_multimodal_content_survives_and_synthetic_provenance_clears(
@@ -1826,7 +1827,7 @@ class TestAbortedRotationDoesNotGrowParent:
         db.end_session(parent, "tui_shutdown")
         assert db.get_session(parent)["ended_at"] is not None
 
-        returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        _returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
         # Rotation went through — no abort loop, no repeated flush growth.
         assert agent.session_id != parent

@@ -265,7 +265,7 @@ class TestConvertMessagesToConverse:
                 }],
             },
         ]
-        system, msgs = convert_messages_to_converse(messages)
+        _system, msgs = convert_messages_to_converse(messages)
         # 3 messages: user, assistant, trailing user (Converse requires last=user)
         assert len(msgs) == 3
         assistant_content = msgs[1]["content"]
@@ -287,13 +287,13 @@ class TestConvertMessagesToConverse:
             }]},
             {"role": "tool", "tool_call_id": "call_1", "content": "file contents here"},
         ]
-        system, msgs = convert_messages_to_converse(messages)
+        _system, msgs = convert_messages_to_converse(messages)
         # Tool result should be in a user-role message
         tool_result_msg = [m for m in msgs if m["role"] == "user" and any(
             "toolResult" in b for b in m["content"]
         )]
         assert len(tool_result_msg) == 1
-        tr = [b for b in tool_result_msg[0]["content"] if "toolResult" in b][0]
+        tr = next(b for b in tool_result_msg[0]["content"] if "toolResult" in b)
         assert tr["toolResult"]["toolUseId"] == "call_1"
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 

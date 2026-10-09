@@ -26,11 +26,17 @@ logger = logging.getLogger("agent.conversation_compression")
 _GENERIC_ABORT_VERDICTS = frozenset({"no_progress", "summary_generation_aborted"})
 
 
-def _attempt_seed(agent: Any, *, attempt_began: bool = True) -> dict[str, Any]:
+def _attempt_seed(
+    agent: Any, *, attempt_began: bool = True, attempt_seed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """This attempt's id, the session it started in, and its trigger.
 
-    Read from the agent's copy: a pre-commit restore puts the previous attempt's seed back on the compressor.
+    ``attempt_seed`` is the attempt's own copy and wins: the agent's copy belongs to the newest attempt, so a
+    stalled attempt unwinding after its fallback began would otherwise log the fallback's identity. Without
+    it, read the agent's copy (a pre-commit restore puts the previous attempt's seed back on the compressor).
     An emit with no attempt begun (pool saturation) gets a fresh id and an unknown trigger."""
+    if attempt_seed:
+        return dict(attempt_seed)
     attempt_id = getattr(agent, "_compression_attempt_id", None) if attempt_began else None
     seed = getattr(agent, "_compression_attempt_seed", None)
     if attempt_id and isinstance(seed, dict) and seed.get("attempt_id") == attempt_id:
@@ -44,24 +50,28 @@ def _attempt_seed(agent: Any, *, attempt_began: bool = True) -> dict[str, Any]:
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
     commit_started_at: float | None = None, include_last_telemetry: bool = True,
+    attempt_seed: dict[str, Any] | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt.
 
     ``include_last_telemetry=False`` is for emits that fire without an attempt having begun
-    (pool-saturation refusals): they must not hydrate from the previous attempt's numbers."""
+    (pool-saturation refusals): they must not hydrate from the previous attempt's numbers.
+    ``attempt_seed`` is the emitting attempt's own seed (see ``_attempt_seed``)."""
     try:
         compressor = agent.context_compressor
         telemetry = getattr(compressor, "_last_compression_telemetry", None) if include_last_telemetry else None
-        own = isinstance(telemetry, dict) and telemetry.get("attempt_id") == getattr(agent, "_compression_attempt_id", None)
+        seed = _attempt_seed(agent, attempt_began=include_last_telemetry, attempt_seed=attempt_seed)
+        own = isinstance(telemetry, dict) and telemetry.get("attempt_id") == seed["attempt_id"]
         if not own:
-            # The attempt-start clear leaves no dict before compress() seeds one, and a pre-commit restore puts
-            # the previous attempt's back: describe THIS attempt from its seed, never another's numbers.
-            telemetry = {**_attempt_seed(agent, attempt_began=include_last_telemetry), "method": "none"}
+            # The attempt-start clear leaves no dict before compress() seeds one, a pre-commit restore puts
+            # the previous attempt's back, and a newer attempt may have seeded its own: describe THIS attempt
+            # from its seed, never another's numbers.
+            telemetry = {**seed, "method": "none"}
         payload = dict(telemetry)
         payload.setdefault("event", "compression_attempt")
         payload.setdefault("route", "hermes")
-        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
-        payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
+        payload.setdefault("attempt_id", seed["attempt_id"])
+        payload.setdefault("session_id", seed["session_id"])
         payload.update(
             total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
             split_status=split_status,
@@ -93,15 +103,18 @@ def _emit_compression_attempt_telemetry(
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
 
 
-def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class: str | None) -> None:
+def _emit_aborted_attempt_telemetry(
+    agent: Any, started_at: float, failure_class: str | None, attempt_seed: dict[str, Any] | None = None,
+) -> None:
     _emit_compression_attempt_telemetry(
-        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class
+        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class,
+        attempt_seed=attempt_seed,
     )
 
 
 def _emit_bypassed_attempt_telemetry(
     agent: Any, started_at: float, *, commit_status: str, failure_class: str | None, approx_tokens: Any,
-    route: str = "hermes", method: str = "none",
+    route: str = "hermes", method: str = "none", attempt_seed: dict[str, Any] | None = None,
 ) -> None:
     """Log one attempt that never reached the local compressor: an automatic gate blocked it, Codex owns the
     thread, or the session lease showed another path already owns the work. The compressor's telemetry still
@@ -111,7 +124,7 @@ def _emit_bypassed_attempt_telemetry(
         compressor = getattr(agent, "context_compressor", None)
         payload = {
             "event": "compression_attempt", "route": route, "method": method, "failure_class": failure_class,
-            **_attempt_seed(agent),
+            **_attempt_seed(agent, attempt_seed=attempt_seed),
             "main_provider": getattr(agent, "provider", "") or "", "main_model": getattr(agent, "model", "") or "",
             # Private caches only: the public properties can trigger a synchronous context-length probe.
             "main_context_limit": getattr(compressor, "_resolved_context_length", None),
@@ -127,7 +140,9 @@ def _emit_bypassed_attempt_telemetry(
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
 
 
-def _emit_blocked_attempt_telemetry(agent: Any, started_at: float, approx_tokens: Any) -> None:
+def _emit_blocked_attempt_telemetry(
+    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None = None,
+) -> None:
     """Record an automatic attempt the breaker gate refused. The class keeps only the guard's name
     (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds."""
     reason = None
@@ -138,5 +153,6 @@ def _emit_blocked_attempt_telemetry(agent: Any, started_at: float, approx_tokens
         logger.debug("compression block-reason read failed", exc_info=True)
     guard = reason.split(":", 1)[0] if isinstance(reason, str) and reason else "unknown"
     _emit_bypassed_attempt_telemetry(
-        agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens
+        agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens,
+        attempt_seed=attempt_seed,
     )

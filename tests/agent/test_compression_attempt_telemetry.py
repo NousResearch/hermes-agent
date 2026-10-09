@@ -403,3 +403,51 @@ def test_pool_saturation_emit_does_not_inherit_previous_attempt_telemetry(caplog
     assert payload["session_id"] == "session-telemetry-test"
     assert payload.get("commit_ms") is None
     assert payload.get("middle_window_tokens") is None
+
+
+def test_late_unwinding_attempt_keeps_its_own_identity_after_a_newer_attempt_starts(caplog):
+    """A stalled attempt that unwinds after its stall fallback began must log its own attempt id, session
+    and trigger, not the newer attempt's (they overwrite the agent's current-attempt fields)."""
+    import threading
+
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    agent = _Agent(compressor)
+    agent.session_id = "session-A"
+    stalled, release = threading.Event(), threading.Event()
+    calls = []
+
+    def _summary(*_args, **_kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            stalled.set()
+            release.wait(10)
+        return "SANITIZED SUMMARY"
+
+    with patch.object(compressor, "_generate_summary", side_effect=_summary):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            first = threading.Thread(
+                target=compress_context, args=(agent, _messages(), "system prompt"),
+                kwargs={"approx_tokens": 80_000, "trigger": "pre_api"},
+            )
+            first.start()
+            assert stalled.wait(10)
+            agent.session_id = "session-B"
+            compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
+            release.set()
+            first.join(10)
+
+    records = [
+        json.loads(record.getMessage().split("context compression attempt telemetry: ", 1)[1])
+        for record in caplog.records
+        if "context compression attempt telemetry:" in record.getMessage()
+    ]
+    by_trigger = {payload["trigger_source"]: payload for payload in records}
+    assert len(records) == 2 and set(by_trigger) == {"pre_api", "post_tool"}
+    assert by_trigger["pre_api"]["session_id"] == "session-A"
+    assert by_trigger["post_tool"]["session_id"] == "session-B"
+    assert by_trigger["pre_api"]["attempt_id"] != by_trigger["post_tool"]["attempt_id"]

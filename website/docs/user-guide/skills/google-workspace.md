@@ -61,7 +61,12 @@ $GAPI gmail send --to user@example.com --subject "Hello" \
 # With CC
 $GAPI gmail send --to user@example.com --cc "team@example.com" \
   --subject "Update" --body "FYI"
+
+# Dry run: build the message and print its headers without sending
+$GAPI gmail send --to user@example.com --subject "Hello" --body "..." --dry-run
 ```
+
+Display names with non-ASCII characters (`"Jörg Müller" <jorg@example.de>`) are encoded on the name only, so Gmail accepts them in `--to`, `--cc` and `--from`.
 
 ### Custom From Header
 
@@ -95,6 +100,14 @@ $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 ```
 
 Automatically threads the reply (sets `In-Reply-To` and `References` headers) and uses the original message's thread ID.
+
+**Who the reply goes to:** the original's `Reply-To` if it has one, otherwise its `From`. When the original is a message *you* sent (a follow-up on your own thread), the reply goes to that message's `To` recipients instead of back to yourself. A subject that already starts with `Re:` in any case (`RE:` from Outlook, `re:`) is not prefixed again.
+
+To check who a reply would go to without sending it:
+
+```bash
+$GAPI gmail reply MESSAGE_ID --body "..." --dry-run
+```
 
 ### Labels
 
@@ -173,7 +186,7 @@ All commands return JSON. Key fields per service:
 |---------|--------|
 | `gmail search` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `snippet`, `labels` |
 | `gmail get` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `labels`, `body` |
-| `gmail send/reply` | `status`, `id`, `threadId` |
+| `gmail send/reply` | `status`, `id`, `threadId` (`--dry-run`: `status`, `threadId`, `headers`) |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |

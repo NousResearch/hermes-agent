@@ -665,7 +665,8 @@ def _mcp_vision_flow(question: str, annotate: bool) -> str:
     from tools.browser_mcp_transport import mcp_screenshot_b64
     content = mcp_screenshot_b64()
     if content is None:
-        return tool_error("MCP screenshot failed", success=False)
+        return tool_error("MCP screenshot failed (see gateway log for cause; likely browser "
+                          "warm-up after a restart — retry once)", success=False)
     screenshot_path = _save_screenshot(content)
     img_b64 = base64.b64encode(content).decode("utf-8")
     annotation_context = ""

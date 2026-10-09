@@ -137,6 +137,33 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_restores_target_persisted_model(self, tmp_path):
+        """The target row, not the departing chat pin, owns the resumed route."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            event = _make_event(text="/resume target")
+            db.create_session(
+                "target", "telegram", user_id="12345", chat_id="67890",
+                model="target-model", model_config={"gateway_runtime": {
+                    "provider": "openai", "base_url": "https://api.openai.com/v1",
+                }},
+            )
+            db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+            runner = _make_runner(session_db=db, event=event)
+            key = _session_key_for_event(event)
+            runner._session_model_overrides = {key: {"model": "departing-model"}}
+            await runner._handle_resume_command(event)
+            assert runner.session_store.switch_session.called
+            assert runner.session_store.set_model_override.call_args.args == (
+                key, {"model": "target-model", "provider": "openai",
+                      "base_url": "https://api.openai.com/v1"},
+            )
+            assert key not in runner._session_model_overrides
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_last_resolved_model(self, tmp_path):
         """Resume must also clear the resumed chat's cached last-resolved
         model, so the restored conversation re-resolves from current config

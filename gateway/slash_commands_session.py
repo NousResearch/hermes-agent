@@ -914,10 +914,22 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
-        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
-        # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
-        # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
-        await self.async_session_store.set_model_override(session_key, None)
+        # Replace the departing conversation's pin with the resolved target's stored route.
+        # Credentials remain transient: the next turn uses normal override rehydration.
+        restored_model = None
+        try:
+            from hermes_state import SessionDB
+            target = await self._session_db.get_session(target_id)
+            model = str((target or {}).get("model") or "").strip()
+            if model:
+                runtime = SessionDB.session_gateway_runtime(target)
+                restored_model = {"model": model}
+                for key in ("provider", "base_url"):
+                    if runtime.get(key):
+                        restored_model[key] = runtime[key]
+        except Exception:
+            logger.debug("Failed to read resumed session model; clearing old pin", exc_info=True)
+        await self.async_session_store.set_model_override(session_key, restored_model)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)

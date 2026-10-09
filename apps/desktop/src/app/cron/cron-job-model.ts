@@ -1,5 +1,7 @@
 import type { CronJob, CronJobUpdates } from '@/types/hermes'
 
+import { truncateText } from './job-state'
+
 const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
 
 /** Script-only cron jobs run a shell script on schedule with no LLM prompt. */
@@ -123,7 +125,10 @@ export function lastErrorSummary(lastError: string | null | undefined): string {
   const sentenceEnd = text.search(/\. |\n/)
   const sentence = (sentenceEnd === -1 ? text : text.slice(0, sentenceEnd + 1)).trim()
 
-  return sentence.length > ERROR_SUMMARY_MAX ? `${sentence.slice(0, ERROR_SUMMARY_MAX - 1).trimEnd()}…` : sentence
+  // Grapheme-aware cap (review follow-up): slice()'s UTF-16 unit limit could split a surrogate
+  // pair in astral error text. truncateText appends the ellipsis itself, so the old form's
+  // reserved slot (`max - 1`) is expressed by the max passed here.
+  return sentence.length > ERROR_SUMMARY_MAX ? truncateText(sentence, ERROR_SUMMARY_MAX - 1) : sentence
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */

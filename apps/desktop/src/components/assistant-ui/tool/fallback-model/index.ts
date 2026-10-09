@@ -206,6 +206,14 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
     icon: 'search',
     tone: 'agent'
   },
+  setup_choose: {
+    icon: 'question',
+    tone: 'agent'
+  },
+  start_chat: {
+    icon: 'comment',
+    tone: 'agent'
+  },
   terminal: {
     icon: 'terminal',
     tone: 'terminal'
@@ -751,9 +759,27 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
   return formatDurationSeconds(seconds)
 }
 
+const NON_DELIVERABLE_TOOLS = new Set([
+  'annotate_preview',
+  'drive_preview',
+  'gui_tour',
+  'list_files',
+  'read_file',
+  'search_files'
+])
+
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (toolName === 'tool_call') {
+    const calls = Array.isArray(args.calls) ? args.calls : [args]
+    const call = parseMaybeObject(calls[0])
+
+    if (calls.length === 1 && typeof call.name === 'string') {
+      return toolPreviewTarget(call.name, parseMaybeObject(call.arguments), result)
+    }
+  }
+
   // Reading an existing file is not producing a deliverable.
-  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+  if (NON_DELIVERABLE_TOOLS.has(toolName) || (toolName === 'desktop_preview' && args.action !== 'open')) {
     return ''
   }
 
@@ -1549,7 +1575,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
-    previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
+    previewTarget: toolPreviewTarget(part.innerToolName || part.toolName, argsRecord, resultRecord),
     rendersAnsi: rendersAnsi || undefined,
     searchQuery: searchQuery || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,

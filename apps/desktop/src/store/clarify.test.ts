@@ -3,13 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $clarifyRequest,
   $clarifyRequests,
+  $setupChooseStages,
+  answerSetupCard,
   type ClarifyRequest,
   clearClarifyRequest,
   hasClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
   setClarifyRequest,
-  skipClarifyRequest
+  setupChooseStage,
+  skipClarifyRequest,
+  stageSetupChoose
 } from './clarify'
 import { $gateway } from './gateway'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
@@ -129,6 +133,71 @@ describe('skipClarifyRequest', () => {
   })
 })
 
+describe('answerSetupCard', () => {
+  const ACCENTS = { '#0000ff': 'Blue', '#ff0000': 'Red' }
+  let look: string
+
+  // The card's pick: snapshot the look once, then apply the row (as setup-pending's `stage` does).
+  function mountAccentCard(requestId: string) {
+    stageSetupChoose(requestId, {
+      labels: ACCENTS,
+      preview: id => {
+        const before = look
+        stageSetupChoose(requestId, {
+          picked: [id],
+          revert: setupChooseStage(requestId).revert ?? (() => (look = before))
+        })
+        look = id
+      }
+    })
+  }
+
+  beforeEach(() => {
+    look = 'original'
+    $clarifyRequests.set({})
+    $setupChooseStages.set({})
+    resetServerRequestsForTests()
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+    $setupChooseStages.set({})
+  })
+
+  it('applies a typed row over the row previewed on the card, and keeps it after the card clears', () => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'setup_choose', params: {}, respond })
+    setClarifyRequest({
+      ...clarify('session-a', 'req-a'),
+      setup: { kind: 'accent', multiSelect: false, options: null, preselected: [] }
+    })
+    mountAccentCard('req-a')
+    setupChooseStage('req-a').preview?.('#ff0000')
+
+    expect(answerSetupCard('session-a', 'blue')).toBe(true)
+
+    expect(respond).toHaveBeenCalledWith({ label: 'Blue', picked: '#0000ff' })
+    expect(hasClarifyRequest('session-a')).toBe(false)
+    expect(look).toBe('#0000ff')
+  })
+
+  it('does not notify subscribers when a staged patch changes nothing', () => {
+    const preview = () => undefined
+    const listener = vi.fn()
+
+    stageSetupChoose('req-a', { labels: ACCENTS, preview })
+    const before = $setupChooseStages.get()
+    const unlisten = $setupChooseStages.listen(listener)
+
+    stageSetupChoose('req-a', { labels: ACCENTS, preview })
+    unlisten()
+
+    expect($setupChooseStages.get()).toBe(before)
+    expect(listener).not.toHaveBeenCalled()
+  })
+})
+
 describe('normalizeChoices', () => {
   it('returns empty array for null/undefined', () => {
     expect(normalizeChoices(null)).toEqual([])
@@ -149,14 +218,20 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['a', '', 'b', '   ', 'c'])).toEqual(['a', 'b', 'c'])
   })
 
-  it('drops strings with newlines', () => {
-    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'd'])
+  it('keeps strings with newlines so option reasons can wrap', () => {
+    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'b\nc', 'd'])
   })
 
-  it('drops strings over 200 chars', () => {
-    const long = 'x'.repeat(201)
-    const ok = 'y'.repeat(200)
-    expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
+  it('keeps long strings and only drops them past the abuse cap', () => {
+    const long = 'x'.repeat(1500)
+    const atCap = 'y'.repeat(8000)
+    const over = 'z'.repeat(8001)
+    expect(normalizeChoices(['a', long, atCap, over])).toEqual(['a', long, atCap])
+  })
+
+  it('measures the cap on the bare text, discounting the (Recommended) label', () => {
+    const atCap = 'x'.repeat(8000) + ' (Recommended)'
+    expect(normalizeChoices([atCap])).toEqual([atCap])
   })
 })
 

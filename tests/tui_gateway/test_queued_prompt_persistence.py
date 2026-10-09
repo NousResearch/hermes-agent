@@ -234,3 +234,66 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def _compact_in_place_while_queued(db, key):
+    """The live turn compacts in place: it holds its own rows, never the queued prompt's accept-time
+    row, so the commit re-sequences that row to a new id after the compacted set."""
+    held = [r["_row_id"] for r in db.get_messages_as_conversation(key, include_row_ids=True)
+            if "QUEUED-MARKER" not in str(r["content"])]
+    db.archive_and_compact(key, [{"role": "user", "content": "[CONTEXT COMPACTION] summary of turn A"},
+                                 {"role": "assistant", "content": "ok, continuing"}],
+                           covered_ids=held, unresolved_held=[])
+
+
+def test_drain_after_in_place_compaction_leaves_one_active_queued_row(monkeypatch, tmp_path):
+    """The envelope kept the accept-time id after the compaction re-sequenced the row, so the drain
+    deactivated the (already inactive) original and the clone stayed live: the queued prompt was
+    active twice, once before reply A, which then replayed as the answer to it."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)
+        db.append_message(key, "user", content="prompt A")
+        _busy(session)
+        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
+                                   queued=True, display_kind=None)
+        _compact_in_place_while_queued(db, key)
+        db.append_message(key, "assistant", content="reply A")
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        monkeypatch.setattr(server, "_run_prompt_submit",
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+        assert server._drain_queued_prompt("r2", sid, session) is True
+
+        rows = [(r["role"], r["content"]) for r in _active_rows(db, key)]
+        assert [c for _r, c in rows].count("queued text QUEUED-MARKER") == 1
+        # The queued prompt follows reply A (the repaired projection may fold the summary ack into it).
+        assert rows[-2:] == [("user", "queued text QUEUED-MARKER"), ("assistant", "reply B")]
+        assert rows[-3][0] == "assistant" and rows[-3][1].endswith("reply A")
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_merge_after_in_place_compaction_updates_the_live_queued_row(monkeypatch, tmp_path):
+    """A text-only arrival after the compaction merged into the envelope, but the row update used the
+    stale id, matched no active row, and the live clone kept only the first fragment."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)
+        db.append_message(key, "user", content="prompt A")
+        _busy(session)
+        server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER", "ws-1", queued=True, display_kind=None)
+        _compact_in_place_while_queued(db, key)
+        server._handle_busy_submit("r2", sid, session, "second", "ws-1", queued=True, display_kind=None)
+
+        queued = [r["content"] for r in _active_rows(db, key) if "QUEUED-MARKER" in str(r["content"])]
+        assert queued == ["first QUEUED-MARKER\n\nsecond"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

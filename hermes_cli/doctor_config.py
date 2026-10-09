@@ -319,7 +319,7 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
         try:
             runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
-        except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here
+        except Exception as exc:
             _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({str(exc).splitlines()[0]})",
                             f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
                             f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
@@ -374,7 +374,7 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
 
 def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:
     """Root-level ``provider``/``base_url`` belong under ``model:`` (raw-file diagnostic)."""
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, read_user_config_raw
     raw_config = read_user_config_raw(config_path)
     stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
     if not stale_root_keys:
@@ -391,7 +391,7 @@ def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:
         value = raw_config.pop(k)
         if not raw_model.get(k):
             raw_model[k] = value
-    atomic_config_write(config_path, raw_config)
+    atomic_config_replace(config_path, raw_config)
     check_ok("Migrated stale root-level keys into model section")
     f.fixed += 1
 

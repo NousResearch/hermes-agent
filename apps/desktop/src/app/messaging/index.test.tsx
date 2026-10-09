@@ -456,6 +456,72 @@ describe('MessagingView restart banner', () => {
   })
 })
 
+describe('MessagingView allowlist editor', () => {
+  const allowlist = (patch: Record<string, unknown> = {}) => ({
+    advanced: false,
+    description: 'Allowed users',
+    is_list: true,
+    is_password: false,
+    is_set: true,
+    key: 'TEAMS_ALLOWED_USERS',
+    prompt: 'Allowed users',
+    redacted_value: '«redacted:111...222»',
+    required: false,
+    url: null,
+    value: '111,222',
+    ...patch
+  })
+
+  const entries = () =>
+    screen.getAllByRole('textbox').filter(el => /^Allowed users \d+$/.test(el.getAttribute('aria-label') || ''))
+
+  async function save() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+  }
+
+  it('shows each saved ID in its own visible box and saves add/remove edits as one list', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [allowlist()] })] })
+    await renderMessaging()
+
+    await screen.findByLabelText('Allowed users 1')
+    expect(entries().map(el => [(el as HTMLInputElement).type, (el as HTMLInputElement).value])).toEqual([
+      ['text', '111'],
+      ['text', '222']
+    ])
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
+    fireEvent.click(screen.getByRole('button', { name: /Add another/ }))
+    // A pasted comma list splits into one box per entry.
+    fireEvent.change(entries()[1], { target: { value: '333, 444' } })
+    expect(entries().map(el => (el as HTMLInputElement).value)).toEqual(['222', '333', '444'])
+
+    await save()
+    expect(updateMessagingPlatform).toHaveBeenCalledWith(
+      'teams',
+      { env: { TEAMS_ALLOWED_USERS: '222,333,444' } },
+      'default'
+    )
+  })
+
+  it('clears a saved allowlist when every entry is removed', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ env_vars: [allowlist({ redacted_value: '«redacted:111»', value: '111' })] })]
+    })
+    await renderMessaging()
+
+    await screen.findByLabelText('Allowed users 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await save()
+    expect(updateMessagingPlatform).toHaveBeenCalledWith(
+      'teams',
+      { clear_env: ['TEAMS_ALLOWED_USERS'], env: {} },
+      'default'
+    )
+  })
+})
+
 describe('MessagingView Telegram quick setup', () => {
   it('runs the QR pairing to apply on the page scope and watches the backend restart', async () => {
     // Every call of one pairing must hit the SAME backend (the pairing lives in

@@ -12,8 +12,8 @@ from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
 
-_ZERO = Decimal("0")
-_ONE_MILLION = Decimal("1000000")
+_ZERO = Decimal(0)
+_ONE_MILLION = Decimal(1000000)
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 # Pay-per-token first-party APIs whose models.dev rate card is the vendor's own
 # list price, keyed by billing-route provider -> API domain. A model missing from
@@ -162,6 +162,7 @@ _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
+_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -193,7 +194,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
         "claude-opus-5": _OPUS,
-        "claude-opus-5-5": ("4.00", "20.00", "0.20", "5.00"),
+        "claude-opus-5-5": _OPUS_5_5,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -224,6 +225,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
         ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
     }),
+    ("bedrock", _BEDROCK_URL, "anthropic-list-2026-09", {
+        "anthropic.claude-opus-5": _OPUS, "anthropic.claude-opus-5-5": _OPUS_5_5,
+    }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
@@ -249,7 +253,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
 )
 
-_OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {}
+_OFFICIAL_DOCS_PRICING: dict[tuple[str, str], PricingEntry] = {}
 for _provider, _url, _version, _rows in _SNAPSHOTS:
     for _models, _rates in _rows.items():
         _entry = _snap(*_rates, version=_version, url=_url)
@@ -295,7 +299,7 @@ del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
 # for Ultrafast can be served at ``default``, and is then billed at Standard).
-_OPENAI_ULTRAFAST_PRICING: Dict[str, PricingEntry] = {
+_OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
     "gpt-6-astra": _snap(
         "60.00", "300.00", "6.00", "75.00",
         url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
@@ -322,7 +326,7 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
 )
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.
-_ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
+_ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     _model: _snap(*_rates, version="anthropic-fast-mode-2026-09", url=f"{_ANTHROPIC_URL}#fast-mode-pricing")
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
@@ -330,7 +334,7 @@ _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
     )
     for _model in _models
 }
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
 # rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -338,10 +342,9 @@ del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
-    *((("openai", f"{m}-{suffix}", m)
-       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
-       for suffix in ("pro", "900k"))),
-    ("openai", "gpt-6.1-sol-pro", "gpt-6.1-sol"),  # no -900k: not verified above 272K on Codex
+    *(("openai", f"{m}-{suffix}", m)
+       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol")
+       for suffix in ("pro", "900k")),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):
@@ -501,7 +504,7 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
 
 
 def _pricing_entry_from_metadata(
-    metadata: Dict[str, Dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
+    metadata: dict[str, dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None

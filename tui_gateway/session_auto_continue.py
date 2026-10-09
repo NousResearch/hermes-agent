@@ -68,6 +68,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
+    from agent.initiate_setup_prompt import intro_resends
+    if intro_resends(marker["prompt"], _session_source(session)):
+        clear_turn_marker(home, session_key)  # the desktop intro sends /initiate-setup again itself
+        return None
     # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.
@@ -269,6 +273,8 @@ def _session_compression_in_flight(session: dict) -> bool:
     ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
     blocking reads run off the event loop so a large state.db never freezes the dispatcher.
     """
+    if session.get("_manual_compress_active"):  # held before/after the DB lock row exists (#133504)
+        return True
     agent = session.get("agent")
     sid = str(getattr(agent, "session_id", "") or "") or str(session.get("session_key") or "")
     if not sid:
@@ -313,11 +319,25 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 if db is None:
                     return
                 try:
-                    db.set_user_message_content(session.get("session_key"), staged["_row_id"], envelope["text"])
+                    # The staged dict records the session its row was written under; a rotated-away
+                    # ``session_key`` misses that row's session_id and the merge update no-ops. An
+                    # in-place compaction of the live turn may also have re-sequenced the row to a
+                    # new id (the original was deactivated and cloned): follow it or the update
+                    # no-ops against the dead original (#123675).
+                    key = _submit_row_owner_key(staged, session)
+                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    updated = live_id is not None and bool(
+                        db.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
-            staged["content"] = envelope["text"]
+            if not updated:
+                # No live row carries the prompt any more (compaction re-sequenced it away):
+                # drop the staged row so the drained turn writes its own, rather than letting
+                # the envelope claim a durable row that no longer exists.
+                envelope.pop("_submit_user_row", None)
+                return
+            staged["_row_id"], staged["content"] = live_id, envelope["text"]
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
@@ -364,7 +384,16 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
         if db is None:
             return
         try:
-            db.deactivate_message(session.get("session_key"), early["_row_id"])
+            # The accept-time dict records the session its row was written under; a rotated-away
+            # ``session_key`` would miss it and leave that row ACTIVE beside its replacement in the
+            # continuation — the [uA, uB, aA] shape this function exists to prevent. An in-place
+            # compaction of the live turn may also have re-sequenced the row to a new id: deactivate
+            # the row that is live NOW, or the clone stays active beside its replacement and the
+            # queued prompt is active twice after the drain (#123675).
+            key = _submit_row_owner_key(early, session)
+            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            if live_id is not None:
+                db.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.
@@ -388,6 +417,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
+        session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields

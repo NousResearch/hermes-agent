@@ -8,7 +8,8 @@ with 429.
 
 The correct order is:
 1. Read body
-2. Validate HMAC signature (reject 401 if invalid)
+2. Validate HMAC signature (reject 404 if invalid - same as unknown
+   route so a bad signature cannot enumerate configured route names)
 3. Rate limit check (reject 429 if over limit)
 4. Process the webhook
 """
@@ -66,7 +67,7 @@ class TestSignatureBeforeRateLimit:
 
         BEFORE FIX: Invalid signatures consume the rate limit bucket, so
         after 'rate_limit' bad requests the valid one would get 429.
-        AFTER FIX: Invalid signatures are rejected with 401 first (before
+        AFTER FIX: Invalid signatures are rejected first (before
         rate limiting), so the rate limit bucket is untouched. The valid
         request after many bad ones still succeeds.
         """
@@ -106,10 +107,13 @@ class TestSignatureBeforeRateLimit:
                         "X-GitHub-Delivery": f"bad-{i}",
                     },
                 )
-                # Each invalid signature should be rejected with 401
-                assert resp.status == 401, (
-                    f"Expected 401 for invalid signature, got {resp.status}"
+                # Each invalid signature is rejected with the same 404 an
+                # unknown route gets (no route-existence leak).
+                assert resp.status == 404, (
+                    f"Expected 404 for invalid signature, got {resp.status}"
                 )
+                data_out = await resp.json()
+                assert data_out["error"] == f"Unknown route: {route_name}"
 
             # Now send a valid-signed request — it MUST succeed (202)
             # BEFORE FIX: This would return 429 because the 5 bad requests

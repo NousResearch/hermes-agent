@@ -138,12 +138,13 @@ def _kick_managed_boot(config: dict | None) -> None:
 
 
 def _boot_in_flight(config: dict | None) -> bool:
-    """True when the managed runtime is enabled and PM holds an installed engine."""
+    """True when the managed runtime is enabled and has a server to supervise (an installed PM
+    engine, or ``local_runtime.executable_path``)."""
     with suppress(Exception):
         section = (_load_config_if_none(config) or {}).get("local_runtime") or {}
         if not section.get("enabled"):
             return False
-        from hermes_cli.local_runtime.binaries import installed_engine
+        from hermes_cli.local_runtime.bootstrap import server_binary
 
-        return installed_engine(section.get("backend") or "auto") is not None
+        return server_binary(section) is not None
     return False

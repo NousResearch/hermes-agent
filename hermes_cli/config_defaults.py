@@ -4,6 +4,7 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_local_runtime import LOCAL_RUNTIME_DEFAULTS
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -2704,20 +2705,7 @@ DEFAULT_CONFIG = {
         # e.g. "us-central1" only if your models are region-pinned.
         "region": "global",
     },
-    # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
-    # llama-server in router mode. No context/VRAM knobs by design.
-    "local_runtime": {
-        # Off = detection-only (Hermes still finds an external llama-server you run).
-        "enabled": False,
-        # Engine versions and every dependent library are pinned by pm/lock.json.
-        # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
-        # cuda|metal|vulkan|hip|cpu.
-        "backend": "auto",
-        "models_max": 4,  # Router process: how many models may be resident at once.
-        "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
-        # Extra ports detection probes for an external llama-server (besides 8080).
-        "detect_ports": [],
-    },
+    "local_runtime": LOCAL_RUNTIME_DEFAULTS,  # hermes_cli/config_defaults_local_runtime.py
     "_config_version": 50,  # Config schema version - bump this when adding new required fields
 }
 

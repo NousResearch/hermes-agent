@@ -133,9 +133,71 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
+def extra_model_dirs(section: dict | None = None) -> "list[Path]":
+    """``local_runtime.model_dirs``: existing read-only GGUF roots served beside ``models_dir()``
+    (downloads and deletes stay in ``models_dir()``). ``section`` defaults to the live config."""
+    if section is None:
+        from hermes_cli.config import load_config_readonly
+
+        section = load_config_readonly().get("local_runtime") or {}
+    raw = section.get("model_dirs") if isinstance(section, dict) else None
+    dirs = (Path(os.path.expanduser(str(d).strip())) for d in (raw if isinstance(raw, list) else []) if str(d).strip())
+    out = []
+    for d in dirs:
+        if d.is_dir():
+            out.append(d)
+        else:
+            _warn_once(f"local_runtime.model_dirs entry {d} is not a directory; ignoring it")
+    return out
+
+
+_WARNED: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    if message not in _WARNED:
+        _WARNED.add(message)
+        logger.warning("%s", message)
+
+
+def staged_across(models_dir: Path, extra_dirs: "tuple[Path, ...] | list[Path]" = ()) -> "list[Path]":
+    """Servable GGUFs in ``models_dir`` then ``extra_dirs``, one per model id. The preset INI and the
+    router name a model by its id, so a root listed twice is walked once and a later file whose id
+    is already taken is skipped (the managed dir wins) rather than written as a second section."""
+    roots: set[str] = set()
+    ids: set[str] = set()
+    out = []
+    for root in (models_dir, *extra_dirs):
+        key = os.path.normcase(str(root.resolve()))
+        if key in roots:
+            continue
+        roots.add(key)
+        for gguf in staged_in(root):
+            model_id = model_id_from_stem(gguf.stem)
+            if model_id in ids:
+                _warn_once(f"local_runtime.model_dirs: {gguf} is shadowed by another {model_id!r}; ignoring it")
+                continue
+            ids.add(model_id)
+            out.append(gguf)
+    return out
+
+
+def server_binary(section: dict) -> "tuple[Path, object | None] | None":
+    """The llama-server to supervise: ``local_runtime.executable_path`` when set, else the installed
+    PM engine's binary (with the engine), else None. The on-demand boot gate asks this too, so a
+    configured executable boots without a PM engine."""
+    executable = str(section.get("executable_path") or "").strip()
+    if executable:
+        return Path(os.path.expanduser(executable)), None
+    from hermes_cli.local_runtime.binaries import installed_engine
+
+    engine = installed_engine(section.get("backend") or "auto")
+    return (engine.binary, engine) if engine is not None else None
+
+
 def staged_models() -> "list[Path]":
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
-    return staged_in(models_dir())
+    return staged_across(models_dir(), extra_model_dirs())
 
 
 def staged_model_ids() -> "list[str]":
@@ -208,7 +270,7 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int) -> int:
+def _admitted_models_max(mdir: Path, configured: int, extra_dirs: "tuple[Path, ...] | list[Path]" = ()) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
@@ -220,7 +282,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
-        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured, extra_dirs=extra_dirs)
     except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -230,7 +292,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
     return cap
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, section: dict | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -249,7 +311,8 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
 
     try:
         capacity = probe_budget(planning=True)
-        for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity)):
+        for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity),
+                                      **_preset_inputs(section)):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -263,6 +326,18 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
         logger.error("preset generation failed (%s) and no previous "
                      "policy file exists; router runs stock fit", exc)
         return None
+
+
+def _preset_inputs(section: dict | None = None) -> dict:
+    """The ``local_runtime`` keys every preset plan reads (``model_dirs``, ``model_overrides``), so
+    a boot and an idle refit write the same sections. ``section`` defaults to the live config."""
+    if section is None:
+        from hermes_cli.config import load_config_readonly
+
+        section = load_config_readonly().get("local_runtime") or {}
+    overrides = section.get("model_overrides") if isinstance(section, dict) else None
+    return {"extra_dirs": extra_model_dirs(section),
+            "overrides": overrides if isinstance(overrides, dict) else None}
 
 
 def _launch_budget(capacity, own_bytes: int = 0):
@@ -303,7 +378,7 @@ def refit_idle_presets(sup) -> bool:
     last = sup._refit_usable
     if last is not None and abs(live.usable_vram_bytes - last) < _REFIT_STEP_BYTES:
         return False
-    text = render_presets(plan_presets(models_dir(), capacity, live=live))
+    text = render_presets(plan_presets(models_dir(), capacity, live=live, **_preset_inputs()))
     # Held across the write and the reload so a restart can't spawn between them; everything
     # slow ran above.
     with sup._lifecycle_lock:
@@ -442,22 +517,23 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             _stop_state_server()
 
         try:
-            from hermes_cli.local_runtime.binaries import installed_engine
             from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-            engine = installed_engine(section.get("backend", "auto"))
-            if engine is None:
+            served = server_binary(section)
+            if served is None:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None
+            binary, engine = served
             _SERVING_ENGINE = engine
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", section)
 
-            sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
+            sup = LlamaServerSupervisor(binary, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
-                                            mdir, int(section.get("models_max", 4))),
+                                            mdir, int(section.get("models_max", 4)),
+                                            extra_model_dirs(section)),
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()
@@ -469,7 +545,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 raise
             _SUPERVISOR = sup
             _stop_at_exit()
-            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
+            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url,
+                        engine.backend if engine else "executable_path", engine.tag if engine else binary)
             _start_idle_sweeper(sup)
             return sup
         except Exception as exc:

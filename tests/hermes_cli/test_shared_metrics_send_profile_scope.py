@@ -80,9 +80,7 @@ def test_send_pass_rechecks_consent_in_routed_profile(monkeypatch, tmp_path):
 
     runtime = _Runtime()
     token = set_hermes_home_override(served)
-    secret_token = set_secret_scope(
-        {"SHARED_METRICS_PROFILE_TEST_TOKEN": "served-only"}, profile_home=str(served)
-    )
+    secret_token = set_secret_scope({"SHARED_METRICS_PROFILE_TEST_TOKEN": "served-only"})
     try:
         runtime._send_exported_packages()
     finally:

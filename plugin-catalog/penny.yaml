@@ -1,0 +1,22 @@
+name: penny
+repo: https://github.com/HelperLabs/penny-hermes
+sha: 5f040f2037c9b186ce14b83f0cd067e1d6be14b2
+version: "0.1.0"
+description: >-
+  Penny core memory and private notes for Hermes. Disclosure — automatic recall
+  sends up to 4,000 characters of nontrivial local prompts as search queries to
+  app.mypenny.ai; selected note saves go to the same service. Independent OAuth
+  credentials are stored under the active Hermes profile; no raw transcript
+  uploads, telemetry, or other-client credential reuse.
+maintainer: HelperLabs
+tier: community
+category: memory
+title: Penny
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/HelperLabs/penny-hermes#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

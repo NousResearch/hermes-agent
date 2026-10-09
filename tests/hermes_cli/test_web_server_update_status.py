@@ -127,7 +127,7 @@ class TestUpdateStatusRootLog:
         data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
 
         assert data["running"] is False
-        assert data["exit_code"] == (0 if b_outcome == "success" else None)
+        assert data["exit_code"] == (0 if b_outcome == "success" else 1 if b_outcome == "failed" else None)
         assert data.get("action_id") == (b_id if b_outcome == "success" else None)
         assert data["receipt"]["action_id"] == (b_id if b_outcome else a_id)
 
@@ -158,7 +158,9 @@ class TestUpdateStatusRootLog:
 
         data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
 
-        assert data["exit_code"] == (0 if b_outcome == "success" else None)
+        assert data["exit_code"] == (
+            0 if b_outcome == "success" else 1 if b_outcome in ("failed", "partial") else None
+        )
         assert "action_id" not in data  # A's root completion marker is not B's
         # The attached receipt names its writer: B's own when it exists, else A's (never B's).
         assert data["receipt"]["action_id"] == (b_id if b_outcome else a_id)
@@ -195,3 +197,89 @@ class TestUpdateStatusRootLog:
             {"step": "autostash", "reason": "re-apply the parked stash"} if debt == "user_action" else None)
         # Debt never changes the C3 exit mapping: owed follow-ups stay exit 0, a user action is partial.
         assert data["exit_code"] == (1 if debt == "user_action" else 0)
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_exit"),
+        [("failed", 1), ("partial", 1), ("refused", 2), ("interrupted", 130)],
+    )
+    def test_reconnected_action_status_reports_terminal_receipt_failure(
+        self, monkeypatch, tmp_path, outcome, expected_exit,
+    ):
+        from hermes_cli import update_receipt
+
+        root, action_id = tmp_path / "root", "d" * 32
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+        monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+        update_receipt.begin_update_receipt()
+        update_receipt.finalize_update_receipt(outcome)
+        log_dir = tmp_path / "dashboard-logs"
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", log_dir)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+        monkeypatch.setattr(
+            _web_server_gateway.subprocess, "Popen", lambda *args, **kwargs: types.SimpleNamespace(pid=7)
+        )
+        _web_server_gateway._spawn_hermes_action(
+            ["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id}
+        )
+        _web_server_gateway._ACTION_PROCS.clear()  # backend restarted; only the receipt remains
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        assert data["running"] is False
+        assert data["exit_code"] == expected_exit
+        assert data["receipt"]["outcome"] == outcome
+
+    def test_running_receipt_is_not_terminal_status(self, monkeypatch, tmp_path):
+        from hermes_cli import update_receipt
+
+        root, action_id = tmp_path / "root", "e" * 32
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+        monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+        update_receipt.begin_update_receipt()
+        log_dir = tmp_path / "dashboard-logs"
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", log_dir)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+        monkeypatch.setattr(
+            _web_server_gateway.subprocess, "Popen", lambda *args, **kwargs: types.SimpleNamespace(pid=7)
+        )
+        _web_server_gateway._spawn_hermes_action(
+            ["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id}
+        )
+        _web_server_gateway._ACTION_PROCS.clear()
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        assert data["running"] is False
+        assert data["exit_code"] is None
+        assert data["receipt"]["outcome"] == "running"
+
+    def test_action_without_receipt_recovers_failure_marker_after_backend_restart(
+        self, monkeypatch, tmp_path,
+    ):
+        root, action_id = tmp_path / "root", "f" * 32
+        (root / "logs").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+        log_dir = tmp_path / "dashboard-logs"
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", log_dir)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+        monkeypatch.setattr(
+            _web_server_gateway.subprocess, "Popen", lambda *args, **kwargs: types.SimpleNamespace(pid=7)
+        )
+        _web_server_gateway._spawn_hermes_action(
+            ["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id}
+        )
+        _web_server_gateway._ACTION_PROCS.clear()
+        (root / "logs" / "update.log").write_text(
+            "=== hermes update started 2026-10-08T10:00:00 ===\n"
+            f"=== hermes-update failed {action_id} exit=3 ===\n",
+            encoding="utf-8",
+        )
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        assert data["running"] is False
+        assert data["exit_code"] == 3
+        assert "action_id" not in data

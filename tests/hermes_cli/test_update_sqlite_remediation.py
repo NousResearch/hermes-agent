@@ -25,12 +25,12 @@ def test_selected_sqlite_controls_completion_and_action_receipt(tmp_path, monkey
     assert probes == [Path(selected)]
     output = capsys.readouterr().out
     assert (message in output) is (verdict != 'unsafe')
-    assert ('=== hermes-update completed' in output) is (verdict != 'unsafe' and action_id != 'invalid')
+    # This message can precede service restart and final receipt; the Desktop success marker is
+    # emitted later by cmd_update after the terminal receipt is closed.
+    assert '=== hermes-update completed' not in output
     if verdict == 'unsafe':
         for text in ('SQLite (3.46.1)', 'corruption bug', 'run the installer again', 'hermes doctor'):
             assert text in output
-    elif action_id != 'invalid':
-        assert f'=== hermes-update completed {action_id} ===' in output
 
 
 @pytest.mark.parametrize('already_restarted_units', [None, {'hermes-serve'}])

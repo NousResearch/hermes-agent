@@ -295,6 +295,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     else None
                 ),
                 failed_respawn_pids=_dashboards_down,
+                restarted_serve_pids=getattr(restart, "restarted_serve_pids", set()),
+                failed_serve_pids=getattr(restart, "failed_serve_pids", set()),
                 # A symlinked profile served by another install's checkout (#120240).
                 external_gateway_pids={row.get("pid") for row in _fleet_snapshot if row_is_external(row)},
                 live_gateway_pids=_live_gateway_pids,

@@ -91,7 +91,8 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
     assert payload["supervisors"] == {"coder": "launchd", "default": "systemd"}
     # Serve units travel in the same payload so one fresh child covers both
     # runtime families (#92145).
-    assert set(payload["serve_units"]) == {"recover", "skip"}
+    assert set(payload["serve_units"]) == {"recover", "skip", "targets"}
+    assert payload["serve_units"]["targets"] == []
     assert kwargs["env"]["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
 
 

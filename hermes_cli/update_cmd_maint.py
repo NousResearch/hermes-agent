@@ -309,16 +309,14 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
 
 
 def _print_update_completion(message: str) -> None:
-    """Print the outcome (with branch @ sha so drift is visible) plus, when launched by the
-    dashboard with an action id, a receipt line the Desktop matches after restart.
+    """Print the update outcome with branch @ sha so drift is visible.
 
-    See #47359, #58764.
+    The action's durable completion marker is emitted by ``cmd_update`` only after the final
+    receipt is closed; this message can precede post-update restart and verification work.
+    See #47359, #58764, #127417.
     """
     from hermes_cli.update_cmd import _branch_head_suffix
     print(f"{message}{_branch_head_suffix()}")
-    action_id = os.environ.get("HERMES_ACTION_ID", "")
-    if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
-        print(f"=== hermes-update completed {action_id} ===")
 
 
 def _read_project_version() -> str | None:

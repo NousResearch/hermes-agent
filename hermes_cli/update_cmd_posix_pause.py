@@ -288,6 +288,84 @@ def _escape_cgroup(unit: dict) -> bool:
     return False
 
 
+def prepare_systemd_serve_update_handoff(plan) -> str | None:
+    """Move an updater launched from a live serve/dashboard service out of its cgroup.
+
+    The completion child inherits this scope, so the owning service can be restarted without
+    killing the update or losing its durable receipt. Returns a user-facing refusal when the
+    process is in a service cgroup but the handoff or required restart authority is unproven.
+    """
+    if sys.platform != "linux":
+        return None
+    from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+
+    own_cgroup = _pid_cgroup()
+    runtimes = [runtime for runtime in getattr(plan, "runtimes", ()) or ()
+                if getattr(runtime, "kind", None) in ("serve", "dashboard")]
+    ancestors = [runtime for runtime in runtimes
+                 if isinstance(getattr(runtime, "pid", None), int)
+                 and _is_pid_ancestor_of_current_process(runtime.pid)]
+    target = None
+    if own_cgroup and own_cgroup.rsplit("/", 1)[-1].endswith(".service"):
+        from hermes_cli import main_dashboard as dashboard
+
+        leaf = own_cgroup.rsplit("/", 1)[-1]
+        scope = dashboard._extract_scope_from_cgroup(own_cgroup)
+        for runtime in ancestors:
+            pid = runtime.pid
+            cgroup = dashboard._get_pid_cgroup_path(pid)
+            unit = dashboard._get_systemd_service_for_pid(pid)
+            if (cgroup == own_cgroup
+                    and unit == leaf
+                    and dashboard._unit_main_pid_is(unit, cgroup, pid)
+                    and scope in {"user", "system"}):
+                target = {"scope": scope, "unit": leaf, "pid": pid, "cgroup": cgroup}
+                break
+    action_id = os.environ.get("HERMES_ACTION_ID", "")
+    desktop_action = len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id)
+    if not own_cgroup:
+        if desktop_action:
+            return "the updater's systemd cgroup membership is unreadable, so it cannot prove it will survive the backend restart"
+        return None
+    if not own_cgroup.rsplit("/", 1)[-1].endswith(".service"):
+        # Already outside a service cgroup (for example, systemd-run --user --scope).
+        return None
+    if target is None:
+        if desktop_action:
+            return ("the Desktop backend is inside a systemd service, but its owning Hermes process "
+                    "could not be verified as that unit's MainPID; no update was applied. Repair the "
+                    "backend inventory or run `hermes update` from a shell outside that service")
+        return None
+    scope, leaf, cgroup = target["scope"], target["unit"], target["cgroup"]
+    if scope not in {"user", "system"}:
+        return "the updater's systemd manager scope is unknown, so it cannot safely leave the backend service"
+    process_pid = target["pid"]
+    service = {"scope": scope, "unit": leaf, "pid": process_pid, "cgroup": cgroup}
+    from hermes_cli.update_cmd_fleet import _resolve_manage_cmd
+    scope_cmd = ["systemctl", "--user"] if scope == "user" else ["systemctl"]
+    if _resolve_manage_cmd({}, scope, scope_cmd, leaf) is None:
+        command = f"systemctl --user restart {leaf}" if scope == "user" else f"sudo -n systemctl restart {leaf}"
+        return (f"the updater cannot prove restart permission for {scope} unit {leaf}; "
+                f"grant non-interactive permission for `{command}` or run `hermes update` outside that service")
+    if not _escape_cgroup(service):
+        return (f"the updater could not move out of {scope} unit {leaf}; no update was applied. "
+                "Run `hermes update` from a shell outside the backend service, or allow that service "
+                "manager to create a transient scope for the updater")
+    print(f"  → Update process moved to a transient systemd scope before restarting {scope}/{leaf}.")
+    return None
+
+
+def require_systemd_serve_update_handoff(plan) -> None:
+    """Refuse before mutation if an in-service Desktop update cannot prove safe custody."""
+    error = prepare_systemd_serve_update_handoff(plan)
+    if error:
+        print(f"✗ Update refused: {error}.")
+        from hermes_cli.update_cmd_common import _record_stop
+
+        _record_stop("serve_systemd_handoff_refused")
+        raise SystemExit(1)
+
+
 def _left_running(units: list[dict], jobs: list[dict]) -> tuple[list[dict], list[dict], list[str]]:
     """Drop the runtimes whose stop would kill this updater; name each one."""
     from hermes_cli.gateway import _is_pid_ancestor_of_current_process

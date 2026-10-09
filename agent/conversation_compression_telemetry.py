@@ -7,6 +7,7 @@ consumers keep one source.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -24,6 +25,38 @@ logger = logging.getLogger("agent.conversation_compression")
 # says WHY, not just THAT (#131412). Every other caller label names an event the compressor cannot see
 # (fence cancelled, superseded, rollback, pool saturated, ...) and still wins.
 _GENERIC_ABORT_VERDICTS = frozenset({"no_progress", "summary_generation_aborted"})
+
+
+def _snapshot_compression_effect_input(messages: list, verbatim_tail: list | None) -> list | None:
+    """Content-only snapshot for final effect accounting; telemetry must never break compression."""
+    try:
+        if not verbatim_tail:
+            return messages
+        from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+
+        return rejoin_compressed_head_and_tail(messages, copy.deepcopy(verbatim_tail))
+    except Exception:
+        logger.debug("failed to snapshot compression effect input", exc_info=True)
+        return None
+
+
+def _record_committed_attempt_effect(
+    agent: Any, messages_before: list | None, messages_after: list, verbatim_tail: list | None, split_status: str,
+) -> None:
+    """Finalize effect fields from the transcript shape that crossed the commit boundary."""
+    if messages_before is None:
+        return
+    try:
+        if verbatim_tail and split_status == "not_applicable":
+            from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+
+            # Without a SessionDB, the manual-compression caller performs this rejoin after compress_context returns.
+            messages_after = rejoin_compressed_head_and_tail(messages_after, verbatim_tail)
+        recorder = getattr(agent.context_compressor, "_record_committed_compression_effect", None)
+        if callable(recorder):
+            recorder(messages_before, messages_after)
+    except Exception:
+        logger.debug("failed to record committed compression effect", exc_info=True)
 
 
 def _attempt_seed(
@@ -138,6 +171,16 @@ def _emit_bypassed_attempt_telemetry(
         )
     except Exception as exc:
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
+    finally:
+        # compress_context opened the thread-local shared-metric lifecycle before reaching this exit.
+        # Bypassed attempts are log-only, so retire that lifecycle explicitly; otherwise an unrelated
+        # pool-saturation emit on the same thread can consume its trigger and token count.
+        try:
+            from hermes_cli.observability.shared_metrics_events import discard_compression_attempt
+
+            discard_compression_attempt()
+        except Exception:
+            logger.debug("failed to discard bypassed compression metric", exc_info=True)
 
 
 def _emit_blocked_attempt_telemetry(

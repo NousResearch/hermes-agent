@@ -3791,11 +3791,11 @@ def _regate_children_after_parent_archive(conn: sqlite3.Connection, parent_id: s
         "WITH RECURSIVE descendants(id) AS ("
         "  SELECT child_id FROM task_links WHERE parent_id = ? "
         "  UNION "
-        "  SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id"
+        "  SELECT l.child_id FROM task_links l JOIN descendants d ON l.parent_id = d.id "
+        "  LIMIT ?"
         ") "
         "SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.worker_started_at "
-        "FROM tasks t JOIN descendants d ON d.id = t.id "
-        "LIMIT ?",
+        "FROM tasks t JOIN descendants d ON d.id = t.id",
         (parent_id, ARCHIVE_DESCENDANT_LIMIT + 1),
     ).fetchall()
     if len(rows) > ARCHIVE_DESCENDANT_LIMIT:
@@ -3871,8 +3871,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         termination = _terminate_reclaimed_worker(child_pid, child_lock, signal_fn=signal_fn, started_at=child_started)
         with write_txn(conn):
             _append_event(conn, child_id, "dependency_parent_archived_termination", termination, run_id=child_run_id)
-    # Re-evaluate readiness without treating archival as successful completion.
-    recompute_ready(conn)
+    # Archival cannot release dependencies, so no board-wide readiness scan is
+    # needed here; the affected closure was re-gated atomically above.
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True

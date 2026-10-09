@@ -40,6 +40,7 @@ class PluginRegistration:
     # re-discovery when the plugin no longer re-registers it.
     # See #91701.
     persistent: bool = False
+    hook_callback: Optional[Callable[..., Any]] = field(default=None, repr=False, compare=False)
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
@@ -220,21 +221,38 @@ class PluginLedgerMixin:
             return manifest_key(plugin.manifest)
         return manifest_key(plugin) if isinstance(plugin, PluginManifest) else str(plugin)
 
+    def _observer_callbacks_removed_by_unload(
+        self, plugin: Union[str, PluginManifest, LoadedPlugin]
+    ) -> set[tuple[str, int]]:
+        """Find callback dispatchers affected by any registration removed for this plugin."""
+        ownership_ledger = self._ownership_ledger
+        target_keys = self._unload_target_keys(self._resolve_plugin_key(plugin))
+        return {
+            (registration.key, id(registration.hook_callback))
+            for key in target_keys
+            for registration in ownership_ledger.get(key, [])
+            if registration.kind == "hook" and registration.hook_callback is not None
+        }
+
     def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
         retired_observers = []
         with self._discovery_lock, _plugin_home_scope(self.home_path):
-            found = self._unload_scoped(plugin)
             try:
                 from agent.plugin_stream_hooks import retire_plugin_observer_dispatchers
 
-                # The manager lock is acquired before the dispatcher lock. Observer workers never
-                # take the dispatcher lock while reporting failures.
+                # Retire queued plugin callbacks before releasing any plugin-owned state.
+                retiring_callbacks = (
+                    None if plugin is None else self._observer_callbacks_removed_by_unload(plugin)
+                )
                 retired_observers = retire_plugin_observer_dispatchers(
-                    self, unload_all=plugin is None
+                    self,
+                    unload_all=plugin is None,
+                    callbacks_to_retire=retiring_callbacks,
                 )
             except Exception:
                 logger.debug("plugin observer dispatcher retirement failed", exc_info=True)
+            found = self._unload_scoped(plugin)
 
         if retired_observers:
             from agent.plugin_stream_hooks import _stop_dispatcher

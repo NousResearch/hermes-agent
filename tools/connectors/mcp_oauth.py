@@ -38,7 +38,7 @@ def probe_with_rollback(
     if flow is not None:
         flow.backup = backup
     previous_entry = None
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     tools: list = []
     discovery_error = ""
 
@@ -91,7 +91,7 @@ class AttemptCanceled(RuntimeError):
 _COMMIT_GUARD = threading.Lock()
 # (hermes home, server) -> the newest card attempt. A retry or a new operation replaces an attempt
 # whose worker is still waiting on the browser; the older one is canceled so it cannot commit later.
-_ACTIVE: Dict[tuple, Any] = {}
+_ACTIVE: dict[tuple, Any] = {}
 
 
 def cancel_attempt(flow) -> bool:
@@ -148,7 +148,7 @@ def _reuse_saved_authorization(
 def run_worker(
         hermes_home: str, server_name: str, cfg: dict, reconnect_live: bool, *,
         flow, on_done: Optional[Callable[[], None]] = None,
-        env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+        env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
         reuse_saved: bool = False) -> None:
     """Drive the interactive MCP OAuth probe under the shared callback bridge.
 
@@ -213,7 +213,7 @@ def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
     from tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path.rstrip("/") not in ("/callback", ""):
                 self.send_response(404)
@@ -282,7 +282,7 @@ class OAuthAttempt:
     flow: Any
     detail: str = ""
 
-    def poll(self) -> Dict[str, Any]:
+    def poll(self) -> dict[str, Any]:
         snapshot = self.flow.snapshot()
         raw = snapshot.get("status")
         status = raw if raw in ("approved", "error") else "pending"
@@ -296,7 +296,7 @@ class OAuthAttempt:
 def start(
     server_name: str, *, url_timeout: float = URL_TIMEOUT_SECONDS,
     client_redirect_uri: Optional[str] = None, cfg: Optional[dict] = None,
-    env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+    env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
 ) -> OAuthAttempt:
     """Start a card OAuth flow and wait until its authorization URL is published.
 

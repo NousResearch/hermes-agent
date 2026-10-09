@@ -364,7 +364,7 @@ def refresh_catalog(force: bool = False) -> bool:
         req = urllib.request.Request(_CATALOG_URL, headers={"User-Agent": "hermes-local-runtime"})
         with urllib.request.urlopen(req, timeout=10) as r:
             fetched = _load_catalog(json.load(r))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("catalog refresh skipped: %s", exc)
         return False
     if fetched != CATALOG:

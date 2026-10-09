@@ -37,7 +37,7 @@ PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
     """Split a profile's ``env_vars`` into (api-key vars, base-URL var); the URL var may be ""."""
-    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
     return (tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
             next((v for v in pp.env_vars if is_url(v)), None) or "")
 

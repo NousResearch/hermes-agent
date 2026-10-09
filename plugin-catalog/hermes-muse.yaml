@@ -1,7 +1,7 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: f3a58389ff789ad98eec80a51ebcf4bec23fb439
-version: "0.1.8"
+sha: 6423ba132f2a9917a856d58c20f4ef43e9d62702
+version: "0.1.9"
 description: >-
   A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
   and temporary interests, prepares reminders, maintains memory and a quiet Feed,
@@ -21,7 +21,7 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/f3a58389ff789ad98eec80a51ebcf4bec23fb439/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/6423ba132f2a9917a856d58c20f4ef43e9d62702/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]

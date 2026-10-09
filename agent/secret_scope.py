@@ -216,6 +216,20 @@ def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
     return val if val is not None else default
 
 
+def _scope_for_process_home(bound: "_BoundScope") -> bool:
+    """True when the installed scope was built for the process's own home.
+
+    The process env is then that home's deployment config — compose/systemd injection
+    for a default-root launch, or ``served_profile_child_env`` for a spawned host — so
+    a scope miss may fall through to it (an env-only credential like ``API_SERVER_KEY``
+    must still enroll the primary config, #135298). A scope built for any other home
+    keeps the fail-closed miss: that process env belongs to a different profile (the
+    launching-profile isolation the multiplex-active gate exists for, #64674).
+    """
+    home = bound.profile_home
+    return bool(home) and _is_process_home(Path(home))
+
+
 def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """Resolve a credential by env-var name, honoring the active profile scope.
 
@@ -223,8 +237,11 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     ``default`` under multiplexing (never another profile's ``os.environ`` value)
     but falls through to ``os.environ`` otherwise — single-profile deployments
     inject credentials via the process env (systemd, ``op run``), so the scope
-    must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
-    scope: multiplex INACTIVE reads ``os.environ``; ACTIVE raises (fail closed).
+    must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). The same
+    fall-through applies under multiplexing when the installed scope is the
+    process's own home: that process env is this profile's deployment config
+    (#135298). With no scope: multiplex INACTIVE reads ``os.environ``; ACTIVE
+    raises (fail closed).
     """
     if _is_global_env(name):
         return _environ_or(name, default)
@@ -233,7 +250,9 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = bound.mapping.get(name)
         if val is not None:
             return val
-        return default if serves_routed_profile() else _environ_or(name, default)
+        if serves_routed_profile() and not _scope_for_process_home(bound):
+            return default
+        return _environ_or(name, default)
     if is_multiplex_active():
         raise UnscopedSecretError(
             name,

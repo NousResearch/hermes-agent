@@ -46,6 +46,10 @@ def fake_telegram_sdk(monkeypatch):
             "LinkPreviewOptions",
             "InlineQueryResultArticle",
             "InputTextMessageContent",
+            "InlineQueryResultCachedPhoto",
+            "InlineQueryResultCachedVideo",
+            "InlineQueryResultCachedAudio",
+            "InlineQueryResultCachedDocument",
             "Application",
             "CommandHandler",
             "CallbackQueryHandler",
@@ -66,6 +70,10 @@ def fake_telegram_sdk(monkeypatch):
         "LinkPreviewOptions",
         "InlineQueryResultArticle",
         "InputTextMessageContent",
+        "InlineQueryResultCachedPhoto",
+        "InlineQueryResultCachedVideo",
+        "InlineQueryResultCachedAudio",
+        "InlineQueryResultCachedDocument",
     ):
         setattr(telegram_pkg, name, fakes[name])
 
@@ -124,6 +132,10 @@ def test_lazy_install_rebinds_every_placeholder(monkeypatch, fake_telegram_sdk):
         "InlineKeyboardMarkup",
         "InlineQueryResultArticle",
         "InputTextMessageContent",
+        "InlineQueryResultCachedPhoto",
+        "InlineQueryResultCachedVideo",
+        "InlineQueryResultCachedAudio",
+        "InlineQueryResultCachedDocument",
         "Application",
         "CommandHandler",
         "CallbackQueryHandler",

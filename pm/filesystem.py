@@ -20,8 +20,21 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists.
+
+    A missing path is not a junction (as ``Path.is_symlink`` is False for one and
+    3.12's own ``Path.is_junction`` swallows the stat error), so probes of a
+    not-yet-created slot — e.g. a fresh catalog install — answer False instead of
+    raising ``FileNotFoundError``.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR):
+            return False
+        raise
 
 
 _VERBATIM = "\\\\?\\"

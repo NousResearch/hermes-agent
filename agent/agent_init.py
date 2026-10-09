@@ -1142,7 +1142,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     import model_tools
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
+        quiet_mode=agent.quiet_mode, tool_policy=agent._tool_policy,
     )
     # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
     from agent.oneshot_footprint import prune_oneshot_tools
@@ -2493,19 +2493,20 @@ def init_agent(
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
-    _load_tools(agent, enabled_toolsets, disabled_toolsets)
-    _init_session_state(
-        agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-        checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
-    )
-
     # Load config once for memory, skills, and compression sections
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
-        _agent_cfg = {}
+        _agent_cfg = {"agent": {"allowed_tools": []}}
 
+    from agent.tool_permissions import ToolPermissionPolicy
+    agent._tool_policy = ToolPermissionPolicy.from_config(_agent_cfg)
+    _load_tools(agent, enabled_toolsets, disabled_toolsets)
+    _init_session_state(
+        agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
+        checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
+    )
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
@@ -2518,6 +2519,10 @@ def init_agent(
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
+    from agent.tool_permissions import apply_agent_tool_policy
+    apply_agent_tool_policy(agent)
+    from hermes_cli.kanban_worker_permissions import pin_owned_worker_tools
+    pin_owned_worker_tools(agent, _agent_cfg)
     _init_usage_state(agent)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)

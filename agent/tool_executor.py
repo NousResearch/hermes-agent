@@ -363,11 +363,14 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    from agent.tool_permissions import agent_tool_policy
+    policy = agent_tool_policy(agent)
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        policy.allowed_names,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -375,6 +378,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     try:
         names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
+            tool_policy=policy,
         ) or [])
     except Exception:
         names = frozenset()
@@ -455,11 +459,14 @@ class _ParsedCall:
 
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
+    from agent.tool_permissions import agent_tool_policy
+    policy = agent_tool_policy(agent)
     name = _canonical_tool_name(tool_call.function.name)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
-    scope_block = None
-    if parse_error is None:
+    scope_block = policy.denial(tool_call.function.name) or policy.denial(name)
+    if parse_error is None and scope_block is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
+        scope_block = policy.denial(name) or scope_block
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)
 
 
@@ -704,7 +711,9 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    from agent.tool_permissions import agent_tool_policy
+    block_message = agent_tool_policy(agent).denial(ref.name) or scope_block
+    block_error_type = "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
@@ -1652,6 +1661,10 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
+    from agent.tool_permissions import agent_tool_policy
+    denied = agent_tool_policy(agent).denial(function_name)
+    if denied:
+        return _SequentialDispatch(lambda _: json.dumps({"error": denied}))
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]
@@ -1697,6 +1710,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                tool_policy=agent_tool_policy(agent),
             )
 
     return _SequentialDispatch(

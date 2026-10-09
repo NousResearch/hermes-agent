@@ -256,9 +256,11 @@ class CLIAgentSetupMixin:
         if runtime is None:
             from hermes_cli.auth import AuthError, is_rate_limited_auth_error
             self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
-            # Only an explicit re-authentication requirement is terminal. Unknown
-            # resolver/network failures must not acquire the sticky Kanban block.
-            self._credentials_terminal = isinstance(_primary_exc, AuthError) and _primary_exc.relogin_required
+            # Missing credentials and explicit re-authentication need configuration,
+            # not retries. Unknown resolver/network failures must remain non-sticky.
+            self._credentials_terminal = isinstance(_primary_exc, AuthError) and (
+                _primary_exc.relogin_required or _primary_exc.code == "missing_api_key"
+            )
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else t("cli.startup.provider_resolution_failed")
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
@@ -663,6 +665,14 @@ class CLIAgentSetupMixin:
                 if single_query_mode
                 else self._clarify_callback)
             connection_callback = None if single_query_mode else self._connection_callback
+            from hermes_cli.kanban_worker_permissions import owned_worker_skips_memory
+            owned_worker_memory_isolated = owned_worker_skips_memory(self.config)
+            skip_memory = self.ignore_rules or owned_worker_memory_isolated
+            disabled_toolsets = self.disabled_toolsets
+            # skip_memory alone permits the built-in store when its toolset is requested.
+            # Receipt-required owners must exclude persistent input even in that case.
+            if owned_worker_memory_isolated and "memory" not in (disabled_toolsets or []):
+                disabled_toolsets = [*(disabled_toolsets or []), "memory"]
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
@@ -671,7 +681,7 @@ class CLIAgentSetupMixin:
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
-                enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=self.enabled_toolsets, disabled_toolsets=disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
@@ -692,7 +702,7 @@ class CLIAgentSetupMixin:
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
                 pass_session_id=self.pass_session_id, skip_context_files=self.ignore_rules,
-                skip_memory=self.ignore_rules, tool_progress_callback=self._on_tool_progress,
+                skip_memory=skip_memory, tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,

@@ -165,6 +165,19 @@ def _kanban_handler(tool_name: str) -> Callable:
                 _check(not unknown,
                        f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
                        f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
+                from agent.tool_permissions import load_tool_policy
+                from hermes_cli.config import load_config_readonly
+                restricted = load_tool_policy().allowed_names is not None or load_config_readonly().get('agent', {}).get('require_execution_receipt') is True
+                if restricted and os.environ.get("HERMES_KANBAN_TASK"):
+                    _enforce_worker_task_ownership(_require_task_id(args))
+                    requested_board = args.get("board")
+                    _check(requested_board is None or requested_board == os.environ.get("HERMES_KANBAN_BOARD"),
+                           "Restricted worker is scoped to its assigned board")
+                    metadata = args.get("metadata")
+                    _check(not args.get("artifacts") and not (isinstance(metadata, dict) and (
+                        metadata.get("artifacts") or any(str(key).startswith("_") for key in metadata))),
+                        "Restricted worker cannot supply artifact paths or internal metadata; "
+                        "report text only, with local drafts saved by the approved broker")
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]

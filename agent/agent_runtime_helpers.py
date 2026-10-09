@@ -2592,6 +2592,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
         resolve_invoke_tool_executor, tool_hook_ids
     )
+    from agent.tool_permissions import agent_tool_policy
+    denied = agent_tool_policy(agent).denial(function_name)
+    if denied:
+        return json.dumps({"error": denied})
     if not isinstance(function_args, dict):
         function_args = {}
     hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
@@ -2649,6 +2653,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
+                tool_policy=agent_tool_policy(agent),
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True

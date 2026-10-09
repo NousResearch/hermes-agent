@@ -73,6 +73,11 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
+        # Exact per-session capability ceiling: null = unrestricted; [] = no tools.
+        # Applied after all schema sources and again at dispatch. Malformed values deny all.
+        "allowed_tools": None,
+        # Opt-in board-only profiles: fail closed without a pinned owned-run receipt.
+        "require_execution_receipt": False,
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

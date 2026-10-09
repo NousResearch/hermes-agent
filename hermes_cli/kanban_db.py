@@ -2297,6 +2297,9 @@ def _claim_and_open_run(
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
+    from hermes_cli.kanban_db_policy import validate_before_claim
+    policy_row = conn.execute('SELECT assignee FROM tasks WHERE id=?', (task_id,)).fetchone()
+    validate_before_claim(conn, task_id, policy_row['assignee'] if policy_row else None)
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -4065,6 +4068,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     attachments, prior attempts, done-parent handoffs, the assignee's recent
     work, comments. Lists are tail-capped and fields char-capped
     (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards."""
+    from hermes_cli.kanban_db_policy import provider_worker_context
+    supplied = provider_worker_context(conn, task_id)
+    if supplied is not None:
+        return supplied
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")

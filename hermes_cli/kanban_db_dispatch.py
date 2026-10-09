@@ -25,7 +25,11 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_worker_diagnostics import (
+    WORKER_ATTEMPT_START,
+    _worker_final_output,
+    _worker_log_exit_code,
+)
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -257,27 +261,6 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
     return ("nonzero_exit", code)
 
 
-_EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
-)
-
-
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
-    """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
-
-
 def reap_worker_zombies() -> "list[int]":
     """Reap exited workers without blocking; returns reaped PIDs. POSIX reaps
     every child via ``waitpid(-1)``; Windows polls the ``Popen`` handles
@@ -379,18 +362,33 @@ def _process_fingerprint(pid: int) -> Optional[str]:
 
 
 def _worker_alive(pid: Optional[int], started_at) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
-    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
-    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
-    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
-    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
-    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
-    if not _kb._pid_alive(pid):
+    """Retain a claim while its worker may still be live, never authorize a signal.
+
+    Start-time readings can drift (macOS boot-time adjustment) or temporarily
+    be unreadable. Neither proves death beside a live PID. A changed boot epoch
+    or materially different start time does; signalling still uses the strict
+    ``_pid_recycled`` guard, not this liveness-reconciliation answer.
+    """
+    if not pid or not _kb._pid_alive(pid):
         return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+    if started_at is None or started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
-    return not _pid_recycled(pid, started_at)
+    if isinstance(started_at, str) and "|" in started_at:
+        from gateway.drain_control import current_instantiation_epoch
+        epoch, started_at = started_at.split("|", 1)
+        if epoch != current_instantiation_epoch():
+            return False
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    try:
+        recorded = int(started_at)
+        if recorded <= 0:
+            return False
+        current = get_process_start_time(int(pid))
+        return current is None or (
+            int(current) > 0 and start_time_fingerprints_match(recorded, current)
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
@@ -447,12 +445,13 @@ def _terminate_reclaimed_worker(
     signal_fn=None,
     started_at=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
-    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
-    UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
-    it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
+    """Best-effort host-local termination with strict spawn-time signal identity.
+
+    A changed epoch or materially recycled PID means the worker is gone; no
+    stranger is signalled. A live PID with only drift or an unreadable identity
+    is instead held (``signal_refused``), just like an UNVERIFIED spawn: neither
+    signalling it nor releasing its claim is safe.
+    """
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -475,6 +474,10 @@ def _terminate_reclaimed_worker(
         info["terminated"] = not _kb._pid_alive(pid)
         return info
     if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+        if _worker_alive(pid, started_at):
+            # Drift/unreadability is not proof of death and never authorizes a signal.
+            info["signal_refused"] = True
+            return info
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
@@ -494,6 +497,9 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
+        if _pid_recycled(pid, started_at):
+            info["signal_refused"] = True
+            return info
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
@@ -681,11 +687,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-            # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
-            # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
-            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
-                             "identity; not signalled", tid, pid)
+        if (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)
+                and _worker_alive(pid, started_at)):
+            # An ambiguous live identity is held, not signalled or released beside.
+            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but its "
+                             "identity cannot authorize a signal; claim held", tid, pid)
             continue
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
         # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
@@ -698,8 +704,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
+                if _pid_recycled(pid, started_at):
+                    # Recheck strict identity after the wait, before SIGKILL or release.
+                    continue
                 killed = _sigkill(kill, pid)
 
+        if _worker_alive(pid, started_at) and _pid_recycled(pid, started_at):
+            # The probe can degrade between the initial check and signal guard.
+            continue
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
@@ -972,54 +984,6 @@ _PROTOCOL_VIOLATION_ERROR = (
     "a run without a terminal kanban call counts as failed no "
     "matter what it did."
 )
-
-
-# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
-_LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-
-
-def _exit_summary_marker() -> str:
-    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
-    return t("cli.session.exit_resume_hint")
-
-
-def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
-
-
-def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
-    """Best-effort read of a dead worker's last printed text, for the board diagnostic.
-
-    A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
-    (``_default_spawn``), so when it exits without a terminal board call the
-    reason is usually sitting there: the model's own explanation of why it could
-    not comply (#88603), or the rendered provider error (#46593). The reap used to
-    discard it in favour of a canned message on every retry. Trims the CLI exit
-    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
-    on a missing/empty log.
-
-    ``board`` must come from the dispatching tick: ambient current-board resolution
-    is wrong for every board but the one the dispatcher thread happens to call
-    "current", so the log would silently not be found.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
-    if not raw:
-        return ""
-    raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_exit_summary_marker())
-    if cut != -1:
-        raw = raw[:cut]
-    lines = []
-    for ln in raw.splitlines():
-        ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_log_noise_prefixes()):
-            lines.append(ln)
-    return " ".join(lines)[-400:]
 
 
 @dataclass
@@ -2092,11 +2056,23 @@ def _dispatch_lane_task(
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
+        from hermes_cli.kanban_db_policy import PolicyViolation, validate_before_claim
+        try:
+            with _kb.write_txn(conn):
+                validate_before_claim(conn, task_id, assignee)
+        except PolicyViolation as exc:
+            result.respawn_guarded.append((task_id, str(exc)))
+            return False
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    from hermes_cli.kanban_db_policy import PolicyViolation
+    try:
+        claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    except PolicyViolation as exc:
+        result.respawn_guarded.append((task_id, str(exc)))
+        return False
     if claimed is None:
         return False
     try:
@@ -2121,7 +2097,8 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _guarded_spawn(conn, claimed, str(workspace),
+                             spawn_fn if spawn_fn is not None else _default_spawn, board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
@@ -2787,7 +2764,13 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    log = open(log_path, "ab")
+    # Flush before Popen inherits the descriptor, including when the worker never
+    # reaches its CLI epilogue. The run id is diagnostic metadata, never task text.
+    run_id = task.current_run_id if task.current_run_id is not None else "none"
+    log.write(f"\n{WORKER_ATTEMPT_START}{run_id}\n".encode())
+    log.flush()
+    return log
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -2828,7 +2811,38 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
+from contextvars import ContextVar
+
+_spawn_authority: ContextVar[object] = ContextVar('kanban_validated_spawn_authority', default=None)
+
+
+def _guarded_spawn(conn, task, workspace, spawn_fn, board):
+    from hermes_cli.kanban_db_policy import policy_provider, validate_before_spawn
+    provider = policy_provider(conn)
+    if provider is None:
+        return _call_spawn_fn(spawn_fn, task, workspace, board)
+    with _kb.write_txn(conn):
+        argument_verifier = getattr(provider, 'validate_spawn_arguments', None)
+        if callable(argument_verifier):
+            argument_verifier(conn, task, workspace)
+        effective = provider.runtime_snapshot(conn, task.id)
+        validate_before_spawn(conn, task.id, task.assignee, task.current_run_id, effective=effective)
+        token = _spawn_authority.set((task.id, task.current_run_id, workspace, board))
+        try:
+            return _call_spawn_fn(spawn_fn, task, workspace, board)
+        finally:
+            _spawn_authority.reset(token)
+
+
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+    from hermes_cli.kanban_db_connect import connect_closing
+    if _spawn_authority.get() == (task.id, task.current_run_id, workspace, board):
+        return _default_spawn_process(task, workspace, board=board)
+    with connect_closing(board=board) as conn:
+        return _guarded_spawn(conn, task, workspace, _default_spawn_process, board)
+
+
+def _default_spawn_process(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the

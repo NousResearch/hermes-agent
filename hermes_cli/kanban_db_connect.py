@@ -641,6 +641,8 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
         conn.row_factory = sqlite3.Row
         conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
+            from hermes_cli.kanban_db_policy import _load_policy, protect_connection
+            _load_policy(conn)
             # WAL doesn't work on network filesystems; the helper falls back to
             # DELETE with one ERROR log (see hermes_state_wal._WAL_INCOMPAT_MARKERS).
             from hermes_state_wal import apply_wal_with_fallback
@@ -659,6 +661,7 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
             # Surface corrupt cells as read errors instead of silent wrong data.
             conn.execute("PRAGMA cell_size_check=ON")
             out = under_lock(conn)
+            protect_connection(conn)
     except Exception:
         conn.close()
         raise

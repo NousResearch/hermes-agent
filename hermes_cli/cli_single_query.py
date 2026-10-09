@@ -163,8 +163,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     AuthError (no turn result object is produced). One that failed on a terminal provider
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
     (EX_CONFIG): the dispatcher blocks the card at once. The same code applies
-    before a turn when credential resolution explicitly requires re-authentication;
-    unknown startup failures retain exit 1.
+    before a turn when credentials are missing or resolution explicitly requires
+    re-authentication; unknown startup failures retain exit 1.
 
     The worker predicate is the STRIPPED ``kanban_task_id()`` (from
     ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here

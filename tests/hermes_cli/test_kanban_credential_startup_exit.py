@@ -10,7 +10,9 @@ from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
 @pytest.mark.parametrize("quiet", [False, True])
 @pytest.mark.parametrize("worker", [False, True])
-@pytest.mark.parametrize("kind,worker_exit", [("revoked", 78), ("quota", 75), ("unknown", 1)])
+@pytest.mark.parametrize("kind,worker_exit", [
+    ("revoked", 78), ("missing", 78), ("quota", 75), ("transient_auth", 1), ("unknown", 1),
+])
 def test_credential_resolution_exit(monkeypatch, quiet, worker, kind, worker_exit):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
@@ -18,6 +20,8 @@ def test_credential_resolution_exit(monkeypatch, quiet, worker, kind, worker_exi
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fixture")
     errors = {
         "revoked": AuthError("fixture revoked", provider="openai-codex", code="invalid_grant", relogin_required=True),
+        "missing": AuthError("fixture missing credentials", provider="xai", code="missing_api_key"),
+        "transient_auth": AuthError("fixture unavailable", provider="xai", code="service_unavailable"),
         "quota": AuthError("fixture quota", provider="openai-codex", code=CODEX_RATE_LIMITED_CODE),
         "unknown": RuntimeError("fixture transport"),
     }

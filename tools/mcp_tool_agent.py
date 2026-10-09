@@ -77,6 +77,9 @@ def _publish_tool_snapshot(
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
+        from agent.tool_permissions import agent_tool_policy
+        new_defs = agent_tool_policy(agent).filter_definitions(new_defs)
+        new_names = {_def_name(t) for t in new_defs}
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
@@ -89,7 +92,7 @@ def _publish_tool_snapshot(
         engine_names = getattr(agent, "_context_engine_tool_names", None)
         if isinstance(engine_names, set):
             engine_names.clear()
-            engine_names.update(staged_engine_names)
+            engine_names.update(staged_engine_names & new_names)
         return new_names - current
 
 
@@ -116,7 +119,9 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    from agent.tool_permissions import agent_tool_policy
+    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                        quiet_mode=quiet_mode, tool_policy=agent_tool_policy(agent)) or [])
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
@@ -228,6 +233,9 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
+    from agent.tool_permissions import agent_tool_policy
+    merged = agent_tool_policy(agent).filter_definitions(merged)
+    merged_names = {_def_name(t) for t in merged}
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

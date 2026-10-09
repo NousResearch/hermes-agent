@@ -9,6 +9,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from hermes_state_deletion import SessionDeletionMixin
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from agent.session_activity import (
@@ -324,7 +325,7 @@ _INHERIT_PARENT_ROUTING_SQL = (
 )
 
 
-class SessionSessionsMixin:
+class SessionSessionsMixin(SessionDeletionMixin):
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
 
     def _own_profile_name(self) -> Optional[str]:
@@ -1693,6 +1694,7 @@ class SessionSessionsMixin:
         expected_display_messages: Optional[dict[str, list[dict[str, Any]]]] = None,
         exclude_active_write_guards: bool = False,
         include_compression_chain: bool = False,
+        deletion_origin: str = "unknown",
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
@@ -1713,6 +1715,7 @@ class SessionSessionsMixin:
                 [session_id], sessions_dir=sessions_dir,
                 exclude_active_write_guards=exclude_active_write_guards,
                 include_compression_chain=True,
+                deletion_origin=deletion_origin,
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
@@ -1735,6 +1738,7 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
+            self._prepare_session_deletion(conn, [session_id], deletion_origin)
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1785,6 +1789,7 @@ class SessionSessionsMixin:
         self, session_ids: list[str], sessions_dir: Optional[Path] = None,
         exclude_active_write_guards: bool = False, skipped_ids: Optional[list[str]] = None,
         include_compression_chain: bool = False,
+        deletion_origin: str = "unknown",
     ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
         are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
@@ -1843,6 +1848,7 @@ class SessionSessionsMixin:
                     expanded = self._expand_compression_lineage(conn, existing)
                 else:
                     expanded = existing
+            self._prepare_session_deletion(conn, expanded, deletion_origin)
             removed_ids.extend(_delete_delegate_children(conn, expanded))
             for chunk in _id_chunks(expanded):
                 ph = _session_ids_placeholders(chunk)

@@ -1196,7 +1196,7 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
-            deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)
+            deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True, deletion_origin="user_rpc")
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:

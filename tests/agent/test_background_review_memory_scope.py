@@ -100,7 +100,7 @@ class TestExplicitRefineOrigin:
         forks = []
 
         def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review",
-                       session_id=None):
+                       session_id=None, review_prompt=None):
             fork = SimpleNamespace(
                 _memory_enabled=True, _user_profile_enabled=False, _memory_write_origin=write_origin,
                 run_conversation=lambda **kw: None, _session_messages=[])

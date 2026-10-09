@@ -253,6 +253,15 @@ def _resolve_create_cwd(params: dict, source: str, profile_home) -> tuple[bool, 
     return explicit_cwd, session_cwd, remote_cwd
 
 
+def _cwd_chosen(params: dict) -> bool | None:
+    """Whether the CLIENT said which workspace this chat starts in (#52589's ``cwd_explicit``), for
+    ``_workspace_is_inherited``: `explicit_cwd` cannot answer it (it is set for any cwd that exists on
+    disk). A client that named NO workspace has not answered at all — the TUI's launch dir, a messaging
+    session — and ``None`` sends the settle to judge the path, where recording "not chosen" would read
+    as an inherited default and re-home a chat the user deliberately started inside a project."""
+    return bool(params.get("cwd_explicit")) if str(params.get("cwd") or "").strip() else None
+
+
 def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
@@ -351,6 +360,22 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
+def _cwd_is_project_folder(current: str) -> bool:
+    """Whether the session's cwd IS a folder a project was explicitly pointed at.
+
+    Read from the projects store, which is durable: a chat parked on its project's own folder stays
+    recognisable as deliberately placed after a restart, when the in-memory pin flags are gone.
+    """
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            return pdb.is_declared_folder(conn, current)
+    except Exception:
+        logger.debug("failed to resolve declared project folders for cwd", exc_info=True)
+        return False
+
+
 def _workspace_is_inherited(session: dict, current: str) -> bool:
     """Whether this chat's workspace was INHERITED rather than chosen: none at all (a detached desktop chat
     the DB has no cwd row for), the profile's configured workspace, or the app's launch default.
@@ -367,6 +392,13 @@ def _workspace_is_inherited(session: dict, current: str) -> bool:
 
     if not (session.get("cwd") or "").strip():
         return True
+
+    # ...and a path a project was explicitly pointed at is an address like any other, even when it is also
+    # the profile's workspace: the app parks its launch directory on that same path, so only the store can
+    # tell a chat living in the project from a chat that merely has nowhere else to be. The in-memory pin
+    # flags do not survive a restart; this does.
+    if _cwd_is_project_folder(current):
+        return False
 
     workspace = _profile_workspace_cwd(session.get("profile_home"))
 

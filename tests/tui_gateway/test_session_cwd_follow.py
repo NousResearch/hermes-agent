@@ -21,6 +21,15 @@ def _git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def _declare_project(folder):
+    """A named project whose declared folder IS ``folder`` — what the sidebar's move and "new session
+    in <project>" leave behind in the durable projects store."""
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        return pdb.create_project(conn, name="workspace", primary_path=str(folder))
+
+
 @pytest.fixture
 def repo_with_worktree(tmp_path):
     """A real repo on ``main`` plus a linked worktree on ``feature``."""
@@ -150,6 +159,44 @@ def test_a_session_started_in_a_project_keeps_that_repo(session, repo_with_workt
     terminal_tool.record_session_cwd(session["session_key"], str(other))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_chat_parked_on_a_project_folder_is_never_re_homed(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """The pin has to outlive the process. A chat sitting ON a project's own folder was put there on
+    purpose (the sidebar's move, "new session in <project>"); after a restart the flags that recorded
+    the move are gone, so the store is what has to say the chat already has an address.
+    """
+    repo, _ = repo_with_worktree
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    _declare_project(workspace)
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(workspace)
+
+
+def test_a_folder_under_a_project_folder_is_not_an_address(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """Only an exact hit counts: a chat parked somewhere INSIDE a project's folder has not been placed
+    in that project, and keeps filing itself under the repo its work lands in.
+    """
+    repo, _ = repo_with_worktree
+    outer = tmp_path / "outer"
+    workspace = outer / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    _declare_project(outer)
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
     assert session["cwd"] == str(repo)
 
 

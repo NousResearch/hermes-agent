@@ -599,6 +599,25 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
 
 
+def is_declared_folder(conn: sqlite3.Connection, path: str, *, include_archived: bool = False) -> bool:
+    """Whether ``path`` IS a declared project folder — equal to one, never a descendant of one (a chat
+    inside a project's repo is a visit, not an address). Covers every declared folder plus each
+    project's ``primary_path``, so a chat parked on a project's own folder still reads as deliberately
+    placed after a restart cleared whatever the process remembered."""
+    if not str(path or "").strip():
+        return False
+    target = _normalize_path(path)
+    sql = ("SELECT pf.path AS folder, p.primary_path AS primary_path "
+           "FROM projects p LEFT JOIN project_folders pf ON pf.project_id = p.id")
+    if not include_archived:
+        sql += " WHERE p.archived = 0"
+    for row in conn.execute(sql).fetchall():
+        for candidate in (row["folder"], row["primary_path"]):
+            if candidate and _normalize_path(candidate) == target:
+                return True
+    return False
+
+
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     """Deterministic ``<project-slug>/<task-id>[-<title-slug>]`` branch name for a project-linked kanban
     task (stable and human-meaningful, replacing the random ``wt/<task-id>`` fallback)."""

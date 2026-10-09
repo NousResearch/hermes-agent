@@ -461,6 +461,18 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   return dataUrl || null
 }
 
+/** A `file.attach` whose path the gateway could not stat: every staging
+ * failure in that handler is wrapped as code 5028
+ * (tui_gateway/methods_prompt.py), so match the unresolved-path message to
+ * know the request is retryable with `data_url` bytes. */
+export function isGatewayPathUnresolvedAttachError(error: unknown): boolean {
+  return (
+    error instanceof JsonRpcGatewayError &&
+    error.code === 5028 &&
+    /file not found on gateway/i.test(error.message)
+  )
+}
+
 // The attach/preview IPC base64-loads the whole file into memory and rejects
 // with a raw "file is too large (N bytes; limit M bytes)" string when over
 // cap. In remote mode every attachment's bytes go through that read, so a big

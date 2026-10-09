@@ -11,6 +11,8 @@ parity across every registered verb.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -201,6 +203,62 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     finally:
         conn1.close()
         conn2.close()
+
+
+def test_notify_claim_from_crashed_process_is_replayed(kanban_home):
+    """A committed claim is not a delivery receipt when its owner exits."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash before send", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat")
+        kb.complete_task(conn, tid, summary="ready")
+
+    claim_in_child = """
+import sys
+from hermes_cli import kanban_db_connect as kbc, kanban_db_notify as kbn
+with kbc.connect() as conn:
+    _, _, events = kbn.claim_unseen_events_for_sub(
+        conn, task_id=sys.argv[1], platform='telegram', chat_id='chat', kinds=['completed'])
+    assert [event.kind for event in events] == ['completed']
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", claim_in_child, tid],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert child.returncode == 0, child.stderr
+
+    # A new process can reclaim the event even though the old cursor was
+    # committed before the child exited. A live concurrent owner remains
+    # excluded by test_notify_claim_is_single_owner_and_rewindable.
+    with kbc.connect() as conn:
+        old_cursor, claimed_cursor, events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat", kinds=["completed"],
+        )
+        assert [event.kind for event in events] == ["completed"]
+        assert claimed_cursor > old_cursor
+        kbn.advance_notify_cursor(
+            conn, task_id=tid, platform="telegram", chat_id="chat", new_cursor=claimed_cursor,
+        )
+        assert kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat", kinds=["completed"],
+        )[1] == []
+
+
+def test_notify_unclaimed_cursor_can_advance_after_delivery(kanban_home):
+    """The read-then-advance API still works for callers without a claim."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="direct delivery", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat")
+        kb.complete_task(conn, tid, summary="ready")
+        cursor, events = kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat", kinds=["completed"],
+        )
+        assert [event.kind for event in events] == ["completed"]
+        kbn.advance_notify_cursor(
+            conn, task_id=tid, platform="telegram", chat_id="chat", new_cursor=cursor,
+        )
+        assert kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat", kinds=["completed"],
+        )[1] == []
 
 
 # ---------------------------------------------------------------------------

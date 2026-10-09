@@ -108,15 +108,20 @@ def close_discarded_turn(db, conn, row):
     turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
     before the wire) ends it. Its side effects are unknown, so the hedged copy. The boundary lands on
     the CURRENT physical transcript (local reset/compression lineage tip), resolved on this
-    connection. Idempotent on the durable tail, like the gateway and core failed-turn closers."""
+    connection. Idempotent on the durable tail, like the gateway and core failed-turn closers.
+
+    A turn lost while parked on a tool (an approval or clarify prompt) ends on its assistant
+    ``tool_calls`` row with no result. That tail is open too: repair prunes the unanswered call,
+    drops the now-empty row and merges the discarded input into the follower's user turn, so it
+    gets the same boundary (merged onto the call row, whose calls are then pruned)."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_state_local_lineage import local_physical_target
     from hermes_state_runtime import _canonical_chain
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
-    tail = conn.execute("SELECT role FROM messages WHERE session_id=? AND active=1 "
+    tail = conn.execute("SELECT role, tool_calls FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
-    if tail is None or tail[0] != 'user':
+    if tail is None or not (tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]'))):
         return False
     db._append_messages_in_transaction(conn, target, [{
         'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),

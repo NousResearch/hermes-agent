@@ -66,3 +66,28 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
     owner.db.append_message(target, 'user', 'FOLLOWER')
     assert await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation']) == settled
     assert owner.db.latest_conversation_role(target) == 'user', 'retry closed a successor turn'
+
+
+@pytest.mark.asyncio
+async def test_discard_closes_turn_lost_while_parked_on_a_tool(owner, monkeypatch):
+    """A turn lost waiting on approval/clarify ends on an unanswered assistant ``tool_calls`` row.
+    Discard must close it too, or repair prunes the call, drops the empty row and merges the
+    discarded input into the follower's request."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+    owner.db.create_session('s', source='test')
+    owner.sessions['s'] = LiveSession(None, 'route')
+    ref = SessionRef(owner.profile_id, 's')
+    actor = Principal('human', owner.profile_id, frozenset({'session:submit', 'session:control'}), 't')
+    first = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
+                                request_id='lost', payload={'text': 'LOST'})
+    claim = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
+    owner.db.append_message('s', 'user', 'LOST')
+    owner.db.append_message('s', 'assistant', '', tool_calls=[{'id': 'call_gate', 'type': 'function',
+        'function': {'name': 'clarify', 'arguments': '{}'}}])
+    owner.epoch = begin_runtime_epoch(owner.db, instance_id='restart')
+    recover_session_inputs(owner.db, epoch=owner.epoch)
+    monkeypatch.setattr(owner, '_schedule', lambda ref: None)
+    await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation'])
+    history = owner.db.get_messages_as_conversation('s') + [{'role': 'user', 'content': 'FOLLOWER'}]
+    repair_message_sequence(None, history)
+    assert [m['content'] for m in history if m['role'] == 'user'] == ['LOST', 'FOLLOWER'], history

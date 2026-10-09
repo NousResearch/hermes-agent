@@ -180,17 +180,42 @@ class TestCronjobRunExecutesImmediately:
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \
              patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/keeper")), \
+             patch("hermes_cli.profiles.get_profile_dir", return_value=Path("/srv/hermes/profiles/keeper")), \
              patch("cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[route]), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
-        assert res["success"] is True
-        adapters = m_run.call_args.kwargs["adapters"]
-        assert isinstance(adapters, SharedRouteAdapters)
-        assert adapters.get("telegram", {"chat_id": "-100"}) is primary_bot
-        assert adapters.get("telegram", {"chat_id": "-999"}) is None
-        assert adapters.get("telegram") is None
+            assert res["success"] is True
+            adapters = m_run.call_args.kwargs["adapters"]
+            assert isinstance(adapters, SharedRouteAdapters)
+            assert adapters.get("telegram", {"chat_id": "-100"}) is primary_bot
+            assert adapters.get("telegram", {"chat_id": "-999"}) is None
+            assert adapters.get("telegram") is None
+
+    def test_default_manual_run_does_not_borrow_empty_shared_routes(self):
+        """An explicit Default route must not turn the native owner into a satellite."""
+        native = {"discord": object()}
+        gateway_loop = object()
+        runner = SimpleNamespace(
+            adapters=native, _gateway_loop=gateway_loop,
+            _adapters_for_profile=lambda profile: native,
+            _is_shared_bot_satellite=lambda profile: True,
+        )
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=dict(_JOB)), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("hermes_constants.profile_name_for_home", return_value="default"), \
+             patch("cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[]), \
+             patch("cron.scheduler.run_one_job", return_value=True) as run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            result = _execute_job_now(dict(_JOB))
+
+        assert result["success"] is True
+        run.assert_called_once()
+        assert run.call_args.kwargs["adapters"] is native
+        assert run.call_args.kwargs["loop"] is gateway_loop
 
     def test_execute_job_now_fails_instead_of_falling_back_when_owner_resolution_raises(self):
         """Fail closed: if the owner profile cannot be resolved, the run is marked failed with the

@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
-from utils import base_url_host_matches
 
 
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
@@ -58,6 +57,11 @@ class CustomProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
+        # utils pulls hermes_yaml → ruamel, which pre-bootstrap interpreters (PM's
+        # runtime, `hermes update`'s tool steps) don't have; discovery must be able to
+        # import this module there, so it loads on first use (#135434).
+        from utils import base_url_host_matches
+
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores

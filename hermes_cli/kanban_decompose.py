@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_board_settings import effective_setting
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
@@ -126,12 +127,14 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None) -> str:
-    """``kanban.<key>`` if it names an existing profile, else ``fallback``
-    (the root task's own assignee) if that does, else the active default
-    profile — so a task is never stranded for lack of an owner.
-    ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
-    catches children the decomposer can't route.
+def _resolve_profile_from_cfg(
+    cfg: dict, key: str, *, fallback: Optional[str] = None, board: Optional[str] = None,
+) -> str:
+    """``kanban.boards.<board>.<key>`` if set, else ``kanban.<key>`` if it names
+    an existing profile, else ``fallback`` (the root task's own assignee) if
+    that does, else the active default profile — so a task is never stranded
+    for lack of an owner. ``orchestrator_profile`` owns the root after
+    fan-out; ``default_assignee`` catches children the decomposer can't route.
 
     The root's assignee sits before the active profile because the decomposer
     runs inside whatever profile hosts the dispatcher — an operator's
@@ -139,7 +142,15 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
     silently become the owner of work the card was assigned away from (#114294).
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get(key) or "").strip()
+    global_value = kanban_cfg.get(key)
+    if global_value is not None and not isinstance(global_value, str):
+        logger.warning(
+            "kanban.%s: expected a string, got %s; ignoring", key, type(global_value).__name__,
+        )
+        global_value = ""
+    explicit = effective_setting(
+        kanban_cfg, key, board, fallback=global_value or None,
+    ) or ""
     for candidate in (explicit, (fallback or "").strip()):
         if candidate:
             try:
@@ -201,7 +212,7 @@ class _Routing:
     valid_names: set[str]
 
 
-def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
+def _load_routing(*, root_assignee: Optional[str] = None, board: Optional[str] = None) -> _Routing:
     from hermes_cli.config import load_config_readonly
     try:
         cfg = load_config_readonly()
@@ -210,8 +221,8 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee, board=board),
+        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee, board=board),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
@@ -313,7 +324,7 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    routing = _load_routing(root_assignee=task.assignee)
+    routing = _load_routing(root_assignee=task.assignee, board=kb.get_current_board())
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

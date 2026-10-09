@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+from plugin_runtime.config_bridge import load_plugin_config, save_plugin_config
+
+logger = logging.getLogger("hermes_cli.plugin_capabilities")
 
 
 @dataclass(frozen=True)
@@ -101,8 +103,7 @@ def _plugin_entry(plugin_id: str, config: Optional[Mapping[str, Any]] = None) ->
     try:
         cfg: Any = config
         if cfg is None:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
+            cfg = load_plugin_config() or {}
         entry = ((cfg.get("plugins") or {}).get("entries") or {}).get(plugin_id) or {}
         return entry if isinstance(entry, dict) else {}
     except Exception:
@@ -162,8 +163,7 @@ def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[st
     """Persist a consent decision: ``granted_capabilities`` (union with prior grants), the consent
     record (hash of the declared set the user saw + UTC timestamp), and the legacy ``allow_*`` key
     for each grant so existing enforcement sites keep working unchanged."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
+    config = load_plugin_config()
     entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
     previous = entry.get(GRANTED_KEY)
     merged = (list(previous) if isinstance(previous, list) else []) + _known(granted)
@@ -180,7 +180,7 @@ def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[st
             node = _child_dict(node, part)
         node[leaf] = True
 
-    save_config(config)
+    save_plugin_config(config)
     logger.info(
         "capability_consent plugin=%s granted=%s declared_hash=%s", plugin_id,
         ",".join(entry[GRANTED_KEY]) or "(none)", entry[CONSENT_KEY]["hash"][:12])

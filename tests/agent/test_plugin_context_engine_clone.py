@@ -42,7 +42,7 @@ class _LockedEngine(_Engine):
 
 def _select(engine):
     with (patch("plugins.context_engine.load_context_engine", return_value=None),
-          patch("hermes_cli.plugins.get_plugin_context_engine", return_value=engine)):
+          patch("plugin_runtime.api.get_plugin_context_engine", return_value=engine)):
         return _select_context_engine({"context": {"engine": engine.name}})
 
 

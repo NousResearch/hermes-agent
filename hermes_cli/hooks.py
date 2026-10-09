@@ -184,7 +184,7 @@ _DEFAULT_PAYLOADS = {
 
 def _cmd_test(args) -> None:
     from hermes_cli.config import load_config
-    from hermes_cli.plugins import VALID_HOOKS
+    from plugin_runtime.dispatch import VALID_HOOKS
     from agent import shell_hooks
 
     event = args.event

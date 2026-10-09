@@ -180,7 +180,7 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
 
     want = _norm(configured)
     try:
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         pm = get_plugin_manager()
         for key, loaded in pm._plugins.items():

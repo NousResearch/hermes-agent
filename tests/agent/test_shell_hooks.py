@@ -7,6 +7,8 @@ covered in ``test_shell_hooks_consent.py``.
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 
 import json
 import sys
@@ -133,7 +135,7 @@ class TestCallbackSubprocess:
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
 
         # Fresh manager
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         cfg = {
             "hooks": {
@@ -163,7 +165,7 @@ class TestCallbackSubprocess:
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
         cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
         assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
 
@@ -315,7 +317,7 @@ class TestIdempotentRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
 
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
 
@@ -324,7 +326,7 @@ class TestIdempotentRegistration:
         assert len(first) == 1
         assert second == []
         # Only one callback on the manager
-        mgr = plugins.get_plugin_manager()
+        mgr = plugin_lifecycle.get_plugin_manager()
         assert len(mgr._hooks.get("on_session_start", [])) == 1
 
     def test_same_command_different_matcher_registers_both(
@@ -339,7 +341,7 @@ class TestIdempotentRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
 
-        plugins._plugin_manager = plugins.PluginManager()
+        plugin_lifecycle._plugin_manager = PluginManager()
 
         cfg = {
             "hooks": {
@@ -352,7 +354,7 @@ class TestIdempotentRegistration:
 
         registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
         assert len(registered) == 2
-        mgr = plugins.get_plugin_manager()
+        mgr = plugin_lifecycle.get_plugin_manager()
         assert len(mgr._hooks.get("pre_tool_call", [])) == 2
 
 

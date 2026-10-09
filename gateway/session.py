@@ -198,7 +198,7 @@ def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
     if not enabled or platform in _PII_SAFE_PLATFORMS:
         return enabled
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
         return bool(entry and entry.pii_safe)
     except Exception:

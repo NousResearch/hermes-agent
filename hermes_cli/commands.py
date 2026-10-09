@@ -400,6 +400,11 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
+from plugin_runtime.host_bindings import bind_plugin_host
+
+bind_plugin_host(command_resolver=resolve_command)
+
+
 def _build_description(cmd: CommandDef) -> str:
     """CLI-facing localized description including the usage hint."""
     if not cmd.args_hint:
@@ -553,7 +558,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     """(name, description, args_hint) for ``PluginContext.register_command`` slash commands.
     Lazy so importing this module never forces plugin discovery."""
     try:
-        from hermes_cli.plugins import get_plugin_commands
+        from plugin_runtime.api import get_plugin_commands
         commands = get_plugin_commands() or {}
     except Exception:
         return []

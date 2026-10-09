@@ -1700,7 +1700,7 @@ class SlackAdapter(BasePlatformAdapter):
         a ``(action_id, plugin)`` already registered on the live app is skipped, so the late
         re-wire (#87770) never stacks a second listener that would run the callback twice."""
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from plugin_runtime.lifecycle import get_plugin_manager
             _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[Slack] Could not load plugin action handlers: %s", e)

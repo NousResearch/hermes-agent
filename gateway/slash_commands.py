@@ -1276,7 +1276,7 @@ class GatewaySlashCommandsMixin(
         src = event.source
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
             try:
-                from gateway.platform_registry import platform_registry
+                from plugin_runtime.platform_registry import platform_registry
                 entry = platform_registry.get(src.platform.value)
                 if not entry or not entry.allow_update_command:
                     return t("gateway.update.platform_not_messaging")

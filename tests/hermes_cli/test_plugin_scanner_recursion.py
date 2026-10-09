@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

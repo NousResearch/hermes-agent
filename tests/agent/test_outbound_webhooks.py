@@ -6,6 +6,8 @@ against a real local HTTP server (no mocks on the network path).
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 
 import hashlib
 import hmac
@@ -39,7 +41,7 @@ def _strip_outbound_callbacks():
     keeps previously-registered callbacks; without this, a target registered
     in one test would fire (real network!) in every later test in this file.
     """
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
 
     manager = get_plugin_manager()
     for event, callbacks in list(manager._hooks.items()):
@@ -52,7 +54,7 @@ def _strip_outbound_callbacks():
 class _CapturingHandler(BaseHTTPRequestHandler):
     """Records every POST (path, headers, body) on the server instance."""
 
-    def do_POST(self):
+    def do_POST(self):  # noqa: N802 — http.server naming
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         self.server.captured.append(  # type: ignore[attr-defined]
@@ -70,7 +72,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self.send_header("Location", location)
         self.end_headers()
 
-    def do_GET(self):
+    def do_GET(self):  # noqa: N802 — records redirect follow-ups
         self.server.captured.append(  # type: ignore[attr-defined]
             {"path": self.path, "method": "GET", "headers": dict(self.headers),
              "body": b""}
@@ -78,7 +80,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args):  # noqa: A002 — http.server naming
         pass
 
 
@@ -369,7 +371,7 @@ class TestRegistration:
         cfg = _cfg({"url": _url(http_server), "events": ["pre_tool_call"]})
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         results = get_plugin_manager().invoke_hook(
             "pre_tool_call", tool_name="terminal", args={"command": "ls"},
@@ -391,14 +393,14 @@ class TestForceReloadHomeScoping:
     def test_force_reload_restores_webhook_and_fires_once(
         self, monkeypatch, http_server,
     ):
-        from hermes_cli import plugins
+        import plugin_runtime.lifecycle as plugins
 
         cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
 
         monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b-webhook")
-        mgr_b = plugins.PluginManager()
-        plugins._plugin_manager = mgr_b
+        mgr_b = PluginManager()
+        plugin_lifecycle._plugin_manager = mgr_b
         outbound_webhooks.register_from_config(cfg)
         assert len(mgr_b._hooks.get("on_session_end", [])) == 1
 
@@ -437,7 +439,7 @@ class TestDelivery:
         registered = outbound_webhooks.register_from_config(cfg)
         assert len(registered) == 1
 
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().invoke_hook(
             "on_session_end",
@@ -469,7 +471,7 @@ class TestDelivery:
         cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().invoke_hook("on_session_end", session_id="s")
         assert outbound_webhooks.flush()
@@ -487,7 +489,7 @@ class TestDelivery:
         )
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         manager = get_plugin_manager()
         manager.invoke_hook(
@@ -550,7 +552,7 @@ class TestDelivery:
         )
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from plugin_runtime.lifecycle import get_plugin_manager
 
         get_plugin_manager().invoke_hook("on_session_end", session_id="s1")
         assert outbound_webhooks.flush()
@@ -585,13 +587,14 @@ class TestDelivery:
         script = tmp_path / "fire_and_exit.py"
         script.write_text(
             "import sys\n"
-            f"sys.path.insert(0, {str(Path(outbound_webhooks.__file__).resolve().parents[1])!r})\n"
+            f"sys.path.insert(0, {repr(str(Path(outbound_webhooks.__file__).resolve().parents[1]))})\n"
             "from agent import outbound_webhooks\n"
-            "from hermes_cli.plugins import get_plugin_manager\n"
-            f"cfg = {cfg!r}\n"
+            "from plugin_runtime.lifecycle import get_plugin_manager\n"
+            f"cfg = {repr(cfg)}\n"
             "outbound_webhooks.register_from_config(cfg)\n"
             "get_plugin_manager().invoke_hook('on_session_end', session_id='exit_test')\n"
-            "# exit immediately — no explicit flush\n"
+            "# exit immediately — no explicit flush\n",
+            encoding="utf-8",
         )
         proc = subprocess.run(
             [_sys.executable, str(script)], capture_output=True, timeout=30,

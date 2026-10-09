@@ -84,7 +84,7 @@ def _platform_defaults(platform_key: str) -> dict[str, Any]:
     if platform_key in _PLATFORM_DEFAULTS:
         return _PLATFORM_DEFAULTS[platform_key]
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform_key)
     except Exception:
         return {}

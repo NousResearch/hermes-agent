@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from hermes_cli.plugins import get_plugin_manager
+from plugin_runtime.lifecycle import get_plugin_manager
 from plugins.memory import load_memory_provider
 
 

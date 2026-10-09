@@ -758,7 +758,7 @@ def _interrupt_session_turn(
         # SESSION's profile as _finalize_session does or an observer's get_hermes_home() names the launch
         # profile (#125063). hydrate_secrets=False: observer-only, /stop must stay fast.
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from plugin_runtime.api import invoke_hook as _invoke_hook
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
                     "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",

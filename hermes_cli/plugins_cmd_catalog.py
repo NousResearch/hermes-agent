@@ -273,6 +273,13 @@ def installed_plugin_removal(name: str, plugin_dir) -> Optional[RemovedEntry]:
     return None
 
 
+from plugin_runtime.host_bindings import bind_plugin_host as _bind_plugin_host
+
+_bind_plugin_host(
+    installed_plugin_removal=lambda name, plugin_dir: installed_plugin_removal(name, plugin_dir),
+)
+
+
 def refuse_if_installed_removed(name: str, plugin_dir) -> None:
     """``PluginOperationError`` form of :func:`installed_plugin_removal` for ``update``/``enable``, which
     otherwise keep pulling and activating code the catalog recalled."""
@@ -673,7 +680,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
         new_target = target.parent / result.installed_name
         declared = _declared_capabilities_from_manifest(_read_manifest(new_target), result.installed_name)
         if declared:
-            from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
+            from plugin_runtime.capabilities import declared_set_changed, pending_capabilities
             if pending_capabilities(result.installed_name, declared) or declared_set_changed(result.installed_name, declared):
                 if interactive:
                     _run_capability_consent(console, result.installed_name, declared, context="update")

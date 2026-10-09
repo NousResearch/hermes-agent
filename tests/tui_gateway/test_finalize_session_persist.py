@@ -186,7 +186,7 @@ class TestFinalizeSessionPersistE2E:
 class TestOnSessionEndHook:
     """Verify on_session_end plugin hook fires on finalize."""
 
-    @patch("hermes_cli.plugins.invoke_hook")
+    @patch("hermes_cli.lifecycle.invoke_hook")
     def test_hook_fired_with_interrupted_true(self, mock_invoke_hook):
         """on_session_end is called with interrupted=True when finalizing."""
         from tui_gateway.server import _finalize_session

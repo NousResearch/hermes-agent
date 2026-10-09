@@ -184,7 +184,7 @@ def _render_terminal(ctx):
         # Plugin-registered terminal backends: show availability via the provider's doctor rows
         # (fail-soft — never break `hermes status`).
         try:
-            from hermes_cli.plugins import discover_plugins
+            from plugin_runtime.lifecycle import discover_plugins
             discover_plugins()
             from agent.terminal_env_registry import get_provider
             provider = get_provider(terminal_env)
@@ -201,7 +201,7 @@ def _render_platforms(ctx):
     _section("Messaging Platforms")
     try:
         from gateway.config import load_gateway_config
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         cfg = load_gateway_config()
     except Exception:
         return
@@ -359,7 +359,7 @@ def _connected_platforms() -> list:
 
 
 def _connected_platform_labels() -> list:
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
     return [getattr(platform_registry.get(p.value), "label", p.value) for p in _connected_platforms()]
 
 

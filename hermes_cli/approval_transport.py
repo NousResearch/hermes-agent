@@ -86,14 +86,7 @@ class ApprovalTransportResult:
     failure: str | None = None
 
 
-@dataclass(frozen=True)
-class RegisteredApprovalTransport:
-    """Plugin-owned registration retained by one profile's PluginManager."""
-
-    name: str
-    present: ApprovalPresentFn
-    plugin_id: str
-    profile_home: str
+from plugin_runtime.contracts import RegisteredApprovalTransport
 
 
 def _deny(failure: str) -> ApprovalTransportResult:

@@ -10,8 +10,8 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from hermes_cli.plugins_ledger import PluginRegistration
-from hermes_cli.plugins_loader import _serialized_replacement
+from plugin_runtime.registration import PluginRegistration
+from plugin_runtime.loading import _serialized_replacement
 
 # Same logger as the rest of the ctx surface, so plugin-load diagnostics stay in one place.
 logger = logging.getLogger("hermes_cli.plugins")

@@ -1680,7 +1680,7 @@ class TestTopLevelBlockVsAuthoredExtra:
             assert os.environ["SLACK_THREAD_REQUIRE_MENTION"] == "true"
             assert os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C1,C2"
         if platform == "telegram":
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
             cls = entry.adapter_factory.__globals__["TelegramAdapter"]
             adapter = cls.__new__(cls)
@@ -1756,7 +1756,7 @@ class TestTopLevelBlockVsAuthoredExtra:
         if source == "root-sibling" and platform == "discord":
             assert os.environ["DISCORD_ALLOWED_USERS"] == "U_ADMIN"
         if source == "root-sibling" and platform == "telegram":
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             entry = next(e for e in platform_registry.all_entries() if e.name == "telegram")
             cls = entry.adapter_factory.__globals__["TelegramAdapter"]
             adapter = cls.__new__(cls)

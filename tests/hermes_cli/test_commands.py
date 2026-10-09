@@ -584,7 +584,7 @@ class TestGatewaySkillCollector:
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", skills_dir),
-            patch("hermes_cli.plugins.get_plugin_commands", return_value={"plug": {"description": "p"}}),
+            patch("plugin_runtime.api.get_plugin_commands", return_value={"plug": {"description": "p"}}),
         ):
             entries, hidden = _collect_gateway_skill_entries(
                 platform="discord", max_slots=5, reserved_names=set(), desc_limit=100,
@@ -768,7 +768,7 @@ class TestTelegramMenuCommands:
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("plugin_runtime.api.get_plugin_commands", return_value=fake_plugins),
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
@@ -871,7 +871,7 @@ class TestTelegramMenuCommands:
         }
 
         with (
-            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("plugin_runtime.api.get_plugin_commands", return_value=fake_plugins),
             patch("agent.skill_commands.get_skill_commands", return_value={}),
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
@@ -896,7 +896,7 @@ class TestTelegramMenuCommands:
         }
 
         with (
-            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("plugin_runtime.api.get_plugin_commands", return_value=fake_plugins),
             patch("agent.skill_commands.get_skill_commands", return_value={}),
             patch("tools.skills_tool.SKILLS_DIR", local_dir),
         ):
@@ -1063,8 +1063,8 @@ class TestPluginCommandEnumeration:
     """
 
     def _patch_plugin_commands(self, monkeypatch, commands):
-        """Monkeypatch hermes_cli.plugins.get_plugin_commands() to a fixed dict."""
-        from hermes_cli import plugins as _plugins_mod
+        """Monkeypatch plugin_runtime.api.get_plugin_commands() to a fixed dict."""
+        import plugin_runtime.api as _plugins_mod
 
         monkeypatch.setattr(
             _plugins_mod, "get_plugin_commands", lambda: dict(commands)
@@ -1088,7 +1088,7 @@ class TestPluginCommandEnumeration:
 
     def test_plugin_enumerator_handles_missing_plugin_manager(self, monkeypatch):
         """Enumerators must never raise when plugin discovery raises."""
-        from hermes_cli import plugins as _plugins_mod
+        import plugin_runtime.api as _plugins_mod
 
         def _boom():
             raise RuntimeError("plugin system down")

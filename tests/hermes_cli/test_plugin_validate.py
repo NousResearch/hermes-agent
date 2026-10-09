@@ -92,7 +92,7 @@ def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path
     """A ``type:`` the Desktop settings renderer/loader accept (``secret`` + ``env:``, ``object``) must
     pass admission — the catalog validator rejecting a documented type blocks pins of plugins that
     declare a secret setting."""
-    from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+    from plugin_runtime.manifest import _CONFIG_SCHEMA_TYPES
     from hermes_cli.plugins_settings import _FIELD_TYPES
 
     assert set(_FIELD_TYPES) == set(_CONFIG_SCHEMA_TYPES)

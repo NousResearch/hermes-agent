@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platform_registry import PlatformEntry, platform_registry
+from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 from tools.send_message_tool import resolve_send_target, send_message_tool
 
 
@@ -190,7 +190,7 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
 
 
 def test_force_reload_unregisters_profile_owned_platform(plugin_platform, monkeypatch):
-    from hermes_cli.plugins import PluginManager
+    from plugin_runtime.manager import PluginManager
 
     name, _entry, _seen = plugin_platform
     manager = PluginManager()

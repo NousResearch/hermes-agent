@@ -2133,6 +2133,31 @@ def get_active_profile_name() -> str:
     return "custom"
 
 
+def _plugin_settled_served_profiles() -> tuple[str, ...]:
+    """Live Gateway host record's settled profile roster for the public PluginContext contract."""
+    try:
+        from gateway.host_rendezvous import ROLE_GATEWAY, read_record
+
+        record = read_record(ROLE_GATEWAY)
+        return tuple(record.profiles) if record is not None else ()
+    except Exception:
+        return ()
+
+
+def _bind_plugin_profile_contract() -> None:
+    """Install host-owned profile policy behind the lower plugin-runtime API."""
+    from plugin_runtime.host_bindings import bind_plugin_host
+
+    bind_plugin_host(
+        profile_home=get_profile_dir,
+        validate_profile_name=validate_profile_name,
+        settled_served_profiles=_plugin_settled_served_profiles,
+    )
+
+
+_bind_plugin_profile_contract()
+
+
 def current_profile_name(default: str | None = None) -> str | None:
     """Identity of the profile the current task runs FOR: the ``HERMES_HOME`` override when one is
     bound (a multiplexed cron tick, a routed gateway turn), else a launcher-pinned

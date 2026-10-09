@@ -2,7 +2,7 @@
 
 Every pluggable-backend registry has the same shape: a global name->provider map
 plus per-profile *scoped* maps (multiplexed gateways), a lock, registration with
-re-registration logging, and the snapshot/restore pair :mod:`hermes_cli.plugins`
+re-registration logging, and the snapshot/restore pair :mod:`plugin_runtime.ownership`
 uses to unwind a plugin. Each ``*_registry`` module instantiates one
 :class:`ProviderRegistry` and re-exports its bound methods under the historical
 module-level names via :meth:`ProviderRegistry.export`, so ``patch("agent.x_registry.get_provider")``

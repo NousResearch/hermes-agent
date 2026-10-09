@@ -92,7 +92,7 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     with (
         patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "pre_verify"),
         patch(
-            "hermes_cli.plugins.get_pre_verify_continue_message",
+            "hermes_cli.plugin_policy.get_pre_verify_continue_message",
             return_value="run project tests",
         ),
         patch("agent.verify_hooks.max_verify_nudges", return_value=2),

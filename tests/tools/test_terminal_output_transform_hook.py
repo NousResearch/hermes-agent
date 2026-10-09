@@ -1,11 +1,12 @@
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
-import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
 from tools.environments.local import LocalEnvironment
 
@@ -55,7 +56,7 @@ def _run_terminal(
     monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
 
     if invoke_hook is not _UNSET:
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
 
     result = json.loads(terminal_tool_module.terminal_tool(command=command))
     return result, mock_env
@@ -124,14 +125,14 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
     monkeypatch.setattr(
         "tools.terminal_tool_sudo._sudo_wrong_password_failure", _sudo_spy
     )
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _hook_spy)
 
     env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
     monkeypatch.setitem(terminal_tool_module._active_environments, "default", env)
     monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
     try:
         command = (
-            "python3 -c \"import sys; "
+            f'"{sys.executable}" -c \"import sys; '
             "sys.stdout.write('HEAD-SENTINEL\\n' + 'x' * 2000000 + "
             "'\\nTAIL-SENTINEL')\""
         )
@@ -194,8 +195,8 @@ def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp
     )
 
     # Force a fresh plugin manager so the new config is picked up.
-    plugins_mod._plugin_manager = plugins_mod.PluginManager()
-    plugins_mod.discover_plugins()
+    plugin_lifecycle._plugin_manager = PluginManager()
+    plugin_lifecycle.discover_plugins()
 
     long_output = "X" * 60000
     result, _mock_env = _run_terminal(

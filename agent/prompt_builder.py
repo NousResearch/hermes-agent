@@ -1327,7 +1327,7 @@ def _plugin_skill_prompt_rows(
     or unloading a plugin removes its registry entries, so enablement gating is inherent."""
     rows: "list[tuple[str, str]]" = []
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
         for meta in get_plugin_manager().list_plugin_skill_metadata():
             name = str(meta.get("name") or "")

@@ -296,7 +296,7 @@ class CLILoopsMixin:
                     print(f"  {t('cli.plugins.bundled_available', count=bundled_count)}")
                 return
             try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
-                from hermes_cli.plugins import get_plugin_manager
+                from plugin_runtime.lifecycle import get_plugin_manager
                 loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
             except Exception:
                 loaded = {}

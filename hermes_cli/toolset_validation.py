@@ -43,7 +43,7 @@ def _platform_default_is_valid(
     # Dynamic plugin platforms are resolved by toolsets.resolve_toolset() even though their synthesized
     # hermes-<platform> name is not in TOOLSETS.
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         return platform_registry.is_registered(platform)
     except Exception:
@@ -73,7 +73,7 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
 
     @cache
     def plugin_names() -> frozenset:
-        from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
+        from plugin_runtime.lifecycle import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
 
         portable = get_portable_mcp_server_names_nowait()
         return frozenset(get_plugin_toolset_keys_nowait() | portable | {f"mcp-{name}" for name in portable})

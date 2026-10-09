@@ -462,7 +462,7 @@ class TestDisabledPluginDiagnostic:
         """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
         dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
         simulated disabled/enabled state without touching real config."""
-        import hermes_cli.plugins as plugins_mod
+        import plugin_runtime.lifecycle as plugins_mod
 
         class _StubMgr:
             _plugins = plugins_map

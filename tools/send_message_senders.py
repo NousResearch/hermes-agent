@@ -342,9 +342,9 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
 def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     """``(standalone_sender_fn, None)`` for a registered plugin or ``(None, error_dict)``;
     ``discover`` runs the idempotent plugin scan first."""
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
     if discover:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:

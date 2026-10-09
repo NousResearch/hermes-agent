@@ -65,7 +65,7 @@ class _HealthyAdapter(BasePlatformAdapter):
 def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # No plugin registers any platform here, so a None adapter is the "plugin never registered" case.
-    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
+    monkeypatch.setattr("plugin_runtime.platform_registry.platform_registry.is_registered", lambda name: False)
     runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
     monkeypatch.setattr(runner, "_create_adapter", create_adapter)
 
@@ -211,7 +211,7 @@ async def test_adapterless_platform_heals_once_its_adapter_appears(monkeypatch, 
         runner._failed_platforms[slack] = runner._startup_retry_entry(
             slack, None, PlatformConfig(enabled=True, token="***"),
         )
-        monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: True)
+        monkeypatch.setattr("plugin_runtime.platform_registry.platform_registry.is_registered", lambda name: True)
         await runner._reconnect_failed_platform(slack, time.monotonic() + 3600)
         assert slack not in runner._failed_platforms
         assert await flush_runtime_status_async()  # status writes are queued off-thread

@@ -10,6 +10,7 @@ import threading
 from collections.abc import Callable, Hashable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -18,6 +19,42 @@ def same_registration(left: Any, right: Any) -> bool:
     if isinstance(left, tuple) and isinstance(right, tuple):
         return len(left) == len(right) and all(same_registration(a, b) for a, b in zip(left, right))
     return left is right
+
+
+
+def _hook_source_of(name: str, module: Any) -> tuple[str, str] | None:
+    """Return the plugin name and resolved module source used to identify fallback hook ownership."""
+    source = getattr(module, "__file__", None)
+    return (name, str(Path(source).resolve())) if source else None
+
+
+@dataclass
+class PluginRegistration:
+    """One host-owned registration plus its inverse, with idempotent disposal."""
+
+    kind: str
+    key: str
+    release: Callable[[], None]
+    plugin_key: str = ""
+    persistent: bool = False
+    _disposed: bool = field(default=False, init=False, repr=False)
+    _on_dispose: Callable[["PluginRegistration"], None] | None = field(default=None, init=False, repr=False)
+
+    @property
+    def active(self) -> bool:
+        """Whether this handle still owns an active registration."""
+        return not self._disposed
+
+    def dispose(self) -> None:
+        """Release this registration once; repeated disposal is harmless."""
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self.release()
+        finally:
+            if self._on_dispose is not None:
+                self._on_dispose(self)
 
 
 @dataclass

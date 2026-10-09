@@ -2009,7 +2009,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: ("Blocked by policy", None),
         )
         agent._checkpoint_mgr.enabled = True
@@ -2083,7 +2083,7 @@ class TestConcurrentToolExecution:
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: ("Blocked", None),
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
@@ -2112,7 +2112,7 @@ class TestConcurrentToolExecution:
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *_args, **_kwargs: (None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
@@ -2165,7 +2165,7 @@ class TestConcurrentToolExecution:
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *_args, **_kwargs: (None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
@@ -2236,7 +2236,7 @@ class TestAgentRuntimePostHookOwnershipSync:
 
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: (None, None),
         )
         monkeypatch.setattr(
@@ -2335,7 +2335,7 @@ class TestRuntimeToolTransformToolResult:
     @staticmethod
     def _install_rewriting_transform(agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "hermes_cli.plugin_policy._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: (None, None),
         )
         monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)

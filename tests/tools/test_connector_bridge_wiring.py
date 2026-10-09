@@ -10,6 +10,8 @@ import logging
 
 import pytest
 
+import hermes_cli.plugin_policy as plugin_policy
+
 from agent.tool_dispatch_helpers import _peel_bridge_call
 from tools.connectors.gateway.bridge import ConnectorLeg, connector_describe
 from tools.connectors.gateway.errors import GatewayAuthError
@@ -638,7 +640,7 @@ def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(mo
     transport = _RecordingTransport()
     _connectors_on(monkeypatch, _recording_client_factory(transport))
     # A pre_tool_call redaction pass: the secret must never leave the process.
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks",
+    monkeypatch.setattr(plugin_policy, "_dispatch_pre_tool_call_hooks",
                         lambda name, args, **kw: (None, {**args, "body": "[REDACTED]"}))
 
     out = _tool_call([{"name": "connectors__gmail__SEND_EMAIL",

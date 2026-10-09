@@ -1,4 +1,5 @@
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 import base64
 import json
@@ -8,8 +9,9 @@ import sys
 import textwrap
 
 from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-from hermes_cli import plugins
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugin_runtime.manifest import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 from run_agent import AIAgent
 
 
@@ -60,7 +62,7 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
 
     manager = PluginManager()
     _install_test_section(manager, section)
-    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", manager)
     agent = _real_agent()
 
     first = build_system_prompt(agent)
@@ -100,8 +102,10 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
 
         from agent.conversation_loop import _restore_or_build_system_prompt
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-        from hermes_cli import plugins
-        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from plugin_runtime.manifest import PluginManifest
+        import plugin_runtime.lifecycle as plugin_lifecycle
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
         from hermes_state import SessionDB
         from run_agent import AIAgent
 
@@ -133,7 +137,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             calls_path.write_text(str(count + 1))
             return "original bytes" if os.environ["TEST_PHASE"] == "first" else "CHANGED"
         ctx.register_system_prompt_section("example.rules", render, position="after_memory")
-        plugins._plugin_manager = manager
+        plugin_lifecycle._plugin_manager = manager
 
         history = [] if os.environ["TEST_PHASE"] == "first" else [
             {"role": "user", "content": "already persisted"}

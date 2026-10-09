@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.plugins import (
-    PluginContext,
-    PluginManager,
     PluginManifest,
 )
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -20,17 +20,12 @@ def patched_manager(monkeypatch):
 
     Restored automatically after the test by monkeypatch.
     """
-    from hermes_cli import plugins as plugins_mod
+    import plugin_runtime.lifecycle as plugin_lifecycle
 
     fresh = PluginManager()
     fresh._discovered = True
-    monkeypatch.setattr(plugins_mod, "_PLUGIN_MANAGER", fresh, raising=False)
-
-    def _stub_get_manager() -> PluginManager:
-        return fresh
-
-    monkeypatch.setattr(plugins_mod, "get_plugin_manager", _stub_get_manager)
-    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", _stub_get_manager)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_manager", fresh)
+    monkeypatch.setattr(plugin_lifecycle, "_plugin_managers_by_home", {})
     yield fresh
 
 

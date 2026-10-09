@@ -132,5 +132,5 @@ def user_plugin_host() -> Any:
     """
     if isolation_mode() != ISOLATION_HOST:
         return None
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
     return get_plugin_manager()._plugin_host()

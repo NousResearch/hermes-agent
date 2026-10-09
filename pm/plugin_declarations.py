@@ -33,7 +33,7 @@ def read_native_manifest(path: Path) -> dict:
 
 
 def manifest_version_error(manifest: dict, name: str) -> str | None:
-    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION, requires_hermes_error
+    from plugin_runtime.manifest import SUPPORTED_MANIFEST_VERSION, requires_hermes_error
 
     reason = requires_hermes_error(manifest)
     if reason:

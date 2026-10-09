@@ -93,6 +93,7 @@ class RemotePluginContext:
         self.manifest = types.SimpleNamespace(**(info.get("manifest") or {}))
         self.plugin_id = info.get("plugin_id") or plugin_key
         self.profile_name = info.get("profile_name")
+        self.profile_home = info.get("profile_home")
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):

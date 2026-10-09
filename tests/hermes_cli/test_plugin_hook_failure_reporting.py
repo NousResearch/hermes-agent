@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from hermes_cli.plugins import PluginManager
+from plugin_runtime.manager import PluginManager
 
 
 @pytest.fixture()
@@ -80,7 +80,7 @@ def test_execution_chain_middleware_failure_warns_once(manager, caplog, monkeypa
     frame and runs the tool."""
     from hermes_cli import middleware as mw
 
-    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    monkeypatch.setattr("plugin_runtime.lifecycle._plugin_manager", manager)
 
     def on_exec(tool_data, next_call):  # core sends tool_name/args, never tool_data
         return next_call()
@@ -105,7 +105,7 @@ def test_stream_observer_hook_failure_warns_once(manager, caplog, monkeypatch):
     the per-consumer worker reports a mis-declared callback through the same warn-once path."""
     from agent import plugin_stream_hooks as psh
 
-    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    monkeypatch.setattr("plugin_runtime.lifecycle._plugin_manager", manager)
 
     def on_stream_delta(tool_data, **kwargs):  # core sends delta, never tool_data
         return None

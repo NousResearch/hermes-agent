@@ -111,7 +111,7 @@ def test_gateway_injection_fails_closed_when_config_cannot_be_read():
     manager.set_gateway_message_injector(object(), injector)
 
     with patch(
-        "hermes_cli.plugins.load_config_readonly",
+        "hermes_cli.config.load_config_readonly",
         side_effect=OSError("config unavailable"),
     ):
         assert (

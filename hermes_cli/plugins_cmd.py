@@ -17,7 +17,7 @@ from typing import Any, NoReturn, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
-from hermes_cli.plugin_capabilities import _child_dict
+from plugin_runtime.capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import rmtree_readonly
@@ -693,7 +693,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     ``allow_tool_override`` grant changes only with an explicit True/False flag;
     None leaves it unchanged. Bundled plugins are trusted.
     """
-    from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
+    from plugin_runtime.relay_policy import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
 
     def _refuse_legacy_relay(plugin: str) -> None:
@@ -866,7 +866,7 @@ def _discover_all_plugins() -> list:
     seen: dict = {}
     # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
-    from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
+    from plugin_runtime.discovery import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
         (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
@@ -922,7 +922,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
         return next((e.toolset for t in tool_names if (e := registry.get_entry(t)) and e.toolset), None)
 
     def _from_loaded_plugin() -> Optional[str]:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent — ensures plugins are loaded
         for _key, loaded in get_plugin_manager()._plugins.items():
             if loaded.manifest.name == name or _key == name:
@@ -930,7 +930,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
         return None
 
     def _from_manifest_on_disk() -> Optional[str]:
-        from hermes_cli.plugins import get_bundled_plugins_dir
+        from plugin_runtime.discovery import get_bundled_plugins_dir
         return next((
             toolset for base in (get_bundled_plugins_dir(), _plugins_dir())
             if base.is_dir() and (base / name).is_dir()
@@ -1059,6 +1059,7 @@ def _catalog():
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
+
 
 
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.

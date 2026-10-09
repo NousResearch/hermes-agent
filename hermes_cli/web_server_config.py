@@ -564,7 +564,7 @@ def _plugin_aux_tasks() -> list[dict[str, Any]]:
     fail-soft: the built-in slots must keep working without plugins.
     """
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from plugin_runtime.api import get_plugin_auxiliary_tasks
         return [dict(entry) for entry in get_plugin_auxiliary_tasks()
                 if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
     except Exception:  # health: allow BLE001 -- plugin discovery must never break the built-in slots

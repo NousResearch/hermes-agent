@@ -139,7 +139,7 @@ def build_plugin_blueprint(
 def plugin_blueprints() -> list[AutomationBlueprint]:
     """Blueprints the active profile's enabled plugins registered (resolved per call)."""
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
 
         discover_plugins()  # idempotent; servers that never import model_tools still see plugins
         return get_plugin_manager().list_automation_blueprints()

@@ -144,7 +144,8 @@ def _get_effective_configurable_toolsets():
     result = list(CONFIGURABLE_TOOLSETS)
     seen = {ts_key for ts_key, _, _ in result}
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        from plugin_runtime.lifecycle import discover_plugins
+        from plugin_runtime.api import get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
         for entry in get_plugin_toolsets():
             if entry[0] not in seen:
@@ -160,7 +161,7 @@ def _get_plugin_toolset_keys() -> set:
     try:
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
-        from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+        from plugin_runtime.lifecycle import get_plugin_toolset_keys_nowait
         return get_plugin_toolset_keys_nowait()
     except Exception:
         return set()
@@ -415,7 +416,7 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        from plugin_runtime.lifecycle import get_portable_mcp_server_names_nowait
         portable = get_portable_mcp_server_names_nowait()
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:

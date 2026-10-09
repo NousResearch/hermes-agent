@@ -10,6 +10,8 @@ Covers wire-up from tools.delegate_tool.delegate_task:
 """
 
 from __future__ import annotations
+import plugin_runtime.lifecycle as plugin_lifecycle
+from plugin_runtime.manager import PluginManager
 
 import json
 import threading
@@ -18,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.delegate_tool import _summarize_tool_arguments, delegate_task
-from hermes_cli import plugins
+from plugin_runtime import api as plugin_api
 
 
 def _make_parent(depth: int = 0, session_id: str = "parent-1"):
@@ -49,10 +51,10 @@ def _make_parent(depth: int = 0, session_id: str = "parent-1"):
 def _fresh_plugin_manager():
     """Each test gets a fresh PluginManager so hook callbacks don't
     leak between tests."""
-    original = plugins._plugin_manager
-    plugins._plugin_manager = plugins.PluginManager()
+    original = plugin_lifecycle._plugin_manager
+    plugin_lifecycle._plugin_manager = PluginManager()
     yield
-    plugins._plugin_manager = original
+    plugin_lifecycle._plugin_manager = original
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +80,7 @@ def _register_capturing_hook():
         kwargs["_thread"] = threading.current_thread()
         captured.append(kwargs)
 
-    mgr = plugins.get_plugin_manager()
+    mgr = plugin_lifecycle.get_plugin_manager()
     mgr._hooks.setdefault("subagent_stop", []).append(_cb)
     return captured
 
@@ -113,7 +115,7 @@ class TestSingleTask:
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
         dispatch_threads = []
-        real_invoke = plugins.invoke_hook
+        real_invoke = plugin_api.invoke_hook
 
         def _tracking_invoke(hook_name, **kwargs):
             if hook_name == "subagent_stop":
@@ -121,7 +123,7 @@ class TestSingleTask:
             return real_invoke(hook_name, **kwargs)
 
         with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+             patch("plugin_runtime.api.invoke_hook", side_effect=_tracking_invoke):
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
@@ -187,7 +189,7 @@ class TestBatchMode:
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
         dispatch_threads = []
-        real_invoke = plugins.invoke_hook
+        real_invoke = plugin_api.invoke_hook
 
         def _tracking_invoke(hook_name, **kwargs):
             if hook_name == "subagent_stop":
@@ -195,7 +197,7 @@ class TestBatchMode:
             return real_invoke(hook_name, **kwargs)
 
         with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+             patch("plugin_runtime.api.invoke_hook", side_effect=_tracking_invoke):
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
                  "summary": "A", "api_calls": 1, "duration_seconds": 1.0,

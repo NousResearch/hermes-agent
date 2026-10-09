@@ -439,7 +439,7 @@ def _profile_gateway_config(home: Path):
     """
     from gateway.config import load_gateway_config
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.plugins_discovery import suppress_plugin_discovery
+    from plugin_runtime.discovery import suppress_plugin_discovery
     from hermes_cli.profiles import profile_is_parked
     scope = suppress_plugin_discovery() if profile_is_parked(home) else contextlib.nullcontext()
     with _profile_runtime_scope(home), scope:
@@ -551,9 +551,9 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
     with contextlib.suppress(Exception):
         # Plugin-shipped adapters (sms, line, teams, feishu, wecom, ...) only exist in the registry
         # after discovery; a bare CLI process has not run it yet.
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         entry = platform_registry.get(platform_value)
         if entry is not None:
             factory = entry.adapter_factory

@@ -685,7 +685,7 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
     if not (force or resolved_url):
         return False
 
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 

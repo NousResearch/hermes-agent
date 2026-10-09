@@ -12,7 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_cli.plugins import PluginContext, PluginManifest
+from hermes_cli.plugins import PluginManifest
+from plugin_runtime.context import PluginContext
 
 
 def _make_ctx(plugin_key: str = "my-plugin") -> PluginContext:

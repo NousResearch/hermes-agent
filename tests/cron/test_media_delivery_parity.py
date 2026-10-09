@@ -65,12 +65,12 @@ def _install_fake_slack_sender(monkeypatch, result_factory):
         })
         return result_factory(calls[-1])
 
-    import gateway.platform_registry as reg_mod
+    import plugin_runtime.platform_registry as reg_mod
 
     entry = reg_mod.platform_registry.get("slack")
     if entry is None:
         # Populate the registry the same way tools/send_message_tool does.
-        import hermes_cli.plugins as hp_boot
+        import plugin_runtime.lifecycle as hp_boot
 
         hp_boot.discover_plugins()
         entry = reg_mod.platform_registry.get("slack")
@@ -78,7 +78,7 @@ def _install_fake_slack_sender(monkeypatch, result_factory):
         pytest.skip("slack platform entry not registered in this environment")
     monkeypatch.setattr(entry, "standalone_sender_fn", fake_sender)
     # Keep plugin discovery from replacing our fake mid-test.
-    import hermes_cli.plugins as hp
+    import plugin_runtime.lifecycle as hp
 
     monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
     return calls

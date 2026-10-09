@@ -485,7 +485,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     The project source is gated on shared truthy semantics (``1``/``true``/``yes``/``on``):
     a bare non-empty check let ``=0``/``=false`` silently enable it (GHSA-5qr3-c538-wm9j).
     """
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from plugin_runtime.discovery import get_bundled_plugins_dir
     from hermes_constants import get_default_hermes_root
 
     bundled_root = get_bundled_plugins_dir()
@@ -496,7 +496,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     # the launch home is the profile directory, which has no ``plugins/`` — user plugins are installed in
     # the hermes root (``~/.hermes/plugins``). Scan the default root as well (``get_default_hermes_root()``
     # unwraps ``<root>/profiles/<name>`` → ``<root>`` and returns a custom ``HERMES_HOME`` unchanged when it
-    # *is* the root), mirroring how ``hermes_cli.plugins`` resolves plugin install locations. The
+    # *is* the root), mirroring how ``plugin_runtime.discovery`` resolves plugin install locations. The
     # ``seen_names`` dedupe below keeps profile-local plugins (if any) authoritative over same-named root
     # plugins.
     user_plugin_roots = [get_process_hermes_home() / "plugins"]
@@ -560,7 +560,7 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
 
 def _discover_dashboard_plugins() -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
-    project plugin sources — same three sources as ``hermes_cli.plugins``."""
+    project plugin sources — same three sources as ``plugin_runtime.discovery``."""
     plugins = []
     seen_names: set = set()
     for plugins_root, source in _dashboard_plugin_search_dirs():
@@ -858,7 +858,7 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
 def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     """``(plugin host, dashboard dir, api file)`` for plugin ``name`` in the active profile, or None
     when that profile has no enabled user copy of it."""
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     for plugin in _discover_dashboard_plugins():
         if plugin.get("name") != name or not plugin.get("_api_file") or plugin.get("source") != "user":

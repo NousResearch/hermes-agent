@@ -1,5 +1,6 @@
 """Tests for the bundled observability/langfuse plugin."""
 from __future__ import annotations
+from plugin_runtime.manager import PluginManager
 
 import importlib
 import logging
@@ -20,15 +21,13 @@ import pytest
 class TestDiscovery:
     def test_plugin_is_discovered_as_standalone_opt_in(self, tmp_path, monkeypatch):
         """Scanner should find the plugin but NOT load it by default."""
-        from hermes_cli import plugins as plugins_mod
-
         # Isolated HERMES_HOME so we don't read the developer's config.yaml.
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        manager = plugins_mod.PluginManager()
+        manager = PluginManager()
         manager.discover_and_load()
 
         # observability/langfuse appears in the plugin registry …

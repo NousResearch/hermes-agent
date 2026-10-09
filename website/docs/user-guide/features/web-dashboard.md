@@ -302,12 +302,15 @@ View agent, gateway, and error log files with filtering and live tailing.
 
 ### Analytics
 
-Usage and cost analytics computed from session history. Select a time period (7, 30, or 90 days) to see:
+Local usage analytics are hidden by default. Set `dashboard.show_token_analytics: true` in Config to enable them. These are local debug records, **not authoritative provider billing**; check the provider's dashboard for actual billed usage. Select a time period (7, 30, or 90 days) to see:
 
-- **Summary cards** — total tokens (input/output), cache hit percentage, total estimated or actual cost, and total session count with daily average
-- **Daily token chart** — stacked bar chart showing input and output token usage per day, with hover tooltips showing breakdowns and cost
-- **Daily breakdown table** — date, session count, input tokens, output tokens, cache hit rate, and cost for each day
-- **Per-model breakdown** — table showing each model used, its session count, token usage, and estimated cost
+- **Summary cards** — total input/output tokens, total session count with daily average, and API calls
+- **Daily token chart** — stacked bar chart showing input and output token usage per day, with hover tooltips
+- **Daily breakdown table** — date, session count, input tokens, and output tokens for each day
+- **Per-provider breakdown** — provider, session count, API calls, input/output tokens, and locally estimated and logged costs in USD. Includes recorded primary and auxiliary work, grouped by canonical billing provider; unattributed usage appears as `unknown`. Each session counts once per provider, so a session that uses several providers appears in each provider's row.
+- **Per-model breakdown** — table showing each model used, its session count, and input/output tokens
+
+The provider breakdown includes recorded auxiliary calls independently of the primary session totals. Its token, call, and cost sums can therefore differ from the existing summary, daily, and model views. Those views keep their existing aggregation scope. All views can omit billable work that was not recorded locally; a logged cost of zero does not prove the provider charged nothing. Older backends that omit the provider breakdown still display the other analytics normally.
 
 ### Cron
 
@@ -544,7 +547,7 @@ Returns log lines. Query parameters: `file` (agent/errors/gateway), `lines` (cou
 
 ### GET /api/analytics/usage
 
-Returns token usage, cost, and session analytics. Query parameter: `days` (default 30). Response includes daily breakdowns and per-model aggregates.
+Returns token usage, cost, and session analytics. Query parameter: `days` (default 30). Response includes daily breakdowns, per-model aggregates, and an additive `by_provider` list. Provider rows contain `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `estimated_cost`, `actual_cost`, `sessions`, and `api_calls`. `sessions` counts distinct sessions per provider, not calls or model rows. Provider usage includes recorded primary and auxiliary work; the existing daily, model, and total fields retain their previous scope. Clients should tolerate older backends without `by_provider`. These are local records, not a provider billing API.
 
 ### GET /api/cron/jobs
 

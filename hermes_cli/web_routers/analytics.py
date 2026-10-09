@@ -77,6 +77,92 @@ def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
+_PROVIDER_USAGE_FIELDS = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_read_tokens": "cache_read_tokens",
+    "cache_write_tokens": "cache_write_tokens",
+    "reasoning_tokens": "reasoning_tokens",
+    "estimated_cost": "estimated_cost_usd",
+    "actual_cost": "actual_cost_usd",
+    "api_calls": "api_call_count",
+}
+
+
+def _provider_residual_expression(key: str, column: str) -> str:
+    total = f"COALESCE(s.{column}, 0)"
+    attributed = f"COALESCE(t.{key}, 0)"
+    residual = f"MAX(0, {total} - {attributed})"
+    if key in ("estimated_cost", "actual_cost"):
+        # Session and route sums can add floats in a different order. Roundoff
+        # alone must not create a phantom provider/session after a route switch.
+        # A relative tolerance still preserves genuinely tiny cost-only usage.
+        tolerance = f"MAX(ABS({total}), ABS({attributed})) * 1e-12"
+        residual = f"CASE WHEN {residual} <= {tolerance} THEN 0 ELSE {residual} END"
+    return f"{residual} AS {key}"
+
+
+def _get_provider_usage(db, cutoff: float) -> List[Dict[str, Any]]:
+    """Attribute recorded usage to providers, including add-only auxiliary calls.
+
+    Session counters include primary turns (including ``voice_chat``), but not
+    record_auxiliary_usage calls. Only primary detail can cover a session's
+    residual; subtracting auxiliary detail here would silently discard usage.
+    One SQL statement keeps attribution and distinct-session counts consistent.
+    """
+    # Read-only dashboards may attach an older schema. Only these known schema
+    # omissions are compatible; malformed stores and unrelated SQL errors must
+    # still reach the route's existing error handling.
+    columns = {row["name"] for row in db._conn.execute("PRAGMA table_info(session_model_usage)")}
+    if columns:
+        # Voice turns use update_token_counts, unlike auxiliary side calls.
+        primary = "COALESCE(u.task, '') IN ('', 'voice_chat')" if "task" in columns else "1"
+        values = ", ".join(f"COALESCE(u.{column}, 0) AS {key}" for key, column in _PROVIDER_USAGE_FIELDS.items())
+        detail_sql = f"""
+            SELECT u.session_id,
+                   COALESCE(NULLIF(u.billing_provider, ''), 'unknown') AS provider,
+                   {primary} AS is_primary, {values}
+            FROM session_model_usage u JOIN selected_sessions s ON s.id = u.session_id
+        """
+    else:
+        # Empty detail source: every session's usage becomes a legacy residual.
+        values = ", ".join(f"0 AS {key}" for key in _PROVIDER_USAGE_FIELDS)
+        detail_sql = f"SELECT id AS session_id, '' AS provider, 1 AS is_primary, {values} FROM selected_sessions WHERE 0"
+
+    sums = ", ".join(f"SUM({key}) AS {key}" for key in _PROVIDER_USAGE_FIELDS)
+    residuals = ", ".join(
+        _provider_residual_expression(key, column)
+        for key, column in _PROVIDER_USAGE_FIELDS.items()
+    )
+    keys = ", ".join(_PROVIDER_USAGE_FIELDS)
+    has_usage = " OR ".join(f"{key} > 0" for key in _PROVIDER_USAGE_FIELDS)
+    return _rows(db, f"""
+        WITH selected_sessions AS (
+            SELECT * FROM sessions WHERE started_at > ?
+        ), route_usage AS (
+            {detail_sql}
+        ), primary_totals AS (
+            SELECT session_id, {sums}
+            FROM route_usage WHERE is_primary
+            GROUP BY session_id
+        ), residual_usage AS (
+            SELECT s.id AS session_id,
+                   COALESCE(NULLIF(s.billing_provider, ''), 'unknown') AS provider,
+                   {residuals}
+            FROM selected_sessions s LEFT JOIN primary_totals t ON t.session_id = s.id
+        ), combined_usage AS (
+            SELECT session_id, provider, {keys} FROM route_usage
+            UNION ALL
+            SELECT session_id, provider, {keys} FROM residual_usage WHERE {has_usage}
+        )
+        SELECT provider, {sums}, COUNT(DISTINCT session_id) AS sessions
+        FROM combined_usage GROUP BY provider
+        ORDER BY CASE WHEN SUM(actual_cost) > 0 THEN SUM(actual_cost)
+                      ELSE SUM(estimated_cost) END DESC,
+                 SUM(input_tokens) + SUM(output_tokens) DESC, provider
+    """, cutoff)
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
@@ -132,6 +218,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            "by_provider": _get_provider_usage(db, cutoff),
             "by_task": _aux_task_summary(aux_rows),  # "what is compression costing me"
             "totals": totals,
             "period_days": days,

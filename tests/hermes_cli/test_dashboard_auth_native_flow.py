@@ -33,6 +33,7 @@ from hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_cli.dashboard_auth import native_flow
+from hermes_cli.dashboard_auth.audit import AuditEvent
 from hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -727,3 +728,207 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
+
+
+# ---------------------------------------------------------------------------
+# Regression #98338: every REFRESH_FAILURE must carry a stable, non-reversible
+# client id. Both audit sites (the native route and the cookie gate) run before
+# any token-derived identity resolves, so the User-Agent is the only per-device
+# signal either can offer — and behind a home NAT the source IP cannot tell two
+# devices apart. The id is a hash: attribution without persisting a raw,
+# attacker-controlled header.
+# ---------------------------------------------------------------------------
+
+
+def _capture_audit_log(monkeypatch):
+    """Record audit_log calls from BOTH the route and the middleware."""
+    import hermes_cli.dashboard_auth.middleware as mw_mod
+    import hermes_cli.dashboard_auth.request_utils as ru_mod
+
+    calls: list = []
+    monkeypatch.setattr(ru_mod, "audit_log",
+                        lambda event, **fields: calls.append((event, fields)))
+    return calls
+
+
+def _expected_device_id(ua: str) -> str:
+    from hermes_cli.dashboard_auth.request_utils import client_device
+
+    class _R:
+        headers = {"user-agent": ua}
+
+    return client_device(_R())
+
+
+def test_native_refresh_failure_audit_includes_stable_device_id(gated_client, monkeypatch):
+    calls = _capture_audit_log(monkeypatch)
+    ua = "HermesDesktop/2.3 (linux x86_64)"
+    r = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": ua},
+    )
+    assert r.status_code == 401
+    failures = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert failures, f"expected a REFRESH_FAILURE audit record; calls={calls}"
+    fields = failures[0][1]
+    assert fields.get("reason") == "all_providers_rejected_rt"
+    assert fields.get("ip")  # pre-existing field preserved
+    assert fields.get("device") == _expected_device_id(ua), fields
+    # Attribution must not leak the raw header into a persisted log.
+    assert ua not in str(fields), "the raw User-Agent must not be persisted"
+
+
+def test_device_id_is_stable_and_bounded(gated_client, monkeypatch):
+    """Same header -> same id across records (so a storm groups by device); different
+    headers -> different ids; never longer than the hash width."""
+    calls = _capture_audit_log(monkeypatch)
+    for ua in ("HermesDesktop/2.3 (linux x86_64)", "Mozilla/5.0 (iPhone)",
+               "X" * 2000):
+        gated_client.post(
+            "/auth/native/refresh",
+            json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+            headers={"User-Agent": ua},
+        )
+    devices = [c[1].get("device") for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert len(devices) == 3, calls
+    assert len(set(devices)) == 3, "distinct clients must get distinct ids: %r" % devices
+    for dev in devices:
+        assert dev and len(dev) == 16, "id must be exactly 16 hex chars: %r" % dev
+        assert all(c in "0123456789abcdef" for c in dev), "id must be hex: %r" % dev
+    # An oversized header cannot inflate the id beyond the hash width.
+    assert devices[-1] == _expected_device_id("X" * 2000)
+
+
+def test_device_id_is_stable_across_repeated_failures(gated_client, monkeypatch):
+    """The whole point of the id: two failures from the same client correlate. This is the
+    property that separates 'one misbehaving device' from 'a storm behind one NAT'."""
+    calls = _capture_audit_log(monkeypatch)
+    ua = "HermesDesktop/2.3 (linux x86_64)"
+    for _ in range(3):
+        gated_client.post(
+            "/auth/native/refresh",
+            json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+            headers={"User-Agent": ua},
+        )
+    devices = [c[1].get("device") for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert len(devices) == 3 and len(set(devices)) == 1, (
+        "the same client must produce one correlatable id across records: %r" % devices
+    )
+    # Computed here, not via client_device: a test that calls the production function
+    # passes even when that function is wrong (a constant, or a truncated hash).
+    import hashlib as _hashlib
+
+    expected = _hashlib.sha256(ua.encode("utf-8")).hexdigest()[:16]
+    assert devices[0] == expected, (
+        "the id must be sha256(User-Agent)[:16]; got %r, expected %r" % (devices[0], expected)
+    )
+
+
+def test_device_id_empty_when_user_agent_absent(gated_client, monkeypatch):
+    """TestClient injects a default User-Agent, so drive the helper's absent branch
+    directly (its contract) and confirm the route still records a bounded id."""
+    from hermes_cli.dashboard_auth.request_utils import client_device
+
+    class _FakeReq:
+        def __init__(self, headers):
+            self.headers = headers
+
+    assert client_device(_FakeReq({})) == ""
+    assert client_device(_FakeReq({"X-Forwarded-For": "1.2.3.4"})) == ""
+
+    calls = _capture_audit_log(monkeypatch)
+    gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": "testclient"},
+    )
+    devices = [c[1].get("device") for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert devices and devices[0] == _expected_device_id("testclient")
+
+
+def test_cookie_gate_refresh_failure_also_records_the_device_id(monkeypatch):
+    """The cookie-gate path audits the SAME event (middleware.py::_audit_failure) for reasons
+    the original route-only patch never touched. Without it, a browser retrying a dead session
+    cookie — the shape the #98338 storm describes — stays unattributable.
+
+    Drives _attempt_refresh directly against a provider that rejects the token, so the gate's
+    audit site is genuinely reached (a route-level request would silently skip it)."""
+    from hermes_cli.dashboard_auth import middleware as mw_mod
+    from starlette.requests import Request
+
+    calls = _capture_audit_log(monkeypatch)
+
+    class _Rejecting:
+        """Stands in for the provider the singleflight rejects. ``refresh`` is never
+        called: the fake passes the instance straight to ``on_rejected``."""
+        name = "stub"
+
+    def _fake_coalesced(rt, provider_hint, *, phase, log, on_rejected, on_unreachable):
+        on_rejected(_Rejecting())
+        return None
+
+    monkeypatch.setattr(mw_mod, "refresh_session_coalesced", _fake_coalesced)
+
+    scope = {"type": "http", "headers": [
+        (b"user-agent", b"Mozilla/5.0 (desktop browser)"),
+        (b"x-forwarded-for", b"1.2.3.4"),
+    ], "client": ("1.2.3.4", 5000), "method": "GET", "path": "/api/config",
+        "query_string": b"", "scheme": "https", "server": ("x", 443), "root_path": ""}
+
+    result = mw_mod._attempt_refresh(Request(scope), refresh_token="garbage-rt")
+    assert result is None
+
+    failures = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert failures, ("the cookie-gate refresh failure was never audited; calls=%r" % (calls,))
+    fields = failures[0][1]
+    assert fields.get("reason") == "refresh_expired", fields
+    assert fields.get("provider") == "stub", fields
+    assert fields.get("ip") == "1.2.3.4", fields
+    assert fields.get("device") == _expected_device_id("Mozilla/5.0 (desktop browser)"), fields
+
+
+def test_both_refresh_failure_sites_emit_the_device_field(gated_client, monkeypatch):
+    """Both writers of REFRESH_FAILURE must EMIT the device field, not merely import the
+    same helper name. An import-identity assertion passes even when one call site is
+    reverted to a plain audit_log call — which is exactly the divergence this guards."""
+    calls = _capture_audit_log(monkeypatch)
+    ua = "HermesDesktop/2.3 (shared-seam)"
+    gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": ua},
+    )
+    route_failures = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+
+    # Now drive the gate's own site through the production closure.
+    from hermes_cli.dashboard_auth import middleware as mw_mod
+    from hermes_cli.dashboard_auth.base import RefreshExpiredError
+    from starlette.requests import Request
+
+    class _Rejecting:
+        name = "stub"
+
+        def refresh(self, **kwargs):
+            raise RefreshExpiredError("dead rt")
+
+    def _fake_coalesced(rt, provider_hint, *, phase, log, on_rejected, on_unreachable):
+        on_rejected(_Rejecting())
+        return None
+
+    monkeypatch.setattr(mw_mod, "refresh_session_coalesced", _fake_coalesced)
+    scope = {"type": "http", "headers": [
+        (b"user-agent", ua.encode()),
+        (b"x-forwarded-for", b"1.2.3.4"),
+    ], "client": ("1.2.3.4", 5000), "method": "GET", "path": "/api/config",
+        "query_string": b"", "scheme": "https", "server": ("x", 443), "root_path": ""}
+    assert mw_mod._attempt_refresh(Request(scope), refresh_token="garbage-rt") is None
+
+    reasons = {c[1].get("reason") for c in calls if c[0] is AuditEvent.REFRESH_FAILURE}
+    assert {"all_providers_rejected_rt", "refresh_expired"} <= reasons, (
+        "both REFRESH_FAILURE sites must be exercised here; saw %r" % (reasons,)
+    )
+    for event, fields in (c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE):
+        assert fields.get("device") == _expected_device_id(ua), (
+            "REFRESH_FAILURE(%s) lost its device attribution: %r" % (fields.get("reason"), fields)
+        )

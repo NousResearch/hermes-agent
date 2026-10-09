@@ -28,7 +28,8 @@ from hermes_cli.dashboard_auth.prefix import prefix_from_request
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
+    access_token_max_age as _expires_in_seconds, audit_refresh_failure,
+    client_ip as _client_ip,
     extract_bearer as _extract_bearer, is_safe_next_path, scan_session_providers,
     unreachable_response)
 
@@ -229,9 +230,10 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
         return None
 
     def _audit_failure(reason):
-        return lambda provider: audit_log(
-            AuditEvent.REFRESH_FAILURE, provider=provider.name, reason=reason,
-            ip=_client_ip(request))
+        # Same shared helper as the native route: both audit REFRESH_FAILURE before
+        # identity resolves, so both need the client attribution (#98338).
+        return lambda provider: audit_refresh_failure(
+            request, provider=provider.name, reason=reason)
 
     return refresh_session_coalesced(
         refresh_token, provider_hint or "", phase="refresh", log=_log,

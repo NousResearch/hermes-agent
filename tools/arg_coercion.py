@@ -41,9 +41,7 @@ def project_tool_args(tool_name: str, args: dict[str, Any], *, schema: dict | No
         return args
 
     params = schema.get("parameters") or {}
-    properties = params.get("properties")
-    if not properties:
-        return args
+    properties = params.get("properties") or {}
 
     # JSON Schema: missing additionalProperties defaults to True (allow extra).
     # Only strip when a schema explicitly forbids them.

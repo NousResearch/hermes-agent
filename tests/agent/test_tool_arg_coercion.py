@@ -477,6 +477,18 @@ class TestProjectToolArgs:
             result = project_tool_args("test_tool", args)
         assert result == args
 
+    def test_strict_no_declared_properties_drops_unknown(self):
+        """A strict empty or omitted properties map grants no arguments."""
+        for properties in ({}, None):
+            parameters = {"type": "object", "additionalProperties": False}
+            if properties is not None:
+                parameters["properties"] = properties
+            schema = {"name": "test_tool", "parameters": parameters}
+
+            result = project_tool_args("test_tool", {"force": True}, schema=schema)
+
+            assert result == {}, "a strict schema with no declared arguments leaked force"
+
     def test_real_terminal_force_is_stripped(self):
         """The terminal tool's hidden ``force`` parameter is stripped.
 

@@ -279,6 +279,54 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
   })
 
+  it('retries a create whose launch pin failed after the ACK under the same request_id (one session, pin reapplied)', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const last = (method: string) => frames().filter(f => f.method === method).at(-1)!
+      const answer = (method: string, body: object) => socket.message(JSON.stringify({ jsonrpc: '2.0', id: last(method).id, ...body }))
+      // The owner keys a local session by request_id, exactly like create_local_session.
+      const minted = new Map<string, string>()
+
+      const ack = () => {
+        const requestId = last('session.create').params.request_id as string
+        minted.set(requestId, minted.get(requestId) ?? `orphan-${minted.size + 1}`)
+        answer('session.create', { result: { session_id: minted.get(requestId), info: {} } })
+      }
+
+      answer('runtime.describe', { result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } })
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The caller (useSessionLifecycle) mints a fresh request_id on every attempt.
+      const first = gw.request('session.create', { request_id: 'attempt-1', model: 'm' })
+      const firstOutcome = first.catch((error: Error) => error)
+      await vi.advanceTimersByTimeAsync(0)
+      ack()
+      await vi.advanceTimersByTimeAsync(0)
+      answer('config.set', { error: { code: -32000, message: 'config refused' } })
+      expect(await firstOutcome).toMatchObject({ message: 'config refused' })
+
+      const retry = gw.request<{ session_id: string }>('session.create', { request_id: 'attempt-2', model: 'm' })
+      await vi.advanceTimersByTimeAsync(0)
+      ack()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(last('config.set').params).toMatchObject({ key: 'verbose', session_id: 'orphan-1', value: 'verbose' })
+      answer('config.set', { result: { key: 'verbose', value: 'verbose', scope: 'session' } })
+      await expect(retry).resolves.toMatchObject({ session_id: 'orphan-1' })
+      expect([...minted.values()]).toEqual(['orphan-1'])
+    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+  })
+
   it('re-ensures a crashed owner on a bounded number of reconnects, then stays discovery-only', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

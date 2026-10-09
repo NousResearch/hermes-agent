@@ -7,6 +7,7 @@ import type { GatewayEvent } from '@hermes/shared/gateway-events'
 import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  JsonRpcGatewayError,
   JsonRpcRequestChannel,
   type ServerRequest,
   wireFrameText
@@ -184,6 +185,8 @@ export class GatewayClient extends EventEmitter {
   isCanonical = false
   private creationContract?: CreationContract
   private describeFlight?: Promise<void>
+  // The last session.create whose outcome is in doubt (see createCanonical).
+  private unsettledCreate?: { key: string; requestId: unknown }
 
   constructor(
     private bootstrap: (start: boolean, recover?: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway
@@ -880,8 +883,31 @@ export class GatewayClient extends EventEmitter {
     return (async () => {
       if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
       const request = canonicalRequest(method, params, this.creationContract)
-      const toolProgress = method === 'session.create' ? launchToolProgress() : undefined
+
+      if (request.method === 'session.create') { return this.createCanonical<T>(request.params, timeoutMs) }
       const value = await this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
+
+      return canonicalResult(method, value, request.params)
+    })()
+  }
+
+  /** session.create plus the launch tool-progress pin, as one outcome for the caller. The owner keys a
+   * local session by request_id, so a create that failed after it may have committed (lost ACK, or the
+   * pin refused after the ACK) is retried with the SAME request_id when the options match: the owner
+   * answers with the session it already minted and the pin is reapplied, never a second session. */
+  private async createCanonical<T>(prepared: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    const toolProgress = launchToolProgress()
+    const { request_id: _fresh, ...options } = prepared
+    const key = JSON.stringify(Object.keys(options).sort().map(name => [name, options[name]]))
+    const retry = this.unsettledCreate?.key === key ? this.unsettledCreate : undefined
+    // Taken, not peeked: a concurrent create never shares an identity still in flight.
+    this.unsettledCreate = undefined
+    const params = retry ? { ...prepared, request_id: retry.requestId } : prepared
+    let acknowledged = false
+
+    try {
+      const value = await this.requestOverWebSocket<T>('session.create', params, timeoutMs)
+      acknowledged = true
 
       if (toolProgress) {
         // Launch pin, before the caller can submit: a refusal fails this create visibly.
@@ -890,8 +916,16 @@ export class GatewayClient extends EventEmitter {
         await this.requestOverWebSocket('config.set', { key: 'verbose', session_id: sid, value: toolProgress })
       }
 
-      return canonicalResult(method, value, request.params)
-    })()
+      return canonicalResult('session.create', value, params)
+    } catch (error) {
+      // An owner's error reply to the create itself is a definitive refusal (nothing to recover);
+      // an ACKed create, a timeout or a dropped socket may have committed the session.
+      if (acknowledged || !(error instanceof JsonRpcGatewayError)) {
+        this.unsettledCreate = { key, requestId: params.request_id }
+      }
+
+      throw error
+    }
   }
 
   kill(reason = 'requested') {

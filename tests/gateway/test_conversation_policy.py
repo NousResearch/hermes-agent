@@ -150,6 +150,7 @@ async def test_inbound_audit_records_matching_rule_without_message(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mentioned", [False, True])
 @pytest.mark.parametrize("text", [
     "⚠️ The model returned only a silence marker for a message that needed a reply. Try again or rephrase.",
     (
@@ -162,11 +163,18 @@ async def test_inbound_audit_records_matching_rule_without_message(tmp_path):
         "Reason: This operation requires explicit approval."
     ),
     (
+        "⚠️ **Hermes wants to run a command that needs your OK**\n\n"
+        "`python3 -c \"print('@lena_ai:chat.rechnerlotsen.com')\"`\n\n"
+        "Why it was flagged: script execution via -e/-c flag\n\n"
+        "Reply `!approve` to execute once, or `!deny` to cancel."
+    ),
+    (
         "This approval prompt has expired. Run the command again if you still "
         "want to approve it."
     ),
+    "That reaction is not valid for this approval prompt.",
 ])
-async def test_approval_lifecycle_messages_are_dropped_before_routing(text, tmp_path):
+async def test_approval_lifecycle_messages_are_dropped_before_routing(text, mentioned, tmp_path):
     adapter = Adapter(Platform.MATRIX, {
         "relevance": {"enabled": True},
         "pingpong_guard": {"enabled": False},
@@ -176,7 +184,7 @@ async def test_approval_lifecycle_messages_are_dropped_before_routing(text, tmp_
         side_effect=AssertionError("approval lifecycle message reached scorer")
     )
     message = event(Platform.MATRIX, text=text)
-    message.metadata["conversation_mentioned"] = False
+    message.metadata["conversation_mentioned"] = mentioned
 
     await adapter.handle_message(message)
 

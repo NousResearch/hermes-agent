@@ -45,7 +45,7 @@ c.close()
 
   try {
     await once(child.stdout!, 'data')
-    preflightStateDb({
+    await preflightStateDb({
       python,
       script,
       home,
@@ -87,7 +87,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   }
 })
 
-test('a managed installation runs the snapshot through the installation launcher', (): void => {
+test('a managed installation runs the snapshot through the installation launcher', async (): Promise<void> => {
   const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-preflight-'))
   const shims: string = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-shim-'))
   const python: string = process.env.HERMES_PYTHON || 'python3'
@@ -125,7 +125,7 @@ test('a managed installation runs the snapshot through the installation launcher
 
     assert.equal(created.status, 0, created.stderr)
 
-    preflightStateDb({
+    await preflightStateDb({
       python: null,
       launcher: shim,
       script,
@@ -143,22 +143,192 @@ test('a managed installation runs the snapshot through the installation launcher
   }
 })
 
-test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
+test('an older selected checkout without the snapshot helper refuses before backend stop', async (): Promise<void> => {
   const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
   let stopped = false
 
   try {
-    assert.throws((): void => {
-      preflightStateDb({
-        python: process.env.HERMES_PYTHON || 'python3',
-        script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
-        home: oldRoot,
-        log: (): void => {}
-      })
-      stopped = true
-    }, /snapshot|pre-flight/)
+    await assert.rejects(
+      async (): Promise<void> => {
+        await preflightStateDb({
+          python: process.env.HERMES_PYTHON || 'python3',
+          script: path.join(oldRoot, 'hermes_cli', 'backup_sqlite.py'),
+          home: oldRoot,
+          log: (): void => {}
+        })
+        stopped = true
+      },
+      /snapshot|pre-flight/
+    )
     assert.equal(stopped, false)
   } finally {
     fs.rmSync(oldRoot, { recursive: true, force: true })
+  }
+})
+
+test('the snapshot does not block the event loop (#124972)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'responsive-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const script: string = fileURLToPath(new URL('../../../../hermes_cli/backup_sqlite.py', import.meta.url))
+
+  const created = spawnSync(
+    python,
+    [
+      '-I',
+      '-S',
+      '-c',
+      "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('CREATE TABLE t (x)'); c.commit(); c.close()",
+      path.join(home, 'state.db')
+    ],
+    { encoding: 'utf8' }
+  )
+
+  assert.equal(created.status, 0, created.stderr)
+
+  let timerFired = false
+
+  setTimeout((): void => {
+    timerFired = true
+  }, 10).unref()
+
+  try {
+    await preflightStateDb({
+      python,
+      script,
+      home,
+      log: (): void => {}
+    })
+    assert.equal(timerFired, true, 'a timer pending during the snapshot fired — the event loop was blocked')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an expired snapshot reports a timeout with a retry path, not corruption (#124972)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'timeout-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const logs: string[] = []
+
+  // A busy snapshot that never finishes: it holds the source long enough for
+  // any real copy to make progress, then sleeps well past the probe cap.
+  const probe: string = path.join(home, 'slow-backup.py')
+  fs.writeFileSync(
+    probe,
+    'import time\ntime.sleep(30)\n'
+  )
+
+  try {
+    await assert.rejects(
+      async (): Promise<void> => {
+        await preflightStateDb({
+          python,
+          script: probe,
+          home,
+          timeoutMs: 250,
+          log: (message: string): void => {
+            logs.push(message)
+          }
+        })
+      },
+      (error: unknown): boolean =>
+        error instanceof Error &&
+        /timed out after 0 s and was cancelled/.test(error.message) &&
+        !/spawnSync|ETIMEDOUT/.test(error.message) &&
+        /retry/i.test(error.message)
+    )
+    assert.equal(
+      logs.some((message: string): boolean => message.includes('timed out') && message.includes('not evidence of corruption')),
+      true,
+      logs.join('\n')
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a snapshot that keeps heartbeating survives past the startup window (#124983)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'progressing-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const logs: string[] = []
+
+  // A snapshot that outlives the startup window while proving progress: it
+  // heartbeats like `backup_sqlite.py` does while a phase runs, far past the
+  // old fixed 180 s cap, and must NOT be killed (#124972, #124983).
+  const probe: string = path.join(home, 'progressing-backup.py')
+  fs.writeFileSync(
+    probe,
+    'import sys, time\n' +
+    'for _ in range(6):\n' +
+    "    sys.stderr.write('PRFL-HB copying state.db: still going\\n')\n" +
+    '    sys.stderr.flush()\n' +
+    '    time.sleep(0.25)\n' +
+    "print('{\"path\": null, \"message\": \"done\"}')\n"
+  )
+
+  try {
+    await preflightStateDb({
+      python,
+      script: probe,
+      home,
+      timeoutMs: 300,
+      stallMs: 10_000,
+      log: (message: string): void => {
+        logs.push(message)
+      }
+    })
+    assert.equal(
+      logs.some((message: string): boolean => /state\.db pre-flight:/.test(message) && /done/.test(message)),
+      true,
+      logs.join('\n')
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a snapshot that heartbeats once and then goes silent is cancelled as wedged (#124983)', async (): Promise<void> => {
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'wedged-preflight-'))
+  const python: string = process.env.HERMES_PYTHON || 'python3'
+  const logs: string[] = []
+
+  // One heartbeat (so the no-progress watchdog is armed), then silence: the
+  // copy is wedged exactly like Dolverin's forced-kill scenario, and the
+  // updater must cancel it rather than wait out a fixed cap.
+  const probe: string = path.join(home, 'wedged-backup.py')
+  fs.writeFileSync(
+    probe,
+    'import sys, time\n' +
+    "sys.stderr.write('PRFL-HB copying state.db: 1 of 2 pages\\n')\n" +
+    'sys.stderr.flush()\n' +
+    'time.sleep(30)\n'
+  )
+
+  try {
+    await assert.rejects(
+      async (): Promise<void> => {
+        await preflightStateDb({
+          python,
+          script: probe,
+          home,
+          timeoutMs: 60_000,
+          stallMs: 300,
+          log: (message: string): void => {
+            logs.push(message)
+          }
+        })
+      },
+      (error: unknown): boolean =>
+        error instanceof Error &&
+        /made no progress for 0 s and was cancelled/.test(error.message) &&
+        /not evidence of corruption/.test(error.message) &&
+        /retry/i.test(error.message)
+    )
+    assert.equal(
+      logs.some((message: string): boolean => message.includes('made no progress') && message.includes('not evidence of corruption')),
+      true,
+      logs.join('\n')
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
   }
 })

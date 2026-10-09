@@ -2273,9 +2273,9 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_pending_model_notes",
     "_last_resolved_model",
     "_queued_events",
-    # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
-    # See #72016.
+    # Stall-watchdog latches; cleared on /new so a fresh conversation can warn again. See #72016.
     "_session_stall_notified",
+    "_session_stall_recovery_latched",
     # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
     "_transcript_lag_streaks",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a

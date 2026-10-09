@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -517,11 +517,22 @@ def _spawn_hermes_action(
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
-    log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
+    try:
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                env=action_env, **detach,
+            )
+        except PermissionError as exc:
+            if sys.platform != "win32" or exc.winerror != 5:
+                raise
+            # Task Scheduler jobs can forbid breakaway; retain hidden-console flags.
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                env=action_env, creationflags=windows_detach_flags_without_breakaway(),
+            )
+    finally:
+        log_file.close()  # child owns its handle; also close ours when spawning fails
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc

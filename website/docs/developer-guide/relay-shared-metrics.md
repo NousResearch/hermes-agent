@@ -163,9 +163,14 @@ history is still `committed` (the model sees the compacted history next), with
 
 The mark is parented to the live `hermes.turn` of the same session, or to the
 `hermes.session` scope when compaction runs outside a turn (gateway hygiene).
-No mark is emitted from a turn Relay does not instrument (a second concurrent
-turn on the same session) or from a persistence-detached fork such as
-background review: their compaction rewrites only their own transcript.
+With `compression.in_place: false`, a rotating commit moves the agent to a
+child session that has no Relay scope until a later Relay-managed LLM call or
+the next turn opens one. While it has none, a compaction in the child (a
+second preflight pass, for example) is parented to the live `hermes.turn` the
+agent started in, and `data.session_id` still names the child. No mark is
+emitted from a turn Relay does not instrument (a second concurrent turn on the
+same session) or from a persistence-detached fork such as background review:
+their compaction rewrites only their own transcript.
 
 `data` is flat so OpenTelemetry flattens every field into
 `nemo_relay.mark.data.<key>`. Every v1 key is present on every mark; a value
@@ -213,9 +218,6 @@ report the same compaction again.
 
 Known gaps in v1:
 
-- With `compression.in_place: false`, a second rotating compaction in the same
-  turn emits no mark: its new session has no Relay scope until the next turn,
-  which opens fresh.
 - With `gateway.telemetry.session_segments.on_compaction: true`, a rotating
   commit outside any turn closes the old Relay session before the mark is
   emitted, so the mark is dropped. No current caller does this: manual

@@ -8,6 +8,7 @@ hygiene runs outside any turn). Relay resets LLM-history freshness only for the 
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -149,3 +150,73 @@ def test_a_turn_relay_does_not_instrument_records_no_mark(relay):
         coordinator.end_turn(live, outcome="success")
 
     assert fake.scope.events == []
+
+
+def test_a_turn_fallback_lands_only_on_the_turn_the_agent_started_in(relay):
+    """An unscoped child session falls back to the live turn only when the agent's turn started in that
+    turn's session; a turn of any other session never receives the mark."""
+    fake, runtime, coordinator = relay
+    lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
+    turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task")
+    try:
+        assert emit_compaction_mark("child", "compaction", _committed("child"), turn_session_id="other") is False
+        assert emit_compaction_mark("child", "compaction", _committed("child"), turn_session_id="s1") is True
+    finally:
+        coordinator.end_turn(turn, outcome="success")
+
+    [event] = fake.scope.events
+    assert (event["handle"], event["data"]["session_id"]) == (turn.handle, "child")
+
+
+def _transcript(start: int) -> list[dict[str, Any]]:
+    filler = " ".join(["context"] * 200)
+    return [
+        message
+        for idx in range(start, start + 10)
+        for message in (
+            {"role": "user", "content": f"user message {idx} {filler}"},
+            {"role": "assistant", "content": f"assistant reply {idx} {filler}"},
+        )
+    ]
+
+
+def test_every_rotation_in_one_turn_is_marked_on_that_turn(relay, tmp_path, monkeypatch):
+    """With ``compression.in_place: false`` each commit moves the agent to a child session, and the child has
+    no Relay scope while the turn that rotated into it is still running. A second rotation in that turn (a
+    multi-pass preflight) must still be marked on the live turn, not dropped."""
+    from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    fake, runtime, coordinator = relay
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="rotating-session",
+        skip_context_files=True, skip_memory=True,
+    )
+    agent.compression_in_place = False
+    agent.context_compressor.tail_token_budget = 10
+    lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="rotating-session", platform="cli")
+    turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task")
+    note_turn_start(agent, "t1")
+    try:
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+            first, _ = agent._compress_context(
+                [{"role": "system", "content": "sys"}, *_transcript(0)], "sys", approx_tokens=80_000,
+                trigger="turn_start_threshold",
+            )
+            child = agent.session_id
+            agent._compress_context(first + _transcript(10), "sys", approx_tokens=80_000, trigger="turn_start_threshold")
+    finally:
+        note_turn_persisted(agent)
+        coordinator.end_turn(turn, outcome="success")
+        agent.close()
+
+    assert "rotating-session" != child != agent.session_id
+    marks = [event for event in fake.scope.events if event["name"].startswith("compaction")]
+    assert [(mark["name"], mark["data"]["session_id"]) for mark in marks] == [
+        ("compaction", "rotating-session"), ("compaction", child),
+    ]
+    assert all(mark["handle"] is turn.handle for mark in marks)
+    assert all(mark["data"]["split_status"] == "rotated_committed" for mark in marks)

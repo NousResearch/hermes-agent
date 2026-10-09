@@ -147,6 +147,7 @@ from agent.compression_facade import CompressionFacadeMixin
 from agent.turn_facade import TurnFacadeMixin
 from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
+from agent.token_budget_runtime import TokenBudgetRuntimeMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import is_local_endpoint
@@ -240,6 +241,7 @@ class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
     SessionPersistenceMixin, CompressionFacadeMixin, TurnFacadeMixin, VisionMessagePrepMixin, ReasoningParamsMixin,
+    TokenBudgetRuntimeMixin,
 ):
     """AI Agent with tool calling capabilities."""
 
@@ -308,6 +310,9 @@ class AIAgent(
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
+        # Runtime budgets are applied only after provider/client/compressor
+        # initialization, keeping prompt construction and its cache stable.
+        self._apply_runtime_token_budget()
 
     def _get_session_db_for_recall(self):
         """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the
@@ -491,8 +496,6 @@ class AIAgent(
         return ensure_lmstudio_model_loaded(
             self.model, self.base_url, getattr(self, "api_key", ""), config_context_length, return_load_result=True,
         )
-
-    switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
     def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
         """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
@@ -1252,8 +1255,6 @@ class AIAgent(
 
     _interruptible_api_call = _forward("agent.chat_completion_helpers", "interruptible_api_call")
     _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")
-    _try_activate_fallback = _forward("agent.chat_completion_helpers", "try_activate_fallback")
-
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider remains (mirrors ``try_activate_fallback``'s guard) — gates the
         "trying fallback..." status so we never announce one that won't be attempted.
@@ -1262,9 +1263,7 @@ class AIAgent(
         """
         return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
 
-    _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")
-    _build_api_kwargs = _forward("agent.chat_completion_helpers", "build_api_kwargs")
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""

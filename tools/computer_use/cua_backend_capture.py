@@ -55,15 +55,14 @@ def _linux_x11_active_window_id() -> Optional[int]:
         return None
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
-def _is_cua_driver_self_window(w: dict[str, Any]) -> bool:
-    """True for the authorization daemon's own native window (normalized app name)."""
-    app_name = str(w.get("app_name", "")).strip().lower()
-    return re.sub(r"[\s_-]+", "", app_name) == "cuadriver"
-
 def _app_key(name: str) -> str:
     """Exact-match key for an app name. Windows drivers name apps by executable, so ``Notepad`` must equal
     ``Notepad.exe`` exactly rather than fall through to the substring tier (which also matches ``notepad++.exe``)."""
     return name.strip().lower().removesuffix(".exe")
+
+def _is_cua_driver_self_window(w: dict[str, Any]) -> bool:
+    """True for the authorization daemon's own native window (normalized app name; ``cua-driver.exe`` on Windows)."""
+    return re.sub(r"[\s_-]+", "", _app_key(str(w.get("app_name", "")))) == "cuadriver"
 
 
 def _select_capture_target(windows: list[dict[str, Any]], *, app_requested: bool,

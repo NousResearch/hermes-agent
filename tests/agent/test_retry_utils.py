@@ -2,7 +2,7 @@
 
 import threading
 
-import agent.retry_utils as retry_utils
+from agent import retry_utils
 from types import SimpleNamespace
 
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff

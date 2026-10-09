@@ -1,4 +1,4 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, onStop, type ReadableAtom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
@@ -43,6 +43,11 @@ export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefine
 
   if (!cached) {
     cached = computed($toolDisclosureStates, states => states[id])
+    onStop(cached, () => {
+      if (disclosureOpenCache.get(id) === cached) {
+        disclosureOpenCache.delete(id)
+      }
+    })
     disclosureOpenCache.set(id, cached)
   }
 
@@ -61,6 +66,11 @@ export function $anyToolDisclosureOpen(ids: readonly string[]): ReadableAtom<boo
 
   if (!cached) {
     cached = computed($toolDisclosureStates, states => ids.some(id => Boolean(states[id])))
+    onStop(cached, () => {
+      if (anyDisclosureOpenCache.get(key) === cached) {
+        anyDisclosureOpenCache.delete(key)
+      }
+    })
     anyDisclosureOpenCache.set(key, cached)
   }
 

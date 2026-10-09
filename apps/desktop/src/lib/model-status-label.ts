@@ -32,9 +32,9 @@ export function currentPickerSelection(
 }
 
 /** Canonical provider labels shared by onboarding and the model pill. OAuth
- * provider ids stay distinct from their direct-API counterparts so a session on
- * `xai-oauth` never reads as the plain `xai` key path, and internal route names
- * never reach user-facing copy. */
+ *  provider ids stay distinct from their direct-API counterparts so a session on
+ *  `xai-oauth` never reads as the plain `xai` key path, and internal route names
+ *  never reach user-facing copy. */
 export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Anthropic Account',
   'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
@@ -62,9 +62,12 @@ export function modelBaseId(model: string): string {
 
 // Trailing model-id variants that should render as a grayed tag beside the
 // name (e.g. "Opus 4.8" + "Fast") rather than collapsing two distinct ids to
-// the same display name.
+// the same display name. `-flash` splits look-alike pairs the same way
+// (#118083): models.dev carries both `deepseek-flash` (alias) and
+// `deepseek-v4.1-flash` (full id) for the provider.
 const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
   [/-fast$/i, 'Fast'],
+  [/-flash$/i, 'Flash'],
   [/-thinking$/i, 'Thinking'],
   [/-preview$/i, 'Preview'],
   [/-latest$/i, 'Latest']
@@ -107,10 +110,6 @@ const applyVendorCasing = (text: string): string => {
 }
 
 function prettifyBase(base: string): string {
-  if (/^deepseek-flash$/i.test(base)) {
-    return 'DeepSeek V4.1 Flash'
-  }
-
   if (/^claude-/i.test(base)) {
     // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
     // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
@@ -137,34 +136,52 @@ function prettifyBase(base: string): string {
   return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
-/** Split a model id into a clean display name plus an optional grayed variant
- *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let base = modelBaseId(model)
-  let tag = ''
+// Split the trailing suffixes a local id can carry — a variant tag
+// (`…-flash`, `…-fast`) and a GGUF quant (`…-UD-Q4_K_XL`, `…-Q8_0`) — in
+// EITHER order: `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model.
+// One decomposition feeds both the catalog rows and the composer pill, so
+// the two screens can never disagree on which variant an id carries.
+function splitTrailingTags(base: string): { base: string; variant: string; quant: string } {
+  let variant = ''
+  let quant = ''
 
-  // Local GGUF ids carry a quant suffix (`…-UD-Q4_K_XL`, `…-Q8_0`). Render it
-  // as a quiet tag — "Qwen3.6 27B · Q4" — never as part of the name. Without
-  // this the composer pill reads raw quant soup ("Qwen3.6 27B UD Q4 K XL").
-  const quant = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
+  for (let progress = true; progress;) {
+    progress = false
 
-  if (quant) {
-    tag = quant[1].split('_')[0].toUpperCase()
-    base = base.slice(0, -quant[0].length)
-    // Instruct/chat markers are noise once the quant confirmed a local build.
-    base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
-  }
+    if (!variant) {
+      for (const [pattern, label] of VARIANT_TAGS) {
+        if (pattern.test(base)) {
+          variant = label
+          base = base.replace(pattern, '')
+          progress = true
 
-  if (!tag) {
-    for (const [pattern, label] of VARIANT_TAGS) {
-      if (pattern.test(base)) {
-        tag = label
-        base = base.replace(pattern, '')
+          break
+        }
+      }
+    }
 
-        break
+    if (!quant) {
+      const quantMatch = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
+
+      if (quantMatch) {
+        quant = quantMatch[1].split('_')[0].toUpperCase()
+        base = base.slice(0, -quantMatch[0].length)
+        // Instruct/chat markers are noise once the quant confirmed a local build.
+        base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
+        progress = true
       }
     }
   }
+
+  return { base, variant, quant }
+}
+
+/** Split a model id into a clean display name plus an optional grayed variant
+ *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
+export function modelDisplayParts(model: string): { name: string; tag: string } {
+  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
+
+  const tags = [variant, quant].filter(Boolean)
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
@@ -172,14 +189,14 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   const contextWindow = base.match(/\[(\d+[mk])\]$/i)
 
   if (contextWindow) {
-    tag = tag ? `${tag} ${contextWindow[1].toUpperCase()}` : contextWindow[1].toUpperCase()
+    tags.push(contextWindow[1].toUpperCase())
     base = base.slice(0, -contextWindow[0].length)
   }
 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
+  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant
@@ -191,19 +208,46 @@ export function displayModelName(model: string): string {
   return tag ? `${name} ${tag}` : name
 }
 
-/** Composer model-pill label — model name plus Fast when it applies. The
- *  reasoning level is NOT here: it has its own pill (`ReasoningPill`), so a
- *  long model name can no longer push the effort out of the truncating span. */
-export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
-  const label = displayModelName(model)
+/** The variant tag a model id carries (Fast, Flash, Thinking, Preview,
+ *  Latest) — the one taxonomy both the catalog rows and the composer pill
+ *  split on, so distinct ids never render as one model listed twice.
+ *  Quant and context-window tags stay picker-row detail. Derived from the
+ *  same suffix split as `modelDisplayParts`, so a quant-bearing local id
+ *  (`…-flash-Q4_K_XL`, `…-Q4_K_XL-flash`) reports the same variant on the
+ *  pill as the catalog row shows. */
+export function modelVariantTag(model: string): string {
+  return splitTrailingTags(modelBaseId(model)).variant
+}
 
-  // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id). The
-  // variant's tag already reads Fast in the label above, so only the
-  // param-driven case appends it — never both (#88597).
-  if (model.trim() && options?.fastMode && !/-fast$/i.test(modelBaseId(model))) {
-    return `${label} · Fast`
-  }
+/** Composer model-pill label — model name plus its variant tag (Fast, Flash,
+ *  …) when one applies, separated by a `·` so the pill reads as
+ *  "name · variant" at a glance. The reasoning level is NOT here: it has its
+ *  own pill (`ReasoningPill`), so a long model name can no longer push the
+ *  effort out of the truncating span. Fast shows when the speed=fast param is
+ *  on OR the active model is a `…-fast` variant — never both. */
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; serviceTier?: string }): string {
+  const name = modelDisplayParts(model).name
 
-  return label
+  const tag = model.trim()
+    ? options?.serviceTier === 'ultrafast'
+      ? 'Ultrafast'
+      : options?.fastMode
+        ? 'Fast'
+        : modelVariantTag(model)
+    : ''
+
+  return tag ? `${name} · ${tag}` : name
+}
+
+const FAST_TIERS = new Set(['fast', 'priority', 'on'])
+
+/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, `auto`, …);
+ *  the composer only speaks the three exact tiers `session.create` accepts.
+ *  Unset stays unset (the profile default rides). */
+export function composerServiceTier(value: unknown): string {
+  const tier = String(value ?? '')
+    .trim()
+    .toLowerCase()
+
+  return !tier ? '' : tier === 'ultrafast' ? 'ultrafast' : FAST_TIERS.has(tier) ? 'priority' : 'normal'
 }

@@ -56,14 +56,14 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
     return default
 
 
-def _as_list(raw: Any) -> List[str]:
+def _as_list(raw: Any) -> list[str]:
     if raw is None:
         return []
     items = raw if isinstance(raw, list) else [raw]
     return [str(item).strip() for item in items if str(item).strip()]
 
 
-_offset = lambda args: max(0, int(args.get("offset") or 0))  # noqa: E731
+_offset = lambda args: max(0, int(args.get("offset") or 0))
 
 
 def _limit(args: dict, default: int = 20) -> int:
@@ -76,10 +76,10 @@ def _limit(args: dict, default: int = 20) -> int:
     return max(1, min(50, value))
 
 
-_ok = lambda action, result, **extra: tool_result({"success": True, "action": action, **extra, "result": result})  # noqa: E731
+_ok = lambda action, result, **extra: tool_result({"success": True, "action": action, **extra, "result": result})
 
 
-def _dispatcher(tool_name: str, default: str, table: Dict[str, _Handler], prepare: Optional[Callable[[dict], dict]] = None):
+def _dispatcher(tool_name: str, default: str, table: dict[str, _Handler], prepare: Optional[Callable[[dict], dict]] = None):
     """Build a tool handler that routes ``args['action']`` through *table*.
 
     The client is constructed outside the error boundary (auth failures propagate
@@ -141,7 +141,7 @@ def _pb_cmd(client: SpotifyClient, args: dict, action: str, method: str, path: s
     return _ok(action, client.request(method, path, params={**extra, "device_id": args.get("device_id")}))
 
 
-_pb_device_cmd = lambda method, path: (lambda c, a, act: _pb_cmd(c, a, act, method, path))  # noqa: E731
+_pb_device_cmd = lambda method, path: (lambda c, a, act: _pb_cmd(c, a, act, method, path))
 
 
 def _pb_required_param(path: str, param: str, convert: Callable[[Any], Any]) -> _Handler:
@@ -219,7 +219,7 @@ def _handle_spotify_search(args: dict, **kw) -> str:
 
 # -- spotify_playlists ---------------------------------------------------------
 
-_playlist_path = lambda args, suffix="": f"/playlists/{normalize_spotify_id(str(args.get('playlist_id') or ''), 'playlist')}{suffix}"  # noqa: E731
+_playlist_path = lambda args, suffix="": f"/playlists/{normalize_spotify_id(str(args.get('playlist_id') or ''), 'playlist')}{suffix}"
 
 
 _handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
@@ -239,8 +239,8 @@ _handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
 
 # -- spotify_albums ------------------------------------------------------------
 
-_page_params = lambda args: {"limit": _limit(args), "offset": _offset(args), "market": args.get("market")}  # noqa: E731
-_prepare_album = lambda args: {**args, "_path": f"/albums/{normalize_spotify_id(str(args.get('album_id') or args.get('id') or ''), 'album')}"}  # noqa: E731
+_page_params = lambda args: {"limit": _limit(args), "offset": _offset(args), "market": args.get("market")}
+_prepare_album = lambda args: {**args, "_path": f"/albums/{normalize_spotify_id(str(args.get('album_id') or args.get('id') or ''), 'album')}"}
 
 
 _handle_spotify_albums = _dispatcher("spotify_albums", "get", {
@@ -280,9 +280,9 @@ _BOOL = {"type": "boolean"}
 _STR_ARRAY = {"type": "array", "items": COMMON_STRING}
 
 
-_strs = lambda *names: dict.fromkeys(names, COMMON_STRING)  # noqa: E731
-_enum = lambda *values: {"type": "string", "enum": list(values)}  # noqa: E731
-_idesc = lambda text: {"type": "integer", "description": text}  # noqa: E731
+_strs = lambda *names: dict.fromkeys(names, COMMON_STRING)
+_enum = lambda *values: {"type": "string", "enum": list(values)}
+_idesc = lambda text: {"type": "integer", "description": text}
 
 
 def _schema(name: str, description: str, properties: dict, required: tuple = ("action",)) -> dict:
@@ -314,26 +314,3 @@ SPOTIFY_LIBRARY_SCHEMA = _schema("spotify_library", "List, save, or remove the u
     "action": _enum("list", "save", "remove"),
     "limit": _INT, "offset": _INT, "market": COMMON_STRING, "uris": _STR_ARRAY, "ids": _STR_ARRAY, "items": _STR_ARRAY,
 }, ("kind", "action"))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'SpotifyAPIError': ('plugins.spotify.client', 'SpotifyAPIError'),
-    'SpotifyAuthRequiredError': ('plugins.spotify.client', 'SpotifyAuthRequiredError'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

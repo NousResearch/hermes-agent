@@ -417,7 +417,7 @@ def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="stall metadata", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: ((0, "terminal"), True),
     )
     assert res["status"] == "dispatched"
@@ -444,7 +444,7 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="live listing", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: (((3, "web_search", base_ts),), True),
     )
     try:
@@ -519,9 +519,11 @@ print(r["delegation_id"])
     )
     delegation_id = first.stdout.strip().splitlines()[-1]
 
+    # The ledger replays on the first consumer, not at import (#123265).
     consumer = r'''
 import json
 from tools.process_registry import process_registry
+process_registry.restore_completions()
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''
@@ -544,7 +546,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
         text=True, capture_output=True, timeout=15, check=True,
     )
     probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        [sys.executable, "-c", "from tools.process_registry import process_registry; process_registry.restore_completions(); print(process_registry.completion_queue.qsize())"],
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
@@ -1009,7 +1011,7 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
              {"goal": "review PR 3 thoroughly and report", "group": "g"}]
@@ -1028,7 +1030,7 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
     and a unit must not be judged stalled for time it spent waiting to start."""
     _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
     started, release = [], threading.Event()
-    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+    frozen = lambda: (((0, None, None),), False)
 
     def blocker(uid):
         def run():

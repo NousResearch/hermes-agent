@@ -268,6 +268,29 @@ def _strip_one_wrapper(text: str) -> str:
     return text
 
 
+# Matches an ``@file:``/``@folder:`` context reference the way the canonical
+# ``agent.context_references`` reference pattern does: an unquoted ``\S+``
+# value, or a backtick/double/single-quoted value (a space-bearing path is
+# written backtick-quoted). Kept local so the titler doesn't import the
+# context-reference machinery (circularity / startup cost) just to detect the
+# attachment-only shape (#92068).
+_QUOTED = r"(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')"
+# Mirrors the canonical agent.context_references value shape: a quoted
+# (space-bearing) path may carry a ``:start[-end]`` line-range suffix, and a
+# bare path swallows its own range via ``\S+``.
+_CONTEXT_REFERENCE_TOKEN_RE = re.compile(
+    rf"(?<![\w/])@(?:file|folder):(?:{_QUOTED}(?::\d+(?:-\d+)?)?|\S+)"
+)
+
+
+def _attachment_only_opener(message: str) -> bool:
+    """True when nothing but context references (and their expansion footer)
+    remain — a manual-attach opener with no typed request and no paste
+    preview has no topic of its own to title (#92068)."""
+    residual = _CONTEXT_REFERENCE_TOKEN_RE.sub("", _CONTEXT_FOOTER_RE.sub("", message))
+    return not residual.strip()
+
+
 def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
@@ -310,11 +333,19 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
-            and bool(_summarize_user_message(user_message).strip()))
+            and bool(_summarize_user_message(user_message).strip())
+            # An attachment-only opener (manual attach, no paste preview) is a
+            # file drop, not a request: deriving its "title" from the message
+            # names the session after the truncated file path (#92068).
+            and not _attachment_only_opener(user_message))
 
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
+    # Attachment-only opener, no paste preview: a file drop has no topic —
+    # refuse rather than name the session after the truncated path (#92068).
+    if not title_preview and _attachment_only_opener(user_message):
+        return None
     line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
@@ -441,7 +472,7 @@ def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
 ) -> Optional[str]:
@@ -462,7 +493,12 @@ def generate_title(
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = build_title_input(user_message, title_preview)
-    if not user_snippet.strip():
+    if not user_snippet.strip() or (
+        # An attachment-only opener (manual attach, no paste preview) reaches
+        # here via auto_title_session, which lacks the instant-title guard:
+        # refuse it rather than titling the session after the file path (#92068).
+        not title_preview and _attachment_only_opener(user_snippet)
+    ):
         return None
     language = _title_language()
     # str.replace, not str.format: the prompt embeds literal JSON braces.
@@ -570,6 +606,18 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
+def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:
+    """Title a delegate run ``Subagent: <goal's first line>`` at ``derived`` authority. No model call:
+    runs fan out in bulk, and the prefix alone is what tells them apart from conversations wherever
+    ``sessions.show_subagents`` lists them (#97202). Collisions get ``#N``. Never raises."""
+    try:
+        derived = derive_title(goal) if is_titleable_user_message(goal) else None
+        return _persist_session_title(session_db, session_id, f"Subagent: {derived}", source="derived") if derived else None
+    except Exception:
+        logger.debug("Subagent title failed for %s", session_id, exc_info=True)
+        return None
+
+
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
     title_preview: str | None = None,
@@ -596,7 +644,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
@@ -691,7 +739,7 @@ def maybe_auto_title(
     user_message: str,
     conversation_history: Optional[list] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,

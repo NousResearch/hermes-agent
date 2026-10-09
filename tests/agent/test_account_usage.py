@@ -107,7 +107,7 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     )
     pool = SimpleNamespace(select=lambda: pool_entry)
 
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
 
@@ -275,7 +275,7 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
         ),
     )
 
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,

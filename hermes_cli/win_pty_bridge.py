@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - non-Windows or pywinpty missing
 _log = logging.getLogger(__name__)
 
 
-__all__ = ["WinPtyBridge", "PtyUnavailableError"]
+__all__ = ["PtyUnavailableError", "WinPtyBridge"]
 
 
 # Same clamp ceiling as the POSIX bridge so a broken winsize probe never reaches the resize call.
@@ -192,11 +192,3 @@ class WinPtyBridge:
 
     def __exit__(self, *_exc) -> None:
         self.close()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

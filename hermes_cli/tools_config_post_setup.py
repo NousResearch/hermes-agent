@@ -13,6 +13,11 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
+from tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
+
+_LOCAL_STT_MODEL_SUMMARY = ", ".join(
+    f"{model} (default)" if model == DEFAULT_LOCAL_MODEL else model for model in STT_MODEL_CATALOG["local"]
+)
 
 
 def _info_lines(*lines: str) -> None:
@@ -22,25 +27,19 @@ def _info_lines(*lines: str) -> None:
 
 
 def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
-    """Install the Browser Use CLI if it isn't already runnable.
-    Primary driver engine for EVERY browser backend except Camofox (Firefox-based, no CDP surface).
-    A browser-use on the user's PATH does not satisfy this check; PM owns the
-    selected isolated tool environment."""
-    _print_info("    Ensuring browser-use CLI (managed install)...")
-    try:
-        from tools.browser_use_cli import install_cli
-        ok, message = install_cli()
-    except Exception as exc:  # pragma: no cover — defensive
-        ok, message = False, f"install failed: {exc}"
-    if ok:
-        _print_success(f"    {message}")
+    """Confirm the Browser Use CLI engine is runnable. It is browser-harness, a core dependency of
+    Hermes's own venv, so there is nothing to download; a miss means the venv needs a re-sync.
+    Primary driver engine for EVERY browser backend except Camofox (Firefox-based, no CDP surface)."""
+    from tools.browser_use_cli import _find_cli
+
+    if _find_cli() is not None:
+        _print_success("    Browser Use CLI ready (browser-harness, bundled with Hermes)")
     else:
-        for line in str(message).splitlines():
-            _print_warning(f"    {line[:200]}")
-        _print_info("    Retry with: hermes tools post-setup browser_use_cli")
+        _print_warning("    browser-harness is missing from Hermes's Python environment")
+        _print_info("    Re-sync it with: hermes update")
     if verbose_hints:
         _info_lines("Local Chrome needs remote debugging: chrome://inspect/#remote-debugging",
-                    "Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
+                    "Cloud browsers: set BROWSER_USE_API_KEY")
 
 
 def _post_setup_lightpanda() -> None:
@@ -126,7 +125,7 @@ def _python_hook(module, extra, label, installing, on_install=(), always=()) -> 
 _PYTHON_POST_SETUP_HOOKS: dict = {
     "faster_whisper": _python_hook(
         "faster_whisper", "stt-whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
+        on_install=(f"Model sizes: {_LOCAL_STT_MODEL_SUMMARY}",
                     "Change via stt.local.model in config.yaml")),
     "kittentts": _python_hook(
         "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
@@ -333,7 +332,7 @@ def _run_post_setup(post_setup_key: str):
     _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
 
 
-def valid_post_setup_keys() -> Set[str]:
+def valid_post_setup_keys() -> set[str]:
     """Return the set of post-setup keys declared by any visible provider (``TOOL_CATEGORIES`` plus
     plugin-registered providers). This is the allowlist ``post-setup`` and the dashboard endpoint
     validate against, so a caller cannot drive ``_run_post_setup`` with an arbitrary key."""
@@ -341,7 +340,7 @@ def valid_post_setup_keys() -> Set[str]:
         TOOL_CATEGORIES, _plugin_browser_providers, _plugin_image_gen_providers,
         _plugin_video_gen_providers, _plugin_web_search_providers)
 
-    keys: Set[str] = set()
+    keys: set[str] = set()
     for cat in TOOL_CATEGORIES.values():
         keys.update(ps for prov in cat.get("providers", []) if (ps := prov.get("post_setup")))
     for builder in (_plugin_web_search_providers, _plugin_image_gen_providers,

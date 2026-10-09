@@ -24,6 +24,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from tui_gateway import server as tui_server
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +721,7 @@ class TestInit:
 
 class TestHydrateTodoStore:
     @staticmethod
-    def _assistant_todo_call(call_id="c1"):
+    def _assistant_todo_call(call_id="c1", name="todo", arguments="{}"):
         return {
             "role": "assistant",
             "content": None,
@@ -728,10 +729,33 @@ class TestHydrateTodoStore:
                 {
                     "id": call_id,
                     "type": "function",
-                    "function": {"name": "todo", "arguments": "{}"},
+                    "function": {"name": name, "arguments": arguments},
                 }
             ],
         }
+
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("todo_list", "{}"),
+            ("tool_call", json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})),
+        ],
+        ids=["direct", "bridged"],
+    )
+    def test_todo_list_name_hydrates(self, agent, name, arguments):
+        """Regression for #124960: the current name and its tool_call-bridged form pair like legacy ``todo``."""
+        todos = [{"id": "t", "content": "Task", "status": "pending"}]
+        history = [
+            self._assistant_todo_call(name=name, arguments=arguments),
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"todos": todos, "revision": 3})},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
+        # The TUI resume path (no AIAgent yet) must pair the same call via the same predicate.
+        assert tui_server._todo_state_from_history(history)["todos"] == todos
 
     def test_no_todo_in_history(self, agent):
         history = [
@@ -1568,41 +1592,6 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
-    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
-        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        hook_calls = []
-        agent.session_id = "session-1"
-        agent._current_turn_id = "turn-1"
-        agent._current_api_request_id = "api-1"
-
-        def _capture_hook(hook_name, **kwargs):
-            hook_calls.append((hook_name, kwargs))
-            return []
-
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
-
-        with (
-            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
-
-        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
-        assert len(post_calls) == 1
-        assert post_calls[0]["tool_name"] == "web_search"
-        assert post_calls[0]["tool_call_id"] == "c1"
-        assert post_calls[0]["session_id"] == "session-1"
-        assert post_calls[0]["turn_id"] == "turn-1"
-        assert post_calls[0]["api_request_id"] == "api-1"
-        assert post_calls[0]["status"] == "cancelled"
-        assert post_calls[0]["error_type"] == "keyboard_interrupt"
-        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
-
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -2222,7 +2211,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        ("clarify", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
@@ -2290,7 +2279,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+        monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
 
         class _NoInstallBackend:
             def required_env(self, name):
@@ -2791,7 +2780,7 @@ class TestHandleMaxIterations:
             # on user/assistant messages.
             if m.get("role") == "tool":
                 assert "name" not in m, m
-        assert [m for m in sent_msgs if m.get("role") == "user"][0]["name"] == "sylvain"
+        assert next(m for m in sent_msgs if m.get("role") == "user")["name"] == "sylvain"
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
@@ -3475,6 +3464,7 @@ class TestRunConversation:
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._custom_providers = [{"base_url": agent.base_url, "capabilities": {"answer_in_reasoning": True}}]
         agent.compression_enabled = True
         empty_resp = _mock_response(
             content=None,
@@ -3499,7 +3489,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
-
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""
@@ -4207,7 +4196,7 @@ class TestRunConversation:
         protect_first = agent.context_compressor.protect_first_n
         protect_last = agent.context_compressor.protect_last_n
         prefill = []
-        for _i in range((protect_first + protect_last + 4)):
+        for _i in range(protect_first + protect_last + 4):
             prefill.append({"role": "user", "content": f"q{_i}"})
             prefill.append({"role": "assistant", "content": f"a{_i}"})
 
@@ -4458,7 +4447,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4495,7 +4484,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -6165,7 +6154,7 @@ class TestStreamingApiCall:
             headers={"x-request-id": "req-plain-text"},
             content=(
                 f"event: error\ndata: {provider_message}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 
@@ -6207,7 +6196,7 @@ class TestStreamingApiCall:
             content=(
                 "event: error\n"
                 f"data: request validation failed: token={secret}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 

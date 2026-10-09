@@ -7,19 +7,26 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
-import { moaPickRemoved, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  customDefaultSupersedesPick,
+  moaPickRemoved,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
@@ -110,6 +117,9 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
+  // Two provably-stale manual picks are the exception and reseed from the
+  // profile default: the virtual `moa` provider (#90244) and a bare provider
+  // slug the default has migrated to its `custom:<key>` form (#81922).
   const refreshCurrentModel = useCallback(
     async (force = false) => {
       // A forced profile swap opens a new intent epoch; an older in-flight
@@ -135,10 +145,22 @@ export function useModelControls({
         // `Model · moa: default` forever (#90244).
         const manualPick = () => Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
 
-        const staleMoaPick = () =>
-          !force && manualPick() && ($currentProvider.get() || '').trim().toLowerCase() === 'moa'
+        const pickProvider = () => ($currentProvider.get() || '').trim()
 
-        if (manualPick() && !force && !staleMoaPick()) {
+        const staleMoaPick = () => !force && manualPick() && pickProvider().toLowerCase() === 'moa'
+
+        // A SECOND exception: a bare provider slug can be a stale spelling of a
+        // `custom:<key>` profile default (#87035 aliases the two spellings for
+        // one endpoint). Shipping the bare form resolves the NATIVE provider and
+        // silently drops the entry's `extra_body` (#81922), so the pick must
+        // reseed. Only a bare slug qualifies — a pick that already names a
+        // provider class is a distinct choice and stays sticky — and the profile
+        // default is a backend fact, so this needs the same `getGlobalModelInfo`
+        // fetch the empty / default-sourced path already makes.
+        const maybeSupersededPick = () =>
+          !force && manualPick() && pickProvider() !== '' && !pickProvider().includes(':')
+
+        if (manualPick() && !force && !staleMoaPick() && !maybeSupersededPick()) {
           return
         }
 
@@ -179,7 +201,10 @@ export function useModelControls({
           profileRefreshEpochRef.current !== profileRefreshEpoch ||
           $activeSessionId.get() ||
           getComposerSelectionGeneration() !== selectionGeneration ||
-          (manualPick() && !force && !reseedStaleMoa)
+          (manualPick() &&
+            !force &&
+            !reseedStaleMoa &&
+            !customDefaultSupersedesPick($currentProvider.get(), result.provider ?? ''))
         ) {
           return
         }
@@ -238,6 +263,10 @@ export function useModelControls({
         ? $currentProvider.get()
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
+      const prevWire = touchesPrimary
+        ? $currentReasoningEffortWire.get()
+        : ($sessionStates.get()[liveSessionId!]?.reasoningEffortWire ?? '')
+
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
@@ -247,11 +276,13 @@ export function useModelControls({
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
         } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error.
+          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
+          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
-            provider: selection.provider
+            provider: selection.provider,
+            reasoningEffortWire: ''
           }))
         }
       }
@@ -264,12 +295,15 @@ export function useModelControls({
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)
+          // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
+          setCurrentReasoningEffortWire(prevWire)
           setCurrentModelSource(prevSource)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: prevModel,
-            provider: prevProvider
+            provider: prevProvider,
+            reasoningEffortWire: prevWire
           }))
         }
 

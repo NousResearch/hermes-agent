@@ -876,6 +876,59 @@ class TestMarkJobRun:
         assert updated["last_error"]
         assert "croniter" in updated["last_error"].lower()
 
+    def test_transient_croniter_import_error_not_latched(self, tmp_cron_dir, monkeypatch):
+        """Regression test for issue #127182.
+
+        A single transient croniter ImportError must not latch HAS_CRONITER=False for
+        the process lifetime: once the import succeeds again (wrong interpreter
+        restarted, shadowed path fixed), _ensure_croniter() has to report True again
+        so compute_next_run() and the due-scan recovery can re-arm recurring jobs
+        without a gateway restart.
+        """
+        pytest.importorskip("croniter")  # need it to make the import succeed again
+        import builtins
+
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        assert job["schedule"]["kind"] == "cron"
+
+        # Simulate the transient failure window: the croniter import raises while patched in.
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "croniter":
+                raise ImportError("No module named 'croniter'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        monkeypatch.setattr(jobs_mod, "croniter", None)
+        monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is False
+        assert jobs_mod.compute_next_run(job["schedule"]) is None
+        # The in-flight guard's cadence cache must not pin the import-failure None either.
+        import cron.scheduler as sched_mod
+        expr = job["schedule"]["expr"]
+        sched_mod._cron_interval_cache.pop(expr, None)
+        assert sched_mod._cron_interval_minutes(expr) is None
+        assert expr not in sched_mod._cron_interval_cache, "import-failure None was cached"
+        mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
+
+        # Window over (import works again); HAS_CRONITER is left untouched.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        # Inside the retry backoff the failed probe is not re-run on every call...
+        assert jobs_mod._ensure_croniter() is False
+        # ...but once the backoff elapses it is re-evaluated, not latched.
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is True, (
+            "a transient ImportError was latched: every recurring job would stay "
+            "next_run_at=None until a gateway restart"
+        )
+        assert jobs_mod.compute_next_run(job["schedule"]) is not None
+        get_due_jobs()  # due-scan recovery re-arms the job
+        assert get_job(job["id"])["state"] == "scheduled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
@@ -1439,7 +1492,7 @@ class TestLateEnvRepointScopesStore:
     previously read/wrote the import-time jobs.json — the user's real file."""
 
     def test_late_env_repoint_scopes_store(self, tmp_path, monkeypatch):
-        import cron.jobs as jobs
+        from cron import jobs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         store = jobs._current_cron_store()
@@ -1452,7 +1505,7 @@ class TestLateEnvRepointScopesStore:
 
 
     def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
-        import cron.jobs as jobs
+        from cron import jobs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
         with jobs.use_cron_store(tmp_path / "override-home"):
@@ -1460,7 +1513,7 @@ class TestLateEnvRepointScopesStore:
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
 
     def test_heartbeat_does_not_recreate_deleted_named_profile(self, tmp_path):
-        import cron.jobs as jobs
+        from cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -1472,7 +1525,7 @@ class TestLateEnvRepointScopesStore:
         assert not deleted_home.exists()
 
     def test_heartbeat_initializes_existing_named_profile(self, tmp_path):
-        import cron.jobs as jobs
+        from cron import jobs
 
         profile_home = tmp_path / "profiles" / "active"
         profile_home.mkdir(parents=True)
@@ -1497,7 +1550,7 @@ class TestLateEnvRepointScopesStore:
         was first imported before the suite's env isolation applied, that
         path IS the developer's live file — writing a sentinel there is
         exactly the incident this PR exists to prevent."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         sim_old_home = tmp_path / "import-time-home"
         sim_cron = sim_old_home / "cron"
@@ -1914,7 +1967,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_named_profile_subdir_fails_closed(self, tmp_path):
         """A subdir under a deleted named profile's cron/ must not recreate it."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -1929,7 +1982,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_default_home_creates_subdir(self, tmp_path):
         """A subdir under a default home's cron/ should be created normally."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         default_home = tmp_path / "default_home"
         default_home.mkdir()
@@ -1940,7 +1993,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
         """The cron dir of a deleted named profile must not be recreated."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -1954,7 +2007,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_existing_named_profile_cron_dir_works(self, tmp_path):
         """An existing named profile's cron dir should be created normally."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         active_home = profiles_dir / "active"
@@ -1966,7 +2019,7 @@ class TestEnsureCronDirWidened:
 
     def test_ensure_cron_dir_scripts_dir_under_named_profile_fails_closed(self, tmp_path):
         """A scripts dir under a deleted named profile must not be recreated."""
-        import cron.jobs as jobs
+        from cron import jobs
 
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()

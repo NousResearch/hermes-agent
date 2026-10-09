@@ -409,7 +409,7 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -438,7 +438,7 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -452,3 +452,32 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, monkeypatch):
+    """#132547: a pipe handle read cannot time out on its own; the query must still return None at its bound."""
+    import threading
+    import time
+
+    from gateway import control_socket
+
+    released = threading.Event()
+
+    class _SilentPipe:  # accepts the request, never answers
+        def write(self, _data):
+            return None
+
+        def read(self, _n):
+            released.wait(10)
+            return b""
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(control_socket, "open", lambda *_a, **_k: _SilentPipe(), raising=False)
+    start = time.monotonic()
+    try:
+        assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None
+        assert time.monotonic() - start < 2.0
+    finally:
+        released.set()

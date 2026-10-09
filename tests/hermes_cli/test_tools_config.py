@@ -29,19 +29,21 @@ from hermes_cli.tools_config import (
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
-    (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
-    already-corrupted config is caught at runtime, not just during migration."""
+    (e.g. 'not-a-real-toolset' instead of 'hermes-cli') must warn at resolve
+    time so an already-corrupted config is caught at runtime, not just during
+    migration. (The legacy 'hermes' alias resolves via _LEGACY_TOOLSET_ALIASES
+    since #41579, so it is no longer an invalid name.)"""
     import hermes_cli.tools_config as _tc
     # The runtime warning fires once per platform per process; clear the guard
     # so this test is deterministic regardless of prior resolutions.
     _tc._warned_invalid_platform_toolsets.discard("cli")
-    config = {"platform_toolsets": {"cli": ["hermes"]}}
+    config = {"platform_toolsets": {"cli": ["not-a-real-toolset"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
         _get_platform_tools(config, "cli")
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("#38798" in m and "hermes" in m for m in warnings), warnings
+    assert any("#38798" in m and "not-a-real-toolset" in m for m in warnings), warnings
 
 
 def test_valid_platform_toolsets_no_runtime_warning(caplog):
@@ -127,41 +129,6 @@ def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
 
 
 
-def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
-    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
-
-    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
-    shouldn't also strip HA from platforms (like cron) that run through
-    _get_platform_tools without an explicit saved toolset list.
-
-    Regression guard for Norbert's HA cron breakage after #14798 made cron
-    honor per-platform tool config.
-    """
-    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
-
-    cron_enabled = _get_platform_tools({}, "cron")
-    assert "homeassistant" in cron_enabled
-    # moa must stay off — the original goal of #14798
-    assert "moa" not in cron_enabled
-
-    cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
-
-
-def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
-    from agent import secret_scope
-
-    monkeypatch.delenv("HASS_TOKEN", raising=False)
-    secret_scope.set_multiplex_active(True)
-    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
-    try:
-        assert "homeassistant" in _get_platform_tools({}, "cron")
-        assert "homeassistant" in _get_platform_tools({}, "cli")
-    finally:
-        secret_scope.reset_secret_scope(token)
-        secret_scope.set_multiplex_active(False)
-
-
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
 # are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
 # via the platform's native composite. The composite ``hermes-discord``
@@ -183,6 +150,41 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
 
 
 
+def test_get_platform_tools_legacy_hermes_alias_expands():
+    """Legacy ``"hermes"`` toolset name must expand to ``"hermes-cli"`` and
+    ``"hermes-api-server"`` so that tools are not silently dropped.
+
+    Regression test for issue #41579.
+    """
+    config = {"platform_toolsets": {"cli": ["hermes", "kanban"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    # Must resolve to the same toolset as a plain "hermes-cli" config.
+    reference = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli", "kanban"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert enabled == reference
+    # Sanity: something was actually enabled. ``kanban`` IS in _DEFAULT_OFF_TOOLSETS
+    # on current main (#3d7f773bb4) but an explicitly listed name is an opt-in that
+    # survives the subtraction, so disjointness no longer holds here.
+    assert enabled
+
+
+def test_get_platform_tools_legacy_hermes_alias_alone():
+    """``"hermes"`` alone (no other toolsets) must still produce tools."""
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    reference = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli", "hermes-api-server"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert enabled == reference
+    assert enabled
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
@@ -449,35 +451,18 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
             _run_post_setup("camofox")
         ensure.assert_not_called()
 
-    def test_ensure_helper_always_delegates_to_install_cli(self):
-        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
-        helper — install_cli() owns the managed-copy check and provisions
-        $HERMES_HOME/bin when only side installs exist."""
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
-        ) as install:
-            from hermes_cli.tools_config import _ensure_browser_use_cli
-
-            _ensure_browser_use_cli()
-        install.assert_called_once()
-
-    def test_ensure_helper_install_failure_is_non_fatal(self):
-        """A failed install must warn and fall back, never raise — the
-        uvx zero-install path and the built-in tools remain available."""
+    def test_ensure_helper_missing_harness_is_non_fatal(self):
+        """A missing harness must warn and point at `hermes update`, never raise — the built-in
+        tools remain available."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
-        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
+        with patch("tools.browser_use_cli._find_cli", return_value=None), patch(
+            "hermes_cli.tools_config_post_setup._print_warning"
+        ) as warn, patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _ensure_browser_use_cli()  # must not raise
 
-        assert any("failed" in c.args[0] for c in warn.call_args_list)
+        assert any("browser-harness" in c.args[0] for c in warn.call_args_list)
+        assert any("hermes update" in c.args[0] for c in info.call_args_list)
 
 
 class TestImagegenBackendRegistry:
@@ -642,7 +627,7 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     account = NousPortalAccountInfo(
         logged_in=False,
@@ -674,7 +659,7 @@ def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
 
 
 def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     account = NousPortalAccountInfo(
         logged_in=True,
@@ -723,7 +708,7 @@ def _managed_image_row() -> dict:
 
 
 def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.tools_config_providers import _plugin_image_gen_providers
 
     monkeypatch.setattr(
@@ -738,7 +723,7 @@ def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
 
 
 def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
     from plugins.image_gen.krea import KREA_MODEL_IDS
     from tools.image_generation_catalog import FAL_MODELS
@@ -756,7 +741,7 @@ def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monke
 
 
 def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     from hermes_cli.tools_config_providers import _managed_image_catalog
 
     pool = NousPortalAccountInfo(

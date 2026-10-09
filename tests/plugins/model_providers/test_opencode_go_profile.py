@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def opencode_go_profile():
     """Resolve the registered OpenCode Go provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-go")
@@ -19,7 +19,7 @@ def opencode_go_profile():
 @pytest.fixture
 def opencode_zen_profile():
     """Resolve the registered OpenCode Zen provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-zen")
@@ -195,7 +195,7 @@ class TestOpenCodeGoGLM52Reasoning:
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])
     def test_alias_spellings_recognized(self, opencode_go_profile, model):
-        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
             model=model,
         )

@@ -100,8 +100,8 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
-def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
-                                 mcp_server_names: List[str] | None = None) -> List[str]:
+def _expand_acp_enabled_toolsets(toolsets: list[str] | None = None,
+                                 mcp_server_names: list[str] | None = None) -> list[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     names = [n for n in (["hermes-acp"] if toolsets is None else toolsets) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
@@ -118,12 +118,12 @@ def _parse_model_config(mc: Any) -> dict:
 
 
 def _session_info(sid: str, cwd: str, model: Any, history_len: int, title: Any, preview: Any,
-                  updated_at: Any) -> Dict[str, Any]:
+                  updated_at: Any) -> dict[str, Any]:
     return {"session_id": sid, "cwd": cwd, "model": model, "history_len": history_len,
             "title": _build_session_title(title, preview, cwd), "updated_at": _format_updated_at(updated_at)}
 
 
-def _first_user_preview(history: List[Dict[str, Any]], default: str) -> str:
+def _first_user_preview(history: list[dict[str, Any]], default: str) -> str:
     return next((str(m.get("content") or "").strip() for m in history
                  if m.get("role") == "user" and str(m.get("content") or "").strip()), default)
 
@@ -136,7 +136,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
-    history: List[Dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
     # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
@@ -144,7 +144,7 @@ class SessionState:
     # a bare is_running check in the slash thread would leave a check-then-act window where
     # a prompt claims the turn mid-mutation.
     command_op: bool = False
-    queued_prompts: List[str] = field(default_factory=list)
+    queued_prompts: list[str] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
@@ -162,7 +162,7 @@ class SessionManager:
     def __init__(self, agent_factory=None, db=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
-        self._sessions: Dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
         # Serializes DB restores: session construction runs off the event loop, so two
         # overlapping session/load for one id must share a single agent build.
@@ -207,7 +207,7 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
         db = self._get_db()
@@ -273,10 +273,38 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def end_all_sessions(self, end_reason: str = "acp_disconnect") -> int:
+        """Stamp ``ended_at`` on every live session (#118216).
+
+        ACP v0.9 has no per-session destroy, so the stdio shutdown that ends
+        this process is the session end: the client that drove the
+        conversation is gone. Without this writer, source='acp' rows keep
+        ``ended_at`` NULL forever and the ended-session guard shared by
+        prune/archive (``hermes_state_maintenance``) can never reach them.
+        A later load/resume reopens the row (see ``_restore``), the same
+        contract the TUI gateway's resume path uses. Best-effort: teardown
+        must never raise. Returns the number of sessions ended.
+        """
+        db = self._get_db()
+        if db is None:
+            return 0
+        with self._lock:
+            session_ids = list(self._sessions.keys())
+        ended = 0
+        for session_id in session_ids:
+            try:
+                db.end_session(session_id, end_reason)
+                ended += 1
+            except Exception:
+                logger.debug("Failed to end ACP session %s", session_id, exc_info=True)
+        if ended:
+            logger.info("Ended %d ACP session(s) on shutdown (%s)", ended, end_reason)
+        return ended
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
                              history=history, cancel_event=threading.Event())
@@ -428,6 +456,15 @@ class SessionManager:
         if row is None or row.get("source") != "acp":
             return None
 
+        # A previous adapter process stamped the row ended at its stdio
+        # shutdown (#118216); resuming the conversation reopens it, the same
+        # contract the TUI gateway's cold-resume path uses.
+        if row.get("ended_at") is not None:
+            try:
+                db.reopen_session(session_id)
+            except Exception:
+                logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
+
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
 
@@ -507,6 +544,10 @@ class SessionManager:
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
+            # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
+            # elsewhere is another endpoint, which must not inherit it.
+            if runtime.get("request_overrides") and (not base_url or base_url == runtime.get("base_url")):
+                kwargs["request_overrides"] = runtime["request_overrides"]
         except Exception as exc:
             resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
@@ -538,11 +579,3 @@ class SessionManager:
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from threading import Lock  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -1085,6 +1085,15 @@ def _commit_tool_result(
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
     from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
+    # Per-turn tally (reset in conversation_loop, exported on the turn result): a run whose
+    # every call was blocked did no work, and callers like cron need that as a runtime signal
+    # rather than trusting the model to self-report it (#135544).
+    _turn_stats = getattr(agent, "_turn_tool_call_stats", None)
+    if isinstance(_turn_stats, dict):
+        _turn_stats["attempted"] = _turn_stats.get("attempted", 0) + 1
+        if blocked:
+            _turn_stats["blocked"] = _turn_stats.get("blocked", 0) + 1
+
     observe_tool_outcome(agent, function_name, is_error)
     if observed:
         if not blocked:

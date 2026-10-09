@@ -1631,6 +1631,10 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Tool-outcome tally for this turn: how many calls were attempted vs blocked before
+    # dispatch (plugin/scope/guardrail). Exported on the result so a caller can tell a dead
+    # turn — every call blocked, no work possible (#135544) — from a healthy one.
+    agent._turn_tool_call_stats = {"attempted": 0, "blocked": 0}
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1762,6 +1766,11 @@ def run_conversation(
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+        # Only stamped when a call was attempted: text-only turns keep the dict unchanged.
+        _tool_stats = getattr(agent, "_turn_tool_call_stats", None)
+        if isinstance(_tool_stats, dict) and _tool_stats.get("attempted"):
+            result["tool_calls_attempted"] = _tool_stats["attempted"]
+            result["tool_calls_blocked"] = _tool_stats.get("blocked", 0)
     _close_durable_failed_turn(agent, result)
     return result
 

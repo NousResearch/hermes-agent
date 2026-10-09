@@ -2585,6 +2585,11 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        # A turn whose every tool call was blocked (plugin/scope/guardrail policy) raises nothing,
+        # so without this runtime signal the fire path below books it as a healthy run (#135544).
+        if (result.get("tool_calls_attempted")
+                and result.get("tool_calls_blocked", 0) >= result["tool_calls_attempted"]):
+            job["_all_tool_calls_blocked"] = result["tool_calls_attempted"]
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
@@ -3385,6 +3390,9 @@ def _run_one_job_body(
             # BaseException so KeyboardInterrupt/SystemExit mid-run still trigger teardown.
             _teardown_deferred()
             raise
+        # Pop before the success gates: the flag must not survive into the job record whatever
+        # path this fire takes (same contract as `_model_unreachable`).
+        _all_tool_calls_blocked = job.pop("_all_tool_calls_blocked", 0)
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
@@ -3399,6 +3407,12 @@ def _run_one_job_body(
             marker_error = _cron_failure_marker_error(final_response)
             if marker_error is not None:
                 success, error, agent_declared = False, marker_error, True
+            elif _all_tool_calls_blocked:
+                # Runtime evidence, not a model self-report: every tool call was blocked before
+                # dispatch, so the turn could do no work even though it "completed" (#135544).
+                success = False
+                error = (f"Agent completed but all {_all_tool_calls_blocked} tool call(s) were "
+                         "blocked before execution (plugin/scope policy) — no work was performed")
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.

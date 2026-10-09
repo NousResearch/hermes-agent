@@ -16,12 +16,18 @@ import cron.scheduler as s
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
-                    error=None, silent_marker_in=None):
-    """Patch the job pipeline primitives and record the call order."""
+                    error=None, silent_marker_in=None, blocked_calls=None):
+    """Patch the job pipeline primitives and record the call order.
+
+    ``blocked_calls``: simulate run_job's #135544 dead-turn signal — the turn
+    completed but every tool call was blocked before dispatch — by planting
+    ``job["_all_tool_calls_blocked"]`` the way the real run_job does."""
     calls = []
 
     def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         calls.append(("run_job", job["id"]))
+        if blocked_calls is not None:
+            job["_all_tool_calls_blocked"] = blocked_calls
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
 
@@ -106,6 +112,48 @@ def test_run_one_job_marker_mentioned_in_report_stays_successful(monkeypatch):
     s.run_one_job({"id": "quoted-marker", "name": "delegate", "deliver": "telegram"})
 
     assert calls[-1] == ("mark", "quoted-marker", True)
+
+
+def test_run_one_job_all_tool_calls_blocked_records_failure(monkeypatch):
+    """A turn whose every tool call was blocked did no work: it is failed through the
+    normal bookkeeping even though the turn "completed" (#135544)."""
+    marked = {}
+    calls = _patch_pipeline(
+        monkeypatch, blocked_calls=6,
+        final="Briefing not sent: every data-collection call was blocked by the "
+              "runtime; no work was done.")
+
+    def fake_mark(jid, ok, err=None, **_kw):
+        marked["ok"], marked["err"] = ok, err
+        calls.append(("mark", jid, ok))
+
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    job = {"id": "dead-run", "name": "daily-briefing", "deliver": "telegram"}
+
+    s.run_one_job(job)
+
+    assert marked["ok"] is False
+    assert "6 tool call(s) were blocked" in marked["err"]
+    # The runtime flag never survives into the persisted job record.
+    assert "_all_tool_calls_blocked" not in job
+
+
+def test_run_one_job_blocked_marker_outranks_blocked_signal(monkeypatch):
+    """The agent's explicit [CRON_FAILURE] evidence stays the primary signal; the
+    all-blocked tally is the fallback when the model only described the failure."""
+    marked = {}
+    _patch_pipeline(
+        monkeypatch, blocked_calls=2,
+        final="[CRON_FAILURE]\nThe delegated child could not finish the report.")
+
+    def fake_mark(jid, ok, err=None, **_kw):
+        marked["ok"], marked["err"] = ok, err
+
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    s.run_one_job({"id": "declared", "name": "delegate", "deliver": "telegram"})
+
+    assert marked["ok"] is False
+    assert "delegated child" in marked["err"]
 
 
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):

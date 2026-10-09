@@ -503,6 +503,10 @@ def _runtime_host_below(holder_pid: int) -> bool:
     Such a host is relaunched BY an update and outlives its stages; a ``hermes update`` its agent
     or ``/update`` starts is an independent update that must not run under the first one's claim
     (cli §7 V9). Unreadable command lines count as not-a-host (the legacy adoption stands).
+
+    The hand-off is the boundary of this run: whatever launched IT is not between us and the
+    holder — the hand-off's custodian is its child, and scanning above the hand-off would veto
+    adopting it over the runner's own ancestry (#135498).
     """
     try:
         import psutil
@@ -510,8 +514,9 @@ def _runtime_host_below(holder_pid: int) -> bool:
         return False
     try:
         proc = psutil.Process().parent()
+        handoff = _handoff_pid()
         for _ in range(_MAX_ANCESTRY_DEPTH):
-            if proc is None or proc.pid == holder_pid:
+            if proc is None or proc.pid == holder_pid or proc.pid == handoff:
                 return False
             with suppress(psutil.Error):
                 if _is_runtime_host(proc.cmdline()):
@@ -1531,11 +1536,22 @@ class UpdateLock:
 
     @staticmethod
     def _is_partner(pid: int) -> bool:
-        return pid == os.getpid() or (pid and (pid == _handoff_pid() or _is_ancestor_pid(pid)))
+        if pid == os.getpid():
+            return True
+        if not pid:
+            return False
+        if pid == _handoff_pid() or _is_ancestor_pid(pid):
+            return True
+        # The hand-off forks a custodian BESIDE the update it spawns (both direct children;
+        # the custodian rewrites marker line 1 to its own pid). It is no ancestor of ours and
+        # the delegate line's whole-second ct can miss — its parent BEING the hand-off pid is
+        # the structural identity that survives both (#135498).
+        handoff = _handoff_pid()
+        return handoff is not None and _stdlib_parent_pid(pid) == handoff
 
     def _adopt_or_refuse(self, existing: _Marker) -> bool:
-        """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under.
-        Called inside the marker mutex."""
+        """C1 rule 4: a LIVE claim by us, an ancestor, the hand-off partner, or the custodian
+        the hand-off forked beside us is run under. Called inside the marker mutex."""
         partners = _live_partners(existing)
         if not any(self._is_partner(p) and (p == os.getpid() or not _runtime_host_below(p)) for p in partners):
             self.holder = UpdateHolder(pid=partners[0], age_seconds=existing.age() if existing.started_at else 0.0)

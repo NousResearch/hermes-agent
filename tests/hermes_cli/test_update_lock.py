@@ -810,6 +810,57 @@ class TestAncestryHandoff:
         assert lock.holder.pid == DEAD_PID
 
 
+class TestHandoffCustodianSibling:
+    """The desktop hand-off forks a custodian BESIDE the ``hermes update`` it spawns (``posix.sh``:
+    the custodian rewrites marker line 1 to its own pid and holds it while the update pre-pulls).
+
+    The custodian is neither our ancestor nor named by the delegate line, whose whole-second
+    creation time (``ps lstart`` precision) can fail to match. When that bridge misses, the child
+    read the hand-off's own custodian as a foreign update and exited 2 forever (#135498). The
+    structural identity that must adopt it: a live holder whose parent IS the hand-off pid.
+
+    The update child is a real subprocess so the hand-off is its true ancestor; ``_runtime_host_below``
+    then stops its walk AT the hand-off, instead of scanning whatever launched the runner — that
+    outside chain is not part of this hand-off run and must not veto the custodian.
+    """
+
+    @pytest.mark.platforms("any")
+    @pytest.mark.parametrize("claim", [_claim, _claim_v2], ids=["v1-no-delegate", "v2-no-delegate"])
+    def test_update_child_adopts_the_handoffs_custodian(self, marker, other_pid, claim):
+        from textwrap import dedent
+
+        # other_pid is a direct child of this test process — the custodian shape, without the
+        # delegate line the whole-second ct bridge would have written.
+        claim(marker, other_pid)
+        child = dedent(
+            """
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, %(root)r)
+            from hermes_cli.update_lock import UpdateLock
+            lock = UpdateLock(path=Path(%(marker)r))
+            if not lock.acquire():
+                print("REFUSED", lock.holder.pid)
+                raise SystemExit(2)
+            assert lock.acquired is False, "the custodian's claim is not ours to own"
+            lock.release()
+            print("ADOPTED")
+            """
+        ) % {"root": str(REPO_ROOT), "marker": str(marker)}
+
+        result = subprocess.run(
+            [sys.executable, "-c", child],
+            capture_output=True, text=True, timeout=120,
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT), HANDOFF_PID_ENV: str(os.getpid())},
+            stdin=subprocess.DEVNULL,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "ADOPTED" in result.stdout
+        assert marker.exists(), "the custodian still needs its marker after the child's stage ends"
+        assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == other_pid
+
+
 class _FakeProcess:
     """One link of a stubbed parent chain.
 

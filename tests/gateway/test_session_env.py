@@ -306,7 +306,7 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
                          lambda name: _handler if name == "gsd-bind" else None)
 
-    handled, result, command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "gsd_bind")
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "gsd_bind")
 
     assert handled is True
     assert result == "Bound: bind"

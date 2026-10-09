@@ -41,7 +41,7 @@ def test_refresh_secret_sources_noop_without_plugin_sources(monkeypatch):
 
     import agent.secret_sources.registry as reg
 
-    monkeypatch.setattr(reg, "list_plugin_sources", lambda: [])
+    monkeypatch.setattr(reg, "list_plugin_sources", list)
     monkeypatch.setattr(
         "hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),

@@ -27,7 +27,7 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
     Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
@@ -46,7 +46,7 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
 
     canonical_db = _canonical(os.fspath(db_path))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
-    pids: List[int] = []
+    pids: list[int] = []
     try:
         own_pid = os.getpid()
         for pid_str in os.listdir("/proc"):
@@ -463,7 +463,7 @@ def _extract_member_atomically(
         raise
 
 
-def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
+def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     """Return ``(sessions, messages)`` stored in the session database *path*.
 
     Read-only and best effort.  ``None`` means "unknown" — a missing file, a

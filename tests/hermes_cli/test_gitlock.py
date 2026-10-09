@@ -67,7 +67,7 @@ def no_git_running(monkeypatch: pytest.MonkeyPatch) -> None:
     code under test.  The guard's own behavior is pinned separately in
     :func:`test_clear_skips_sweep_while_git_running`.
     """
-    import hermes_cli.gitlock as gitlock
+    from hermes_cli import gitlock
 
     monkeypatch.setattr(gitlock, "_git_proc_running", lambda: False)
 
@@ -90,7 +90,7 @@ def test_clear_removes_all_stale_lock_kinds(repo: Path, no_git_running: None) ->
 
 def test_clear_skips_sweep_while_git_running(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A running git process must block the sweep even for stale locks."""
-    import hermes_cli.gitlock as gitlock
+    from hermes_cli import gitlock
 
     monkeypatch.setattr(gitlock, "_git_proc_running", lambda: True)
     _touch(repo / ".git" / "shallow.lock", STALE_LOCK_MIN_AGE_SECONDS + 60)
@@ -124,9 +124,9 @@ def test_clear_noop_with_no_locks(repo: Path) -> None:
 # crash coming, so the recovery marks them and retries once. These pin the recognizer against
 # look-alike failures and the retry contract: retry exactly once, only on this crash, args untouched.
 
-from subprocess import CompletedProcess  # noqa: E402
+from subprocess import CompletedProcess
 
-from hermes_cli.gitlock import (  # noqa: E402
+from hermes_cli.gitlock import (
     fetch_with_partial_clone_recovery,
     is_partial_clone_pack_objects_crash,
 )
@@ -203,7 +203,7 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
 # `git gc --auto` (git's own gc.autoPackLimit decides when it is worth it). Real git against a
 # local blobless clone: these pin how the pieces interact, not their command lines.
 
-from hermes_cli.gitlock import settle_partial_clone_maintenance, disable_tree0_auto_maintenance  # noqa: E402
+from hermes_cli.gitlock import settle_partial_clone_maintenance, disable_tree0_auto_maintenance
 
 _GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 

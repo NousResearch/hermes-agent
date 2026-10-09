@@ -592,7 +592,7 @@ class TestValidateConfigKey:
         """The underscore escape only applies to the FIRST segment. A real
         typo in a sub-key (e.g. agent._max_turns) is still caught."""
         from hermes_cli.config import _validate_config_key
-        is_known, suggestion = _validate_config_key("agent._max_turns")
+        is_known, _suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
 

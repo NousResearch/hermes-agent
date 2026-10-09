@@ -35,7 +35,7 @@ def isolated_machine_home(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("marker_name", [".update-incomplete", ".lazy-refresh-incomplete", None, "manual", "baseline"])
 def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, marker_name):
-    import pm.paths as paths
+    from pm import paths
     from pm.environments import selected_venv, site_packages
 
     engine = importlib.import_module("pm.install")

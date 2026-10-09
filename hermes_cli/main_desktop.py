@@ -897,7 +897,7 @@ def _app_asar_hash(app_path: Path) -> str | None:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
         return h.hexdigest()
-    except (OSError, IOError):
+    except OSError:
         return None
 
 
@@ -936,7 +936,7 @@ def _running_macos_app_bundles() -> set[Path]:
     """``.app`` bundles of every live Hermes Desktop process. A running bundle is never swapped
     under: Electron loads ``app.asar`` chunks and helper apps lazily, so renaming its bundle away
     and deleting the old tree crashes the live app (the detached updater waits for it to exit)."""
-    import psutil  # noqa: PLC0415
+    import psutil
     bundles: set[Path] = set()
     for proc in psutil.process_iter(["exe"]):
         exe = proc.info.get("exe") or ""
@@ -992,8 +992,8 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
             print(f"  ✓ Installed the rebuilt Desktop app at {app}")
     for problem in problems:
         print(f"  ⚠ {problem}")
-    from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
-    from utils import atomic_json_write, read_json_or_empty  # noqa: PLC0415
+    from hermes_cli.gui_uninstall import desktop_install_record
+    from utils import atomic_json_write, read_json_or_empty
     # A copy that failed to reinstall stays recorded, so the next update retries it. Every
     # `hermes desktop` launch lands here: write only when the set changed.
     apps = [str(app) for app in owned]
@@ -1030,8 +1030,8 @@ def _owns_installed_desktop_apps() -> bool:
     backend."""
     if sys.platform != "darwin":
         return False
-    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
-    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_constants import get_default_hermes_root
     return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
 
 
@@ -1045,8 +1045,8 @@ def _installed_desktop_apps() -> list[Path]:
     """
     if not _owns_installed_desktop_apps():
         return []
-    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths  # noqa: PLC0415
-    from utils import read_json_or_empty  # noqa: PLC0415
+    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
+    from utils import read_json_or_empty
     candidates = packaged_gui_app_paths()
     if owned := _update_owned_macos_bundles(candidates):
         return owned

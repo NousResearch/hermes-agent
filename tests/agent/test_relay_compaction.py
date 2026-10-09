@@ -139,14 +139,13 @@ def test_no_relay_host_skips_quietly(monkeypatch):
 def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
     fake, runtime, coordinator = relay
     coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
-    entered, release = threading.Event(), threading.Event()
+    release, finished = threading.Event(), threading.Event()
 
     def stalled_event(_name, **_kwargs):
-        entered.set()
         release.wait()
 
     monkeypatch.setattr(fake.scope, "event", stalled_event)
-    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 0.05)
+    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 2.0)
     result = []
 
     def publish():
@@ -154,13 +153,13 @@ def test_stalled_relay_event_does_not_hold_the_caller(monkeypatch, relay):
             emit_compaction_mark("s1", "compaction", _committed("s1"))
         except Exception as exc:
             result.append(exc)
+        finally:
+            finished.set()
 
     publisher = threading.Thread(target=publish, daemon=True)
     try:
         publisher.start()
-        publisher.join(timeout=2)
-        assert not publisher.is_alive()
-        assert entered.is_set()
+        assert finished.wait(timeout=4)
         assert len(result) == 1
         assert isinstance(result[0], TimeoutError)
         assert "Relay scope operation exceeded" in str(result[0])

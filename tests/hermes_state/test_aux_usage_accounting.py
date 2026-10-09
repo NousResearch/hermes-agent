@@ -39,7 +39,94 @@ def _usage_rows(db, session_id):
     return [dict(r) for r in rows]
 
 
+_ACCOUNTING_COUNTERS = (
+    "api_call_count",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "reasoning_tokens",
+)
+
+
+def _counter_tuple(row):
+    return tuple(row[name] for name in _ACCOUNTING_COUNTERS)
+
+
+def _session_counter_tuple(db, session_id):
+    with db._lock:
+        row = db._conn.execute(
+            "SELECT api_call_count, input_tokens, output_tokens, cache_read_tokens, reasoning_tokens "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    return _counter_tuple(row)
+
+
+def _usage_counter_tuple(db, session_id, *, task=None):
+    where = "session_id = ?"
+    params = [session_id]
+    if task is not None:
+        where += " AND task = ?"
+        params.append(task)
+    with db._lock:
+        row = db._conn.execute(
+            "SELECT COALESCE(SUM(api_call_count), 0) AS api_call_count, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+            "COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens "
+            f"FROM session_model_usage WHERE {where}",
+            params,
+        ).fetchone()
+    return _counter_tuple(row)
+
+
 class TestRecordAuxiliaryUsage:
+    def test_session_summary_equals_main_task_rows_while_all_rows_include_aux(self, db):
+        """The session summary is main-loop-only; the ledger additionally exposes aux work."""
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", model="main", billing_provider="openrouter",
+            api_call_count=307, input_tokens=2_225_723, output_tokens=165_215,
+            cache_read_tokens=36_549_632, reasoning_tokens=45_149,
+        )
+        db.record_auxiliary_usage(
+            "s1", "compression", model="aux", billing_provider="openrouter",
+            api_call_count=55, input_tokens=787_759, output_tokens=71_722,
+            cache_read_tokens=1_410_048, reasoning_tokens=846,
+        )
+
+        main = (307, 2_225_723, 165_215, 36_549_632, 45_149)
+        all_rows = (362, 3_013_482, 236_937, 37_959_680, 45_995)
+        aux = (55, 787_759, 71_722, 1_410_048, 846)
+        assert _session_counter_tuple(db, "s1") == main
+        assert _usage_counter_tuple(db, "s1", task="") == main
+        assert _usage_counter_tuple(db, "s1") == all_rows
+        assert tuple(all_value - main_value for all_value, main_value in zip(all_rows, main)) == aux
+
+    def test_absolute_gateway_update_changes_session_only_not_per_model_rows(self, db):
+        """Absolute gateway totals cannot be assigned to an individual model route."""
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", model="main", billing_provider="openrouter",
+            api_call_count=1, input_tokens=10, output_tokens=2,
+        )
+        db.update_token_counts(
+            "s1", model="main", billing_provider="openrouter", absolute=True,
+            api_call_count=9, input_tokens=900, output_tokens=90,
+        )
+
+        assert _session_counter_tuple(db, "s1")[:3] == (9, 900, 90)
+        assert _usage_counter_tuple(db, "s1", task="")[:3] == (1, 10, 2)
+
+        db.record_auxiliary_usage(
+            "s1", "compression", model="aux", billing_provider="openrouter",
+            api_call_count=2, input_tokens=20, output_tokens=4,
+        )
+        assert _session_counter_tuple(db, "s1")[:3] == (9, 900, 90)
+        assert _usage_counter_tuple(db, "s1", task="")[:3] == (1, 10, 2)
+        assert _usage_counter_tuple(db, "s1", task="compression")[:3] == (2, 20, 4)
+
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")
         db.record_auxiliary_usage(
@@ -291,4 +378,3 @@ class TestInsightsAuxTotals:
         assert ov["total_output_tokens"] == 600
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
-

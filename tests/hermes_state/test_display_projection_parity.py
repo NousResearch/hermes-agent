@@ -60,6 +60,37 @@ def _rest_display(db, sid):
 
 
 class TestDisplayProjectionParity:
+    def test_repeated_identical_compaction_does_not_duplicate_live_or_display_projection(self, db):
+        """Replaying one compaction boundary preserves one live and one display copy per turn."""
+        sid = "repeat-compact"
+        db.create_session(sid, source="test")
+        db.append_message(sid, "user", "old question", timestamp=1000.0)
+        db.append_message(sid, "assistant", "old answer", timestamp=1001.0)
+        compacted = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary", "timestamp": 2000.0},
+            {"role": "user", "content": "carried question", "timestamp": 2001.0},
+        ]
+        live = [
+            ("assistant", "[CONTEXT COMPACTION] summary"),
+            ("user", "carried question"),
+        ]
+
+        for _ in range(2):
+            db.archive_and_compact(sid, compacted, tail_count=0)
+
+            model, display = db.get_resume_conversations(sid)
+            assert _texts(model) == live
+            assert db.get_session(sid)["message_count"] == 2
+            with db._lock:
+                active_ids = [
+                    row["id"] for row in db._conn.execute(
+                        "SELECT id FROM messages WHERE session_id = ? AND active = 1", (sid,)
+                    ).fetchall()
+                ]
+            assert len(active_ids) == len(set(active_ids))
+            display_texts = _texts(display)
+            assert len(display_texts) == len(set(display_texts))
+
     def test_resume_display_matches_the_rest_transcript(self, db):
         sid = _compact_in_place(db, "chat")
 

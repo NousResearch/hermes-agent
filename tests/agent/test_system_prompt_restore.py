@@ -218,6 +218,56 @@ class TestSurfaceSwitch:
 
 
 class TestStoredPromptReuse:
+    def test_model_switch_null_is_transitional_and_next_turn_restores(self, tmp_path, caplog):
+        """A route invalidation rebuilds once, persists, then restores its new bytes."""
+        from hermes_state import SessionDB
+
+        session_id = "s1"
+        old_prompt = "Model: old-model\nProvider: openrouter\nPROMPT_V1"
+        rebuilt_prompt = "Model: new-model\nProvider: openrouter\nPROMPT_V2"
+        history = [{"role": "user", "content": "continue"}]
+
+        with SessionDB(tmp_path / "state.db") as db:
+            db.create_session(session_id, source="test")
+            db.update_system_prompt(session_id, old_prompt)
+            db.update_session_model(session_id, "new-model", provider="openrouter")
+
+            assert db.get_session(session_id)["system_prompt"] is None
+
+            first = _make_agent(session_db=db, prebuilt_prompt=rebuilt_prompt)
+            first.session_id = session_id
+            first.model = "new-model"
+            first._persist_disabled = True
+            with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+                _restore_or_build_system_prompt(first, None, history)
+
+            null_warnings = [
+                record.getMessage() for record in caplog.records
+                if "is null; rebuilding from scratch this turn" in record.getMessage()
+            ]
+            assert len(null_warnings) == 1
+            assert first._cached_system_prompt == rebuilt_prompt
+            assert db.get_session(session_id)["system_prompt"] == rebuilt_prompt
+            with db._lock:
+                raw = db._conn.execute(
+                    "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+            assert raw["system_prompt"] is None
+            assert raw["system_prompt_hash"] is not None
+
+            caplog.clear()
+            second = _make_agent(session_db=db, prebuilt_prompt="SHOULD_NOT_BUILD")
+            second.session_id = session_id
+            second.model = "new-model"
+            second._persist_disabled = True
+            with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+                _restore_or_build_system_prompt(second, None, history)
+
+            second._build_system_prompt.assert_not_called()
+            assert second._cached_system_prompt == rebuilt_prompt
+            assert not any("is null" in record.getMessage() for record in caplog.records)
+
     def test_present_row_is_reused_verbatim(self, caplog):
         """Continuing session with a stored prompt → reuse byte-for-byte."""
         stored = "Stored prompt from turn 1 — byte-identical reuse"

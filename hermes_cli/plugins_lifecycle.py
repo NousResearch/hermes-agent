@@ -52,22 +52,8 @@ def _manager_for_home(plugins, home_key: Path):
     return manager
 
 
-@contextmanager
-def reserve_plugin_manager_for_home(home: Path) -> Iterator[tuple[bool, Exception | None]]:
-    """Hold same-home lookups off through teardown and the caller's profile mutation.
-
-    The yielded result is ``(had_manager, teardown_error)`` so callers can roll back
-    inside the reservation if teardown failed. Errors from an owner-reentrant manager
-    created during the reservation are logged during final cleanup.
-    """
-    from hermes_cli import plugins
-
-    try:
-        home_key = Path(home).expanduser().resolve()
-    except (OSError, RuntimeError):
-        home_key = Path(home).expanduser()
-
-    thread_id = threading.get_ident()
+def _reserve_manager_for_home(plugins, home_key: Path, thread_id: int):
+    """Claim a home reservation without reversing the manager-lock order."""
     manager = None
     manager_lock = None
     reentrant = False
@@ -115,6 +101,28 @@ def reserve_plugin_manager_for_home(home: Path) -> Iterator[tuple[bool, Exceptio
                 break
             continue
         break
+    return manager, manager_lock, reentrant
+
+
+@contextmanager
+def reserve_plugin_manager_for_home(home: Path) -> Iterator[tuple[bool, Exception | None]]:
+    """Hold same-home lookups off through teardown and the caller's profile mutation.
+
+    The yielded result is ``(had_manager, teardown_error)`` so callers can roll back
+    inside the reservation if teardown failed. Errors from an owner-reentrant manager
+    created during the reservation are logged during final cleanup.
+    """
+    from hermes_cli import plugins
+
+    try:
+        home_key = Path(home).expanduser().resolve()
+    except (OSError, RuntimeError):
+        home_key = Path(home).expanduser()
+
+    thread_id = threading.get_ident()
+    manager, manager_lock, reentrant = _reserve_manager_for_home(
+        plugins, home_key, thread_id
+    )
 
     if reentrant:
         yield False, None

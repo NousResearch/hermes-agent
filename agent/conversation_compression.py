@@ -3577,6 +3577,7 @@ def _candidate_rejected(
             agent._emit_warning(
                 "⚠ Compression returned an empty transcript. No session split was performed; conversation continues unchanged."
             )
+        _emit_aborted_attempt_telemetry(agent, attempt.started_at, "empty_transcript", attempt.seed)
         return True
 
     # A newer WORKING attempt supersedes us; discard the late candidate. No-op

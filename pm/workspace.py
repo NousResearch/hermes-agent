@@ -120,7 +120,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
     members = []
-    buildable = {}  # [project].name -> identity of the member already snapshotted for it
+    buildable = {}  # [project].name -> (source tree, installed identity)
     for identity, entry in member_sources(plugin_dirs).items():
         if not _is_member_candidate(entry):
             continue
@@ -128,15 +128,17 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         # against the metadata its backend produces), so the same buildable
         # plugin enabled in two profiles sharing a gateway would declare one
         # name twice and fail `uv lock` with "Two workspace members are both
-        # named …". One copy resolves that name; an identical source is the
-        # same package either way, so identical duplicates fold into the
-        # first copy (config order, via a stable `sorted` below).
+        # named …". Fold only copies with identical source bytes AND effective
+        # external path inputs; equal declarations can resolve sibling paths
+        # against different installed identities, including staged sources.
         name = _buildable_member_name(entry)
         if name is not None:
             seen = buildable.get(name)
-            if seen is not None and _same_member_source(seen, entry):
+            if (seen is not None and _same_member_source(seen[0], entry)
+                    and _external_member_source_paths(seen[0], seen[1])
+                    == _external_member_source_paths(entry, identity)):
                 continue
-            buildable[name] = entry
+            buildable[name] = (entry, identity)
         members.append(_workspace_member(entry, root, identity=identity).relative_to(root).as_posix())
 
     if members:
@@ -306,6 +308,35 @@ def _same_member_source(a: Path, b: Path) -> bool:
     return list(snapshot_entries(a)) == list(snapshot_entries(b))
 
 
+def _external_member_path_specs(document: dict, plugin_dir: Path, identity: Path):
+    """Yield external relative sources and their installed-identity destinations.
+
+    Internal trees travel with the snapshot; external trees remain installed
+    inputs. Use the same boundary for folding and workspace path rewriting.
+    """
+    for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
+        for spec in sources if isinstance(sources, list) else [sources]:
+            if not isinstance(spec, dict) or "path" not in spec:
+                continue
+            relative = Path(spec["path"])
+            if relative.is_absolute():
+                continue
+            resolved = (plugin_dir / relative).resolve()
+            if resolved.is_relative_to(plugin_dir.resolve()):
+                continue
+            yield spec, (identity / relative).resolve().as_posix()
+
+
+def _external_member_source_paths(plugin_dir: Path, identity: Path) -> list[str]:
+    import tomllib
+
+    pyproject = read_python_declaration(plugin_dir).pyproject
+    if pyproject is None:
+        return []
+    document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    return [path for _, path in _external_member_path_specs(document, plugin_dir, identity)]
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
@@ -330,18 +361,9 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)
-        for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
-            for spec in sources if isinstance(sources, list) else [sources]:
-                if not isinstance(spec, dict) or "path" not in spec:
-                    continue
-                relative = Path(spec["path"])
-                if relative.is_absolute():
-                    continue
-                resolved = (plugin_dir / relative).resolve()
-                if resolved.is_relative_to(plugin_dir.resolve()):
-                    continue  # The referenced tree was copied with this member.
-                spec["path"] = (identity / relative).resolve().as_posix()
-                changed = True
+        for spec, path in _external_member_path_specs(document, plugin_dir, identity):
+            spec["path"] = path
+            changed = True
         if virtual:
             document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
         if virtual or changed:

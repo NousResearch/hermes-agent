@@ -279,12 +279,14 @@ describe('ChatSidebar project entry', () => {
     // overlay re-places every live row it is handed by path prefix — and a nested project's cwd sits
     // under its parent's path, so an unfiltered list re-inserts the child's chat into the parent.
     const parentChat = makeSessionInfo({ cwd: '/work/ws', id: 'parent-chat', title: 'Parent chat' })
+
     const childChat = makeSessionInfo({
       cwd: '/work/ws/child',
       git_repo_root: '/work/ws/child',
       id: 'child-chat',
       title: 'Child chat'
     })
+
     const parent = {
       id: 'p_parent',
       label: 'ws',
@@ -302,6 +304,7 @@ describe('ChatSidebar project entry', () => {
       sessionCount: 1,
       sessionIds: ['parent-chat']
     }
+
     const child = {
       id: 'p_child',
       label: 'child',

@@ -123,6 +123,7 @@ _NOT_DELEGATE = (
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
 # Word-bounded: `| sha256sum -c` / `| shasum` / `| dashboard` are not `| sh` / `| dash`.
 _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)\b'
+_SUDO_PREFIX = r'(?:sudo\s+(?:-\S+\s+)*)?'
 
 # Known credential-file paths as one shared alternation for the JavaScript and Python
 # read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
@@ -309,12 +310,12 @@ THREAT_PATTERNS = [
     # The decode may read a file or a redirect before the pipe (`base64 -d payload.b64 | sh`,
     # `base64 --decode < p | sh`), short flags may be combined (`-di`), and openssl decodes base64
     # too. Execution means an interpreter in command position at ANY later stage of the line
-    # (`| gunzip | sh`, `| tee x.sh; sh x.sh`); decoding into a data consumer (`| jq .`, `| grep`,
-    # `| tar xz`) is not execution.
+    # (`| gunzip | sh`, `| tee x.sh; sh x.sh`), or an archive unpacker: an embedded base64 tarball
+    # is code the scanner never sees. Decoding into a data consumer (`| jq .`, `| grep`) is not.
     (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
      r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
      r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'
-     r'|iex|pwsh|powershell|\.(?=\s))(?![\w.-])'
+     r'|iex|pwsh|powershell|tar|bsdtar|unzip|cpio|gunzip|gzip|zcat|xz|unxz|bunzip2|\.(?=\s))(?![\w.-])'
      r'|\b(?:eval|source|iex|exec)\b[^\n]*\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b',
      "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
     (r'\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}',
@@ -371,10 +372,11 @@ THREAT_PATTERNS = [
     # `curl` needs an operand before the pipe (#118155): the bare phrase `curl | sh` is prose shorthand for the
     # install method, and curl with no URL fetches nothing. A real download-and-execute names its source, so
     # requiring one non-pipe character after the command costs no coverage.
-    (rf'curl\s+[^|\s][^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
-    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SHELL_NAMES_RE}',
+    # `| sudo -E bash` is the same download-and-execute, with root.
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
+    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SUDO_PREFIX}{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
-    (r'curl\s+[^|\s][^\n]*\|\s*python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
+    (rf'curl\s+[^|\s][^\n]*\|\s*{_SUDO_PREFIX}python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain", "PEP 723 inline script metadata with dependencies (verify pinning)"),

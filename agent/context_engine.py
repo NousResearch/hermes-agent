@@ -8,6 +8,8 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 (CLI exit, /reset, gateway expiry), never per-turn.
 """
 
+from __future__ import annotations
+
 import copy
 import json
 from abc import ABC, abstractmethod

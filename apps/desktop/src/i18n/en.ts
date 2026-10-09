@@ -2797,11 +2797,11 @@ export const en: Translations = {
         help: 'Recommended. User IDs in @user:server format, one per box.'
       },
       SIGNAL_HTTP_URL: {
-        label: 'Signal bridge URL',
+        label: 'signal-cli HTTP URL',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'URL of a running signal-cli REST bridge.'
+        help: 'URL of the native signal-cli HTTP daemon.'
       },
-      SIGNAL_ACCOUNT: { label: 'Phone number', help: 'The number registered with your signal-cli bridge.' },
+      SIGNAL_ACCOUNT: { label: 'Phone number', help: 'The phone number linked to signal-cli.' },
       SIGNAL_ALLOWED_USERS: { label: 'Allowed Signal users', help: 'Recommended. Signal identifiers, one per box.' },
       WHATSAPP_ENABLED: {
         label: 'Enable WhatsApp bridge',

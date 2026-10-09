@@ -42,6 +42,8 @@ _TRIGGER_CLASSES = {
     "manual": "manual", "overflow": "overflow", "provider": "provider", "unknown": "unknown", "other": "unknown",
 }
 _TRIGGER_CLASS_VALUES = frozenset({"auto", "manual", "overflow", "provider", "unknown"})
+# The error-classifier reasons whose recovery compresses with ``trigger="overflow"``.
+_OVERFLOW_REASONS = frozenset({"context_overflow", "payload_too_large", "long_context_tier"})
 _OUTCOMES = frozenset({"committed", "aborted", "failed", "skipped", "blocked"})
 _SPLIT_STATUSES = frozenset({
     "not_applicable", "in_place_committed", "rotated_committed", "failed_not_indexed", "aborted",
@@ -177,7 +179,8 @@ def attempt_payload(record: dict[str, Any], *, compression_count: Any = None) ->
     values: dict[str, Any] = {key: _int(record.get(src)) for src, key in _ATTEMPT_INTS.items()}
     values.update(
         kind="provider_native" if codex else "summarize", scope="provider" if codex else "history", official=True,
-        method=record.get("method"), trigger=trigger, trigger_class=trigger_class, outcome=outcome,
+        method=record.get("method"), trigger=trigger, trigger_class=trigger_class,
+        overflow_reason=_closed(record.get("overflow_reason"), _OVERFLOW_REASONS), outcome=outcome,
         failure_class=failure,
         attempt_id=record.get("attempt_id"), session_id=record.get("session_id"),
         token_count_method=record.get("token_count_method"),

@@ -187,6 +187,7 @@ that does not apply is `null`. Categorical fields come from these closed sets:
 | `outcome` | `committed`, `aborted`, `failed`, `skipped`, `blocked` |
 | `split_status` | `not_applicable`, `in_place_committed`, `rotated_committed`, `failed_not_indexed`, `aborted`, or `null` |
 | `token_count_method` | `estimate_rough`, or `null` |
+| `overflow_reason` | `context_overflow`, `payload_too_large`, `long_context_tier` (the error classifier's reason for the provider rejection a `trigger: overflow` attempt recovers from), or `null` for every other trigger |
 
 A value outside its set reads `other`. `failure_class` uses the
 `hermes.compression.count` classes plus the attempt-only classes (guard exits
@@ -225,8 +226,8 @@ Known gaps in v1:
   hygiene compacts in place.
 - Reserved for later versions and never emitted in v1: `kind`
   `request_truncation` / `window_reduction`, `scope: request`,
-  `trigger: recovery`, `outcome: noop`, `token_count_method: provider_usage`,
-  and a filled `overflow_reason` (always `null` in v1).
+  `trigger: recovery`, `outcome: noop`, and
+  `token_count_method: provider_usage`.
 
 ## Process-Wide Plugin Policy and Profile Isolation
 

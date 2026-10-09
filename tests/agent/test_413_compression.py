@@ -444,6 +444,55 @@ class TestHTTP413Compression:
 
 
 
+def _context_length_400():
+    err = Exception(
+        "Error code: 400 - {'error': {'message': "
+        "\"This endpoint's maximum context length is 204800 tokens. "
+        "However, you requested about 270460 tokens.\", 'code': 400}}"
+    )
+    err.status_code = 400
+    return err
+
+
+def _long_context_tier_429():
+    err = Exception("Extra usage is required for long context requests.")
+    err.status_code = 429
+    return err
+
+
+@pytest.mark.parametrize(
+    ("make_error", "reason"),
+    [
+        pytest.param(_make_413_error, "payload_too_large", id="413"),
+        pytest.param(_context_length_400, "context_overflow", id="context-length-400"),
+        pytest.param(_long_context_tier_429, "long_context_tier", id="long-context-tier-429"),
+    ],
+)
+def test_overflow_recovery_passes_the_classified_reason_to_compression(agent, make_error, reason):
+    """Both overflow callers already hold the classifier's reason; the attempt record gets it as
+    ``overflow_reason`` next to ``trigger="overflow"``."""
+    agent.client.chat.completions.create.side_effect = [
+        make_error(), _mock_response(content="Recovered after compression", finish_reason="stop"),
+    ]
+    prefill = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+
+    with (
+        patch.object(agent, "_compress_context") as mock_compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        mock_compress.return_value = ([{"role": "user", "content": "hello"}], "compressed prompt")
+        agent.run_conversation("hello", conversation_history=prefill)
+
+    mock_compress.assert_called_once()
+    kwargs = mock_compress.call_args.kwargs
+    assert (kwargs["trigger"], kwargs.get("overflow_reason")) == ("overflow", reason)
+
+
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 

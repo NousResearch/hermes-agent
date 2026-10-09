@@ -167,6 +167,37 @@ def test_a_raising_emitter_never_changes_the_compaction_result(monkeypatch, capl
     assert failures[0].exc_info is not None
 
 
+def test_overflow_attempt_records_its_classified_overflow_reason(published):
+    agent = _Agent(_compressor())
+
+    with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        compress_context(
+            agent, _messages(), "system prompt", approx_tokens=80_000, bypass_cooldown=True, trigger="overflow",
+            overflow_reason="context_overflow",
+        )
+
+    [(_sid, name, payload)] = published
+    assert name == "compaction"
+    assert (payload["trigger"], payload["trigger_class"], payload["overflow_reason"]) == (
+        "overflow", "overflow", "context_overflow",
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({"trigger_source": "overflow", "overflow_reason": "payload_too_large"}, "payload_too_large"),
+        ({"trigger_source": "overflow", "overflow_reason": "long_context_tier"}, "long_context_tier"),
+        ({"trigger_source": "overflow", "overflow_reason": "rate_limit"}, "other"),
+        ({"trigger_source": "overflow"}, None),
+        ({"trigger_source": "pre_api"}, None),
+    ],
+)
+def test_overflow_reason_stays_in_its_closed_set(record, expected):
+    payload = compaction_events.attempt_payload({"commit_status": "committed", **record})
+    assert payload["overflow_reason"] == expected
+
+
 def test_gate_blocked_attempt_publishes_exactly_one_blocked_attempt_mark(published):
     compressor = _compressor()
     agent = _Agent(compressor)

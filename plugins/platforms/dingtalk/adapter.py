@@ -82,6 +82,35 @@ def _is_sdk_incompat(exc: BaseException | None) -> bool:
     return False
 
 
+def _is_missing_socks_runtime(exc: BaseException | None) -> bool:
+    """True for #135646: websockets picked a SOCKS proxy (env or macOS system proxy) but python-socks is absent.
+
+    dingtalk-stream dials ``websockets.connect(uri)`` with no ``proxy=``, so websockets chooses the
+    proxy from ``urllib.request.getproxies()`` and raises this ImportError on every attempt.
+    """
+    for _ in range(4):
+        if exc is None:
+            return False
+        if isinstance(exc, ImportError) and "python-socks" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _fatal_sdk_error_message(exc: BaseException) -> str | None:
+    """Actionable, non-retryable message for SDK errors only a reinstall fixes; None for anything else."""
+    if _is_sdk_incompat(exc):
+        return (f"dingtalk-stream cannot open its websocket with the installed websockets package ({exc}). "
+                "Hermes pins dingtalk-stream==0.24.3 with websockets==15.0.1; reinstall the dingtalk extra "
+                "so those versions are used (e.g. `pip install 'hermes-agent[dingtalk]'`).")
+    if _is_missing_socks_runtime(exc):
+        return ("dingtalk-stream's websocket is routed through a SOCKS proxy (socks_proxy/https_proxy or the "
+                f"macOS/Windows system proxy), but python-socks is not installed ({exc}). Reinstall the dingtalk "
+                "extra, which ships it (e.g. `pip install 'hermes-agent[dingtalk]'`), or exempt DingTalk with "
+                "NO_PROXY=dingtalk.com.")
+    return None
+
+
 class _SdkLogGuard(logging.Filter):
     """Collapse repeated dingtalk_stream.client records; never raises on bad format args.
 
@@ -258,8 +287,9 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         dingtalk-stream's ``start()`` runs its own catch-all retry loop, so most
         errors never reach us: ``_SdkLogGuard`` collapses that loop's repeated
-        log records, and a dingtalk-stream/websockets incompatibility (#24851)
-        is handed to the gateway's reconnect watcher via ``_set_fatal_error``
+        log records, and errors only a reinstall fixes (a dingtalk-stream/websockets
+        incompatibility, #24851, or a SOCKS proxy without python-socks, #135646)
+        are handed to the gateway's reconnect watcher via ``_set_fatal_error``
         instead of retrying forever.  For errors that do escape ``start()``,
         exponential backoff (RECONNECT_BACKOFF) applies; after
         RECONNECT_CIRCUIT_BREAKER_TRIPS identical errors in a row the breaker
@@ -292,7 +322,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             except Exception as e:
                 if not self._running:
                     return
-                if _is_sdk_incompat(e):
+                if _fatal_sdk_error_message(e) is not None:
                     self._on_sdk_error(e, cancel=False)
                     await self._notify_fatal_error()
                     return
@@ -321,12 +351,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                 backoff_idx += 1
 
     def _on_sdk_error(self, exc: BaseException, *, cancel: bool = True) -> None:
-        """Called (sync, possibly from the SDK logger) with an SDK exception; hands off on incompat."""
-        if not _is_sdk_incompat(exc) or getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+        """Called (sync, possibly from the SDK logger) with an SDK exception; hands off on a reinstall-only error."""
+        msg = _fatal_sdk_error_message(exc)
+        if msg is None or getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
             return
-        msg = (f"dingtalk-stream cannot open its websocket with the installed websockets package ({exc}). "
-               "Hermes pins dingtalk-stream==0.24.3 with websockets==15.0.1; reinstall the dingtalk extra "
-               "so those versions are used (e.g. `pip install 'hermes-agent[dingtalk]'`).")
         logger.error("[%s] %s", self.name, msg)
         # Not retryable: only a reinstall + restart fixes it, and connect() returns True before the
         # socket exists, so a gateway reconnect would re-fail every watcher tick forever.

@@ -2439,6 +2439,7 @@ ddgs = [
 dingtalk = [
     { name = "alibabacloud-dingtalk" },
     { name = "dingtalk-stream" },
+    { name = "python-socks" },
     { name = "qrcode" },
 ]
 discord = [
@@ -2458,6 +2459,7 @@ fal = [
 ]
 feishu = [
     { name = "lark-oapi" },
+    { name = "python-socks" },
     { name = "qrcode" },
 ]
 firecrawl = [
@@ -2752,6 +2754,8 @@ requires-dist = [
     { name = "python-dotenv", marker = "python_full_version >= '3.14'", specifier = "==1.2.2" },
     { name = "python-multipart", marker = "python_full_version >= '3.14'", specifier = ">=0.0.9,<1" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = "==0.0.32" },
+    { name = "python-socks", marker = "extra == 'dingtalk'", specifier = "==2.8.2" },
+    { name = "python-socks", marker = "extra == 'feishu'", specifier = "==2.8.2" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.8" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'telegram'", specifier = "==22.8" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.8" },

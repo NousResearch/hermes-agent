@@ -72,7 +72,7 @@ class TelegramHeldInboundMixin:
         if schedule and not self._should_drop_delayed_delivery():
             self._schedule_held_inbound_redispatch()
 
-    def adopt_held_inbound(self, predecessor: TelegramHeldInboundMixin) -> None:
+    def adopt_held_inbound(self, predecessor: "TelegramHeldInboundMixin") -> None:
         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
         self._held_inbound_successor = None  # we own the queue again: a reverse link would forward in a cycle

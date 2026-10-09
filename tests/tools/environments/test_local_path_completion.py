@@ -42,6 +42,12 @@ def test_missing_user_local_bin_not_appended(monkeypatch, tmp_path):
     assert ".local" not in _append_missing_sane_path_entries("/usr/bin:/bin")
 
 
+@pytest.fixture(autouse=True)
+def _no_committed_venv(monkeypatch):
+    """Keep PATH tests off the real install; tests that need a venv patch their own."""
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _repo: None)
+
+
 def test_committed_python_precedes_store_tool_python_in_terminal_path(monkeypatch, tmp_path):
     """A PM tool Python on the inherited PATH must not shadow dependency imports."""
     tool_bin = tmp_path / "tools" / "python" / "bin"

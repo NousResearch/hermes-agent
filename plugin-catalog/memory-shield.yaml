@@ -1,7 +1,7 @@
 name: memory-shield
 title: Memory Shield
 repo: https://github.com/churnast/hermes-memory-shield
-sha: 5ce3e2585f0bef675eb5e31e97ca224daf098a0e
+sha: 1755dc37dd51e5217f98383242ef56c7eda4c62c
 description: >-
   Keeps your agent from rewriting or wiping what it remembers about you: by default the agent may add facts
   to the owner profile (USER.md) wherever it may write and may correct one only when the owner asks in a
@@ -30,12 +30,12 @@ tier: community
 category: general
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/churnast/hermes-memory-shield#readme
-version: "1.1.0"
-image: https://raw.githubusercontent.com/churnast/hermes-memory-shield/5ce3e2585f0bef675eb5e31e97ca224daf098a0e/docs/card.png
+version: "1.1.1"
+image: https://raw.githubusercontent.com/churnast/hermes-memory-shield/1755dc37dd51e5217f98383242ef56c7eda4c62c/docs/card.png
 screenshots:
-  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/5ce3e2585f0bef675eb5e31e97ca224daf098a0e/docs/screenshots/01-group-stranger.png
-  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/5ce3e2585f0bef675eb5e31e97ca224daf098a0e/docs/screenshots/02-forget-everything.png
-  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/5ce3e2585f0bef675eb5e31e97ca224daf098a0e/docs/screenshots/04-undo.png
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/1755dc37dd51e5217f98383242ef56c7eda4c62c/docs/screenshots/01-group-stranger.png
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/1755dc37dd51e5217f98383242ef56c7eda4c62c/docs/screenshots/02-forget-everything.png
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/1755dc37dd51e5217f98383242ef56c7eda4c62c/docs/screenshots/04-undo.png
 platforms: [linux, macos]
 known_issues:
   - "Needs plugins.isolation: in_process (the default). Under plugins.isolation: host the plugin cannot see the current chat, sender or Hermes' review marker, so it judges every call like a direct chat and the group chat and background review protection does not apply."

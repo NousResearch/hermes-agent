@@ -1337,6 +1337,21 @@ def safe_write_text(path: Path, content: str, retries: int = 4) -> bool:
     return False
 
 
+def trigger_icloud_download(path: Path) -> None:
+    """Request immediate download of a dataless .icloud placeholder file on macOS."""
+    if sys.platform != "darwin":
+        return
+    try:
+        escaped = str(path.resolve()).replace('"', '\\"')
+        cmd = [
+            "swift", "-e",
+            f'import Foundation; try? FileManager.default.startDownloadingUbiquitousItem(at: URL(fileURLWithPath: "{escaped}"))'
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
 def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
     if not safe_is_dir(threads_dir):
         return []
@@ -1350,6 +1365,10 @@ def list_dispatch_threads(threads_dir: Path) -> List[DispatchThreadMeta]:
         if not safe_is_dir(entry):
             continue
         meta_file = entry / "meta.json"
+        icloud_meta = entry / ".meta.json.icloud"
+        if icloud_meta.is_file() and not meta_file.is_file():
+            trigger_icloud_download(icloud_meta)
+
         data = safe_read_json(meta_file)
         if data:
             results.append(cast(DispatchThreadMeta, data))
@@ -1362,6 +1381,10 @@ def list_thread_messages(threads_dir: Path, thread_id: str) -> List[DispatchMess
     if not safe_is_dir(msgs_dir):
         return []
     try:
+        if safe_is_dir(msgs_dir):
+            for item in msgs_dir.iterdir():
+                if item.name.startswith(".") and item.name.endswith(".icloud"):
+                    trigger_icloud_download(item)
         files = sorted(msgs_dir.glob("*.json"))
     except (OSError, Exception):
         return []

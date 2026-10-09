@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: courier-by-autolane
+description: >-
+  Courier by Autolane: curbside food delivery in Austin. Order from a
+  restaurant for curbside pickup, and Autolane's vehicle brings it to you.
+source: https://docs.goautolane.com/courier/courier-mcp
+
+# Autolane hosts a remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP. Users link their phone on Autolane's
+# sign-in page; nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.goautolane.com/courier-mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - autolane
+    - autonomous delivery
+    - delivery
+    - curbside delivery
+  hosts:
+    - goautolane.com
+
+post_install: |
+  On first connection Hermes opens a browser to Autolane's "Link your phone"
+  page (or run `hermes mcp login courier-by-autolane`). Enter your mobile number
+  and the texted code, then restart the session so the tools load.
+
+  Courier by Autolane is invite-only for now; join the waitlist at
+  https://goautolane.com/autolane-courier.

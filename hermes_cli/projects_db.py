@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home
@@ -240,20 +240,77 @@ def _normalize_parent(conn: sqlite3.Connection, parent_id: Optional[str], *, chi
     return parent
 
 
-def _refuse_parent_cycle(conn: sqlite3.Connection, project_id: str, parent_id: str) -> None:
-    """Raise when ``parent_id`` already sits under ``project_id``.
+def _comparison_segments(path: str) -> List[str]:
+    """Segments of a folder path, so two spellings of one folder compare equal.
 
-    Walks the explicit links only: a loop through folder containment is resolved (and flattened) by the
-    display layer, and every link a drag can create is explicit. A loop here would drop rows silently.
+    Mirrors ``tui_gateway.project_tree._comparison_segments``. The store keeps its own copy because the
+    loop guard below has to run where EVERY writer passes, and hermes_cli does not reach into a display
+    module.
     """
+    normalized = os.path.normpath(os.path.expanduser(str(path or "")))
+    return [segment for segment in re.split(r"[\\/]+", normalized) if segment and segment != "."]
+
+
+def _folder_keys(project: Project) -> List[List[str]]:
+    """The folders the sidebar nests a row by: its declared ones, else its primary path."""
+    paths = [str(folder.path or "") for folder in project.folders] or [str(project.primary_path or "")]
+    return [key for key in (_comparison_segments(path) for path in paths) if key]
+
+
+def _parent_chain(conn: sqlite3.Connection) -> tuple[Dict[str, Optional[str]], Dict[str, List[List[str]]]]:
+    """Every project's explicit parent and folder keys — the picture the effective chain is walked on."""
+    explicit: Dict[str, Optional[str]] = {}
+    keys: Dict[str, List[List[str]]] = {}
+    for project in list_projects(conn, include_archived=True):
+        explicit[project.id] = project.parent_id
+        keys[project.id] = _folder_keys(project)
+    return explicit, keys
+
+
+def _containment_parent(keys: Dict[str, List[List[str]]], project_id: str) -> Optional[str]:
+    """The nearest project whose folder strictly holds one of this one's, deepest first.
+
+    This is the parent the sidebar derives for a row nobody has moved.
+    """
+    own = keys.get(project_id) or []
+    best, best_len = None, -1
+    for other_id, other_keys in keys.items():
+        if other_id == project_id:
+            continue
+        for key in other_keys:
+            if len(key) <= best_len:
+                continue
+            if any(len(key) < len(own_key) and own_key[: len(key)] == key for own_key in own):
+                best, best_len = other_id, len(key)
+    return best
+
+
+def _refuse_parent_loop(
+    explicit: Dict[str, Optional[str]], keys: Dict[str, List[List[str]]], project_id: str,
+    parent_id: Optional[str],
+) -> None:
+    """Raise when the proposed ``parent_id`` already sits under ``project_id``.
+
+    Walks the EFFECTIVE chain — an explicit link where a row has one, folder containment where it has
+    none — because that is what the sidebar renders: a loop hidden on the containment side shows as both
+    rows nested under each other on every tree build, until some later move happens to repair it. A move
+    that holds on both chains is left alone; nesting a project under one of its own folder-children is a
+    loop only while nothing on that side overrides the containment.
+
+    ``parent_id`` None means "back to containment", so the derived parent is the proposal then.
+    """
+    if parent_id is not None and not parent_id:
+        return  # explicitly top level: nothing above it to loop through
+
     seen = {project_id}
-    cursor: Optional[str] = parent_id
+    cursor = parent_id or _containment_parent(keys, project_id)
+
     while cursor:
         if cursor in seen:
             raise ValueError("that move would nest a project under one of its own descendants")
         seen.add(cursor)
-        row = conn.execute("SELECT parent_id FROM projects WHERE id = ?", (cursor,)).fetchone()
-        cursor = (row["parent_id"] or None) if row is not None else None
+        explicit_parent = explicit.get(cursor)
+        cursor = _containment_parent(keys, cursor) if explicit_parent is None else (explicit_parent or None)
 
 
 def set_project_parent(conn: sqlite3.Connection, project_id: str, parent_id: Optional[str]) -> Optional[str]:
@@ -266,7 +323,8 @@ def set_project_parent(conn: sqlite3.Connection, project_id: str, parent_id: Opt
         raise ValueError(f"no such project: {project_id}")
     parent = _normalize_parent(conn, parent_id, child_id=project_id)
     if parent:
-        _refuse_parent_cycle(conn, project_id, parent)
+        explicit, keys = _parent_chain(conn)
+        _refuse_parent_loop(explicit, keys, project_id, parent)
     _execute_rowcount(conn, "UPDATE projects SET parent_id = ? WHERE id = ?", (parent, project_id))
     return parent
 
@@ -299,6 +357,13 @@ def create_project(
             "switch to it instead of creating a duplicate"
         )
     parent = _normalize_parent(conn, parent_id)
+    if parent:
+        # The new project has no row yet, so the walk is handed it from the arguments: a project created
+        # into a folder that holds its declared parent would nest the two under each other.
+        explicit, keys = _parent_chain(conn)
+        explicit[pid] = parent
+        keys[pid] = [key for key in (_comparison_segments(path) for path in folder_paths) if key]
+        _refuse_parent_loop(explicit, keys, pid, parent)
     with write_txn(conn):
         conn.execute(
             "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived, parent_id) "

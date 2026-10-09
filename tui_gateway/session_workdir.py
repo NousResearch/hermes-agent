@@ -370,7 +370,11 @@ def _workspace_is_inherited(session: dict, current: str) -> bool:
 
     workspace = _profile_workspace_cwd(session.get("profile_home"))
 
-    return bool(workspace) and os.path.abspath(os.path.expanduser(str(workspace))) == current
+    # Sitting on the profile's workspace is "inherited" only for the desktop, which parks its launch
+    # directory there. Anywhere else that is the shell the user started in — the same distinction
+    # `_LAUNCH_CWD_NOT_A_WORKSPACE` draws for persistence — so leaving it is a move INTO a repo.
+    return bool(workspace) and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE and (
+        os.path.abspath(os.path.expanduser(str(workspace))) == current)
 
 
 def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:

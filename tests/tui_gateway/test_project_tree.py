@@ -475,6 +475,29 @@ def test_discovered_repo_inside_a_declared_project_nests_under_it():
     assert child["parentId"] == "p_app"
 
 
+def test_a_discovered_subproject_keeps_no_session_count_of_its_own():
+    # The payload aggregates sessions onto the scanned root, but those sessions belong to the declared
+    # project that owns the folder (by depth). A badge here would count them twice and drill in empty.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 7, "last_active": 9}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["sessionCount"] == 0
+    assert child["lastActive"] == 0.0
+    assert child["sessionIds"] == []
+
+
+def test_a_discovered_repo_nobody_owns_keeps_the_count_the_scan_saw():
+    discovered = [{"root": "/www/fresh", "label": "fresh", "sessions": 3, "last_active": 9}]
+
+    tree = pt.build_tree([], [], discovered, resolve=None, hydrate=False)
+
+    fresh = next(p for p in tree["projects"] if p["id"] == "/www/fresh")
+    assert fresh["sessionCount"] == 3
+
+
 def test_discovered_repo_that_is_a_projects_own_folder_does_not_duplicate_its_row():
     # The one case worth refusing: the repo IS the declared project, so the project row already is it.
     project = _project("p_app", "App", ["/www/app"])
@@ -888,3 +911,18 @@ def test_effective_parent_map_resolves_containment_when_unset():
     resolved = pt.effective_parent_map([parent, nested, moved])
 
     assert resolved == {"p_dev": None, "p_align": "p_dev", "p_moved": None}
+
+
+def test_a_stored_loop_is_broken_instead_of_rendered():
+    """The store refuses new loops, but a projects.db written before that guard can hold one.
+
+    Both rows would otherwise reach the wire as each other's child — the sidebar draws that as two rows
+    nested inside one another, on every build, until some other move happens to repair it. The row the
+    walk reaches first drops to the top level, which is what breaks the cycle.
+    """
+    a = _project("p_a", "A", ["/www/a"], parent_id="p_b")
+    b = _project("p_b", "B", ["/www/b"], parent_id="p_a")
+
+    resolved = pt.effective_parent_map([a, b])
+
+    assert resolved == {"p_a": None, "p_b": "p_a"}

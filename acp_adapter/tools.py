@@ -10,10 +10,12 @@ from typing import Any, Callable, Dict, List, Optional
 import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
+from agent.display import build_tool_preview
+
 logger = logging.getLogger(__name__)
 
 # Hermes tool name -> ACP ToolKind (anything unlisted is "other").
-TOOL_KIND_MAP: Dict[str, ToolKind] = {
+TOOL_KIND_MAP: dict[str, ToolKind] = {
     name: kind
     for kind, names in {
         "read": ("read_file", "skill_view", "skills_list", "browser_snapshot", "browser_vision",
@@ -43,7 +45,6 @@ _POLISHED_TOOLS = {
     "vision_analyze", "image_generate", "text_to_speech",
     # Schedulers / platform integrations
     "cronjob", "send_message", "clarify", "discord", "discord_admin",
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
@@ -54,7 +55,7 @@ _POLISHED_TOOLS = {
 }
 
 _EMPTYISH = (None, "", [], {})
-Args = Dict[str, Any]
+Args = dict[str, Any]
 _Formatter = Callable[[str, Optional[str], Optional[Args]], Optional[str]]
 
 
@@ -82,11 +83,6 @@ def _arg(args: Optional[Args], *keys: str, default: str = "") -> str:
 def _first(data: Args, *keys: str, default: Any = "") -> Any:
     """First truthy ``data[key]`` in ``keys`` order, else ``default``."""
     return next((data[k] for k in keys if data.get(k)), default)
-
-
-def _clip(text: str, limit: int) -> str:
-    """Hard-truncate to ``limit`` chars with a trailing ellipsis."""
-    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _fmt(value: Any, template: str, fallback: str) -> str:
@@ -193,68 +189,12 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 # --- tool-call titles -------------------------------------------------------
 
 
-def _title_web_extract(args: Args) -> str:
-    urls = args.get("urls", [])
-    if not urls:
-        return "web extract"
-    first = urls[0]
-    if isinstance(first, dict):
-        first = first.get("url") or first.get("href") or "?"
-    elif not isinstance(first, str):
-        first = "?"
-    return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
-
-
-def _title_delegate(args: Args) -> str:
-    if isinstance(tasks := args.get("tasks"), list) and tasks:
-        return f"delegate batch ({len(tasks)} tasks)"
-    return f"delegate: {_clip(goal, 60)}" if (goal := args.get("goal", "")) else "delegate task"
-
-
-def _title_execute_code(args: Args) -> str:
-    first_line = next((line.strip() for line in _arg(args, "code").splitlines() if line.strip()), "")
-    return _fmt(_clip(first_line, 70), "python: {}", "python code")
-
-
-def _title_skill_manage(args: Args) -> str:
-    name, file_path = _arg(args, "name", default="?"), _arg(args, "file_path")
-    target = _clip(f"{name}/{file_path}" if file_path else name, 64)
-    return f"skill {_arg(args, 'action', default='manage')}: {target}"
-
-
-_TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
-    "terminal": lambda a: f"terminal: {_clip(a.get('command', ''), 80)}",
-    "read_file": lambda a: f"read: {a.get('path', '?')}",
-    "write_file": lambda a: f"write: {a.get('path', '?')}",
-    "patch": lambda a: f"patch ({a.get('mode', 'replace')}): {a.get('path', '?')}",
-    "search_files": lambda a: f"search: {a.get('pattern', '?')}",
-    "web_search": lambda a: f"web search: {a.get('query', '?')}",
-    "web_extract": _title_web_extract,
-    "process": lambda a: _fmt(_arg(a, "session_id"), f"process {_arg(a, 'action', default='manage')}: {{}}",
-                              f"process {_arg(a, 'action', default='manage')}"),
-    "delegate_task": _title_delegate,
-    "session_search": lambda a: _fmt(_arg(a, "query"), "session search: {}", "recent sessions"),
-    "memory": lambda a: f"memory {_arg(a, 'action', default='manage')}: {_arg(a, 'target', default='memory')}",
-    "execute_code": _title_execute_code,
-    "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
-    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), '/{}', '')})",
-    "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
-    "skill_manage": _title_skill_manage,
-    "browser_navigate": lambda a: f"navigate: {a.get('url', '?')}",
-    "browser_snapshot": lambda a: "browser snapshot",
-    "browser_vision": lambda a: f"browser vision: {str(a.get('question', '?'))[:50]}",
-    "browser_get_images": lambda a: "browser images",
-    "vision_analyze": lambda a: f"analyze image: {str(a.get('question', '?'))[:50]}",
-    "image_generate": lambda a: _fmt(_arg(a, "prompt", "description")[:50], "generate image: {}", "generate image"),
-    "cronjob": lambda a: _fmt(_arg(a, "job_id", "id"), f"cron {_arg(a, 'action', default='manage')}: {{}}",
-                              f"cron {_arg(a, 'action', default='manage')}"),
-}
-
-
 def build_tool_title(tool_name: str, args: Args) -> str:
-    """Build a human-readable title for a tool call (defaults to the tool name)."""
-    builder = _TITLE_BUILDERS.get(tool_name)
-    return builder(args) if builder is not None else tool_name
+    """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
+    every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;
+    bare tool name when the arguments yield no preview."""
+    preview = build_tool_preview(tool_name, args, max_len=80)
+    return f"{tool_name}: {preview}" if preview else tool_name
 
 
 # --- completion formatters; all share the signature (tool_name, result, args) --
@@ -581,7 +521,7 @@ def _format_media_or_cron_result(tool_name: str, data: Args, args: Args) -> Opti
     return "\n".join([f"✅ {tool_name} completed", *(f"- **{k}:** {data.get(k)}" for k in keys if data.get(k))])
 
 
-def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth: int = 3, max_items: int = 8) -> List[str]:
+def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth: int = 3, max_items: int = 8) -> list[str]:
     """Render nested JSON-ish values as compact Markdown bullets, not inline blobs."""
     pad = "  " * indent
     bullet = f"{pad}- "
@@ -590,7 +530,7 @@ def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth
     def _line(text: str) -> str:
         return f"{bullet}{label} {text}" if label else f"{bullet}{text}"
 
-    def _child(child_key: str, child_value: Any, extra_indent: int) -> List[str]:
+    def _child(child_key: str, child_value: Any, extra_indent: int) -> list[str]:
         return _format_structured_value(child_key, child_value, indent=indent + extra_indent, max_depth=max_depth - 1,
                                         max_items=max_items)
 
@@ -677,7 +617,7 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
     return _truncate_text("\n".join(lines), limit=7000)
 
 
-_COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
+_COMPLETION_FORMATTERS: dict[str, _Formatter] = {
     "todo": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
@@ -696,10 +636,10 @@ _COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
 }
 
 
-def _parse_unified_diff_content(diff_text: str) -> List[Any]:
+def _parse_unified_diff_content(diff_text: str) -> list[Any]:
     """Convert unified diff text into ACP diff content blocks (one per ``---``/``+++`` pair)."""
-    content: List[Any] = []
-    state: Dict[str, Any] = {"old": None, "new": None, "old_lines": [], "new_lines": []}
+    content: list[Any] = []
+    state: dict[str, Any] = {"old": None, "new": None, "old_lines": [], "new_lines": []}
 
     def _flush() -> None:
         old_path, new_path = state["old"], state["new"]
@@ -734,7 +674,7 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
 
 def _build_tool_complete_content(
     tool_name: str, result: Optional[str], *, function_args: Optional[Args] = None, snapshot: Any = None
-) -> List[Any]:
+) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
     if tool_name == "skill_manage":
         try:
@@ -757,7 +697,7 @@ def _build_tool_complete_content(
 # --- ToolCallStart / ToolCallProgress events ---------------------------------
 
 
-def _more(items: list, shown: int, unit: str = "") -> List[str]:
+def _more(items: list, shown: int, unit: str = "") -> list[str]:
     """``["... N more<unit>"]`` trailer when ``items`` overflowed the ``shown`` cap, else ``[]``."""
     return [f"... {len(items) - shown} more{unit}"] if len(items) > shown else []
 
@@ -784,7 +724,7 @@ def _start_skill_manage(args: Args) -> Any:
         target = str(args.get("file_path") or "file")
         return acp.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(args.get("file_content") or ""))
     if action in {"delete", "remove_file"}:
-        return f"Removing {str(args.get('file_path') or file_path)} from skill '{name}'"
+        return f"Removing {args.get('file_path') or file_path!s} from skill '{name}'"
     return f"Running skill_manage action '{action}' on skill '{name}' ({file_path})"
 
 
@@ -811,7 +751,7 @@ def _preview(label: str, value: str, limit: int) -> str:
 # Per-tool start-content builders returning text or one ACP content block. ``None`` means the
 # title/location already identify the target (read_file, web_extract): a synthetic content block
 # would make Zed render an unhelpful Output section before completion.
-_START_CONTENT_BUILDERS: Dict[str, Optional[Callable[[Args], Any]]] = {
+_START_CONTENT_BUILDERS: dict[str, Optional[Callable[[Args], Any]]] = {
     "patch": lambda a: (
         f"Preparing {a.get('mode', 'replace')} edit for {a.get('path') or 'patch input'}. Approval prompt shows the diff."
     ),
@@ -847,7 +787,7 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     (mirrors ``get_cute_tool_message`` in ``agent/display.py``)."""
     try:
         return _build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
-    except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
+    except Exception as exc:
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
         return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
@@ -876,9 +816,11 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
 
 def build_tool_complete(
     tool_call_id: str, tool_name: str, result: Optional[str] = None, function_args: Optional[Args] = None,
-    snapshot: Any = None,
+    snapshot: Any = None, is_error: bool = False,
 ) -> ToolCallProgress:
-    """Create a ToolCallUpdate (progress) event for a completed tool call."""
+    """Create a ToolCallUpdate (progress) event for a completed tool call.
+
+    ``is_error`` is the executor's own verdict; the result-text heuristic stays as fallback."""
     if tool_name == "web_extract":  # errors only; success stays compact via the title
         error_text = _format_web_extract_result(tool_name, result, function_args)
         content = [_text(error_text)] if error_text else None
@@ -887,12 +829,24 @@ def build_tool_complete(
     structured = isinstance(_json_loads_maybe(result), (dict, list))
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if _tool_result_failed(result, tool_name) else "completed", content=content,
+        status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
     )
 
 
-def extract_locations(arguments: Args) -> List[ToolCallLocation]:
+def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
+    """Create a ToolCallUpdate for a call that ended without ever reporting a result.
+
+    A blocked or permission-denied call projects no ``tool.completed``, so the
+    turn ends with its bubble still spinning; ``failed`` is the honest terminal
+    state — the tool did not produce a result."""
+    return acp.update_tool_call(
+        tool_call_id, kind=get_tool_kind(tool_name), status="failed",
+        content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
+    )
+
+
+def extract_locations(arguments: Args) -> list[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
     if not (path := arguments.get("path")):
         return []

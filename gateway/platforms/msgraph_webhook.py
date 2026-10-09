@@ -22,7 +22,9 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult, is_network_accessible)
+    BasePlatformAdapter, SendResult, is_network_accessible,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000
 DEFAULT_MAX_BODY_BYTES = 1_048_576
-NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
+NotificationScheduler = Callable[[dict[str, Any], MessageEvent], Awaitable[None] | None]
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 
 
@@ -77,7 +79,7 @@ def _prefix_match(resource: str, prefix: str) -> bool:
     return resource == prefix or resource.startswith(f"{prefix}/")
 
 
-def _render_template(template: str, payload: Dict[str, Any]) -> str:
+def _render_template(template: str, payload: dict[str, Any]) -> str:
     """Substitute ``{dotted.key}`` placeholders from *payload*; unknown keys stay literal."""
 
     def _resolve(match: re.Match[str]) -> str:
@@ -96,6 +98,8 @@ def _render_template(template: str, payload: Dict[str, Any]) -> str:
 
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)
@@ -141,12 +145,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         app.router.add_post(self._webhook_path, self._handle_notification)
         # Plugin-registered native routes; wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(app)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._host, self._port, self._webhook_path)
         self._mark_connected()
-        logger.info("[msgraph_webhook] Listening on %s:%d%s", self._host, self._port, self._webhook_path)
+        if self._runner is not None:
+            logger.info("[msgraph_webhook] Listening on %s:%d%s", self._host, self._port, self._webhook_path)
         return True
 
     async def disconnect(self) -> None:
@@ -156,11 +160,11 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         logger.info("[msgraph_webhook] Response for %s: %s", chat_id, content[:200])
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
@@ -265,7 +269,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    def _verify_client_state(self, notification: Dict[str, Any]) -> bool:
+    def _verify_client_state(self, notification: dict[str, Any]) -> bool:
         """Timing-safe compare of the Graph-supplied clientState against the configured shared secret
         (``openssl rand -hex 32`` in the setup guide)."""
         expected = self._client_state
@@ -281,7 +285,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         while len(self._seen_receipt_order) > self._max_seen_receipts:
             self._seen_receipts.discard(self._seen_receipt_order.popleft())
 
-    def _build_message_event(self, notification: Dict[str, Any], receipt_key: Optional[str]) -> MessageEvent:
+    def _build_message_event(self, notification: dict[str, Any], receipt_key: Optional[str]) -> MessageEvent:
         message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}", chat_name="msgraph/webhook",
@@ -290,7 +294,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             text=self._render_prompt(notification), message_type=MessageType.TEXT, source=source,
             raw_message=notification, message_id=message_id, internal=True)
 
-    def _render_prompt(self, notification: Dict[str, Any]) -> str:
+    def _render_prompt(self, notification: dict[str, Any]) -> str:
         template = self.config.extra.get("prompt", "")
         if template:
             return _render_template(template, {
@@ -300,7 +304,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         rendered = json.dumps(notification, indent=2, sort_keys=True)[:4000]
         return f"Microsoft Graph change notification:\n\n```json\n{rendered}\n```"
 
-    def _schedule_notification(self, notification: Dict[str, Any], event: MessageEvent) -> None:
+    def _schedule_notification(self, notification: dict[str, Any], event: MessageEvent) -> None:
         scheduler = self._notification_scheduler
         if scheduler is None:
             coro = self.handle_message(event)

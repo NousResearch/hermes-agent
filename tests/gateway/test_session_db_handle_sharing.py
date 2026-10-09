@@ -156,3 +156,58 @@ def test_unavailable_store_handle_does_not_resurrect_a_second_open(store):
     assert runner._session_db_handles == {}, (
         "a duplicate handle was cached on the store's failure path"
     )
+
+
+def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store, home):
+    """Profile unserve and delete force-close the profile's generation (``close_all_under``).
+
+    Both gateway caches kept serving that dead object: the store's SessionDB and the runner's
+    async wrapper around it. The store's self-heal then reopened a writer the registry does not
+    know about, so the agent's ``acquire`` got a second writer on the same file, and after a
+    delete + recreate every call raised ``StateDbReplacedError`` until restart.
+    """
+    import hermes_state_registry as registry
+
+    runner = _runner_with(store)
+    first = store._db
+    first.create_session("before-unserve", source="telegram")
+    first_wrapper = runner._open_session_db_for_active_scope()
+    assert first_wrapper._db is first
+    path = Path(first.db_path)
+    assert registry.close_all_under(home) == 1
+
+    second = store._db
+
+    assert second is not first
+    second.create_session("after-unserve", source="telegram")
+    assert first._conn is None, "the torn-down handle was revived outside the registry"
+    acquired = registry.acquire(path)
+    try:
+        assert acquired is second, "one file, one writer: the agent must share the store's handle"
+    finally:
+        registry.release(acquired)
+    second_wrapper = runner._open_session_db_for_active_scope()
+    assert second_wrapper is not first_wrapper and second_wrapper._db is second
+
+
+def test_api_server_profile_cache_reopens_a_handle_the_registry_tore_down(home):
+    """The API adapter's per-home cache serves routed profiles under their runtime scope; the
+    same ``close_all_under`` must evict its entry too."""
+    import hermes_state_registry as registry
+    from gateway.platforms.api_server import APIServerAdapter
+
+    adapter = APIServerAdapter.__new__(APIServerAdapter)
+    adapter._session_dbs = {}
+    adapter._session_db_cache_lock = threading.Lock()
+    adapter._session_db_cache_closed = False
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    first = adapter._open_and_cache_session_db(profile)
+    assert registry.close_all_under(profile) == 1
+
+    second = adapter._open_and_cache_session_db(profile)
+    try:
+        assert second is not first
+        second.create_session("after-unserve", source="api_server")
+    finally:
+        registry.close_all_under(profile)

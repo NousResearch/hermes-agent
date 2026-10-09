@@ -8,6 +8,7 @@ whose callers fall back to the in-repo lists on ``None``.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -17,8 +18,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from hermes_cli import __version__ as _HERMES_VERSION
-from utils import atomic_replace
+from hermes_cli.version_info import get_version_info
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,14 @@ DEFAULT_TTL_HOURS = DEFAULT_TTL_MINUTES / 60.0
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
 
-_HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
+_HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 
-# In-process cache, invalidated against the disk file's mtime and TTL.
+# In-process cache, invalidated against the disk file's path + mtime and TTL. The path matters:
+# under a multiplexed gateway each profile has its own ``<home>/cache/model_catalog.json``, and
+# mtime alone cannot tell two profiles' files apart.
 _catalog_cache: dict[str, Any] | None = None
 _catalog_cache_source_mtime: float = 0.0
+_catalog_cache_source_path: str = ""
 
 
 def _load_catalog_config() -> dict[str, Any]:
@@ -143,7 +147,10 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
     path = _cache_path()
     try:
         mtime = path.stat().st_mtime
-        with open(path, encoding="utf-8") as fh:
+    except (OSError, FileNotFoundError):
+        return (None, 0.0)
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return (None, 0.0)
@@ -151,34 +158,28 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
 
 
 def _write_disk_cache(data: dict[str, Any]) -> None:
-    path = _cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-        atomic_replace(tmp, path)
+        atomic_json_write(_cache_path(), data)
     except OSError as exc:
         logger.info("model catalog cache write failed: %s", exc)
 
 
-# Stale-while-revalidate: at most one background manifest refresh in flight per process. The
-# refreshed manifest lands on disk; the NEXT get_catalog() call picks it up via the mtime check.
+# Stale-while-revalidate: at most one background manifest refresh in flight per cache file (i.e.
+# per profile home — profile A's refresh must not suppress profile B's). The refreshed manifest
+# lands on disk; the NEXT get_catalog() call picks it up via the mtime check.
 _catalog_swr_lock = threading.Lock()
-_catalog_swr_inflight = False
+_catalog_swr_inflight: set[str] = set()
 
 
 def _spawn_catalog_swr_refresh(url: str) -> None:
-    """Refresh the catalog manifest off-thread (fire-and-forget, deduped)."""
-    global _catalog_swr_inflight
+    """Refresh the catalog manifest off-thread (fire-and-forget, deduped per cache path)."""
+    inflight_key = str(_cache_path())
     with _catalog_swr_lock:
-        if _catalog_swr_inflight:
+        if inflight_key in _catalog_swr_inflight:
             return
-        _catalog_swr_inflight = True
+        _catalog_swr_inflight.add(inflight_key)
 
     def _refresh() -> None:
-        global _catalog_swr_inflight
         try:
             fetched = _fetch_manifest_with_fallback(url, DEFAULT_FETCH_TIMEOUT)
             if fetched is not None:
@@ -187,15 +188,26 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
             logger.debug("catalog SWR refresh failed", exc_info=True)
         finally:
             with _catalog_swr_lock:
-                _catalog_swr_inflight = False
+                _catalog_swr_inflight.discard(inflight_key)
 
-    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+    # copy_context: the picker may be serving a profile scoped by the HERMES_HOME ContextVar
+    # (tui_gateway ``_profile_scoped``), so the worker must write THAT profile's cache file.
+    context = contextvars.copy_context()
+    threading.Thread(target=lambda: context.run(_refresh), daemon=True, name="model-catalog-swr").start()
 
 
 def _remember(data: dict[str, Any], mtime: float) -> dict[str, Any]:
-    global _catalog_cache, _catalog_cache_source_mtime
+    global _catalog_cache, _catalog_cache_source_mtime, _catalog_cache_source_path
     _catalog_cache, _catalog_cache_source_mtime = data, mtime
+    _catalog_cache_source_path = str(_cache_path())
     return data
+
+
+def _in_process_catalog() -> dict[str, Any] | None:
+    """The in-process copy when it mirrors the ACTIVE profile's cache file, else None."""
+    if _catalog_cache is not None and _catalog_cache_source_path == str(_cache_path()):
+        return _catalog_cache
+    return None
 
 
 def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
@@ -210,8 +222,9 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
     disk_fresh = disk_data is not None and (now - disk_mtime) < ttl_seconds
 
     if not force_refresh and disk_data is not None:
-        if disk_fresh and _catalog_cache is not None and disk_mtime == _catalog_cache_source_mtime:
-            return _catalog_cache
+        cached = _in_process_catalog()
+        if disk_fresh and cached is not None and disk_mtime == _catalog_cache_source_mtime:
+            return cached
         if not disk_fresh:
             # Stale-while-revalidate: serve the expired disk copy now and refresh off-thread so the
             # /model picker (which calls this on every open) never blocks on the manifest fetch.
@@ -303,7 +316,8 @@ def _default_model_from_block(block: dict[str, Any] | None) -> str | None:
 def get_default_model_from_cache(provider: str) -> str | None:
     """The manifest's labeled default for ``provider`` (the model Hermes silently lands on when the
     user never picked one) — in-process then disk cache only, never a fetch."""
-    found = _default_model_from_block(_block_of(_catalog_cache, provider)) if _catalog_cache is not None else None
+    cached = _in_process_catalog()
+    found = _default_model_from_block(_block_of(cached, provider)) if cached is not None else None
     if found:
         return found
     disk_data, _mtime = _read_disk_cache()
@@ -316,7 +330,7 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
     the remote fetch is bot-gated. Validated, then written via the same atomic writer."""
     src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
     try:
-        with open(src, encoding="utf-8") as fh:
+        with open(src, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         logger.debug("model catalog seed from checkout skipped (%s): %s", src, exc)
@@ -331,6 +345,7 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
 
 def reset_cache() -> None:
     """Clear the in-process cache. Used by tests and ``hermes model --refresh``."""
-    global _catalog_cache, _catalog_cache_source_mtime
+    global _catalog_cache, _catalog_cache_source_mtime, _catalog_cache_source_path
     _catalog_cache = None
     _catalog_cache_source_mtime = 0.0
+    _catalog_cache_source_path = ""

@@ -37,10 +37,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [
-    pytest.mark.windows_only,
-    pytest.mark.skipif(sys.platform != "win32", reason="native Windows only"),
-]
+pytestmark = pytest.mark.platforms("windows")  # native Windows only
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -246,7 +243,7 @@ class TestWatcherRespawnLive:
         old = subprocess.Popen([sys.executable, "-c", "pass"])
         old.wait(timeout=30)
 
-        import hermes_cli.gateway as gateway
+        from hermes_cli import gateway
 
         assert gateway._spawn_gateway_restart_watcher(
             old.pid, [sys.executable, "-c", stub]
@@ -287,7 +284,7 @@ class TestResumeVerificationLive:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         (tmp_path / "home").mkdir(parents=True, exist_ok=True)
 
-        import hermes_cli.gateway as gateway
+        from hermes_cli import gateway
         import hermes_cli.main as hm
         from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 

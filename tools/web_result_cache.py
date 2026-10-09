@@ -10,7 +10,6 @@ Lives here, not in tool dispatch, so hits sit *after* every safety check and ski
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -18,6 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def _web_config() -> dict:
     try:
         from tools.web_tools import _load_web_config
         return _load_web_config()
-    except Exception:  # noqa: BLE001 — config problems must never break tools
+    except Exception:
         return {}
 
 
@@ -83,9 +83,9 @@ class SearchMemo:
     wait for (and share) the winner's response."""
 
     def __init__(self) -> None:
-        self._store: Dict[tuple, Tuple[float, dict]] = {}  # key -> (expires_at, response)
+        self._store: dict[tuple, tuple[float, dict]] = {}  # key -> (expires_at, response)
         self._store_lock = threading.Lock()
-        self._key_locks: Dict[tuple, threading.Lock] = {}
+        self._key_locks: dict[tuple, threading.Lock] = {}
 
     @staticmethod
     def _key(provider: str, query: str, limit: int) -> tuple:
@@ -147,7 +147,7 @@ def slice_search_response(response: dict, limit: int) -> dict:
             out = _deep_copy(response)
             out["data"]["web"] = out["data"]["web"][:limit]
             return out
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return response
 
@@ -163,15 +163,15 @@ def _cache_dir() -> Optional[Path]:
         d = get_hermes_dir("cache/web", "web_cache")
         d.mkdir(parents=True, exist_ok=True)
         return d
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def _load_index() -> dict:
     try:
-        data = json.loads((_cache_dir() / _INDEX_FILENAME).read_text(encoding="utf-8"))
+        data = json.loads((_cache_dir() / _INDEX_FILENAME).read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — missing/corrupt index == empty cache
+    except Exception:
         return {}
 
 
@@ -183,12 +183,10 @@ def _save_index(index: dict) -> None:
         if len(index) > _INDEX_MAX_ENTRIES:
             newest = sorted(index.items(), key=lambda kv: kv[1].get("fetched_at", 0), reverse=True)
             index = dict(newest[:_INDEX_MAX_ENTRIES])
-        # Per-process tmp name: CLI, gateway, cron, and subagents all write this index; a shared tmp name
-        # would let concurrent writers truncate each other. os.replace is atomic: worst case is a lost insert.
-        tmp = path.with_suffix(f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(index), encoding="utf-8")
-        tmp.replace(path)
-    except Exception as exc:  # noqa: BLE001
+        # CLI, gateway, cron, and subagents all write this index; the replace is atomic, so the worst case
+        # under concurrent writers is a lost insert, never a truncated index.
+        atomic_json_write(path, index, indent=None)
+    except Exception as exc:
         logger.debug("Failed to save web extract cache index: %s", exc)
 
 
@@ -230,7 +228,7 @@ def _is_cache_exempt_host(url: str) -> bool:
         if not isinstance(patterns, (list, tuple)) or not host:
             return False
         return any(_host_matches_pattern(host, str(p)) for p in patterns)
-    except Exception:  # noqa: BLE001 — config problems never break tools
+    except Exception:
         return False
 
 
@@ -251,7 +249,7 @@ def _is_local_dev_url(url: str) -> bool:
         except ValueError:
             return False  # public DNS name
         return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
-    except Exception:  # noqa: BLE001 — on doubt, don't cache
+    except Exception:
         return True
 
 
@@ -273,8 +271,8 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
         # The index is plain JSON on disk; never let a tampered entry read outside cache/web.
         if cache_root.resolve() not in file_path.resolve().parents:
             return None
-        content = file_path.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
+        content = file_path.read_text(encoding="utf-8-sig")
+    except Exception:
         return None
     logger.info("web_extract cache hit: %s", url)
     return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}
@@ -300,14 +298,5 @@ def extract_cache_put(
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
             _save_index(index)
-    except Exception as exc:  # noqa: BLE001 — cache writes are best-effort
+    except Exception as exc:
         logger.debug("Failed to cache web extract for %s: %s", url, exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

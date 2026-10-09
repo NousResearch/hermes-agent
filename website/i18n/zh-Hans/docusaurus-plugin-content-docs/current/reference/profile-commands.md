@@ -226,7 +226,7 @@ hermes profile alias work --remove
 hermes profile rename <old-name> <new-name>
 ```
 
-重命名 profile，同时更新目录和 shell alias。
+重命名 profile，同时更新目录和 shell alias。以旧名称安装的网关服务（`hermes -p <old-name> gateway install`）无论网关是否在运行都会被移除，因为它会在下次登录时启动旧名称；请用 `hermes -p <new-name> gateway install` 重新安装。在 Docker 镜像内，s6 网关槽位会迁移到新名称。
 
 | 参数 | 描述 |
 |----------|-------------|
@@ -397,7 +397,7 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
 
 `hermes_requires` 支持 `>=`、`<=`、`==`、`!=`、`>`、`<`，或裸版本号（视为 `>=`）。若当前 Hermes 版本不满足规格，安装将失败并给出明确错误。
 
-`distribution_owned` 为可选项。若设置，更新时仅替换这些路径；profile 中的其他内容保持用户所有。若省略，则应用上述默认值。
+`distribution_owned` 为可选项。若设置，更新时仅更新这些路径；profile 中的其他内容保持用户所有。技能目录（如 `skills/`，或 `skills/research/` 这样的分类）按技能逐个合并：发行版附带的技能会被替换，你自己在其中添加的技能会保留。作者之后从发行版中移除的技能，更新时不会被删除（与顶层 `skills/` 相同）。若省略，则应用上述默认值。
 
 ### 发布发行版
 

@@ -1,3 +1,7 @@
+import { stripAnsi } from '@hermes/shared/ansi'
+import { compactNumber } from '@hermes/shared/format'
+import type { ToolLabel } from '@hermes/shared/gateway-events'
+
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
@@ -6,44 +10,10 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
+import { t } from '../i18n/runtime.js'
 import type { ThinkingMode } from '../types.js'
 
-const ESC = String.fromCharCode(27)
-const BEL = String.fromCharCode(7)
-const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
-const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
-const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
-const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
-// eslint-disable-next-line no-control-regex -- intentionally strips C0/C1 control chars
-const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
-
-export const stripAnsi = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const sanitizeAnsiForRender = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const hasAnsi = (s: string) => s.includes(ESC)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -95,15 +65,15 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
 export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
 
+  const chip = t('libText.text.pasteLinesChip', compactNumber(lineCount))
+
   if (!preview) {
-    return `[[ [${fmtK(lineCount)} lines] ]]`
+    return `[[ ${chip} ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
-  return tail
-    ? `[[ ${head.trimEnd()}.. [${fmtK(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
+  return tail ? `[[ ${head.trimEnd()}.. ${chip} .. ${tail.trimStart()} ]]` : `[[ ${preview} ${chip} ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -137,7 +107,7 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
 export const boundedLiveRenderText = (
   text: string,
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+) => boundedRenderText(text, t('libText.text.showingLiveTail'), { maxChars, maxLines })
 
 const boundedRenderText = (
   text: string,
@@ -177,10 +147,10 @@ const boundedRenderText = (
 
   const label =
     omittedLines > 0
-      ? `[${labelPrefix}; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
-      : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
+      ? t('libText.text.omittedLinesChars', labelPrefix, compactNumber(omittedLines), compactNumber(omittedChars))
+      : t('libText.text.omittedChars', labelPrefix, compactNumber(omittedChars))
 
-  return `${label}${tail}`
+  return `${label}\n${tail}`
 }
 
 const countNewlines = (text: string, end: number) => {
@@ -211,18 +181,30 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-export const buildToolTrailLine = (
-  name: string,
-  context: string,
-  error?: boolean,
-  note?: string,
-  duration?: number
-) => {
+/** One row's worth of a bridged call: the gateway already phrased it, preview included. */
+export const formatToolLabel = (label: ToolLabel) =>
+  `${label.emoji} ${compactPreview(label.preview ? `${label.text}  ${label.preview}` : label.text, 72)}`
+
+export const formatToolLabels = (labels: readonly ToolLabel[]) => {
+  const [first, ...rest] = labels
+
+  if (first === undefined) {
+    return ''
+  }
+
+  return rest.length > 0 ? `${formatToolLabel(first)} +${rest.length}` : formatToolLabel(first)
+}
+
+/** A finished trail row for an already-phrased call. */
+export const toolTrailLine = (call: string, error?: boolean, note?: string, duration?: number) => {
   const detail = compactPreview(note ?? '', 72)
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${call}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
+
+export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string, duration?: number) =>
+  toolTrailLine(formatToolCall(name, context), error, note, duration)
 
 const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
@@ -239,6 +221,26 @@ const verboseToolBlock = (label: string, text?: string) => {
     : ''
 }
 
+/** The Args and Result blocks for an already-phrased call. */
+export const verboseToolTrailLine = (
+  call: string,
+  error?: boolean,
+  duration?: number,
+  argsText?: string,
+  resultText?: string
+) => {
+  const detail = [
+    verboseToolBlock(t('libText.text.argsLabel'), argsText),
+    verboseToolBlock(error ? t('libText.text.errorLabel') : t('libText.text.resultLabel'), resultText)
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
+
+  return `${call}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+}
+
 export const buildVerboseToolTrailLine = (
   name: string,
   context: string,
@@ -246,15 +248,7 @@ export const buildVerboseToolTrailLine = (
   duration?: number,
   argsText?: string,
   resultText?: string
-) => {
-  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
-    .filter(Boolean)
-    .join('\n')
-
-  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
-
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
-}
+) => verboseToolTrailLine(formatToolCall(name, context), error, duration, argsText, resultText)
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 
@@ -351,37 +345,39 @@ export const estimateRows = (text: string, w: number, compact = false) => {
 
 /**
  * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
- * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
- * down the moment the turn settles, so without this the question + options
- * vanish from the screen while the agent's follow-up still refers to "the
- * options above".  Mirrors the option formatting in ClarifyPrompt (the same
- * 1-based numbered list) so the persisted record reads identically to what was
- * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ * as a persistent transcript block.  Every question on its own line, answered
+ * ones keeping their locked answer (partials survive a timeout server-side, so
+ * the record must show what was actually sent).  `reason` states why the
+ * prompt ended ("timed out", "cancelled").
  */
-export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
-  const head = `ask ${question.trim()}`
-  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
-
-  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
-}
-
-/**
- * Batch counterpart of `formatAbandonedClarify`: every question on its own
- * line, answered ones keeping their locked answer (partials survive a
- * timeout server-side, so the record must show what was actually sent).
- */
-export const formatAbandonedClarifyBatch = (
-  questions: { qid: string; question: string }[],
+export const formatAbandonedClarify = (
+  questions: { multiSelect?: boolean; qid: string; question: string }[],
   answers: Record<string, string>,
   reason: string
 ) => {
   const lines = questions.map(q => {
     const answer = answers[q.qid]
 
-    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+    return answer
+      ? `  ${t('libText.text.clarifyAnswered', q.question, clarifyAnswerText(answer, q.multiSelect))}`
+      : `  ${t('libText.text.clarifyUnanswered', q.question)}`
   })
 
-  return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
+  return [
+    t('libText.text.clarifyHead', questions.length),
+    ...lines,
+    `  ${t('libText.text.clarifyReason', reason)}`
+  ].join('\n')
+}
+
+const clarifyAnswerItems = (answer: string): null | string[] => {
+  try {
+    const parsed: unknown = JSON.parse(answer)
+
+    return Array.isArray(parsed) ? parsed.map(String) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -391,28 +387,39 @@ export const formatAbandonedClarifyBatch = (
  * the Other row (index = choices.length) with the text staged for editing.
  * Unanswered questions restore to a clean cursor.
  */
-export const clarifyBatchRevisitState = (
+export const clarifyRevisitState = (
   choices: readonly string[],
-  answer: string | undefined
-): { custom: string; sel: number } => {
+  answer: string | undefined,
+  multiSelect = false
+): { custom: string; picked: string[]; sel: number } => {
   if (answer === undefined || answer === '') {
-    return { custom: '', sel: 0 }
+    return { custom: '', picked: [], sel: 0 }
+  }
+
+  const items = multiSelect ? clarifyAnswerItems(answer) : null
+
+  if (items) {
+    const custom = items.filter(item => !choices.includes(item)).join(', ')
+
+    return { custom, picked: items.filter(item => choices.includes(item)), sel: custom ? choices.length : 0 }
   }
 
   const choiceIndex = choices.indexOf(answer)
 
   if (choiceIndex >= 0) {
-    return { custom: '', sel: choiceIndex }
+    return { custom: '', picked: [], sel: choiceIndex }
   }
 
-  return { custom: answer, sel: choices.length > 0 ? choices.length : 0 }
+  return { custom: answer, picked: [], sel: choices.length > 0 ? choices.length : 0 }
+}
+
+export const clarifyAnswerText = (answer: string, multiSelect?: boolean) => {
+  const items = multiSelect ? clarifyAnswerItems(answer) : null
+
+  return items ? items.join(', ') : answer
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
-
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
-
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

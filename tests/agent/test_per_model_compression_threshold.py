@@ -38,6 +38,39 @@ class TestResolveModelThreshold:
 
 class TestContextCompressorModelThresholds:
     @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+    def test_two_reasoning_only_clean_stops_force_preflight_compression(self, _mock):
+        """Runtime degeneration signals must not wait for the nominal-window trigger."""
+        cc = ContextCompressor(model="deepseek-flash", threshold_percent=0.50, quiet_mode=True)
+
+        assert not cc.should_compress(159_061)
+        cc.note_reasoning_only_clean_stop()
+        assert not cc.should_compress(159_061)
+        cc.note_reasoning_only_clean_stop()
+        assert cc.should_compress(159_061)
+
+        cc.note_successful_text_response()
+        assert not cc.should_compress(159_061)
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+    def test_expired_reasoning_only_clean_stop_does_not_force_compression(self, _mock):
+        cc = ContextCompressor(model="deepseek-flash", threshold_percent=0.50, quiet_mode=True)
+
+        cc.note_reasoning_only_clean_stop(now=1.0)
+        cc.note_reasoning_only_clean_stop(now=1.0 + 16 * 60)
+
+        assert not cc.should_compress(159_061)
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+    @patch("agent.context_compressor.time.monotonic", return_value=1.0 + 16 * 60)
+    def test_clean_stop_signal_expires_without_a_follow_up_stop(self, _clock, _model):
+        """An idle session's next preflight must not compact from an old pair of stops."""
+        cc = ContextCompressor(model="deepseek-flash", threshold_percent=0.50, quiet_mode=True)
+        cc.note_reasoning_only_clean_stop(now=1.0)
+        cc.note_reasoning_only_clean_stop(now=2.0)
+
+        assert not cc.should_compress(159_061)
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
     def test_init_large_context_with_override(self, _mock):
         """Large context (>=512K) + per-model override: override applies directly."""
         cc = ContextCompressor(

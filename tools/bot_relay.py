@@ -44,7 +44,7 @@ DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 
 # Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
-# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
@@ -500,17 +500,20 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 
 
 def _hermes_cli() -> str:
-    """hermes CLI beside this interpreter, then ``shutil.which``, then the bare name
-    (service contexts lack PATH, so a bare "hermes" died with ENOENT).
+    """Prefer this install's published launcher, then interpreter/PATH fallbacks.
 
-    The deliver RPC runs on the target gateway, whose process is the venv python — its bin/Scripts directory
-    holds the matching ``hermes`` entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
-    service contexts (systemd units, desktop launchers, non-login SSH shells) do not provide, so delivery
-    died with ENOENT there (#93590). When no sibling exists (e.g. running from a source tree without an
-    installed script), a ``shutil.which`` lookup runs next — it honors whatever PATH the process does have —
-    before falling back to the bare name, preserving today's behavior for interactive shells.
+    A long-lived caller can still run in an older dependency generation. Its
+    sibling console script pins that generation, whereas the published launcher
+    selects current dependencies at child start. Keep the historical fallbacks
+    for external/developer installs that have no published launcher (#93590).
     """
-    sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
+    # (for example an ampersand in a query-file path), even with shell=False.
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    if published.is_file():
+        return str(published)
+    sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 
@@ -583,11 +586,23 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
     profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
     profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
     ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
-    caller knows it (relay RPC, roster); otherwise the active override."""
+    caller knows it (relay RPC, roster); otherwise the active override, and under multiplex the launch
+    home."""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     from tools.environments.local import served_profile_child_env
 
-    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
+    # ``_profile_home`` answers None for the launch profile by design and a relay RPC binds no scope,
+    # so under multiplex an empty target means the launch profile, not "unknown" (the fail-closed
+    # raise; cf. the slash-worker spawn, #115427). An explicit target beats an override or bound scope
+    # inside ``served_profile_child_env``, so fill it only when both are absent; a single-profile host
+    # keeps its pass-through env.
+    target_home = profile_home
+    if (not target_home and is_multiplex_active() and not get_hermes_home_override()
+            and current_secret_scope() is None):
+        target_home = get_routing_process_hermes_home()
+    env = served_profile_child_env(base=os.environ, target_home=target_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
     for name in _delivery_child_session_env_names():
         env.pop(name, None)
@@ -622,7 +637,7 @@ class TurnBusyError(RuntimeError):
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
+                         f"queued behind it for ~{round(waited_seconds)}s without it finishing. "
                          "The message was NOT delivered; retry shortly.")
 
 

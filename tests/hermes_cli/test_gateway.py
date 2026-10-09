@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -250,6 +250,40 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.service_running is True
     assert snapshot.service_scope == "s6"
     assert snapshot.gateway_pids == (123,)
+
+
+def _run_status_with_snapshot(monkeypatch, snapshot) -> str:
+    """``_cmd_status`` for a host with no installed systemd/launchd/Windows service."""
+    import io
+    from contextlib import redirect_stdout
+
+    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", lambda system=False: snapshot)
+    monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda probe: None)
+    monkeypatch.setattr(gateway, "named_profile_served_by_running_multiplexer", lambda: False)
+    for name in ("_print_runtime_health", "_print_multiplex_standalone_reason", "_print_served_ingress_urls",
+                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status",
+                 "_print_standalone_by_config"):
+        monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        gateway._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
+    return buf.getvalue()
+
+
+def test_s6_supervised_gateway_without_scannable_pid_reports_running(monkeypatch):
+    """#125390: s6 service up, process scan empty (`python -c` launcher argv is unmatched per
+    #123881 and containers have no gateway.pid) — the default profile must not report an outage."""
+    snapshot = gateway.GatewayRuntimeSnapshot(
+        manager="s6 (container supervisor)", service_installed=True, service_running=True, gateway_pids=())
+    out = _run_status_with_snapshot(monkeypatch, snapshot)
+    assert out.startswith("✓ Gateway is running (supervised by s6 (container supervisor))")
+    assert "not running" not in out
+
+
+def test_manual_gateway_without_pids_still_reports_stopped(monkeypatch):
+    out = _run_status_with_snapshot(monkeypatch, gateway.GatewayRuntimeSnapshot(manager="manual process"))
+    assert out.startswith("✗ Gateway is not running")
 
 
 
@@ -523,7 +557,7 @@ class TestStopProfileGateway:
     @pytest.mark.platforms("windows")
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
+        from hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -550,7 +584,7 @@ class TestStopProfileGateway:
     @pytest.mark.platforms("windows")
     def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
         """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
+        from hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -581,8 +615,8 @@ class TestStopProfileGateway:
         a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
         refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
         self-comparison."""
-        import gateway.status as status
-        import hermes_cli.gateway_windows as gateway_windows
+        from gateway import status
+        from hermes_cli import gateway_windows
 
         pid = 4242
         calls = []
@@ -816,7 +850,6 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
         def failing_validation(*a, cleanup_stale=True, **k):
             probe_kwargs.append(cleanup_stale)
-            return None
 
         monkeypatch.setattr(
             "gateway.status.get_running_pid", failing_validation
@@ -846,6 +879,40 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
 
 
+
+
+class TestReaperStartupGrace:
+    """``min_age_s`` spares a gateway still claiming gateway.pid/lock (#122533).
+
+    A booting gateway is argv-visible before it is record-visible; reaping it writes
+    a planned-stop marker it consumes on startup and exits 0 with no supervisor. An
+    undeterminable age must read as too young, never widen the reap.
+    """
+
+    def test_grace_spares_booting_and_unknown_age_but_reaps_stale_orphan(self, monkeypatch):
+        booting, unknown, stale = 55501, 55502, 99998
+        ages = {booting: 2.0, stale: 900.0}
+
+        def _age(pid):
+            if pid not in ages:
+                raise RuntimeError("probe failed")
+            return ages[pid]
+
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(
+            gateway, "find_gateway_pids",
+            lambda exclude_pids=None: [p for p in (booting, unknown, stale) if p not in (exclude_pids or set())],
+        )
+        monkeypatch.setattr("hermes_cli.dashboard_procs._process_age_seconds", _age)
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        marked = []
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked.append)
+
+        assert gateway._reap_unsupervised_gateway_orphans(min_age_s=180.0) is True
+        assert marked == [stale]
 
 
 class TestReaperCandidateIsSupervisorOwned:
@@ -921,7 +988,7 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
     Hermes-owned service (by binary path) stays SCM-supervised."""
     import psutil
-    import hermes_cli.gateway_windows as gateway_windows
+    from hermes_cli import gateway_windows
 
     monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
     profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
@@ -1069,7 +1136,7 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now: installs.append(force))
+    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now, force_unit_path=False: installs.append(force))
 
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 

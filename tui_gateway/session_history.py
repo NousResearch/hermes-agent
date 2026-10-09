@@ -108,22 +108,107 @@ def _content_display_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _coerce_message_text(content: Any) -> str:
+def _coerce_message_text(content: Any, *, image_urls: bool = True) -> str:
     """Render ``message['content']`` (str, parts list, or one structured dict) as a plain string. Image parts
     keep their URL inline so the desktop's ``extractEmbeddedImages`` and the resume payload agree with the
-    cached message (else the inline image flashed, then vanished); other shapes become a placeholder."""
+    cached message (else the inline image flashed, then vanished); other shapes become a placeholder.
+    ``image_urls=False`` renders ``[image]`` instead — the ``inline_images=false`` read (#116511): a remote
+    client reads a transcript in kilobytes instead of re-transmitting every stored attachment."""
     if isinstance(content, list):
         chunks: list[str] = []
         for part in content:
             if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
                 chunks.append(part if isinstance(part, str) else part["text"])
             elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=True)
+                rendered = _history_dict_text(part, image_urls=image_urls)
                 chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
         return "".join(chunks)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=True)
+        return _history_dict_text(content, image_urls=image_urls)
     return "" if content is None else str(content)
+
+
+_IMAGE_HINT_RE = re.compile(r"\[Image attached at: ([^\n\]]+)\]")
+_IMAGE_DATA_RE = re.compile(r"data:image/[^;,]+;base64,([A-Za-z0-9+/=]+)\Z")
+_IMAGE_REF_RE = re.compile(r"@image:(`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+'|\S+)\Z")
+# The session store's text-only projection replaces each image part with this
+# stand-in, so a flattened row carries one placeholder per attached image. It
+# describes the same attachment the refs above describe, so the projection
+# drops it (mirroring the desktop's extractImageRefs) instead of refusing.
+_SCREENSHOT_PLACEHOLDER = "[screenshot]"
+
+
+def _strip_trailing_screenshot_placeholders(text: str) -> tuple[str, int]:
+    lines = text.split("\n")
+    count = 0
+    while lines and lines[-1] == _SCREENSHOT_PLACEHOLDER:
+        lines.pop()
+        count += 1
+    return "\n".join(lines), count
+
+
+def _user_image_display_text(content: Any) -> str | None:
+    """Project verified native-vision images as refs without changing stored/model content."""
+    if not isinstance(content, list) or len(content) < 2 or not isinstance(content[0], dict):
+        return None
+    text_part = content[0]
+    if text_part.get("type") != "text" or not isinstance(text_part.get("text"), str):
+        return None
+    text = text_part["text"]
+    from agent.context_references import format_reference_value
+    if "\n\n[Image attached at: " in text:
+        caption, hints = text.split("\n\n[Image attached at: ", 1)
+        if not caption or caption == "What do you see in this image?":
+            return None
+        hints, placeholders = _strip_trailing_screenshot_placeholders(hints)
+        matches = [_IMAGE_HINT_RE.fullmatch(line) for line in ("[Image attached at: " + hints).split("\n")]
+        if not all(matches):
+            return None
+        paths = [match[1] for match in matches]
+        if placeholders not in (0, len(paths)):
+            return None
+        projected = caption + "\n\n" + "\n".join(f"@image:{format_reference_value(p)}" for p in paths)
+    else:
+        body, placeholders = _strip_trailing_screenshot_placeholders(text)
+        lines = body.splitlines()
+        ref_lines = [line for line in lines if line.startswith("@image:")]
+        matches = [_IMAGE_REF_RE.fullmatch(line) for line in ref_lines]
+        if not matches or not all(matches) or lines[-len(matches):] != ref_lines:
+            return None
+        paths = [match[1][1:-1] if match[1][0] in ('`', '"', "'") else match[1] for match in matches]
+        if any(format_reference_value(p) != match[1] for p, match in zip(paths, matches)):
+            return None
+        if placeholders not in (0, len(paths)):
+            return None
+        projected = body
+
+    import base64
+    import binascii
+    from pathlib import Path
+    from fastapi import HTTPException
+    from hermes_cli.web_routers.files import _fs_regular_file
+    from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    image_parts = content[1:1 + len(paths)]
+    if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
+        return None
+    if len(content) > 1 + len(paths):
+        from agent.memory_manager import sanitize_context
+        memory = content[-1]
+        if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
+            return None
+    for path, part in zip(paths, image_parts):
+        if not Path(path).is_absolute() or not isinstance(part, dict) or part.get("type") != "image_url":
+            return None
+        match = _IMAGE_DATA_RE.fullmatch(_history_part_image_url(part))
+        if not match or len(match[1]) > ((_FS_DATA_URL_MAX_BYTES + 2) // 3) * 4:
+            return None
+        try:
+            target, st = _fs_regular_file(Path(path))
+            if st.st_size > _FS_DATA_URL_MAX_BYTES or target.read_bytes() != base64.b64decode(match[1], validate=True):
+                return None
+        except (OSError, ValueError, binascii.Error, HTTPException):
+            return None
+    return projected
 
 
 def _history_text_only_part(part: dict) -> bool:
@@ -164,7 +249,7 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
         return text
     try:
         from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
-        cmd_key = resolve_skill_command_key(head.lstrip("/"))
+        cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
         return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
     except Exception:  # a skill that no longer resolves must not break the rewind
         logger.debug("skill re-expansion failed for replay", exc_info=True)
@@ -197,7 +282,9 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict], *, profile_home=None) -> list[dict]:
+def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
+    """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
+    so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
 
     messages = []
@@ -212,11 +299,15 @@ def _history_to_messages(history: list[dict], *, profile_home=None) -> list[dict
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _user_image_display_text(m.get("content")) if role == "user" else None
+        if content_text is None:
+            content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A setup handoff's first message carries the first-task skill after what the user sees.
+            from agent.first_task_prompt import visible_text
+            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")

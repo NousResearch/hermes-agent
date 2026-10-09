@@ -96,6 +96,41 @@ async def test_marker_survives_until_a_served_profile_is_reachable(multiplex_run
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+async def test_private_home_notices_reach_both_bots(multiplex_runner, outcome):
+    """Equal positive Telegram chat ids under two bots are two conversations, not one shared chat.
+
+    A Telegram private chat id names the USER, so the launch bot and a served profile's bot with
+    the same home id each owe their own notice; a delivery dedupe that collapses them discharged
+    the served profile's obligation without ever sending it (#118233).
+    """
+    runner, marker = multiplex_runner
+    runner.config = _home_config(Platform.TELEGRAM, "8776018003")
+    launch, coder = _adapter(), _adapter()
+    runner.adapters = {Platform.TELEGRAM: launch}
+    runner._profile_configs = {"coder": _home_config(Platform.TELEGRAM, "8776018003")}
+    runner._profile_adapters = {"coder": {Platform.TELEGRAM: coder}}
+    if outcome == "failure":
+        coder.send.return_value = SendResult(success=False, error="temporary failure")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_awaited_once()
+    coder.send.assert_awaited_once()
+    if outcome == "failure":
+        assert marker.exists(), "the second bot's conversation is still owed its notice"
+        recorded = json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"]
+        assert ["telegram", "8776018003", None] in recorded
+        assert ["coder:telegram", "8776018003", None] not in recorded
+        coder.send.reset_mock()
+        coder.send.return_value = SendResult(success=True, message_id="recovered")
+        await runner._replay_pending_planned_restart_notification()
+        coder.send.assert_awaited_once()
+        launch.send.assert_awaited_once()
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
 async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypatch):
     """One host process restarting once owes a shared chat ONE notice, not one per profile.
 
@@ -125,7 +160,7 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_one_broken_profile_does_not_starve_the_rest(multiplex_runner, monkeypatch):
     """A profile whose transport resolution raises is skipped; the fan-out continues."""
-    runner, marker = multiplex_runner
+    runner, _marker = multiplex_runner
     runner.adapters[Platform.DISCORD] = _adapter()
     ok = _adapter()
     runner._profile_configs = {

@@ -26,6 +26,8 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
                         "name": "botA-only-job",
                         "prompt": "scoped hello",
                         "enabled": True,
+                        # what cron/scheduler_delivery.py persists for unconfirmed sends
+                        "last_delivery_unverified": ["telegram:123"],
                     }
                 ]
             }
@@ -34,7 +36,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     )
 
     # Route the profile name the handler resolves to our temp home.
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
 
     monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
 
@@ -50,6 +52,11 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     assert resp["result"]["scoped"] == "botA"
     names = [j.get("name") for j in resp["result"]["jobs"]]
     assert "botA-only-job" in names
+    # The wire contract must accept the real row shape (a list of targets, not a bool).
+    from tui_gateway.contracts.tools_commands import CronManageResult
+
+    jobs = CronManageResult.model_validate(resp["result"]).jobs or []
+    assert jobs[0].last_delivery_unverified == ["telegram:123"]
 
     # The override must not leak: an unscoped call after this one resolves the
     # launch profile again, which does not contain botA's job.
@@ -59,7 +66,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
 
 
 def test_cron_manage_unknown_profile_errors(tmp_path, monkeypatch):
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
 
     missing = tmp_path / "profiles" / "ghost"
     monkeypatch.setattr(profiles, "get_profile_dir", lambda name: missing)

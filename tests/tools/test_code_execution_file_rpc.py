@@ -30,9 +30,9 @@ CALLS = {
 def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypatch):
     from pm.shell import bash
     from tools.registry import registry
-    import tools.file_tools  # noqa: F401 - populate schemas
-    import tools.web_tools  # noqa: F401
-    import tools.terminal_tool  # noqa: F401
+    import tools.file_tools
+    import tools.web_tools
+    import tools.terminal_tool
 
     shell = bash()
     assert shell
@@ -56,9 +56,9 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
     monkeypatch.setattr("model_tools.handle_function_call", dispatch)
 
     class Shell:
-        def execute(self, command, cwd=None, timeout=None):
+        def execute(self, command, cwd=None, timeout=None, stdin_data=None):
             result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
-                                    env=dict(os.environ), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+                                    env=dict(os.environ), input=stdin_data or "", capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
             return {"output": result.stdout}
 

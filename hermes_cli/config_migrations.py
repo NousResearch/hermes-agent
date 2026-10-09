@@ -675,8 +675,10 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
-def _migrate_to_52(results: Dict[str, Any], quiet: bool) -> None:
-    # 51 → 52: move custom-endpoint secrets out of config.yaml.
+def _migrate_to_54(results: Dict[str, Any], quiet: bool) -> None:
+    # 53 → 54: move custom-endpoint secrets out of config.yaml.
+    if not _local_files_allowed():
+        return
     _c = _cfg()
     config = _c.read_raw_config()
     moved = 0
@@ -933,8 +935,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         section="agent", key="clarify_timeout", old=3600, new=90,
         added="agent.clarify_timeout=90",
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
-    # 53 → 54: move custom-endpoint secrets out of config.yaml (see _migrate_to_52).
-    (54, _migrate_to_52),
+    # 53 → 54: move custom-endpoint secrets out of config.yaml (see _migrate_to_54).
+    (54, _migrate_to_54),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -979,6 +981,9 @@ def run_migrations(
                 try:
                     migration_fn(results, quiet)
                 except Exception as exc:
+                    if migration_fn is _migrate_to_54:
+                        # Retry the secret move rather than stamping an incomplete migration.
+                        raise
                     # A malformed nested value in one step must not abort the rest of the
                     # ladder (config loading itself fails otherwise). Loud, not silent.
                     warning = f"config migration to v{target_ver} failed and was skipped: {exc}"

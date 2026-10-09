@@ -118,3 +118,61 @@ def test_migration_preserves_populated_declared_binding(tmp_path, monkeypatch, b
     assert "api_key" not in raw["model"] and "api_key_env" not in raw["model"]
     assert get_env_value("SHARED_PROVIDER_KEY") == "sk-current-bound-secret"
     assert "sk-stale-inline-secret" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("version", [50, None])
+@pytest.mark.parametrize("location", ["model", "providers", "custom_providers"])
+@pytest.mark.parametrize("failure", ["env_error", "env_noop", "config_error"])
+def test_failed_secret_move_keeps_migration_retryable(
+    tmp_path, monkeypatch, version, location, failure,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import config as cfg
+
+    entry = {"base_url": "https://retry.example/v1", "api_key": "sk-retry-secret"}
+    config = {}
+    if location == "model":
+        config[location] = {**entry, "provider": "custom", "default": "model-a"}
+    elif location == "providers":
+        config[location] = {"retry": entry}
+    else:
+        config[location] = [{**entry, "name": "retry"}]
+    if version is not None:
+        config["_config_version"] = version
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("credential migration write failed")
+
+    with monkeypatch.context() as failed_write:
+        if failure == "env_noop":
+            failed_write.setattr(cfg, "save_env_value", lambda *args: None)
+            expected_error = RuntimeError
+        else:
+            boundary = "save_config" if failure == "config_error" else "save_env_value"
+            failed_write.setattr(cfg, boundary, fail_write)
+            expected_error = OSError
+        with pytest.raises(expected_error):
+            cfg.migrate_config(interactive=False, quiet=True)
+
+    failed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert failed.get("_config_version") == version
+    assert "sk-retry-secret" in path.read_text(encoding="utf-8")
+
+    cfg.migrate_config(interactive=False, quiet=True)
+
+    migrated = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert migrated["_config_version"] == cfg.DEFAULT_CONFIG["_config_version"]
+    if location == "model":
+        migrated_entry = migrated[location]
+    elif location == "providers" or version is None:
+        # Unversioned legacy lists first migrate to the upstream providers map.
+        migrated_entry = migrated["providers"]["retry"]
+        if location == "custom_providers":
+            assert "custom_providers" not in migrated
+    else:
+        migrated_entry = migrated[location][0]
+    assert "api_key" not in migrated_entry
+    assert cfg.get_env_value(migrated_entry["key_env"]) == "sk-retry-secret"
+    assert "sk-retry-secret" not in path.read_text(encoding="utf-8")

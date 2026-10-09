@@ -31,8 +31,8 @@ class _HandleDeclined(Exception):
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
-    def __init__(self, adapter: Any, chat_id: str, tts_config: Dict[str, Any],
-                 loop: asyncio.AbstractEventLoop, *, metadata: Optional[Dict[str, Any]] = None,
+    def __init__(self, adapter: Any, chat_id: str, tts_config: dict[str, Any],
+                 loop: asyncio.AbstractEventLoop, *, metadata: Optional[dict[str, Any]] = None,
                  audio_format: Optional[AudioFormat] = None) -> None:
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
@@ -189,7 +189,7 @@ class StreamingTTSConsumer:
                 from tools.tts_text_normalize import _strip_markdown_for_tts as _strip
                 self._strip_markdown = _strip
             except ImportError:
-                self._strip_markdown = lambda t: t  # noqa: E731
+                self._strip_markdown = lambda t: t
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
         iterator = iter(self._streamer.stream(cleaned))

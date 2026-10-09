@@ -835,7 +835,7 @@ def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: 
 
 
 def get_authenticated_provider_slugs(
-    current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
+    current_provider: str = "", user_providers: dict | None = None, custom_providers: list | None = None
 ) -> list[str]:
     """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
     stale catalogs warm in the background, never in this call)."""
@@ -1740,7 +1740,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
     current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
-    user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
+    user_providers: dict | None = None, custom_providers: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each

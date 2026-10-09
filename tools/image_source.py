@@ -93,7 +93,7 @@ def _guard_credential_read(host_target: Path, src: str) -> None:
         # model-supplied local paths. Import is best-effort (guard unavailability must not break image
         # loading); a real block always propagates.
         from agent.file_safety import raise_if_read_blocked
-    except Exception:  # noqa: BLE001 — guard unavailable: proceed
+    except Exception:
         return
     try:
         raise_if_read_blocked(str(host_target))
@@ -173,12 +173,12 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     if _is_local_terminal_backend():
         try:
             return p.resolve()
-        except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail downstream
+        except Exception:
             return p
     from tools.credential_files import from_agent_visible_cache_path
     try:
         real = Path(from_agent_visible_cache_path(str(p))).resolve()
-    except Exception:  # noqa: BLE001 — cannot resolve -> not a safe host read
+    except Exception:
         return None
     if any(real.is_relative_to(root.resolve()) for root in _media_cache_roots()):
         return real

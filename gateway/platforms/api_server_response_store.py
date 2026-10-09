@@ -4,9 +4,9 @@ import json
 import logging
 import sqlite3
 import time
-from contextlib import suppress
+from contextlib import closing, suppress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -36,7 +36,7 @@ class ResponseStore:
     request id, so a reuse is refused with ``admission_conflict`` and never re-executes.
     """
 
-    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None,
+    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: Optional[str] = None,
                  max_identities: Optional[int] = None):
         self._max_size = max_size
         self._max_identities = max_identities
@@ -77,6 +77,7 @@ class ResponseStore:
         self._conn.execute('CREATE INDEX IF NOT EXISTS response_keys_response ON response_keys(response_id)')
         # Rows written before settlement was tracked: settled iff their replay record survives.
         self._mark_settled('1', ())
+        self._settle_terminal_admissions()
         self._conn.commit()
         # Conversation history lives here: owner-only perms, once at init (not per commit).
         self._tighten_file_permissions()
@@ -92,7 +93,7 @@ class ResponseStore:
             except OSError:
                 logger.debug("Failed to restrict response store permissions for %s", candidate, exc_info=True)
 
-    def get(self, response_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, response_id: str) -> Optional[dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
         row = self._conn.execute(
             "SELECT data FROM responses WHERE response_id = ?", (response_id,)).fetchone()
@@ -110,7 +111,7 @@ class ResponseStore:
             self._conn.commit()
             return None
 
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
+    def put(self, response_id: str, data: dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         insert = 'INSERT OR IGNORE' if response_id.startswith('idem:') else 'INSERT OR REPLACE'
         self._conn.execute(
@@ -127,6 +128,44 @@ class ResponseStore:
             "WHERE responses.response_id=request_key) WHERE settled_at IS NULL AND "
             f"{selector} AND EXISTS (SELECT 1 FROM responses WHERE responses.response_id=request_key "
             f"AND {_RECORD}') IS NOT NULL)", (time.time(), *params))
+
+    def _settle_terminal_admissions(self) -> None:
+        """Settle an identity whose canonical admission already finished but left no replay
+        record: rows migrated from a release that did not track settlement (their record aged
+        out of the old body LRU), or a request whose client left before the record was written.
+
+        The authority is this home's ``state.db`` (live row or retired tombstone), read-only.
+        Only a terminal admission settles, at its acceptance time so it ages out first; a
+        queued/started/unknown one keeps its identity, so its exact retry is unchanged."""
+        if not self._db_path:
+            return
+        pending = dict(self._conn.execute(
+            'SELECT a.admission_id, k.request_key FROM response_keys k JOIN response_admissions a '
+            'ON a.request_key=k.request_key WHERE k.settled_at IS NULL').fetchall())
+        state_db = Path(self._db_path).parent / 'state.db'
+        if not pending or not state_db.is_file():
+            return
+        from hermes_state_holders import read_only_db_uri
+        from hermes_state_terminal import ADMISSION_PREFIX
+        terminal = []
+        ids = list(pending)
+        try:
+            with closing(sqlite3.connect(read_only_db_uri(state_db), uri=True)) as canon:
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    marks = ','.join('?' * len(chunk))
+                    terminal += [row[0] for row in canon.execute(
+                        f"SELECT admission_id FROM session_admissions WHERE status='terminal' "
+                        f"AND admission_id IN ({marks})", chunk)]
+                    terminal += [row[0][len(ADMISSION_PREFIX):] for row in canon.execute(
+                        f'SELECT key FROM state_meta WHERE key IN ({marks})',
+                        [ADMISSION_PREFIX + admission_id for admission_id in chunk])]
+        except sqlite3.Error:
+            # Unreadable canonical store: nothing is proven terminal, so nothing is settled.
+            logger.debug('Responses identity settlement skipped: %s unreadable', state_db, exc_info=True)
+            return
+        self._conn.executemany('UPDATE response_keys SET settled_at=created_at WHERE request_key=? '
+                               'AND settled_at IS NULL', [(pending[a],) for a in set(terminal)])
 
     def _identity_bound(self) -> int:
         return self._max_identities or IDENTITY_RETENTION_FACTOR * self._max_size

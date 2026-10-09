@@ -533,13 +533,15 @@ class MCPServerTransportMixin:
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
         # Always own the client: the httpx_client_factory forwards the SDK's (headers, auth, timeout),
-        # installs the wire-body cap, layers TLS on the inner transport (client-level verify/cert are
-        # inert once a custom transport= is passed) and re-adds the proxy mounts that custom transport
-        # would otherwise suppress. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        # installs the wire-body cap, the redirect boundary (SSRF gate + Authorization strip), layers TLS
+        # on the inner transport (client-level verify/cert are inert once a custom transport= is passed)
+        # and re-adds the proxy mounts that custom transport would otherwise suppress. Client MUST come
+        # from the SDK's httpx (httpx2 on mcp >= 2.0).
         _httpx_mod = _core.sdk_httpx()
+        _build_client = _make_redirect_header_stripper(_httpx_mod, _httpx_mod.URL(url))
         def _sse_client_factory(headers=None, timeout=None, auth=None):
             inner_transport = _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
-            return _httpx_mod.AsyncClient(
+            return _build_client(
                 follow_redirects=True,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
                 transport=_make_mcp_body_cap_transport(_httpx_mod, inner_transport),

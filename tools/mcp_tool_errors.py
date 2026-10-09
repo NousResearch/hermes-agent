@@ -283,12 +283,32 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
+class BlockedMcpRedirect(ValueError):
+    """A configured MCP endpoint redirected the client to an address the SSRF policy forbids."""
+
+
+def _reject_unsafe_redirect(original_url: str, target_url: str) -> None:
+    """Redirect-target SSRF gate for the MCP HTTP clients. A remote (or compromised) MCP server that
+    answers 30x with ``Location: http://127.0.0.1:<port>/`` or the cloud-metadata endpoint would
+    otherwise make the client reach the user's own machine — re-sending every configured non-Authorization
+    header (API keys) and treating the internal reply as the MCP response. Policy: the cloud-metadata floor
+    (``is_always_blocked_url``) is refused for every origin; a *public* origin may not hop into
+    private/loopback space (``is_safe_url``, so ``security.allow_private_urls`` still applies); a
+    loopback/private origin (a local dev MCP server) keeps redirecting within private space."""
+    from tools.url_safety import is_always_blocked_url, is_safe_url
+    if is_always_blocked_url(target_url):
+        raise BlockedMcpRedirect(f"Blocked MCP redirect to a cloud-metadata address: {target_url}")
+    if is_safe_url(original_url) and not is_safe_url(target_url):
+        raise BlockedMcpRedirect(f"Blocked MCP redirect from public endpoint {original_url} to a "
+                                 f"private/internal address: {target_url}")
+
+
 def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
                                    configured_header_names: "set[str] | frozenset[str]" = frozenset()):
-    """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
-    follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
-    every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids
-    forwarding them cross-origin.
+    """Client factory enforcing the redirect boundary: a cross-origin redirect follow-up is first checked
+    against the SSRF policy (:func:`_reject_unsafe_redirect`), then ``Authorization`` is stripped; with
+    *strict* (Agent Plugins v1 ``strict_redirect_headers``) every configured header (lowercase names in
+    *configured_header_names*) is stripped too — v1 forbids forwarding them cross-origin.
 
     The factory builds ``httpx_mod.AsyncClient(**kwargs)`` — resolved at call time, so the proxy
     ``mounts=`` / ``transport=`` the caller passes reach the SDK's real client class (and anything a
@@ -297,7 +317,9 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
     is unset when response event hooks fire (httpx populates it later in the redirect loop), so a
     response hook can never mutate the follow-up; and a *request* hook would fire on non-redirect traffic
     too — the OAuth auth flow yields token/metadata/registration requests through the same client, often
-    to a different-origin authorization server whose own credentials must NOT be stripped."""
+    to a different-origin authorization server whose own credentials must NOT be stripped. The SSRF check
+    resolves DNS synchronously on the loop, like the gateway's redirect guard: redirects are rare and
+    ``_build_redirect_request`` is not awaitable."""
     origin = (original_url.scheme, original_url.host, original_url.port)
 
     def _build_client(**kwargs):
@@ -308,6 +330,7 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
             next_request = base_build(client, request, response)
             target = next_request.url
             if (target.scheme, target.host, target.port) != origin:
+                _reject_unsafe_redirect(str(original_url), str(target))
                 headers = next_request.headers
                 headers.pop("authorization", None)
                 headers.pop("Authorization", None)

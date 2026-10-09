@@ -3086,6 +3086,21 @@ class TestRedirectHeaderStripper:
     hooks fire) without also touching non-redirect traffic (a request hook would strip the OAuth
     auth flow's token/registration calls to a different-origin authorization server)."""
 
+    _DNS = {"origin.example.test": "93.184.216.34", "other.example.test": "93.184.216.35",
+            "localhost": "127.0.0.1"}
+
+    @pytest.fixture(autouse=True)
+    def _deterministic_dns(self, monkeypatch):
+        """The cross-origin SSRF gate resolves both ends: pin the fixture hosts (no real DNS in tests)."""
+        import socket
+
+        def _getaddrinfo(hostname, port=None):
+            if hostname not in self._DNS:
+                raise socket.gaierror(hostname)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self._DNS[hostname], port or 0))]
+
+        monkeypatch.setattr("tools.url_safety._getaddrinfo", _getaddrinfo)
+
     def _build_redirect(self, httpx, *, strict=False, configured=frozenset(),
                         headers, location):
         from tools.mcp_tool_errors import _make_redirect_header_stripper
@@ -3128,3 +3143,31 @@ class TestRedirectHeaderStripper:
             location="https://origin.example.test/other")
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"
+
+    def test_public_origin_cannot_redirect_into_private_space(self):
+        """A public MCP URL 302-ing to loopback, link-local or cloud metadata is an SSRF pivot that would
+        also re-send the configured API-key headers to the internal target: refused before any request
+        is built for it (salvage of #70335 / #62929, ported from aaif-goose/goose#11501)."""
+        import httpx
+        from tools.mcp_tool_errors import BlockedMcpRedirect
+
+        for location in ("http://127.0.0.1:9000/mcp", "http://169.254.169.254/latest/meta-data/",
+                         "http://metadata.google.internal/computeMetadata/v1/"):
+            with pytest.raises(BlockedMcpRedirect):
+                self._build_redirect(httpx, headers={"X-Api-Key": "k"}, location=location)
+
+    def test_loopback_origin_keeps_private_redirects_but_not_metadata(self):
+        """A local dev MCP server may redirect within private space (localhost -> 127.0.0.1); the
+        cloud-metadata floor holds for every origin."""
+        import httpx
+        from tools.mcp_tool_errors import BlockedMcpRedirect, _make_redirect_header_stripper
+
+        build_client = _make_redirect_header_stripper(httpx, httpx.URL("http://localhost:3100/mcp"))
+        client = build_client()
+        request = httpx.Request("GET", "http://localhost:3100/mcp", headers={"X-Api-Key": "k"})
+        response = httpx.Response(302, headers={"location": "http://127.0.0.1:3100/mcp/"}, request=request)
+        next_request = client._build_redirect_request(request, response)
+        assert next_request.url.host == "127.0.0.1"
+        response = httpx.Response(302, headers={"location": "http://169.254.169.254/"}, request=request)
+        with pytest.raises(BlockedMcpRedirect):
+            client._build_redirect_request(request, response)

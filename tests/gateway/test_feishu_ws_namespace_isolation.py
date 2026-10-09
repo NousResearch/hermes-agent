@@ -12,7 +12,8 @@ from plugins.platforms.feishu import adapter as first
 
 
 @pytest.mark.parametrize("running", [False, True])
-def test_second_namespace_preserves_shutdown_owner(monkeypatch, caplog, running):
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_second_namespace_preserves_shutdown_owner(monkeypatch, caplog, running, concurrent):
     name = "plugins.platforms.feishu._namespace_probe"
     spec = importlib.util.spec_from_file_location(name, first.__file__)
     second = importlib.util.module_from_spec(spec)
@@ -31,7 +32,20 @@ def test_second_namespace_preserves_shutdown_owner(monkeypatch, caplog, running)
             sdk.loop.run_until_complete(parked())
 
     sdk = SimpleNamespace(loop=SimpleNamespace(), websockets=SimpleNamespace(connect=lambda: None), Client=Client)
-    first._install_lark_ws_isolation(sdk)
+    if concurrent:
+        from concurrent.futures import ThreadPoolExecutor
+        barrier = threading.Barrier(2)
+
+        def install(module):
+            barrier.wait(timeout=10)
+            module._install_lark_ws_isolation(sdk)
+            return (sdk.loop, sdk.websockets.connect, sdk.Client._receive_message_loop)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(install, first), pool.submit(install, second)
+            assert a.result(timeout=15) == b.result(timeout=15)
+    else:
+        first._install_lark_ws_isolation(sdk)
     installed = (sdk.loop, sdk.websockets.connect, sdk.Client._receive_message_loop)
     second._install_lark_ws_isolation(sdk)
     assert installed == (sdk.loop, sdk.websockets.connect, sdk.Client._receive_message_loop)
@@ -47,11 +61,18 @@ def test_second_namespace_preserves_shutdown_owner(monkeypatch, caplog, running)
                            _ws_reconnect_interval=None, _ws_ping_interval=None,
                            _ws_ping_timeout=None, _running=running)
     caplog.set_level(logging.DEBUG)
-    worker = threading.Thread(target=second._run_official_feishu_ws_client, args=(Client(), stub), daemon=True)
+    cleanup = []
+
+    def run():
+        second._run_official_feishu_ws_client(Client(), stub)
+        cleanup.append(tuple(getattr(second._ws_isolation_state, key, None)
+                             for key in ("loop", "adapter", "connect_kwargs", "on_link_up")))
+
+    worker = threading.Thread(target=run, daemon=True)
     worker.start()
     worker.join(10)
     assert not worker.is_alive()
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR and "receive loop" in r.getMessage()]
     assert len(errors) == int(running), "receive-loop severity must follow the actual owner"
     assert first._ws_isolation_state is second._ws_isolation_state
-    assert getattr(second._ws_isolation_state, "adapter", None) is None
+    assert cleanup == [(None, None, None, None)]

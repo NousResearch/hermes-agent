@@ -98,7 +98,7 @@ def live_gateway(tmp_path_factory):
     (plugins / ".install-metadata.json").write_text(
         "{" + ", ".join(f'"{n}": {{"source": "local", "sha": "0"}}' for n in _HEADS) + "}", encoding="utf-8")
 
-    log = open(root / "gateway.log", "w", encoding="utf-8")  # noqa: SIM115 — handed to the child
+    log = open(root / "gateway.log", "w", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--force"],
                             cwd=str(home), env=_child_env(home), stdin=subprocess.DEVNULL, stdout=log,
                             stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)

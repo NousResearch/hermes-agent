@@ -548,7 +548,7 @@ class TestDryRun:
         big.write_bytes(b"z" * 10)
         dg.track(str(test_f), "test", silent=True)
         dg.track(str(big), "other", silent=True)
-        auto, prompt = dg.dry_run()
+        auto, _prompt = dg.dry_run()
         # test → auto, other → neither (doesn't hit any rule)
         assert any(i["path"] == str(test_f) for i in auto)
 

@@ -404,7 +404,7 @@ def _handler_for(fake: FakeBedrock) -> type[BaseHTTPRequestHandler]:
         def log_message(self, *_args: Any) -> None:
             return
 
-        def do_POST(self) -> None:  # noqa: N802 - http.server API
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             headers = {k.lower(): v for k, v in self.headers.items()}
             route = _ROUTE_RE.match(self.path.split("?", 1)[0])

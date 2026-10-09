@@ -212,7 +212,7 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
 # profile: bounds the config.yaml read to once per window; the sweep itself is
 # throttled far more coarsely by state_meta (sessions.min_interval_hours).
 _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
-_last_auto_archive_check: Dict[str, float] = {}
+_last_auto_archive_check: dict[str, float] = {}
 
 
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:

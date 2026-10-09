@@ -782,7 +782,7 @@ def _consent_reader_importable() -> bool:
     that runs the new tree (never the pre-pull one, which must import nothing); the recorder's
     pre-gate imports the same module next, so a working interpreter loads nothing extra."""
     try:
-        import hermes_cli.config  # noqa: F401
+        import hermes_cli.config
     except ImportError:  # ruamel and every other third-party package are missing here
         return False
     return True

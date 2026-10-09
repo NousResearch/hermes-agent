@@ -522,7 +522,7 @@ def _own_pr(key: str, field: dict) -> dict | None:
     return next((n for n in (field.get("nodes") or []) if n and not n.get("isCrossRepository")), None)
 
 
-def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = None) -> dict:
     """PRs on the given branches (plus any asked for by number) — queried per branch
     rather than paging the repo's newest PRs and hoping ours are in the page."""
     not_ready = {"ghReady": False, "prs": []}

@@ -26,7 +26,7 @@ _MAX_READ_SECONDS = 10.0
 
 # The six-state account vocabulary -> the state that read ends the attempt in, and who caused it.
 # `pending` is not here: it is the attempt still running, and moves nothing.
-_ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
+_ACCOUNT_OUTCOME: dict[str, tuple[TargetState, Actor]] = {
     "active": (TargetState.connected, Actor.backend_watcher),
     "failed": (TargetState.failed, Actor.backend_watcher),
     "revoked": (TargetState.failed, Actor.backend_watcher),
@@ -52,13 +52,13 @@ def managed_kind(client: Any, action: str, force: bool) -> Kind:
     return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
 
 
-def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
+def _status_by_slug(client: Any) -> dict[str, dict[str, Any]]:
     """The toolkit list, by slug. Only the reconnect repair check reads it: it answers "is this app
     already connected" before any account exists for the watcher to read."""
     return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
 
 
-def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
+def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reinitiate: bool, actor: Actor) -> None:
     """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
     the watcher on the first mint and the user on Try again. The operation id rides along so the
     vendor's done page can name it on the way back to the desktop."""
@@ -100,7 +100,7 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
 
 
-def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[Dict[str, Any]]:
+def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[dict[str, Any]]:
     """The one route the watcher reads: that target's own account row. ``None`` means "nothing to
     apply this tick" — no account to read, a rate-limit still in force, an account the gateway does
     not know yet (404 until the deadline), or a read that failed. A 429 is raised to the tick: its
@@ -214,7 +214,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
     return prepare
 
 
-def _no_card_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
+def _no_card_result(client: Any, action: str, names: list[str], force: bool, session_id: str) -> str:
     operation = DetachedOperation([Target(n, "connector", action) for n in names], session_key=session_id)
     _prepare(client, action, force)(operation)
     payload = operation.result(with_urls=True)
@@ -228,13 +228,13 @@ def _no_card_result(client: Any, action: str, names: List[str], force: bool, ses
 
 def run_managed_action(
     action: str,
-    connectors: List[str],
-    args: Dict[str, Any],
+    connectors: list[str],
+    args: dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-    connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
 ) -> str:
     if connectors_available is not None and not connectors_available():

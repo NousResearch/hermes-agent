@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
-    STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_coin_name_only, is_data_decode,
+    STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_coin_name_only,
     is_doc_prose, is_google_installed_app_secret, is_hex_in_char_class, is_inert_fixture_line,
     is_json_prose_value, is_locale_catalog,
     is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
@@ -25,7 +25,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v9"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v10"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -238,8 +238,6 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
     if f.pattern_id == "encoded_exfil" and is_base64_media(line):
         sev = "low"
     if is_code and is_regex_alternation_token(f, line):
-        sev = STEP_DOWN.get(sev, sev)
-    if f.pattern_id == "base64_decode_pipe" and is_data_decode(line):
         sev = STEP_DOWN.get(sev, sev)
     if is_loopback_only(f, line):
         sev = "low"    # 127.0.0.0/8 is a local service, not egress

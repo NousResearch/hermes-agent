@@ -270,25 +270,6 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     return bool(hits) and all(inert(h) for h in hits)
 
 
-# ── (6) base64 decode piped to a non-interpreter ────────────────────────────────────────────
-# ``base64_decode_pipe`` describes "decodes and pipes to execution". ``gh api … | base64 -d |
-# grep '^sha:'`` decodes data for a text filter; the shape is only execution when a consumer
-# is a shell/interpreter or ``eval``/``source``/``exec``. Every stage after the decode counts:
-# ``base64 -d | gunzip | sh`` executes although its first consumer is a filter. A pipeline of
-# data consumers only steps down to medium.
-_PIPE_CONSUMER = re.compile(r"\s*(?:\w+=\S*\s+)*(?:\S*/)?(?P<cmd>[A-Za-z0-9_.+-]+)")
-_INTERPRETERS = re.compile(r"^(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo)$")
-
-
-def is_data_decode(line: str) -> bool:
-    """``base64 -d`` whose pipe stages are all non-interpreter commands (grep, jq, tee, tar …)."""
-    m = _PATTERN_BY_ID["base64_decode_pipe"].search(line)
-    if m is None:
-        return False
-    consumers = [c.group("cmd") for c in map(_PIPE_CONSUMER.match, line[m.end():].split("|")) if c]
-    return bool(consumers) and not any(_INTERPRETERS.match(cmd) for cmd in consumers)
-
-
 # ── (7) loopback address with port ───────────────────────────────────────────────────────────
 # ``hardcoded_ip_port`` is the "network" family's egress tripwire, yet ``127.0.0.1:12306`` in a
 # README, an ``.mcp.json`` or a client default is a LOCAL service the plugin talks to on the same
@@ -476,7 +457,6 @@ __all__ = [
     "is_base64_media",
     "is_ci_workflow",
     "is_coin_name_only",
-    "is_data_decode",
     "is_doc_prose",
     "is_google_installed_app_secret",
     "is_hex_in_char_class",

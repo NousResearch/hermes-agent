@@ -309,18 +309,14 @@ async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkey
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
     adapter = runner.adapters[Platform.TELEGRAM]
-    runner.session_store._entries["agent:main:telegram:dm:123:42"] = SimpleNamespace(
-        origin=SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="123",
-            chat_type="dm",
-            thread_id="42",
-            user_id="proc_owner",
-            user_name="alice",
-        )
-    )
+    entry = runner.session_store.get_or_create_session(SessionSource(
+        platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", thread_id="42",
+        user_id="proc_owner", user_name="alice",
+    ))
     completion_queue = queue.Queue()
-    completion_queue.put(_watch_event())
+    completion_queue.put({
+        **_watch_event(), "session_key": entry.session_key, "parent_session_id": entry.session_id,
+    })
     async_event = {"type": "async_delegation", "session_id": "delegate_one"}
     completion_queue.put(async_event)
 
@@ -542,6 +538,8 @@ async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface_child", [False, True])
 async def test_gateway_watch_drain_uses_child_process_policy(monkeypatch, tmp_path, surface_child):
+    from gateway.session import SessionSource
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = _build_runner(monkeypatch, tmp_path, "all")
     (tmp_path / "config.yaml").write_text(
@@ -551,8 +549,13 @@ async def test_gateway_watch_drain_uses_child_process_policy(monkeypatch, tmp_pa
     )
     inject = AsyncMock(return_value=True)
     monkeypatch.setattr(runner, "_inject_watch_notification", inject)
+    entry = runner.session_store.get_or_create_session(SessionSource(
+        platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", thread_id="42",
+    ))
     events = queue.Queue()
-    events.put({**_watch_event(), "owner_task_id": "sa-child", "task_id": "parent-container"})
+    events.put({**_watch_event(), "session_key": entry.session_key,
+                "parent_session_id": entry.session_id,
+                "owner_task_id": "sa-child", "task_id": "parent-container"})
     await runner._drain_watch_notifications(events)
     assert inject.await_count == int(surface_child)
     assert events.empty()
@@ -560,6 +563,7 @@ async def test_gateway_watch_drain_uses_child_process_policy(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_gateway_watch_policy_uses_each_events_profile(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
 
@@ -569,6 +573,7 @@ async def test_gateway_watch_policy_uses_each_events_profile(monkeypatch, tmp_pa
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=True, sessions_dir=tmp_path / "sessions"))
     homes = {name: get_profile_dir(name) for name in ("a", "b")}
+    entries = {}
     for name, home in homes.items():
         home.mkdir(parents=True)
         (home / "config.yaml").write_text(
@@ -576,6 +581,9 @@ async def test_gateway_watch_policy_uses_each_events_profile(monkeypatch, tmp_pa
             f"delegation:\n  surface_child_process_notifications: {str(name == 'a').lower()}\n",
             encoding="utf-8",
         )
+        entries[name] = runner.session_store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", thread_id="42", profile=name,
+        ))
     seen = []
     async def inject(_text, event):
         seen.append((event["session_key"], get_hermes_home()))
@@ -583,8 +591,10 @@ async def test_gateway_watch_policy_uses_each_events_profile(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_inject_watch_notification", inject)
     events = queue.Queue()
     for name in ("a", "b", "a"):
-        events.put({**_watch_event(), "session_key": f"agent:{name}:telegram:dm:123:42",
-                    "owner_task_id": "sa-child"})
+        event = {**_watch_event(), "session_key": entries[name].session_key,
+                 "parent_session_id": entries[name].session_id, "owner_task_id": "sa-child"}
+        assert await runner._watch_event_route_verdict(event) == "owned"
+        events.put(event)
 
     await runner._drain_watch_notifications(events)
 

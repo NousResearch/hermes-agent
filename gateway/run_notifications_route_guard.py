@@ -13,6 +13,7 @@ current owner. An unrelated pin is dropped before it can disclose output across 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional, cast
@@ -75,6 +76,53 @@ def _pin_route_rejection(pinned_row: Dict[str, Any], session_entry: SessionEntry
 class GatewayNotificationRouteGuardMixin:
     """Route ownership for pinned async-delegation completions."""
 
+    async def _watch_event_route_verdict(self, evt: dict) -> str:
+        """Return owned, drop, or retry for a queued process watch event's spawning route."""
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from gateway.run_notifications import _raw_process_event_session_id
+        from hermes_state import AsyncSessionDB
+
+        if evt.get("type") not in {
+            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released", "heartbeat",
+        } or _raw_process_event_session_id(evt):
+            return "owned"
+        key = str(evt.get("session_key") or "").strip()
+        pin = str(evt.get("parent_session_id") or "").strip()
+        if not key.startswith("agent:") or not pin:
+            return "drop"  # A chat key alone cannot prove which conversation spawned the event.
+        try:
+            async with self._completion_event_scope(evt):
+                generation = self._current_session_run_generation(key)
+                entry = await self.async_session_store.lookup_by_session_key(key)
+                if entry is None:
+                    return "drop"
+                owner_db = await asyncio.to_thread(self.session_store._db_for_key, key)
+                if owner_db is None:
+                    return "retry"
+                session_db = AsyncSessionDB(owner_db)
+                row = await session_db.get_session(pin)
+                if row is None:
+                    return "drop"
+                reason = str(row.get("end_reason") or "") if row.get("ended_at") else ""
+                if reason in _USER_BOUNDARY_END_REASONS:
+                    return "drop"
+                if is_internal_subagent_row(row):
+                    owns = await self._delegate_pin_belongs_to_route(
+                        session_db, row, entry, raise_lookup_errors=True,
+                    )
+                elif reason == "compression":
+                    owns = await self._resolve_compression_lineage_target(
+                        session_db, entry, pin, raise_lookup_errors=True,
+                    ) == entry.session_id
+                else:
+                    owns = pin == entry.session_id and row.get("session_key") == key
+                if not owns:
+                    return "drop"
+                return "owned" if await self._unchanged_completion_route(entry, generation) else "drop"
+        except Exception:
+            logger.debug("Process watch route lookup failed for %s", pin, exc_info=True)
+            return "retry"
+
     async def _watcher_message_route_owned(self, watcher: dict, process: Any) -> bool:
         """Prove a direct process status still addresses its spawning conversation."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
@@ -117,11 +165,14 @@ class GatewayNotificationRouteGuardMixin:
 
     async def _delegate_pin_belongs_to_route(
         self, session_db: Any, pinned_row: Dict[str, Any], entry: SessionEntry,
+        *, raise_lookup_errors: bool = False,
     ) -> bool:
         """Prove a child pin descends from this exact chat owner before showing its output there."""
         try:
             owner = await session_db.get_session(entry.session_id)
         except Exception:
+            if raise_lookup_errors:
+                raise
             logger.debug("Delegate route owner lookup failed for %s", entry.session_id, exc_info=True)
             return False
         if (
@@ -144,6 +195,8 @@ class GatewayNotificationRouteGuardMixin:
                 try:
                     return await session_db.get_compression_tip(child_id) == entry.session_id
                 except Exception:
+                    if raise_lookup_errors:
+                        raise
                     logger.debug("Delegate owner compression lookup failed for %s", child_id, exc_info=True)
                     return False
             parent_id = str(row.get("parent_session_id") or "")
@@ -154,6 +207,8 @@ class GatewayNotificationRouteGuardMixin:
             try:
                 row = await session_db.get_session(parent_id)
             except Exception:
+                if raise_lookup_errors:
+                    raise
                 logger.debug("Delegate lineage lookup failed for %s", parent_id, exc_info=True)
                 return False
             if row is None:
@@ -162,11 +217,14 @@ class GatewayNotificationRouteGuardMixin:
 
     async def _resolve_compression_lineage_target(
         self, session_db: Any, session_entry: SessionEntry, pinned_session_id: str,
+        *, raise_lookup_errors: bool = False,
     ) -> Optional[str]:
         """Return the live compression tip of ``pinned_session_id`` if the route owns that lineage, else None."""
         try:
             target_session_id = await session_db.get_compression_tip(pinned_session_id)
         except Exception:
+            if raise_lookup_errors:
+                raise
             logger.debug("Async-delegation compression-tip lookup failed for %s", pinned_session_id, exc_info=True)
             target_session_id = None
         if not target_session_id or target_session_id == pinned_session_id:
@@ -178,6 +236,8 @@ class GatewayNotificationRouteGuardMixin:
         try:
             tip_row = await session_db.get_session(target_session_id)
         except Exception:
+            if raise_lookup_errors:
+                raise
             logger.debug("Compression continuation lookup failed for %s", target_session_id, exc_info=True)
             tip_row = None
         if tip_row is None or tip_row.get("ended_at") or is_internal_subagent_row(tip_row):
@@ -199,6 +259,8 @@ class GatewayNotificationRouteGuardMixin:
                     else None
                 )
             except Exception:
+                if raise_lookup_errors:
+                    raise
                 logger.debug("Compression route lineage lookup failed for %s", session_entry.session_id, exc_info=True)
                 route_tip = None
             route_owns_lineage = route_tip == target_session_id

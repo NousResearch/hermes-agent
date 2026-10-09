@@ -973,6 +973,7 @@ def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_reg
 def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, event_type, mode):
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
+    runner._watch_event_route_verdict = AsyncMock(return_value="owned")
     runner._load_background_notifications_mode = lambda: mode
     evt = dict(_completion_event(started_at=1), type=event_type,
                pattern="READY", output="READY", message="Watch patterns disabled")
@@ -986,6 +987,7 @@ def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, e
 def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=[RuntimeError("offline"), None]))
     runner = _runner(adapter)
+    runner._watch_event_route_verdict = AsyncMock(return_value="owned")
     runner._load_background_notifications_mode = lambda: "concise"
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)

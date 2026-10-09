@@ -1006,13 +1006,7 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
-        """Consume queued watch events and inject them when notifications are enabled.
-
-        Drain every queued watch event; evaluate notification policy inside each event's owning
-        profile scope because one shared queue serves all profiles.
-
-        See #9290.
-        """
+        """Drain watch events under their profile and verify their spawning route before waking it."""
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
@@ -1020,6 +1014,11 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                 if not should_surface_notification(evt):
                     continue
                 if self._load_background_notifications_mode() == "off":
+                    continue
+                route = await self._watch_event_route_verdict(evt)
+                if route != "owned":
+                    if route == "retry":
+                        completion_queue.put(evt)
                     continue
                 synth_text = _format_gateway_process_notification(evt)
                 if not synth_text:
@@ -1128,12 +1127,8 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
     ) -> Optional[bool]:
-        """Inject a watch/completion notification as a synthetic message event.
-
-        Routing comes from the queued event, never the active foreground message. Returns
-        ``True`` on adapter acceptance, ``False`` on retryable adapter failure, ``None`` with no
-        gateway route. Not transactional: a crash after acceptance can replay (at-least-once).
-        """
+        """Inject from the queued route: True accepted, False retryable, None dropped.
+        A crash after adapter acceptance can replay the event (at least once)."""
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
@@ -1196,6 +1191,9 @@ class GatewayNotificationsMixin(GatewayNotificationRouteGuardMixin):
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            route = await self._watch_event_route_verdict(evt)
+            if route != "owned":
+                return False if route == "retry" else None
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,

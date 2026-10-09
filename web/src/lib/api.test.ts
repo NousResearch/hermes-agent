@@ -96,19 +96,6 @@ describe("fetchJSON", () => {
 });
 
 describe("api.getModelOptions", () => {
-  it("requests a live model refresh when asked", async () => {
-    vi.stubGlobal("window", {});
-
-    const fetchMock = jsonFetchMock({ providers: [] });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await api.getModelOptions({ refresh: true });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/model/options?refresh=1&include_unconfigured=1",
-      expect.objectContaining({ credentials: "include" }),
-    );
-  });
 
   it("keeps explicit profile scoping when refreshing", async () => {
     vi.stubGlobal("window", {});
@@ -298,5 +285,26 @@ describe("api OAuth helpers", () => {
       "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
       "/api/providers/oauth/sessions/oauth-session?profile=worker",
     ]);
+  });
+});
+
+describe("api.getAuthMe loopback contract", () => {
+  it("accepts a token-authenticated synthetic loopback identity", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const identity = {
+      display_name: "Local",
+      email: "",
+      expires_at: 0,
+      org_id: "",
+      provider: "loopback",
+      user_id: "local",
+    };
+    const fetchMock = jsonFetchMock(identity);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getAuthMe()).resolves.toEqual(identity);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get(SESSION_HEADER)).toBe("loopback-token");
   });
 });

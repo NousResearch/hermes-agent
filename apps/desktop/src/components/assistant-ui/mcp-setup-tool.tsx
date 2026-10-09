@@ -8,7 +8,6 @@ import { useSessionView } from '@/app/chat/session-view'
 import {
   connectionRequestOwnsPart,
   CONNECTOR_CARD_PHASES,
-  type ConnectorOwner,
   MARK_LABEL,
   reissueConnectionTarget,
   useConnectionOwner,
@@ -25,12 +24,14 @@ import { Loader2 } from '@/lib/icons'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import {
+  connectionOpOf,
+  type ConnectionOwner,
   type ConnectionRequest,
   type ConnectionTarget,
   type ConnectionTargetState,
   continueConnectionRequest,
   respondToConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
@@ -72,8 +73,7 @@ const MCP_VERBS = {
   initiated: 'open',
   not_connected: 'none',
   pending: 'approve',
-  skipped: 'none',
-  unavailable: 'none'
+  skipped: 'none'
 } satisfies Record<ConnectionTargetState, McpVerb>
 
 // Two states read differently per action. A pending authorize is the backend still minting the link,
@@ -190,7 +190,14 @@ export function McpSetupPending(props: ToolCallMessagePartProps) {
   const sessionId = useStore(view.$runtimeId)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const storedId = useStore(view.$storedId)
-  const $request = useMemo(() => sessionConnectionRequest(sessionId), [sessionId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+
+  const $request = useMemo(
+    () => toolConnectionRequest(sessionId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, sessionId]
+  )
+
   const request = useStore($request)
   const action = useMemo(() => readSetupAction(props.args), [props.args])
   // The session's operation belongs to one tool call; another call's request never paints here.
@@ -213,7 +220,7 @@ export function McpSetupPending(props: ToolCallMessagePartProps) {
 interface McpSetupOfferProps {
   action: SetupAction
   /** Null until the session's owner resolves; only Try again needs it, so the rest of the card works. */
-  owner: ConnectorOwner | null
+  owner: ConnectionOwner | null
   request: ConnectionRequest
 }
 

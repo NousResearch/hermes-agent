@@ -23,7 +23,8 @@ def _dotenv_key_names() -> set[str]:
     from .env, invisible to the launchd backend).
     """
     try:
-        text = get_env_path().read_text(encoding="utf-8", errors="ignore")
+        env_path = get_env_path()
+        text = env_path.read_text(encoding="utf-8-sig", errors="ignore")
     except (OSError, UnicodeError):
         return set()
     names: set[str] = set()
@@ -50,21 +51,45 @@ def _git_output(project_root: Path, *args: str) -> str:
 
 
 def _get_git_commit(project_root: Path) -> str:
-    """Short git commit hash, or '(unknown)'. Docker images exclude ``.git``, so fall back to the build SHA
-    the Dockerfile bakes into ``<project_root>/.hermes_build_sha``."""
+    """Short git commit hash, or '(unknown)'.
+
+    The requested *project_root* is authoritative: when it has no git,
+    the install-stamp fallback is only valid for the RUNNING install
+    (``hermes_cli.version_info`` has no per-root API — it reads
+    HERMES_INSTALL_ROOT / the running code root, never an arbitrary
+    directory). For any other root the provenance is unknown.
+    """
     value = _git_output(project_root, "rev-parse", "--short=8", "HEAD")
     if value:
         return value
+    if project_root.resolve() != get_project_root():
+        return "(unknown)"
     try:
-        from hermes_cli.build_info import get_build_sha  # deferred: keeps dump cheap on non-dump paths
-        return get_build_sha(short=8) or "(unknown)"
+        from hermes_cli.version_info import get_code_identity  # deferred: keeps dump cheap on non-dump paths
+        return get_code_identity().get("short_sha") or "(unknown)"
     except Exception:
         return "(unknown)"
 
 
 def _get_git_commit_date(project_root: Path) -> str:
-    """Return the date the HEAD commit was authored (YYYY-MM-DD), or '' (Docker images have no .git)."""
-    return _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
+
+    Same authority rule as :func:`_get_git_commit`: the stamp fallback
+    describes the running install only.
+    """
+    value = _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+    if value:
+        return value
+    if project_root.resolve() != get_project_root():
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        from hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
+        commit_date = get_version_info().commit_date
+        return datetime.fromtimestamp(commit_date, tz=timezone.utc).strftime("%Y-%m-%d") if commit_date else ""
+    except Exception:
+        return ""
 
 
 def _redact(value: str) -> str:
@@ -80,7 +105,9 @@ def _gateway_status() -> str:
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
             mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
-            return f"running ({mode}, pid {snapshot.gateway_pids[0]})"
+            # A supervised gateway may have no scannable PID (s6 `python -c` launcher, #125390).
+            pid = f", pid {snapshot.gateway_pids[0]}" if snapshot.gateway_pids else ""
+            return f"running ({mode}{pid})"
         return f"stopped ({snapshot.manager})"
     except Exception:
         return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"
@@ -111,7 +138,7 @@ _PLATFORM_ENV_VARS = {
     "telegram": "TELEGRAM_BOT_TOKEN", "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
     "sms": "TWILIO_ACCOUNT_SID", "matrix": "MATRIX_HOMESERVER_URL", "mattermost": "MATTERMOST_URL",
-    "homeassistant": "HASS_TOKEN", "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
+    "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
     "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID", "weixin": "WEIXIN_ACCOUNT_ID",
     "qqbot": "QQ_APP_ID",
 }
@@ -153,8 +180,50 @@ def _config_overrides(config: dict) -> dict[str, str]:
         overrides["toolsets"] = str(user_toolsets)
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        overrides["fallback_providers"] = str(fallbacks)
+        from hermes_cli.debug_redaction import redact_debug_support_text
+
+        overrides["fallback_providers"] = redact_debug_support_text(
+            str(_fallback_debug_projection(fallbacks))
+        )
     return overrides
+
+
+_FALLBACK_DEBUG_FIELDS = (
+    "provider",
+    "model",
+    "base_url",
+    "api_mode",
+    "key_env",
+    "api_key_env",
+    "max_tokens",
+)
+
+
+def _fallback_debug_projection(value) -> list[dict]:
+    """Render only route metadata useful to support; omit arbitrary containers.
+
+    Fallback entries are open mappings consumed by provider-specific code, so a
+    denylist cannot make their ``headers``, ``env``, command/argv, or future
+    fields safe to serialize. Credential pointer names remain useful and carry
+    no values; an inline key is represented only as a source status.
+    """
+    entries = [value] if isinstance(value, dict) else value if isinstance(value, list) else []
+    projected: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item: dict = {}
+        for key in _FALLBACK_DEBUG_FIELDS:
+            child = entry.get(key)
+            if key == "max_tokens":
+                if isinstance(child, (int, float)) and not isinstance(child, bool):
+                    item[key] = child
+            elif isinstance(child, str):
+                item[key] = child
+        if entry.get("api_key"):
+            item["credential_source"] = "inline"
+        projected.append(item)
+    return projected
 
 
 # (env var, dump label) in display order.
@@ -174,13 +243,14 @@ _API_KEYS = [
 
 
 def _version_line(project_root: Path) -> str:
-    """``<version> [<commit>] (<commit date>)`` — the commit date is the real "as-of" date; __release_date__
-    is intentionally NOT shown (reads like a wall-clock timestamp, confuses triage)."""
+    """``<version> [<commit>] (<commit date>)`` using the running code identity."""
     try:
-        from hermes_cli import __version__
-    except ImportError:
-        __version__ = "(unknown)"
-    ver_str = f"{__version__} [{_get_git_commit(project_root)}]"
+        from hermes_cli.version_info import get_version_info
+
+        version = get_version_info().derived_version
+    except Exception:
+        version = "(unknown)"
+    ver_str = f"{version} [{_get_git_commit(project_root)}]"
     commit_date = _get_git_commit_date(project_root)
     return f"{ver_str} ({commit_date})" if commit_date else ver_str
 

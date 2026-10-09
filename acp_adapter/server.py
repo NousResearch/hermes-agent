@@ -25,7 +25,7 @@ from acp.schema import (
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
-from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
+from acp_adapter.commands import SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
@@ -326,12 +326,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.model_switch import switch_model
         from hermes_cli.models import parse_model_input
 
-        current_provider = getattr(state.agent, "provider", None)
+        current_provider, current_model = getattr(state.agent, "provider", None), str(state.model or "")
         explicit_provider, model_input = parse_model_input(raw_model, "")
         cfg = load_config()
         result = switch_model(
             raw_input=model_input, explicit_provider=explicit_provider,
-            current_provider=current_provider or "openrouter", current_model=str(state.model or ""),
+            current_provider=current_provider or "openrouter", current_model=current_model,
             current_base_url=str(getattr(state.agent, "base_url", "") or ""),
             current_api_key=str(getattr(state.agent, "api_key", "") or ""),
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
@@ -356,6 +356,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # working model instead of a model/agent mismatch that persists via save_session.
         state.agent, state.model = agent, new_model
         self.session_manager.save_session(state.session_id)
+        from hermes_cli.observability.shared_metrics_events import record_model_switch
+
+        record_model_switch(
+            from_provider=current_provider, to_provider=target_provider, surface="acp", from_model=current_model,
+            session_id=state.session_id)
         return current_provider, target_provider, new_model
 
     @staticmethod
@@ -447,7 +452,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(agent, "enabled_toolsets", None) or ["hermes-acp"],
+                getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
             agent.tools = get_tool_definitions(
@@ -524,6 +529,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, protocol_version: int | None = None, client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None, **kwargs: Any,
     ) -> InitializeResponse:
+        from hermes_cli.version_info import get_version_info
+
         auth_methods = build_auth_methods()
         logger.info(
             "Initialize from %s (protocol v%s)", client_info.name if client_info else "unknown",
@@ -532,7 +539,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
-            agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
+            agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
@@ -892,13 +899,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Install the ACP streaming callbacks on the session agent for one turn."""
         cbs = _TurnCallbacks()
         if conn:
-            tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+            tool_call_ids: dict[str, deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
             cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
             # Shared with the step callback so a runtime that projects
             # ``tool.completed`` closes each call once, not twice.
             turn_state: dict[str, Any] = {}
-            policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
+            policy_getter = lambda: self._edit_approval_policy_for_state(state)
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
                 turn_state=turn_state,
@@ -918,7 +925,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
             cbs.stream_delta_cb = stream_delta_cb
             # Closes the synthetic permission-request bubble once the user has answered.
-            send_update = lambda update: _send_update(conn, session_id, loop, update)  # noqa: E731
+            send_update = lambda update: _send_update(conn, session_id, loop, update)
             cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id, send_update=send_update)
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
@@ -1084,40 +1091,3 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from acp.schema import AgentThoughtChunk  # noqa: F401,E402
-from acp.schema import AudioContentBlock  # noqa: F401,E402
-from acp.schema import AvailableCommand  # noqa: F401,E402
-from acp.schema import AvailableCommandsUpdate  # noqa: F401,E402
-from acp.schema import BlobResourceContents  # noqa: F401,E402
-from acp.schema import EmbeddedResourceContentBlock  # noqa: F401,E402
-from acp.schema import ImageContentBlock  # noqa: F401,E402
-from pathlib import Path  # noqa: F401,E402
-from acp.schema import ResourceContentBlock  # noqa: F401,E402
-from acp.schema import TextResourceContents  # noqa: F401,E402
-from acp.schema import UnstructuredCommandInput  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import json  # noqa: F401,E402
-from urllib.parse import unquote  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ACP_MAX_MODELS_PER_PROVIDER': ('acp_adapter.model_catalog', 'ACP_MAX_MODELS_PER_PROVIDER'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

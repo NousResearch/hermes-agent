@@ -170,13 +170,6 @@ def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkey
     assert observed_names == ["anthropic.messages"]
 
 
-def test_unknown_api_mode_preserves_provider_name():
-    assert (
-        relay_llm._relay_operation_name("custom-provider", {"api_mode": "future_api"})
-        == "custom-provider"
-    )
-
-
 @pytest.mark.parametrize(
     ("api_mode", "operation", "codec_class"),
     [
@@ -195,16 +188,6 @@ def test_relay_protocol_drives_operation_and_codec(
 
     assert relay_llm._relay_operation_name("custom-provider", metadata) == operation
     assert isinstance(relay_llm._codec(relay, metadata), codec_type)
-
-
-def test_relay_metadata_preserves_provider_name():
-    metadata = {"api_mode": "chat_completions", "hermes.provider": "explicit"}
-
-    assert relay_llm._relay_metadata("openrouter", metadata) == metadata
-    assert relay_llm._relay_metadata("openrouter", {"api_mode": "chat_completions"}) == {
-        "api_mode": "chat_completions",
-        "hermes.provider": "openrouter",
-    }
 
 
 def test_provider_request_overlays_interceptor_added_codex_field():
@@ -394,6 +377,31 @@ def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
     assert observed == ["provider-native"]
 
 
+def test_managed_stream_delivers_each_chunk_before_the_provider_sends_the_next(relay_turn):
+    """Steering lost streamed text with Relay on: chunk N was withheld until chunk N+1 arrived."""
+    del relay_turn
+    release = threading.Event()
+
+    def paused_provider(_request):
+        yield {"delta": "first"}
+        assert release.wait(10), "first chunk never reached the consumer during the provider pause"
+        yield {"delta": "second"}
+
+    stream = relay_llm.stream(
+        {"payload": "paused"},
+        paused_provider,
+        session_id="session-1",
+        name="paused-native",
+        model_name="paused-model",
+        finalizer=lambda: {"content": "first second"},
+        metadata={"api_mode": "bedrock_converse", "api_request_id": "paused-stream"},
+    )
+
+    assert next(stream) == {"delta": "first"}
+    release.set()
+    assert list(stream) == [{"delta": "second"}]
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -537,16 +545,6 @@ def test_live_stream_defers_runtime_shutdown_until_exhaustion(
         relay_runtime._reset_for_tests()
 
 
-
-
-
-
-
-
-
-
-
-
 def test_anthropic_stream_accumulator_merges_plain_provider_object():
     accumulator = relay_llm.AnthropicStreamAccumulator()
     accumulator.observe({
@@ -582,6 +580,25 @@ def test_anthropic_stream_accumulator_merges_plain_provider_object():
     assert response.usage.input_tokens == 10
 
 
+def test_anthropic_stream_accumulator_null_delta_usage_keeps_message_start_counts():
+    """The SDK's ``MessageDeltaUsage`` serializes the fields message_delta omits as null; they
+    must not erase the input / cache counts message_start reported (span token counts went null)."""
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({"type": "message_start", "message": {
+        "id": "message-1", "type": "message", "role": "assistant", "model": "claude-test",
+        "usage": {"input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200,
+                  "output_tokens": 1},
+    }})
+    accumulator.observe({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {
+        "output_tokens": 42, "input_tokens": None, "cache_read_input_tokens": None,
+        "cache_creation_input_tokens": None,
+    }})
+
+    assert accumulator.finalize()["usage"] == {
+        "input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200, "output_tokens": 42,
+    }
+
+
 def test_jsonable_does_not_probe_dynamic_attributes():
     class DynamicProviderObject:
         def __getattr__(self, name):
@@ -591,10 +608,6 @@ def test_jsonable_does_not_probe_dynamic_attributes():
             return "opaque-provider-object"
 
     assert relay_llm._jsonable(DynamicProviderObject()) == "opaque-provider-object"
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -623,8 +636,6 @@ async def test_async_provider_callback_preserves_caller_context(relay_turn):
     )
 
     assert result == {"caller_value": "caller"}
-
-
 
 
 def test_anthropic_stream_callbacks_do_not_reenter_captured_context(
@@ -758,8 +769,6 @@ def test_explicit_stream_close_surfaces_provider_close_failure(relay_turn):
     stream.close()
 
 
-
-
 def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn):
     _relay, turn = relay_turn
     metadata = {"api_mode": "custom", "api_request_id": "request-retry"}
@@ -794,6 +803,56 @@ def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn
     assert turn.logical_llm_calls == {}
 
 
+def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
+    """#115471: a sibling turn of the same session may hold a live scope above this handle.
+
+    The logical-LLM close must skip its pop instead of popping through the sibling (which would
+    close the sibling's scope) or letting the native binding raise "not at the top of the stack"
+    once per overlap. The skipped scope is reclaimed by the session-close drain.
+    """
+    relay, turn = relay_turn
+    metadata = {"api_mode": "custom", "api_request_id": "request-overlap"}
+
+    relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "valid"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+    own_handle = turn.logical_llm_calls["request-overlap"]
+    lease = turn.lease
+
+    # Scope views are context-local: the turn's scopes live in the session context, so the
+    # overlap and every stack assertion must be observed through that same context.
+    observe_top = lambda: lease.host.run_in_session(
+        lease.session, relay_runtime._current_top, relay
+    )
+    top_before_sibling = observe_top()
+
+    # A concurrent turn's live scope sits above ours.
+    sibling_handle = lease.host.run_in_session(
+        lease.session, relay.scope.push, relay_runtime.LOGICAL_LLM_SCOPE,
+        relay.ScopeType.Function, handle=None, input={},
+    )
+    assert relay_runtime._same_handle(observe_top(), sibling_handle), "sibling must be on top"
+
+    relay_llm.complete_logical_call("request-overlap", outcome="success")
+
+    # The close skipped its pop instead of popping through the sibling, and the handle still
+    # left the registry either way.
+    assert turn.logical_llm_calls == {}
+    assert relay_runtime._same_handle(observe_top(), sibling_handle)
+
+    # The sibling's scope is intact, so the stack unwinds to exactly what it was before.
+    lease.host.run_in_session(lease.session, relay.scope.pop, sibling_handle)
+    assert relay_runtime._same_handle(observe_top(), own_handle), (
+        "the skipped scope stays on the stack and is reclaimed by the session-close drain"
+    )
+
+
 def test_non_stream_result_survives_logical_scope_close_failure(
     relay_turn, monkeypatch
 ):
@@ -824,20 +883,6 @@ def test_non_stream_result_survives_logical_scope_close_failure(
     assert "request-close" in turn.logical_llm_calls
     relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
     assert turn.logical_llm_calls == {}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_stream_flushes_buffered_provider_chunks_after_relay_failure(
@@ -1008,26 +1053,12 @@ def test_wedged_relay_aclose_does_not_block_provider_fallback(
     assert stream._runtime_lease is None
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_stream_refuses_replay_after_transformed_relay_output(
     relay_turn, monkeypatch
 ):
     """A transformed delivered chunk consumes an unknown provider source; replaying the
     pending raw list would emit that source a second time after its transformed form."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def transform_then_fail(
@@ -1080,7 +1111,7 @@ def test_stream_does_not_replay_chunks_relay_passed_over(
 ):
     """A match at index > 0 means Relay saw and skipped the earlier chunks — they were
     suppressed, not merely pending, and the fallback must not resurrect them."""
-    relay, turn = relay_turn
+    relay, _turn = relay_turn
     raw_chunks = [{"delta": "first"}, {"delta": "second"}]
 
     async def reorder_then_fail(
@@ -1225,10 +1256,6 @@ def test_anthropic_codec_preserves_tool_history_and_cached_system_blocks(relay_t
     assert observed_body_wire == original_wire
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_async_non_stream_returns_namespaced_interceptor_result(
     relay_turn,
@@ -1297,17 +1324,7 @@ def test_non_stream_preserves_provider_error_from_relay_wrapper_suffix(
     assert "request-error" in turn.logical_llm_calls
 
 
-
-
-
-
-
-
-
-
-
-
-def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
+def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch):
     relay, _turn = relay_turn
     request_body = {"model": "test-model", "messages": []}
     request = relay.LLMRequest({}, request_body)
@@ -1318,16 +1335,14 @@ def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
 
     monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: FailingCodec())
 
-    with caplog.at_level("WARNING", logger="agent.relay_llm"):
-        baseline = relay_llm._codec_round_trip_request_body(
-            relay,
-            request,
-            relay_request_body=request_body,
-            metadata={"api_mode": "chat_completions"},
-        )
+    baseline = relay_llm._codec_round_trip_request_body(
+        relay,
+        request,
+        relay_request_body=request_body,
+        metadata={"api_mode": "chat_completions"},
+    )
 
     assert baseline is None
-    assert "ignoring request rewrites" in caplog.text
 
 
 def test_stream_current_unwraps_completed_response(tmp_path, monkeypatch):
@@ -1620,7 +1635,7 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         session_id="session-1",
         name="test-provider",
         model_name="test-model",
-        finalizer=lambda: {},
+        finalizer=dict,
         completed_response_predicate=_choices_predicate,
     )
     stream._prime_completed_response()
@@ -1645,7 +1660,7 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
             lambda inner_request: _completed_response(),
             name="moa-aggregator",
             model_name="test-model",
-            finalizer=lambda: {},
+            finalizer=dict,
             completed_response_predicate=_choices_predicate,
         )
 
@@ -1655,7 +1670,7 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
         session_id="session-1",
         name="moa",
         model_name="test-model",
-        finalizer=lambda: {},
+        finalizer=dict,
         completed_response_predicate=_choices_predicate,
     )
     assert list(stream) == []

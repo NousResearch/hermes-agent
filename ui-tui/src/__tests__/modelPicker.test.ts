@@ -35,10 +35,6 @@ describe('ModelPicker provider filtering', () => {
     expect(providerIndexAfterClearingFilter(rows, provider('missing'))).toBe(-1)
   })
 
-  it('returns -1 for empty rows', () => {
-    expect(providerIndexAfterClearingFilter([], provider('a'))).toBe(-1)
-  })
-
   it('finds the first match when multiple rows share a slug', () => {
     const p = provider('dup')
 

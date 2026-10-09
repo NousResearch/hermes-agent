@@ -31,9 +31,12 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run as `python website/scripts/fetch-plugin-stars.py`, so sys.path[0] is this directory and the
+# repo-root `hermes_yaml` shim is not importable without this (broke every scheduled probe).
+sys.path.insert(0, str(REPO_ROOT))
+import hermes_yaml as yaml
+
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"
 LIVE_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-stars.json"
@@ -92,6 +95,9 @@ def load_previous(output: Path, live_url: str | None) -> dict:
 
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
+# Repository aliases per GraphQL request. One request for the whole catalog exceeded GitHub's
+# per-query resource limit at ~300 repos: partial data + an error, stale counts kept silently.
+_BATCH = 100
 
 
 def _graphql(query: str, token: str) -> dict:
@@ -112,7 +118,7 @@ def stars_query(slugs: list[str]) -> str:
 
 
 def probe_stars(slugs: list[str], previous: dict[str, int], token: str | None) -> tuple[dict[str, int], bool]:
-    """One GraphQL request for all repos -> ``(stars, probed)``. On failure keep every previous
+    """GraphQL probe in ``_BATCH``-sized requests -> ``(stars, probed)``. On failure keep every previous
     count (never regress to 0) and report ``probed=False`` so the caller does not restamp
     ``fetched_at`` over counts that are days old (#118113)."""
     kept = {s: previous[s] for s in slugs if s in previous}
@@ -121,21 +127,23 @@ def probe_stars(slugs: list[str], previous: dict[str, int], token: str | None) -
     if not token:
         _log("no GITHUB_TOKEN; keeping previous counts without probing")
         return kept, False
-    try:
-        payload = _graphql(stars_query(slugs), token)
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        _log(f"GraphQL probe failed ({e}); keeping previous counts")
-        return kept, False
-    data = payload.get("data") or {}
-    for err in payload.get("errors") or []:
-        _log(f"GraphQL: {err.get('message')}")  # e.g. a renamed/deleted repo; its previous count is kept
     stars: dict[str, int] = {}
-    for i, slug in enumerate(slugs):
-        node = data.get(f"r{i}")
-        if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
-            stars[slug] = node["stargazerCount"]
-        elif slug in previous:
-            stars[slug] = previous[slug]
+    for start in range(0, len(slugs), _BATCH):
+        batch = slugs[start:start + _BATCH]
+        try:
+            payload = _graphql(stars_query(batch), token)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            _log(f"GraphQL probe failed ({e}); keeping previous counts")
+            return kept, False
+        data = payload.get("data") or {}
+        for err in payload.get("errors") or []:
+            _log(f"GraphQL: {err.get('message')}")  # e.g. a renamed/deleted repo; its previous count is kept
+        for i, slug in enumerate(batch):
+            node = data.get(f"r{i}")
+            if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
+                stars[slug] = node["stargazerCount"]
+            elif slug in previous:
+                stars[slug] = previous[slug]
     return stars, True
 
 
@@ -164,7 +172,7 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output: Path = DEFAULT_OUTPUT,
               f"{missing} of {len(slugs)} catalog repos have no star count")
         print(f"Probe failed; wrote {len(stars)} cached star counts (as of {fetched_at}) to {output}")
         return 0
-    print(f"Probed {len(slugs)} repos in one GraphQL request, wrote {len(stars)} star counts to {output}")
+    print(f"Probed {len(slugs)} repos in {-(-len(slugs) // _BATCH)} GraphQL request(s), wrote {len(stars)} star counts to {output}")
     return 0
 
 
@@ -173,7 +181,7 @@ if __name__ == "__main__":
     parser.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--probe", action="store_true",
-                        help="call GitHub (one GraphQL request); only the scheduled skills-index run does this")
+                        help="call GitHub (batched GraphQL requests); only the scheduled skills-index run does this")
     parser.add_argument("--no-live", action="store_true", help="do not consult the live site's cache")
     args = parser.parse_args()
     sys.exit(main(catalog_dir=args.catalog_dir, output=args.output, probe=args.probe,

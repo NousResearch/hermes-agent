@@ -94,6 +94,7 @@ export const zh: Translations = {
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -160,9 +161,14 @@ export const zh: Translations = {
     deleteSelectedConfirmMessage:
       "此操作将永久删除所选的 {count} 个会话及其所有消息。无法撤销。",
     selectedSessionsDeleted: "已删除 {count} 个会话",
+    selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    workspace: "工作区",
+    workspaceDefault: "默认",
+    workspaceRescan: "重新扫描仓库",
+    workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
     roles: {

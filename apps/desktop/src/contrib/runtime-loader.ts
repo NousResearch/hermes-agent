@@ -7,8 +7,11 @@
  *   -> blob `import()` -> validate default HermesPlugin -> register(ctx)
  *
  * Loading the same plugin id again disposes the previous registrations first
- * (agent rewrites a plugin file -> clean reload). Failures toast + log; a
- * broken plugin can never take the app down.
+ * (agent rewrites a plugin file -> clean reload) — everything taken out
+ * through `ctx` (contributions, events, sockets, `ctx.setInterval`/
+ * `ctx.addEventListener`); bare globals and module-scope state are the
+ * plugin's own. Failures toast + log; a broken plugin can never take the app
+ * down, and a module whose evaluation never settles times out on its own row.
  *
  * Sources today: the in-repo runtime example (`?raw`, proves the pipeline)
  * and the two on-disk doors — `<hermes home>/desktop-plugins/<name>/plugin.js`
@@ -31,6 +34,7 @@
 
 import { atom } from 'nanostores'
 
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -56,6 +60,11 @@ interface LoadOptions {
 /** Live runtime plugins: id -> disposers (unload/reload support). */
 const loaded = new Map<string, (() => void)[]>()
 
+/** Module evaluation deadline. A top-level `await` that never settles (a dead
+ *  host, a gateway that is not up) would otherwise hang `import()` forever —
+ *  and, through the disk scan's sequential loop, every plugin listed after it. */
+const IMPORT_TIMEOUT_MS = 10_000
+
 // Matches the specifier of a static `from '…'`, a side-effect `import '…'`, or
 // a dynamic `import('…')`. Deliberately loose — a sentence ending in `from`, a
 // quoted example, a commented-out import all match it — so a match is honoured
@@ -67,7 +76,101 @@ const importSpecifierRe = () => /(from\s*|import\s*\(\s*|import\s+)(['"])([^'"]+
  *  specifier regex is not syntax-aware, so this is what keeps a plugin's own
  *  copy and comments — `const label = 'Copy keys from'`, `// import 'x'` —
  *  from being read as import syntax (rejected as "unsupported import") or
- *  rewritten in place (a mapped specifier inside a string must stay verbatim). */
+ *  rewritten in place (a mapped specifier inside a string must stay verbatim).
+ *  Regex literals are excluded too: a quote or backtick inside a pattern
+ *  (#120208) must not open a string/template state. */
+
+/** Keywords after which a `/` opens a regex literal, never a division. */
+const regexKeywordRe = /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/
+
+/** True when the `/` at `slash` (already known not to start `//` or `/*`)
+ *  opens a regex literal: the previous significant char cannot end a value.
+ *  Standard division-vs-regex heuristic. */
+function isRegexStart(source: string, slash: number): boolean {
+  let j = slash - 1
+
+  while (j >= 0 && /\s/.test(source[j])) {
+    j -= 1
+  }
+
+  if (j < 0) {
+    return true
+  }
+
+  const prev = source[j]
+
+  // Postfix `++`/`--` ends a value (division); a lone `+`/`-` cannot.
+  if (prev === '+' || prev === '-') {
+    return source[j - 1] !== prev
+  }
+
+  // Identifier, number, string/template end, `)` or `]` end a value.
+  if (prev === ')' || prev === ']' || prev === "'" || prev === '"' || prev === '`') {
+    return false
+  }
+
+  // Block-end `}` resolves toward regex — `} /re/` (statement-start
+  // pattern) is real code, `} / 2` (dividing a block) is not. Revisit if a
+  // plugin ever divides a block result.
+  if (prev === '}') {
+    return true
+  }
+
+  if (/[A-Za-z0-9_$]/.test(prev)) {
+    let k = j
+
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) {
+      k -= 1
+    }
+
+    // `x.return / 2` divides a property, it is not `return /re/`.
+    if (source[k] === '.') {
+      return false
+    }
+
+    return regexKeywordRe.test(source.slice(k + 1, j + 1))
+  }
+
+  return true
+}
+
+/** End offset (exclusive) of the regex literal opened at `slash`, or -1 when
+ *  the pattern never closes on this line (so the `/` was a division).
+ *  Escapes and `[...]` classes are honored so a quote or backtick inside the
+ *  pattern (#120208) cannot leak into the surrounding lex. */
+function regexEnd(source: string, slash: number): number {
+  let j = slash + 1
+  let inClass = false
+
+  while (j < source.length) {
+    const c = source[j]
+
+    if (c === '\\') {
+      j += 2
+    } else if (c === '\n') {
+      return -1
+    } else if (c === '[') {
+      inClass = true
+      j += 1
+    } else if (c === ']') {
+      inClass = false
+      j += 1
+    } else if (c === '/' && !inClass) {
+      j += 1
+
+      while (j < source.length && /[A-Za-z]/.test(source[j])) {
+        j += 1
+      }
+
+      return j
+    } else {
+      j += 1
+    }
+  }
+
+  return -1
+}
+
 function codeRanges(source: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = []
   const stack: Array<'expr' | 'template'> = []
@@ -107,6 +210,21 @@ function codeRanges(source: string): Array<[number, number]> {
         stack.push('template')
         state = 'template'
         i += 1
+      } else if (ch === '/') {
+        // A lone `/` (not `//` or `/*`, handled above) opens a regex literal
+        // when the previous significant token cannot end a value (#120208).
+        // Otherwise it is a division and stays plain code.
+        const end = isRegexStart(source, i) ? regexEnd(source, i) : -1
+
+        if (end > 0) {
+          // The pattern is not code: import-looking text inside it must
+          // neither match nor be rewritten in place.
+          closeCode(i)
+          i = end
+          codeStart = i
+        } else {
+          i += 1
+        }
       } else if (ch === '}' && stack[stack.length - 1] === 'expr') {
         closeCode(i)
         stack.pop()
@@ -240,8 +358,23 @@ function unsupportedImports(source: string): string[] {
 }
 
 export function unloadRuntimePlugin(id: string): void {
-  loaded.get(id)?.forEach(dispose => dispose())
+  const disposers = loaded.get(id)
+
+  // Released BEFORE the disposers run, and each disposer in its own
+  // try/catch: a disposer with its own bug must not wedge the registry
+  // (#126338). With a bare forEach the throw aborted the loop and stranded
+  // the delete, so every later reload re-ran the same broken disposers and
+  // died before the fresh register() — file edits looked inert until an
+  // app restart.
   loaded.delete(id)
+
+  disposers?.forEach(dispose => {
+    try {
+      dispose()
+    } catch (error) {
+      console.error(`[plugins] ${id}: disposer failed during unload`, error)
+    }
+  })
 }
 
 /** Evaluate + register one runtime plugin. Returns its id, or null on failure. */
@@ -265,10 +398,23 @@ export async function loadRuntimePlugin(
     const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
 
     let mod: { default?: HermesPlugin }
+    let deadline: ReturnType<typeof setTimeout> | undefined
 
     try {
-      mod = await import(/* @vite-ignore */ url)
+      mod = await Promise.race([
+        import(/* @vite-ignore */ url) as Promise<{ default?: HermesPlugin }>,
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(
+            () =>
+              reject(
+                new Error(`import timed out after ${IMPORT_TIMEOUT_MS / 1000}s — module evaluation never settled`)
+              ),
+            IMPORT_TIMEOUT_MS
+          )
+        })
+      ])
     } finally {
+      clearTimeout(deadline)
       URL.revokeObjectURL(url)
     }
 
@@ -300,6 +446,16 @@ export async function loadRuntimePlugin(
       return null
     }
 
+    // Two files claiming one id (a standalone install beside a unified-package
+    // copy): the FIRST loaded owns the id. Silently letting the second win
+    // disposed the first's registrations and made each file's hot-reload flip
+    // ownership; instead the later file errors on its own folder row.
+    const owner = $pluginRecords.get()[plugin.id]
+
+    if (owner && owner.file !== options.file) {
+      throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
+    }
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
@@ -310,13 +466,16 @@ export async function loadRuntimePlugin(
       packageOrigin: options.packageOrigin
     }
 
-    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+    const failRegistration = (error: unknown) => {
       // Roll back everything register() managed before it failed — a
       // half-registered plugin must not leave live contributions/listeners
       // nobody can ever dispose — and land the failure on the plugin's OWN
       // row so Capabilities → Plugins shows it (the toggle stays usable).
-      disposers.forEach(dispose => dispose())
-      loaded.delete(plugin.id)
+      // unloadRuntimePlugin() tolerates a throwing disposer, so a cleanup
+      // bug in the rollback can neither strand the remaining disposers nor
+      // hold the registration — the #126338 wedge where every later reload
+      // re-ran the same broken disposers instead of the fixed file.
+      unloadRuntimePlugin(plugin.id)
       console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
       notifyError(error, `Plugin "${record.name}" failed to register`)
       publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
@@ -337,7 +496,7 @@ export async function loadRuntimePlugin(
           () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
         )
       } catch (error) {
-        failRegistration(disposers, error)
+        failRegistration(error)
 
         return
       }
@@ -349,7 +508,7 @@ export async function loadRuntimePlugin(
       if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
         void Promise.resolve(result).catch((error: unknown) => {
           if (loaded.get(plugin.id) === disposers) {
-            failRegistration(disposers, error)
+            failRegistration(error)
           }
         })
       }
@@ -428,6 +587,8 @@ async function diskRoots(): Promise<DiskRoot[]> {
 const PACKAGE_MARKER = '.hermes-package.json'
 
 interface PackageMarker {
+  /** The package is a symlinked dev checkout; `source` is its `desktop/` dir. */
+  linkedSource?: string
   origin?: { catalogName?: string; repo?: string; sha?: string }
   package: string
 }
@@ -441,11 +602,19 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       return null
     }
 
-    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+    const read = await desktop.readFileText(marker.path)
+
+    if (isReadFileErrorResult(read)) {
+      return null
+    }
+
+    const parsed = JSON.parse(read.text) as {
       catalogName?: string
+      linked?: boolean
       package?: string
       repo?: string
       sha?: string
+      source?: string
     }
 
     if (!parsed.package) {
@@ -453,6 +622,7 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
     }
 
     return {
+      linkedSource: parsed.linked && parsed.source ? parsed.source : undefined,
       origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
       package: parsed.package
     }
@@ -472,6 +642,10 @@ interface DiskPlugin {
   id: null | string
   /** Origin label (folder name) — the toast/inventory name for load errors. */
   origin: string
+  /** Linked dev package only: the SOURCE `desktop/plugin.js` this copy came from. */
+  sourceFile?: string
+  /** Watch on `sourceFile` — a save re-syncs the copy, then reloads it. */
+  sourceWatchId?: null | string
   watchId: null | string
 }
 
@@ -511,6 +685,10 @@ async function readPluginSourceText(file: string): Promise<string> {
 
   const result = await desktop.readFileText(file)
 
+  if (isReadFileErrorResult(result)) {
+    throw new Error(result.message || `Plugin read failed: ${result.error}`)
+  }
+
   if (result.truncated) {
     throw new PluginSourceOversizeError(
       "plugin.js exceeds this shell's 512 KiB read limit — update Hermes Desktop to load larger plugins"
@@ -536,15 +714,18 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
       packageOrigin: entry.packageOrigin
     })
 
-    // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
-    // NEW id, so unload the previous incarnation here or its contributions +
-    // inventory row orphan.
-    if (id && prevId && prevId !== id) {
+    // loadRuntimePlugin only disposes the NEW id, so the previous incarnation
+    // is unloaded here when the file no longer yields it: a hot-edit that
+    // changes `plugin.id`, or a save that no longer loads at all (syntax
+    // error, timeout, duplicate). Otherwise the old module's contributions and
+    // its activate handle stay live beside the error row — the Plugins tab
+    // would show a broken file as "loaded" and re-enable stale code.
+    if (prevId && prevId !== id) {
       unloadRuntimePlugin(prevId)
       dropPlugin(prevId)
     }
 
-    entry.id = id ?? entry.id
+    entry.id = id
 
     // A fixing save under a different plugin id — drop the folder-named
     // error record so the inventory shows one row, not a ghost.
@@ -619,10 +800,57 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
   }
 
   try {
-    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+    const watch = await desktop.watchPreviewFile(record.file)
+
+    // Structured "folder gone" answer — nothing to watch; the poll still
+    // reconciles new folders and edits need a manual reload.
+    record.watchId = isReadFileErrorResult(watch) ? null : watch.id
   } catch {
     // Unwatchable — the poll still reconciles new folders; edits need a
     // manual "Reload desktop plugins".
+  }
+}
+
+/** Watch a linked dev package's SOURCE `plugin.js`. Without it the developer
+ *  edits their checkout while the app keeps running the copy in
+ *  `desktop-plugins/` — the copy is only refreshed on Rescan or restart. */
+async function watchDiskPluginSource(desktop: NonNullable<Window['hermesDesktop']>, record: DiskPlugin): Promise<void> {
+  if (!record.sourceFile || record.sourceWatchId) {
+    return
+  }
+
+  try {
+    const watch = await desktop.watchPreviewFile(record.sourceFile)
+
+    record.sourceWatchId = isReadFileErrorResult(watch) ? null : watch.id
+  } catch {
+    record.sourceWatchId = null
+  }
+}
+
+/** A linked source changed: copy it over the app-root half (Electron's
+ *  reconcile — the one writer of that folder), then reload every copy that
+ *  pass replaced and re-bind its watch, which the folder swap orphaned. */
+async function resyncLinkedDiskPlugins(): Promise<void> {
+  const desktop = window.hermesDesktop
+
+  if (!desktop?.reconcileDesktopPlugins) {
+    return
+  }
+
+  const touched = new Set((await desktop.reconcileDesktopPlugins().catch(() => [])) ?? [])
+
+  for (const record of disk.values()) {
+    // The folder of `<root>/<name>/plugin.js`, either separator (Windows paths).
+    if (!touched.has(record.file.replace(/[\\/][^\\/]*$/, ''))) {
+      continue
+    }
+
+    if (await loadDiskPlugin(record)) {
+      await watchDiskPluginFile(desktop, record)
+    } else {
+      void scanDiskPlugins()
+    }
   }
 }
 
@@ -660,7 +888,11 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         continue // Root missing (no plugins yet) — the poll/watch reconciles.
       }
 
-      for (const dir of entries.filter(e => e.isDirectory)) {
+      // Listing order is filesystem order; sorted so duplicate-id ownership
+      // (first loaded wins) is the same on every launch.
+      const folders = entries.filter(e => e.isDirectory).sort((a, b) => a.name.localeCompare(b.name))
+
+      for (const dir of folders) {
         let file: string | null
 
         try {
@@ -695,6 +927,8 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
           origin: dir.name,
           packageName: marker?.package,
           packageOrigin: marker?.origin,
+          sourceFile: marker?.linkedSource ? `${marker.linkedSource}/plugin.js` : undefined,
+          sourceWatchId: null,
           watchId: null
         }
 
@@ -707,6 +941,7 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         }
 
         await watchDiskPluginFile(desktop, record)
+        await watchDiskPluginSource(desktop, record)
       }
     }
 
@@ -737,6 +972,10 @@ function retireDiskPlugin(file: string, record: DiskPlugin): void {
 
   if (record.watchId) {
     void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+  }
+
+  if (record.sourceWatchId) {
+    void window.hermesDesktop?.stopPreviewFileWatch(record.sourceWatchId)
   }
 
   disk.delete(file)
@@ -805,6 +1044,12 @@ export function watchRuntimePlugins(): void {
     }
 
     for (const record of disk.values()) {
+      if (record.sourceWatchId === id) {
+        void resyncLinkedDiskPlugins()
+
+        return
+      }
+
       if (record.watchId === id) {
         void loadDiskPlugin(record).then(readable => {
           if (!readable) {

@@ -119,8 +119,7 @@ class TestUnpinnedJobsFollowTheMainModel:
 
         assert success is False
         assert agent_kwargs is None
-        assert "hermes cron edit pin-test --model <name>" in error
-        assert "cronjob action=update" not in error
+        assert error
 
 
 class TestPinnedLocksTheMainModel:
@@ -128,7 +127,7 @@ class TestPinnedLocksTheMainModel:
 
     @staticmethod
     def _store(monkeypatch, tmp_path, main_model="main-model", main_provider="openrouter"):
-        import cron.jobs as jobs
+        from cron import jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}

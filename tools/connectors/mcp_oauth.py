@@ -38,7 +38,7 @@ def probe_with_rollback(
     if flow is not None:
         flow.backup = backup
     previous_entry = None
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     tools: list = []
     discovery_error = ""
 
@@ -91,7 +91,7 @@ class AttemptCanceled(RuntimeError):
 _COMMIT_GUARD = threading.Lock()
 # (hermes home, server) -> the newest card attempt. A retry or a new operation replaces an attempt
 # whose worker is still waiting on the browser; the older one is canceled so it cannot commit later.
-_ACTIVE: Dict[tuple, Any] = {}
+_ACTIVE: dict[tuple, Any] = {}
 
 
 def cancel_attempt(flow) -> bool:
@@ -148,7 +148,7 @@ def _reuse_saved_authorization(
 def run_worker(
         hermes_home: str, server_name: str, cfg: dict, reconnect_live: bool, *,
         flow, on_done: Optional[Callable[[], None]] = None,
-        env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+        env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
         reuse_saved: bool = False) -> None:
     """Drive the interactive MCP OAuth probe under the shared callback bridge.
 
@@ -162,17 +162,21 @@ def run_worker(
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import force_interactive_oauth
-        home_token = set_hermes_home_override(hermes_home)
-        secret_token = set_secret_scope({**build_profile_secret_scope(Path(hermes_home)), **(env or {})})
+        home_token = secret_token = None
         try:
+            home_token = set_hermes_home_override(hermes_home)
+            secret_token = set_secret_scope(
+                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})}, profile_home=hermes_home)
             if not (reuse_saved and flow is not None
                     and _reuse_saved_authorization(server_name, cfg, flow, on_commit)):
                 with force_interactive_oauth(), dashboard_oauth_flow(flow):
                     probe_with_rollback(
                         server_name, cfg, hermes_home, flow, reconnect_live, on_commit=on_commit)
         finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
     except Exception as exc:
         from tools.mcp_dashboard_oauth import exception_message
         msg = exception_message(exc)
@@ -209,7 +213,7 @@ def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
     from tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path.rstrip("/") not in ("/callback", ""):
                 self.send_response(404)
@@ -278,7 +282,7 @@ class OAuthAttempt:
     flow: Any
     detail: str = ""
 
-    def poll(self) -> Dict[str, Any]:
+    def poll(self) -> dict[str, Any]:
         snapshot = self.flow.snapshot()
         raw = snapshot.get("status")
         status = raw if raw in ("approved", "error") else "pending"
@@ -292,7 +296,7 @@ class OAuthAttempt:
 def start(
     server_name: str, *, url_timeout: float = URL_TIMEOUT_SECONDS,
     client_redirect_uri: Optional[str] = None, cfg: Optional[dict] = None,
-    env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+    env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
 ) -> OAuthAttempt:
     """Start a card OAuth flow and wait until its authorization URL is published.
 

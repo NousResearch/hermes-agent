@@ -45,11 +45,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
+def _proc_fields(path: str, wanted: dict[str, str]) -> dict[str, int]:
     """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` /proc file."""
-    found: Dict[str, int] = {}
+    found: dict[str, int] = {}
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
                 key = line.split(":", 1)[0]
                 if key in wanted:
@@ -61,7 +61,7 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     return found
 
 
-def sample_memory() -> Dict[str, Any]:
+def sample_memory() -> dict[str, Any]:
     """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
     (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
     sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
@@ -74,15 +74,15 @@ def sample_memory() -> Dict[str, Any]:
     return sample
 
 
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+def _read_json(path: Path) -> Optional[dict[str, Any]]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
 
-def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
+def _write_sentinel(payload: dict[str, Any], home: Optional[Path]) -> None:
     try:
         from utils import atomic_json_write
 
@@ -95,7 +95,7 @@ def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
         logger.debug("Failed to write lifecycle sentinel", exc_info=True)
 
 
-def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
+def _append_exit_diag(record: dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
         path = _home_path(home, "logs", "gateway-exit-diag.log")
@@ -140,7 +140,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     return True
 
 
-def _suspected_oom(mem: Dict[str, Any]) -> bool:
+def _suspected_oom(mem: dict[str, Any]) -> bool:
     """Heuristic only (classification stays with the reader); thresholds are
     memory_status' "critical" tier so a live warning and a post-mortem verdict agree."""
     from gateway.memory_status import _CRITICAL_AVAILABLE_FRACTION, _CRITICAL_AVAILABLE_KIB
@@ -153,14 +153,14 @@ def _suspected_oom(mem: Dict[str, Any]) -> bool:
     )
 
 
-def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Evidence dict when the previous life died uncleanly, else ``None``. Read-only."""
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
     if not sentinel or sentinel.get("phase") != "running":
         return None
     if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
         return None  # live owner — planned takeover in flight, not a death
-    evidence: Dict[str, Any] = {
+    evidence: dict[str, Any] = {
         "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),
         "prior_start_time": sentinel.get("start_time"),
     }
@@ -243,7 +243,7 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     return "check-failed: no result" if not row or row[0] is None else str(row[0])
 
 
-def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None:
+def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path]) -> None:
     """Integrity-check the store, persist the exit-diag record, log at WARNING."""
     # The death may have torn the store; this is the only moment we know to look.
     verdict = evidence["state_db_integrity"] = check_state_db_integrity(home=home)
@@ -263,10 +263,10 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     )
 
 
-def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def record_startup(home: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Boot entry point: report any unclean previous exit (evidence dict, also persisted
     to ``gateway-exit-diag.log`` and logged at WARNING) then claim the sentinel.  Never raises."""
-    evidence: Optional[Dict[str, Any]] = None
+    evidence: Optional[dict[str, Any]] = None
     try:
         evidence = detect_unclean_exit(home)
         if evidence is not None:
@@ -274,7 +274,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
-        claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
+        claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
         from hermes_cli.process_identity import _process_create_time
@@ -306,7 +306,7 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
         sentinel = _read_json(get_lifecycle_sentinel_path(home))
         if sentinel is not None and sentinel.get("pid") != os.getpid():
             return
-        exited: Dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
+        exited: dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
                                   "exited_at": _now_iso()}
         # Carry the incarnation identity: the Windows start attestation matches a clean exit by
         # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).

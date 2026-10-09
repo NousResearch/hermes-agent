@@ -23,7 +23,7 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     # Model the default gateway's identity, not merely a live pytest PID. The satellite has no lock.
     monkeypatch.setattr(
         "gateway.status.is_gateway_runtime_lock_active",
@@ -69,7 +69,7 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
     if mode == "stale":
         assert "STALLED" in output
     if mode in {"disabled", "excluded", "unrelated_pid"}:
-        assert "No gateway is running on this host" in output
+        assert "No scheduler is serving profile" in output
         assert "hermes --profile default gateway install" in output
         assert "sudo hermes --profile default gateway install --system" in output
         assert "hermes --profile default gateway run" in output
@@ -150,6 +150,102 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     # install in; it is never offered a second host process, legacy or otherwise.
     assert ("gateway migrate --multiplex" in output) == (home_kind == "named")
     assert "LEGACY" not in output
+
+
+def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatch, capsys):
+    """Desktop `serve` ticks cron in-process; a fresh ticker heartbeat is not a missing gateway."""
+    from cron import jobs
+    from hermes_cli import cron
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: home)
+    monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
+    monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
+    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr("gateway.host_topology.host_gateway_serving", lambda profile_name=None: None)
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+    jobs.record_ticker_heartbeat(success=True)
+
+    assert cron._builtin_gateway_liveness() is True
+    cron.cron_status()
+    output = capsys.readouterr().out
+    assert "Scheduler host: an in-process ticker (hermes serve / Desktop backend) ticking profile 'default'" in output
+    assert "will fire automatically" in output
+    assert "No scheduler is serving profile" not in output
+    assert "gateway install" not in output
+
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time() - 3600))
+    assert cron._builtin_gateway_liveness() is False
+    cron.cron_status()
+    stale = capsys.readouterr().out
+    assert "No scheduler is serving profile" in stale
+    assert "gateway install" in stale
+
+
+def test_in_process_ticker_heartbeat_counts_only_while_its_writer_lives(tmp_path, monkeypatch):
+    """A killed serve/Desktop ticker leaves a stamp that reads fresh for ~3 minutes; without a lock,
+    pid or served record the heartbeat proves a scheduler only while the process that wrote it is
+    alive. A legacy bare-epoch stamp names no writer and is not proof by itself."""
+    import subprocess
+    import sys
+
+    from cron import jobs
+    from hermes_cli import cron
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
+    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+    dead = subprocess.Popen([sys.executable, "-c", ""], stdin=subprocess.DEVNULL)
+    dead.wait()
+
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(f"{time.time()} {dead.pid}", encoding="utf-8")
+    assert cron._builtin_gateway_liveness() is False
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time()), encoding="utf-8")
+    assert cron._builtin_gateway_liveness() is False
+    jobs.record_ticker_heartbeat(success=True)
+    assert cron._builtin_gateway_liveness() is True
+
+
+def test_named_profile_output_names_the_profile_and_trusts_its_own_ticker(served_root, capsys, monkeypatch):
+    """`hermes -p probe cron list/status` names the inspected profile on every verdict (#99579) and
+    answers "is a scheduler ticking THIS home": a fresh heartbeat written into probe's store counts
+    even when the default multiplexer's record does not list probe — the serve/Desktop backend ticks
+    every local profile without any gateway record (#121881, #99631)."""
+    from cron import jobs
+    from hermes_cli import cron
+
+    served_root.joinpath("gateway_state.json").write_text(json.dumps({"served_profiles": ["other"]}))
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+
+    cron.cron_list()
+    assert "No scheduled jobs in profile 'probe'." in capsys.readouterr().out
+    assert cron._builtin_gateway_liveness() is False
+    cron.cron_status()
+    dead = capsys.readouterr().out
+    assert "✗ No scheduler is serving profile 'probe' — its cron jobs will NOT fire" in dead
+    assert "on this host" not in dead
+
+    jobs.record_ticker_heartbeat(success=True)
+    assert cron._builtin_gateway_liveness() is True
+    cron.cron_status()
+    alive = capsys.readouterr().out
+    assert "ticking profile 'probe'" in alive
+    assert "will fire automatically" in alive
+    assert "NOT fire" not in alive
 
 
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])

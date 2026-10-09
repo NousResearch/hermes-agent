@@ -4,6 +4,7 @@ check routes through the real runtime contracts instead of a parallel scanner.""
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import shutil
 import socket
@@ -320,8 +321,8 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
     if missing:
         report.warning(
             "declared python_dependencies not installed: " + ", ".join(missing)
-            + " — Hermes never auto-installs plugin dependencies; install manually: pip install "
-            + " ".join(f"'{m}'" for m in missing))
+            + " — install and enable the plugin with hermes plugins. "
+            "For an enabled plugin, run hermes pm repair, then restart Hermes.")
 
     schema = getattr(manifest, "config_schema", {}) or {}
     if schema:
@@ -330,6 +331,40 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
             stype = spec.get("type") if isinstance(spec, dict) else None
             if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
                 report.warning(f"config_schema key {skey!r} declares unknown type {stype!r}")
+
+
+def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
+    """Warn when the Desktop app runs a stale copy of this package's ``desktop/plugin.js``.
+
+    Electron copies a unified package's desktop half to ``<root>/desktop-plugins/<name>/`` and loads
+    THAT copy, so editing the package in place changes nothing on screen until the copy is refreshed.
+    The copy carries a ``.hermes-package.json`` marker whose ``source`` names the folder it came from.
+    """
+    source = path / "desktop" / "plugin.js"
+    if not source.is_file():
+        return
+    from hermes_constants import get_default_hermes_root
+
+    app_root = get_default_hermes_root() / "desktop-plugins"
+    try:
+        copies = sorted(app_root.glob("*/.hermes-package.json"))
+    except OSError:
+        return
+    for marker_file in copies:
+        try:
+            marker = json.loads(marker_file.read_text(encoding="utf-8-sig"))
+            if Path(marker["source"]).resolve() != source.parent.resolve():
+                continue
+            if (marker_file.parent / "plugin.js").read_bytes() == source.read_bytes():
+                return
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        report.warning(
+            f"Desktop runs a stale copy of desktop/plugin.js ({marker_file.parent}); your edits are not "
+            "loaded. Refresh it with Capabilities → Plugins → Rescan in the Desktop app (or restart it). "
+            "To develop in place, symlink the checkout into plugins/ instead: the Desktop then re-syncs "
+            "the copy on every save.")
+        return
 
 
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
@@ -392,6 +427,8 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
         report.error(str(exc))
     except Exception as exc:
         report.error(f"unexpected validation failure: {type(exc).__name__}: {exc}")
+    # Outside the runtime sandbox: it swaps HERMES_HOME for a temp dir, and the copy lives in the real one.
+    _check_desktop_half_copy(report, path)
     return report
 
 

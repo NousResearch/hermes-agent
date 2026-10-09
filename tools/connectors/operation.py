@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from tools.connectors.contract import RESOLVED_STATES, Actor, SettleReason, TargetState, allowed
+from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
 OPERATION_DEADLINE_SECONDS = 300.0
@@ -36,16 +36,21 @@ class Target:
     next_read_at: float = 0.0
     # The credentials an MCP install still needs ({name, prompt, required}); the card draws a
     # field per entry and holds its verb until every required one has text.
-    required_env: List[Dict[str, Any]] = field(default_factory=list)
+    required_env: list[dict[str, Any]] = field(default_factory=list)
     # Fields a transition passes through to the model (``tools`` on a connected MCP target).
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
+    # The install step an ``initiated`` catalog row is in (an ``InstallPhase`` id); drawn only then.
+    phase: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
-        return self.state in RESOLVED_STATES
+        return resolves(self.kind, self.state)
 
-    def snapshot(self, *, with_url: bool = True) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value}
+    def snapshot(self, *, with_url: bool = True) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value,
+                               "resolved": self.resolved}
+        if self.phase and self.state == TargetState.initiated:
+            out["phase"] = self.phase
         if self.detail:
             out["detail"] = self.detail
         if self.instructions:
@@ -66,10 +71,10 @@ class Target:
 class ConnectionOperation:
     # The gateway installs its ``connection.update`` emitter here once; pure data otherwise.
     on_change: ClassVar[
-        Optional[Callable[["ConnectionOperation", Optional[Dict[str, Any]], Dict[str, Any]], None]]
+        Optional[Callable[["ConnectionOperation", Optional[dict[str, Any]], dict[str, Any]], None]]
     ] = None
 
-    targets: List[Target]
+    targets: list[Target]
     session_key: str = ""
     # Stamped by ``live.open``: the profile home the operation was opened under.
     profile_key: str = ""
@@ -85,7 +90,7 @@ class ConnectionOperation:
     seq: int = 0
     # Set on every transition and on settle; the waiting loop sleeps on it.
     wake: threading.Event = field(default_factory=threading.Event, repr=False)
-    _settled_snapshot: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    _settled_snapshot: Optional[dict[str, Any]] = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
@@ -99,7 +104,7 @@ class ConnectionOperation:
         self, name: str, to: TargetState, actor: Actor, *, detail: Optional[str] = None,
         connect_url: Optional[str] = None, connection_id: Optional[str] = None, attempt: Optional[str] = None,
         **extra: Any,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Move one target; the contract decides whether ``actor`` may. Returns the change, or None
         when the target is already in ``to``. Allowed after settlement: the frozen result stays."""
         target = self.target(name)
@@ -128,8 +133,10 @@ class ConnectionOperation:
         self._changed(change, snapshot)
         return change
 
-    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
-        """Replace a target's link and detail without a state change (a repeated failure).
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user,
+                phase: Optional[str] = None) -> None:
+        """Replace a target's link, detail and install phase without a state change (a repeated
+        failure, or the next step of an install).
 
         ``actor`` says who produced the new text: a second failure of a backend attempt is the
         backend's report, not the user's move, and the frame must not claim otherwise."""
@@ -139,13 +146,14 @@ class ConnectionOperation:
         with self._lock:
             target.connect_url = connect_url
             target.detail = detail
+            target.phase = phase
             change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": actor.value,
                       "detail": detail}
             snapshot = self._bump_locked()
         self.wake.set()
         self._changed(change, snapshot)
 
-    def _bump_locked(self) -> Dict[str, Any]:
+    def _bump_locked(self) -> dict[str, Any]:
         """Advance the write counter and take the snapshot that frame carries. Both happen under
         ``_lock`` so a second writer cannot backdate this frame with its own state.
 
@@ -156,7 +164,7 @@ class ConnectionOperation:
             self.seq += 1
         return self._result_locked()
 
-    def _changed(self, change: Optional[Dict[str, Any]], snapshot: Dict[str, Any]) -> None:
+    def _changed(self, change: Optional[dict[str, Any]], snapshot: dict[str, Any]) -> None:
         hook = type(self).on_change
         if hook is not None:
             hook(self, change, snapshot)
@@ -190,7 +198,7 @@ class ConnectionOperation:
     def settle_if_all_resolved(self) -> bool:
         return self.all_resolved and self.settle(SettleReason.all_resolved)
 
-    def _snapshot_locked(self, *, with_urls: bool = True) -> Dict[str, Any]:
+    def _snapshot_locked(self, *, with_urls: bool = True) -> dict[str, Any]:
         return {
             "op_id": self.op_id,
             "seq": self.seq,
@@ -200,7 +208,7 @@ class ConnectionOperation:
             "targets": [t.snapshot(with_url=with_urls) for t in self.targets],
         }
 
-    def _result_locked(self, *, with_urls: bool = True) -> Dict[str, Any]:
+    def _result_locked(self, *, with_urls: bool = True) -> dict[str, Any]:
         if self._settled_snapshot is not None:
             targets = [dict(t) for t in self._settled_snapshot["targets"]]
             if not with_urls:
@@ -209,14 +217,16 @@ class ConnectionOperation:
             return dict(self._settled_snapshot, targets=targets)
         return self._snapshot_locked(with_urls=with_urls)
 
-    def result(self, *, with_urls: bool = True) -> Dict[str, Any]:
-        """The settled model result, or the live snapshot before settlement.
+    def snapshot(self, *, with_urls: bool = True) -> dict[str, Any]:
+        with self._lock:
+            return self._result_locked(with_urls=with_urls)
 
-        Deferred MCP listings are model-only result data. Change frames and request payloads use
-        the internal snapshots, so renderers never receive the catalog block.
-        """
+    def result(self, *, with_urls: bool = True) -> dict[str, Any]:
         with self._lock:
             result = self._result_locked(with_urls=with_urls)
+        for target in result["targets"]:
+            target.pop("connection_id", None)
+            target.pop("resolved", None)  # the card's flag; the model reads state
         if result.get("settled_at") is None:
             return result
         from tools.registry import registry
@@ -236,13 +246,13 @@ class ConnectionOperation:
                 target["tools_listing"] = listing
         return result
 
-    def request_payload(self) -> Dict[str, Any]:
+    def request_payload(self) -> dict[str, Any]:
         """The ``connection.request`` payload and the resume snapshot: identity, live target snapshots
         (links included, the panel owns them), server-owned deadline."""
         with self._lock:
             targets = [t.snapshot() for t in self.targets]
             seq = self.seq
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "op_id": self.op_id,
             "seq": seq,
             "deadline_at": self.deadline_at,
@@ -252,3 +262,8 @@ class ConnectionOperation:
         if self.tool_call_id:
             payload["tool_call_id"] = self.tool_call_id
         return payload
+
+
+class DetachedOperation(ConnectionOperation):
+
+    on_change = None

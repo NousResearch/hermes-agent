@@ -21,7 +21,11 @@ from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
-Prelude = Generator[tuple[str, str, dict], Optional[str]]
+# The explicit ``None`` return type is load-bearing: ``typing.Generator`` gains a
+# defaulted third parameter only on 3.13+, and this module-level alias is evaluated
+# at import time, so a two-argument form raises TypeError on the 3.11/3.12 installs
+# requires-python promises to support (#135587).
+Prelude = Generator[tuple[str, str, dict], Optional[str], None]
 
 
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:

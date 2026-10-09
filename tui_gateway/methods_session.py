@@ -181,7 +181,7 @@ def _pet_emit(event: str, payload: dict, what: str) -> None:
     """Best-effort progress emit: a transport hiccup must never abort generation."""
     try:
         _emit(event, "", payload)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("%s emit failed: %s", what, exc)
 
 
@@ -200,7 +200,7 @@ def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool =
                 if slug and not (value := _str_param(params, "slug")):
                     return _err(rid, 4004, "missing slug")
                 return fn(rid, params, value) if slug else fn(rid, params)
-            except Exception as exc:  # noqa: BLE001 - cosmetic surface
+            except Exception as exc:
                 logger.debug("%s failed: %s", name, exc)
                 if fail_open is not None:
                     return _ok(rid, fail_open(params) if callable(fail_open) else dict(fail_open))
@@ -1610,7 +1610,7 @@ def _(rid, params: dict) -> dict:
                 # No popularity metric; petdex's hand-picked set (by asset path) is closest.
                 "curated": "/curated/" in entry.spritesheet_url,
                 "generated": entry.slug in installed and installed[entry.slug].generated})
-    except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
+    except Exception as exc:
         logger.debug("pet.gallery manifest fetch failed: %s", exc)
     seen = {item["slug"] for item in gallery}
     gallery.extend(
@@ -1649,7 +1649,7 @@ def _pet_config_followup(what: str, fn, *args) -> None:
     """Best-effort ``hermes_cli.pets`` active-slug update after a store op that already succeeded."""
     try:
         fn(*args)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("%s config update failed: %s", what, exc)
 
 
@@ -1724,7 +1724,7 @@ def _(rid, params: dict) -> dict:
         available = False
     try:
         providers = list_sprite_providers()
-    except Exception as exc:  # noqa: BLE001 - picker is best-effort
+    except Exception as exc:
         logger.debug("pet provider list failed: %s", exc)
     return _ok(rid, {"available": available, "providers": providers})
 
@@ -1774,7 +1774,7 @@ def _(rid, params: dict) -> dict:
         try:
             shutil.copyfile(src, dest)
             data_uri = _pet_png_data_uri(dest)
-        except Exception as exc:  # noqa: BLE001 - skip a bad draft, keep the rest
+        except Exception as exc:
             logger.debug("pet.generate draft %d failed: %s", index, exc)
             return
         out.append({"index": index, "dataUri": data_uri})

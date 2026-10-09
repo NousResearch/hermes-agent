@@ -9,9 +9,9 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dict[str, dict], Dict[str, str | None]]:
+def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dict[str, dict], dict[str, str | None]]:
     servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
-    plugins: Dict[str, str | None] = {name: None for name in servers}
+    plugins: dict[str, str | None] = {name: None for name in servers}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers
@@ -29,7 +29,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dic
     return servers, plugins
 
 
-def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[str, Any]:
+def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
     from tools.mcp_tool_common import mcp_server_enabled
 

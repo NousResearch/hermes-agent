@@ -14,7 +14,7 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
-def ensure_install_id(config: Dict[str, Any]) -> str:
+def ensure_install_id(config: dict[str, Any]) -> str:
     """Return a stable install id, minting and persisting one when empty.
 
     The id becomes ``service.instance.id`` and must survive restarts, so a fresh

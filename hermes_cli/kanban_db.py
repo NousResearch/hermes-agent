@@ -718,7 +718,7 @@ class Task:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
-        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))  # noqa: E731
+        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
@@ -2108,7 +2108,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -4544,7 +4544,7 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
-from hermes_cli.kanban_db_boards import (  # noqa: E402
+from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
     board_metadata_path,
@@ -4554,18 +4554,18 @@ from hermes_cli.kanban_db_boards import (  # noqa: E402
     remove_board,
     write_board_metadata,
 )
-from hermes_cli.kanban_db_connect import (  # noqa: E402
+from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
 )
-from hermes_cli.kanban_db_workspace import (  # noqa: E402
+from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
 )
-from hermes_cli.kanban_db_dispatch import (  # noqa: E402
+from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,

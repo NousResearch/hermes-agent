@@ -246,6 +246,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { createDownloadSavePrefs, unclaimedDownloadPath } from './download-save-prefs'
 import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
@@ -7129,12 +7130,25 @@ function installContextMenuBridge(window: BrowserWindow) {
 // as the default directory (win-unpacked in packaged installs) and whatever
 // extensionless name the anchor carried. Route every download to the user's
 // Downloads directory and guarantee a MIME-derived extension.
-function installDownloadHandling() {
+function installDownloadHandling(isDirectSaveEnabled: () => boolean) {
   session.defaultSession.on('will-download', (_event, item) => {
     const suggested = item.getFilename() || 'download'
     const hasExtension = Boolean(path.extname(suggested))
     const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
     const filename = `${suggested}${extension}`
+
+    // The direct-save preference (#135441) suppresses the OS dialog, which no
+    // unattended agent run can answer — the download then lands in Downloads
+    // under the resolved filename instead of stalling in a `<uuid>.tmp`.
+    if (isDirectSaveEnabled()) {
+      try {
+        item.setSavePath(unclaimedDownloadPath(app.getPath('downloads'), filename))
+
+        return
+      } catch {
+        // No Downloads directory to write to — offer the dialog instead.
+      }
+    }
 
     try {
       item.setSaveDialogOptions({
@@ -19369,7 +19383,17 @@ app.whenReady().then(() => {
   enableRendererAccessibility({ appApi: app })
 
   installMediaPermissions()
-  installDownloadHandling()
+
+  // Device-local download preference (#135441): main owns the JSON so the
+  // will-download handler can consult it synchronously.
+  const downloadSavePrefs = createDownloadSavePrefs({
+    preferencesPath: path.join(app.getPath('userData'), 'download-save-direct.json'),
+    log: message => rememberLog(message)
+  })
+
+  downloadSavePrefs.start()
+  installDownloadHandling(downloadSavePrefs.isEnabled)
+
   registerMediaProtocol()
   installEmbedReferer()
   installRemoteHeaderRules()

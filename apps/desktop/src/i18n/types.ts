@@ -1009,6 +1009,8 @@ export interface Translations extends NoticeTranslations {
       minimizeToTrayTitle: string
       minimizeToTrayDesc: string
       minimizeToTrayUnavailable: string
+      downloadsSaveDirectTitle: string
+      downloadsSaveDirectDesc: string
       none: string
       noneParen: string
       builtinOnly: string

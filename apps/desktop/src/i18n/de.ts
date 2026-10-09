@@ -1567,6 +1567,9 @@ export const deOverrides = {
         'Beim Minimieren von Fenstern oder Schließen des Hauptfensters werden diese im Infobereich (Menüleiste unter macOS) ausgeblendet und Hermes läuft weiter. Beenden Sie über „Hermes beenden“ im Infobereich-Menü oder mit Cmd+Q. Standardmäßig aus; gilt nur für dieses Gerät.',
       minimizeToTrayUnavailable:
         'Der Infobereich ist nicht verfügbar. Fenster werden normal minimiert und geschlossen. Schalten Sie die Option aus und wieder ein, um es erneut zu versuchen.',
+      downloadsSaveDirectTitle: 'Downloads ohne Nachfrage speichern',
+      downloadsSaveDirectDesc:
+        'Downloads aus dem Vorschaubereich landen direkt in Ihrem Downloads-Ordner, statt den Systemdialog zum Speichern zu öffnen, den ein unbeaufsichtigter Agentenlauf nicht beantworten kann. Bestehende Dateien werden nie überschrieben — ein erneuter Download wird als „name (1)“ gespeichert. Standardmäßig aus; gilt nur für dieses Gerät.',
       none: 'Keine',
       noneParen: '(keine)',
       builtinOnly: 'Nur eingebaut',

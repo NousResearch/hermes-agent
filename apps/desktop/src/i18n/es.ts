@@ -1570,6 +1570,9 @@ export const esOverrides = {
         'Al minimizar las ventanas o cerrar la ventana principal, se ocultan en la bandeja del sistema (barra de menús en macOS) y Hermes sigue ejecutándose. Usa Salir de Hermes en el menú de la bandeja o Cmd+Q para salir. Desactivado por defecto; se aplica solo a este dispositivo.',
       minimizeToTrayUnavailable:
         'La bandeja del sistema no está disponible. Las ventanas se minimizarán y cerrarán con normalidad. Desactiva y vuelve a activar esta opción para reintentarlo.',
+      downloadsSaveDirectTitle: 'Guardar descargas sin preguntar',
+      downloadsSaveDirectDesc:
+        'Las descargas del panel de vista previa van directamente a tu carpeta de Descargas en lugar de abrir el diálogo de guardado del sistema, que una ejecución de agente desatendida no puede responder. Los archivos existentes nunca se sobrescriben: una descarga repetida se guarda como «nombre (1)». Desactivado por defecto; se aplica solo a este dispositivo.',
       none: 'Ninguno',
       noneParen: '(ninguno)',
       builtinOnly: 'Solo integradas',

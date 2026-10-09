@@ -1574,6 +1574,9 @@ export const frOverrides = {
         'Réduire les fenêtres ou fermer la fenêtre principale les masque dans la zone de notification (barre des menus sur macOS) et Hermes continue de s’exécuter. Utilisez Quitter Hermes dans le menu de la zone de notification ou Cmd+Q pour quitter. Désactivé par défaut ; s’applique uniquement à cet appareil.',
       minimizeToTrayUnavailable:
         'La zone de notification est indisponible. Les fenêtres seront réduites et fermées normalement. Désactivez puis réactivez cette option pour réessayer.',
+      downloadsSaveDirectTitle: 'Enregistrer les téléchargements sans demander',
+      downloadsSaveDirectDesc:
+        'Les téléchargements du volet d’aperçu vont directement dans votre dossier Téléchargements au lieu d’ouvrir la boîte de dialogue d’enregistrement du système, qu’aucune exécution d’agent autonome ne peut valider. Les fichiers existants ne sont jamais écrasés — un nouveau téléchargement s’enregistre en « nom (1) ». Désactivé par défaut ; s’applique uniquement à cet appareil.',
       none: 'Aucun',
       noneParen: '(aucun)',
       builtinOnly: 'Intégré uniquement',

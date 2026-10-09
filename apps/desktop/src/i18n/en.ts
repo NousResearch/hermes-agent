@@ -1221,6 +1221,9 @@ export const en: Translations = {
         'Minimize windows or close the main window to hide them in the system tray (menu bar on macOS) and keep Hermes running. Use Quit Hermes from the tray menu or Cmd+Q to exit. Off by default; applies only to this device.',
       minimizeToTrayUnavailable:
         'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
+      downloadsSaveDirectTitle: 'Save downloads without asking',
+      downloadsSaveDirectDesc:
+        'Downloads from the preview pane land straight in your Downloads folder instead of opening the OS save dialog, which an unattended agent run cannot answer. Existing files are never overwritten — a repeat download saves as "name (1)". Off by default; applies only to this device.',
       none: 'None',
       noneParen: '(none)',
       builtinOnly: 'Built-in only',

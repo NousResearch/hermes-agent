@@ -182,3 +182,13 @@ def test_periodic_trims_log_at_debug_with_an_hourly_info_line(monkeypatch, tmp_p
 
     levels = [r.levelno for r in caplog.records if r.getMessage().startswith("memory trim:")]
     assert levels == [logging.DEBUG] * 59 + [logging.INFO, logging.INFO]
+
+
+def test_default_log_every_n_survives_a_failed_config_load(monkeypatch):
+    import hermes_cli.config as config
+
+    def _boom():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(config, "load_config_readonly", _boom)
+    assert mem_trim._config_settings()[2] == 60

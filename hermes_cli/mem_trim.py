@@ -145,7 +145,8 @@ def trim_memory(
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
     the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
-    affecting the caller.
+    affecting the caller. A successful trim logs at INFO when forced or on every ``log_every_n``-th
+    eligible call (default 60: roughly hourly for an idle gateway), and at DEBUG otherwise.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:

@@ -357,7 +357,7 @@ class TestExternalTrees:
         external = worktree_gc.audit_external_trees(str(repo))
         paths = [record.path for record in external]
         assert any("elsewhere-tree" in p for p in paths)
-        record = [r for r in external if "elsewhere-tree" in r.path][0]
+        record = next(r for r in external if "elsewhere-tree" in r.path)
         assert record.branch == "ext/branch"
         assert not record.missing
 
@@ -380,7 +380,7 @@ class TestExternalTrees:
         _shutil.rmtree(ext)
 
         external = worktree_gc.audit_external_trees(str(repo))
-        record = [r for r in external if "vanished-tree" in r.path][0]
+        record = next(r for r in external if "vanished-tree" in r.path)
         assert record.missing
 
         planned = worktree_gc.prune_missing_registrations(str(repo), dry_run=True)
@@ -421,7 +421,7 @@ class TestCmdWorktreeJson:
         assert set(payload) == {"repo", "trees", "external_trees", "branches"}
         names = [t["name"] for t in payload["trees"]]
         assert "hermes-json" in names
-        tree = [t for t in payload["trees"] if t["name"] == "hermes-json"][0]
+        tree = next(t for t in payload["trees"] if t["name"] == "hermes-json")
         assert {"verdict", "reason", "age_days", "branch"} <= set(tree)
 
     def test_prune_dry_run_json(self, repo, capsys):

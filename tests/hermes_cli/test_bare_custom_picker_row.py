@@ -15,7 +15,7 @@ def test_bare_custom_row_survives_switching_away_from_it(monkeypatch):
     """Regression for #59702: the bare ``model.provider: custom`` row must not
     vanish from the picker when the session's current provider is a different
     one."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -49,7 +49,7 @@ def test_bare_custom_row_survives_switching_away_from_it(monkeypatch):
 def test_bare_custom_row_config_fallback_defers_to_matching_named_entry(monkeypatch):
     """The config-sourced bare row must not duplicate a named custom_providers
     entry that already covers the same base_url (#59702)."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -74,7 +74,7 @@ def test_bare_custom_row_config_fallback_defers_to_matching_named_entry(monkeypa
 def test_bare_custom_row_config_fallback_tolerates_legacy_scalar_model(monkeypatch):
     """A legacy bare-string ``model:`` config value must not crash the picker
     (the ConfigContext loader already tolerates it)."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": "gpt-4o"})
 

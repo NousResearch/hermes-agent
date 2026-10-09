@@ -378,3 +378,20 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     assert record["session_id"] == "db-session"
     assert (record["trigger_source"], record["method"]) == ("pre_api", "llm_summary")
     assert record["tokens_after"] is not None and record["middle_window_tokens"] is not None
+
+
+def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog, shared_metric_rows):
+    """An engine that hands back no messages for a non-empty transcript is refused before any split, and the
+    attempt still logs its one record and counts once."""
+    agent = _Agent(_compressor())
+    messages = _messages()
+
+    with patch.object(agent.context_compressor, "compress", return_value=[]):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=80_000, trigger="pre_api")
+
+    assert compressed == _messages()
+    [record] = _attempt_records(caplog)
+    assert (record["commit_status"], record["failure_class"]) == ("aborted", "empty_transcript")
+    assert (record["trigger_source"], record["method"]) == ("pre_api", "none")
+    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "other")]

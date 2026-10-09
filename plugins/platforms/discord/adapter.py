@@ -1390,7 +1390,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Telegram #58563 fix.
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
-        # send_or_update_status() bookkeeping: {(chat_id, status_key) -> bot message_id} so repeat
+        # send_or_update_status() bookkeeping: {(target_id, status_key) -> bot message_id} so repeat
         # status callbacks edit one bubble in place instead of appending (issue #134288, cf. #30045).
         self._status_message_ids: Dict[tuple, str] = {}
 
@@ -3538,7 +3538,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     async def send_or_update_status(
         self, chat_id: str, status_key: str, content: str, *,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send a status message, or edit the previous one with the same ``(chat_id, status_key)``; if the
+        """Send a status message, or edit the previous one with the same destination and status key; if the
         edit fails (deleted, too old, …) the cached id is dropped and a fresh message is sent.
 
         Issue #134288: the session-turn-lease wait loop posts a visible status every ~15s; without this
@@ -3547,12 +3547,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         mirrored). The first call sends and remembers the message id; subsequent calls with the same key
         edit that message in place.
         """
-        key = (str(chat_id), str(status_key))
+        # The same parent channel can hold multiple active threads. Cache by the destination that
+        # send() actually uses so one thread never tries to edit another thread's message id.
+        target_id = str((metadata or {}).get("thread_id") or chat_id)
+        key = (target_id, str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
-            # A bubble sent into a thread must be edited in that thread: metadata thread_id wins over
-            # chat_id, mirroring send()'s channel resolution.
-            target_id = str((metadata or {}).get("thread_id") or chat_id)
             result = await self.edit_message(target_id, cached_id, content, finalize=False, metadata=metadata)
             if result.success:
                 # Only write back if nobody evicted/replaced this key during the await.

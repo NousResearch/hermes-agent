@@ -28,9 +28,10 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
-from hermes_constants import display_hermes_home, get_hermes_home
+from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron.jobs_invariants import _validate_job_mode_invariants
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -471,16 +472,6 @@ _PAYLOAD_FIELDS = frozenset({"prompt", "script", "skill", "skills", "no_agent"})
 EMPTY_PAYLOAD_ERROR = (
     "Cron job has nothing to run: the prompt is blank and no script or "
     "skill(s) are set. Provide a prompt, a script, or at least one skill."
-)
-
-NO_AGENT_WITHOUT_SCRIPT_ERROR = (
-    "no_agent=True requires a script — with no agent and no script "
-    "there is nothing for the job to run."
-)
-
-SCRIPT_IS_COMMAND_LINE_ERROR = (
-    "script must name a file under {scripts_dir} (e.g. 'watchdog.sh'), not a shell command line: "
-    "{script!r} has no such file. Write the command into a script there and pass its filename."
 )
 
 
@@ -1771,41 +1762,6 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
-
-
-def _validate_job_mode_invariants(
-    monitor_script: Optional[str],
-    monitor_url: Optional[str],
-    no_agent: bool,
-    script: Optional[str],
-) -> None:
-    """Execution-mode invariants shared by create_job and update_job (no bypass via the update
-    door)."""
-    if monitor_script and monitor_url:
-        raise ValueError(
-            "monitor_script and monitor_url are mutually exclusive — a job "
-            "can only have one monitor source.")
-    if (monitor_script or monitor_url) and no_agent:
-        raise ValueError(
-            "monitor_script/monitor_url cannot be combined with no_agent=True — "
-            "the whole point of a monitor job is to suppress or wake the AGENT "
-            "based on source changes. Use a plain no_agent script job instead.")
-    if no_agent and not script:
-        raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
-    if script and _script_is_command_line(script):
-        raise ValueError(SCRIPT_IS_COMMAND_LINE_ERROR.format(
-            scripts_dir=display_hermes_home() + "/scripts/", script=script))
-
-
-def _script_is_command_line(script: str) -> bool:
-    """A ``script`` with whitespace that resolves to no file is a command line (``echo hi``),
-    not a path; run every tick it would deliver "Script not found" as the payload. A plain
-    missing filename stays creatable (``hermes cron doctor`` reports it)."""
-    if not any(ch.isspace() for ch in script.strip()):
-        return False
-    from cron.lifecycle_guard import _resolve_script_path
-    path = _resolve_script_path(script)
-    return path is None or not path.is_file()
 
 
 def _oneshot_past_grace_error(run_at: Any) -> ValueError:

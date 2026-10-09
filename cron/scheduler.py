@@ -1537,7 +1537,7 @@ def _run_no_agent_job(
     script_path = job.get("script")
     # Legacy/hand-edited no_agent job without a script: pause it, or it re-fires every tick.
     if not str(script_path or "").strip():
-        from cron.jobs import NO_AGENT_WITHOUT_SCRIPT_ERROR
+        from cron.jobs_invariants import NO_AGENT_WITHOUT_SCRIPT_ERROR
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 

@@ -151,6 +151,7 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
     if session_scoped:
         kwargs["persist_across_processes"] = False
     docker_env_obj = _DockerEnvironment(image=image, cwd=cwd, timeout=timeout, task_id=task_id, host_cwd=host_cwd,
+                                        expected_container_id=cc.get("_expected_container_id"),
                                         **_resources(cc), **kwargs)
     # Marker read by is_persistent_env(): a session-scoped container survives BETWEEN turns (skip
     # per-turn teardown) but is removed at session close / idle timeout. Test doubles may reject attrs.

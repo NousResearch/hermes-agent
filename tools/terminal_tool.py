@@ -1059,6 +1059,9 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    # One-shot hint (never persisted) for a caller that already knows which Docker container it
+    # wants attached on a cache miss (Bot Desktop's sandbox.json marker; #t_2ca05370).
+    docker_expected_container_id: Optional[str] = None
 
 
 _PROMOTED_NOTE = (
@@ -1071,7 +1074,7 @@ _PROMOTED_NOTE = (
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, docker_expected_container_id: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -1151,6 +1154,7 @@ def _plan_execution(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
         promoted_from_foreground_timeout=promoted,
+        docker_expected_container_id=docker_expected_container_id,
     )
 
 
@@ -1208,6 +1212,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
             new_env = _create_configured_env(
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
+                docker_expected_container_id=plan.docker_expected_container_id,
             )
         except ImportError as e:
             raise _Rejected(_error_json(
@@ -1372,6 +1377,7 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    _docker_expected_container_id: Optional[str] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1393,12 +1399,19 @@ def terminal_tool(
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
+    ``_docker_expected_container_id`` (internal, not in the model schema) is a one-shot hint: on
+    a cache-miss Docker creation, try attaching to this exact container id (verified alive and
+    labeled for the resolved profile) before falling back to the normal label search / fresh
+    create. Used by Bot Desktop's sandbox reconnect so a container's reuse key drifting for any
+    reason (profile migrated from a standalone to a multiplexed gateway, a config change, ...)
+    cannot orphan a container the caller already knows is still running (#t_2ca05370).
     """
     from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
     plan = None
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            docker_expected_container_id=_docker_expected_container_id,
         )
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id

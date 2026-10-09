@@ -66,18 +66,26 @@ def _check_disk_usage_warning():
 
 def _create_configured_env(
     config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
-    task_id: str, host_cwd: Optional[str],
+    task_id: str, host_cwd: Optional[str], docker_expected_container_id: Optional[str] = None,
 ):
     """``_create_environment`` with the ssh/local/container kwargs shaped from *config*
-    (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up)."""
+    (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up).
+
+    ``docker_expected_container_id`` is a one-shot hint (never persisted): a caller that already
+    knows which container it wants attached (Bot Desktop's sandbox.json marker, verified alive)
+    rides along in ``container_config`` so ``DockerEnvironment`` tries it before falling back to
+    its own label search (#t_2ca05370). Harmless on non-docker backends -- their builders ignore
+    the extra key.
+    """
     from tools.terminal_tool_backends import _create_environment
     from tools.terminal_tool_config import _is_container_backend
+    container_config = _container_config_from_config(config) if _is_container_backend(env_type) else None
+    if container_config is not None and docker_expected_container_id:
+        container_config = {**container_config, "_expected_container_id": docker_expected_container_id}
     return _create_environment(
         env_type=env_type, image=image, cwd=cwd, timeout=timeout,
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(
-            _container_config_from_config(config) if _is_container_backend(env_type) else None
-        ),
+        container_config=container_config,
         local_config=_local_config_from_config(config) if env_type == "local" else None,
         task_id=task_id, host_cwd=host_cwd,
     )

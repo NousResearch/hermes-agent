@@ -120,6 +120,10 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
 | **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
+On native Windows, use the [Windows clone command](website/docs/reference/package-management.md#prepare-a-checkout)
+before preparing dependencies. A deeply nested checkout can otherwise fail with
+`Filename too long` while writing the repository's documentation paths.
+
 ### PM developer environment
 
 Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,

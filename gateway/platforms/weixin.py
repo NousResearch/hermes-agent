@@ -986,8 +986,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
                         errmsg = resp.get("errmsg") or resp.get("msg")
                         if _is_session_expired(resp, ret, errcode) and not retried_without_token and context_token:
+                            # Scoped to this send only: dropping the shared entry here would evict the token the
+                            # interactive path still needs when a push (cron / one-shot) borrows the live adapter's
+                            # store. A stored entry is replaced solely by a newer inbound (#135503).
                             retried_without_token, context_token = True, None
-                            self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
                             logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
                             continue
                         if _is_stale_session_ret(ret, errcode, errmsg):
@@ -1169,10 +1171,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if (ret is None or ret == 0) and (errcode is None or errcode == 0):
                     break
                 # Same stale-session fallback as _send_text_chunk: re-send once without context_token. Clearing the
-                # token also covers the remaining item lists (caption, then media) and bounds this loop.
+                # local token also covers the remaining item lists (caption, then media) and bounds this loop; the
+                # shared store entry is left for a newer inbound to replace (#135503).
                 if _is_session_expired(resp, ret, errcode) and context_token:
                     context_token = None
-                    self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
                     logger.warning("[%s] session expired for %s; re-sending media without context_token", self.name, _safe_id(chat_id))
                     continue
                 errmsg = resp.get("errmsg") or resp.get("msg")

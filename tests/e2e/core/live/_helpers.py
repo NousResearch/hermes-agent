@@ -215,7 +215,7 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
     orig_sync = httpx.HTTPTransport.handle_request
     orig_async = httpx.AsyncHTTPTransport.handle_async_request
 
-    def handle_request(self, request):  # noqa: ANN001
+    def handle_request(self, request):
         body = _body(request)
         try:
             resp = orig_sync(self, request)
@@ -225,7 +225,7 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
         _record(request, resp.status_code, body, _error_text(resp))
         return resp
 
-    async def handle_async_request(self, request):  # noqa: ANN001
+    async def handle_async_request(self, request):
         body = _body(request)
         try:
             resp = await orig_async(self, request)

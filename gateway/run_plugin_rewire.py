@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class GatewayPluginRewireMixin:
     """Subscribe once per plugin manager; re-wire that profile's adapters on every loaded event."""
 
-    _plugin_rewire_unsubscribe: Optional[Dict[str, Callable[[], None]]] = None
+    _plugin_rewire_unsubscribe: Optional[dict[str, Callable[[], None]]] = None
 
     def _subscribe_plugin_rewire(self, manager: Any, profile_name: Optional[str] = None,
                                  profile_home: Optional[Path] = None) -> None:

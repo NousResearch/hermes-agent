@@ -356,7 +356,7 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
     _img_mode = "text"
     _build_parts = None
     try:
-        from agent.image_routing import build_native_content_parts as _build_parts  # noqa: F811
+        from agent.image_routing import build_native_content_parts as _build_parts
         from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
 

@@ -223,7 +223,7 @@ class EgressTrap:
                 self.end_headers()
                 self.close_connection = True
 
-            do_CONNECT = do_GET = do_POST = do_PUT = do_HEAD = _refuse  # noqa: N815
+            do_CONNECT = do_GET = do_POST = do_PUT = do_HEAD = _refuse
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
@@ -317,7 +317,7 @@ class TuiGateway:
 
     def __init__(self, home: Path, proxy: str | None = None) -> None:
         self.home = home
-        self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")  # noqa: SIM115
+        self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, text=True, bufsize=1,

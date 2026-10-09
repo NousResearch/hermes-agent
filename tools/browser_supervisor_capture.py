@@ -49,8 +49,8 @@ class CapturedCDP:
         return CapturedCDPInvalid(f"captured CDP connection for task {self.task_id!r} is gone "
                                   "(supervisor reconnected, stopped or was replaced); capture again")
 
-    async def _send(self, method: str, params: Optional[Dict[str, Any]],
-                    session_id: Optional[str], timeout: float) -> Dict[str, Any]:
+    async def _send(self, method: str, params: Optional[dict[str, Any]],
+                    session_id: Optional[str], timeout: float) -> dict[str, Any]:
         # ``_cdp`` reaches its send without awaiting, so this check and the send run in one
         # loop step: a reconnect cannot swap the socket in between.
         if not self.is_valid():
@@ -64,8 +64,8 @@ class CapturedCDP:
                 raise self._invalid() from None
             raise
 
-    def call(self, method: str, params: Optional[Dict[str, Any]] = None, *,
-             session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+    def call(self, method: str, params: Optional[dict[str, Any]] = None, *,
+             session_id: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
         """Send ``method`` on the captured connection and return the raw CDP reply
         (``{"id", "result"}``). ``session_id=None`` targets the browser endpoint;
         pass ``page_session_id`` (or a session you attached) for page domains.

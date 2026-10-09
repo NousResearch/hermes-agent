@@ -18,7 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +535,6 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
                 self.session = object()
                 self._ready.set()
                 await self._wait_for_lifecycle_event()
-                return
 
         task = _Task("srv")
         run_task = asyncio.ensure_future(task.run({"command": "x"}))

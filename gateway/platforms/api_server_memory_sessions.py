@@ -32,14 +32,14 @@ class ApiServerMemorySessions:
     """Session-keyed ``MemoryManager`` registry with exclusive check-out/check-in."""
 
     def __init__(self, *, max_size: Optional[int] = None, idle_ttl_secs: Optional[float] = None) -> None:
-        self._entries: "OrderedDict[Tuple[str, str], Tuple[Any, Optional[Path], float]]" = OrderedDict()
+        self._entries: "OrderedDict[tuple[str, str], tuple[Any, Optional[Path], float]]" = OrderedDict()
         self._lock = threading.Lock()
         self._max_size = max_size
         self._idle_ttl_secs = idle_ttl_secs
 
     # -- bounds (same knobs as the gateway agent cache, resolved lazily) -------------------------
 
-    def _bounds(self) -> Tuple[int, float]:
+    def _bounds(self) -> tuple[int, float]:
         if self._max_size is None or self._idle_ttl_secs is None:
             from gateway.run import _AGENT_CACHE_IDLE_TTL_SECS, _AGENT_CACHE_MAX_SIZE, _load_gateway_config
             from gateway.agent_cache_pressure import resolve_agent_cache_bounds
@@ -53,7 +53,7 @@ class ApiServerMemorySessions:
         return self._max_size, self._idle_ttl_secs
 
     @staticmethod
-    def _owner_home() -> Tuple[str, Optional[Path]]:
+    def _owner_home() -> tuple[str, Optional[Path]]:
         """(registry key, profile home to re-enter on eviction) for the CURRENT scope. Callers run
         inside ``_profile_scope`` (or a single-profile gateway), so the ambient home is the owner's."""
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -81,7 +81,7 @@ class ApiServerMemorySessions:
         home_key, home = self._owner_home()
         max_size, idle_ttl = self._bounds()
         now = time.monotonic()
-        doomed: List[Tuple[Any, Optional[Path]]] = []
+        doomed: list[tuple[Any, Optional[Path]]] = []
         with self._lock:
             displaced = self._entries.pop((home_key, session_id), None)
             if displaced is not None and displaced[0] is not manager:
@@ -131,6 +131,6 @@ class ApiServerMemorySessions:
 
     # -- introspection (tests) --------------------------------------------------------------------
 
-    def parked(self) -> Dict[Tuple[str, str], Any]:
+    def parked(self) -> dict[tuple[str, str], Any]:
         with self._lock:
             return {key: entry[0] for key, entry in self._entries.items()}

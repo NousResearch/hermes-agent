@@ -126,7 +126,7 @@ def _kick_managed_boot(config: dict | None) -> None:
             from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(_load_config_if_none(config))
-        except Exception:  # noqa: BLE001 — best-effort; resolution falls back
+        except Exception:
             logger.warning("on-demand managed-server boot failed", exc_info=True)
         finally:
             _KICK_LOCK.release()

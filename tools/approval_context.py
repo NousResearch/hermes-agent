@@ -146,6 +146,15 @@ def _is_unattended_platform_approval_context() -> bool:
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
 
 
+# Platforms where a *registered* gateway notify callback still does not mean a human can answer:
+# the generic TurnRunner lane registers one for every inbound turn
+# (``_run_conversation_with_approval`` registers unconditionally, no platform branch), while the
+# adapter renders no ``send_exec_approval``/``/approve`` surface and the inbound lane is a
+# fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
+# "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
+_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+
+
 def _is_single_query_approval_context() -> bool:
     """True for a single-query (-q) session: ``hermes chat -q`` exports
     ``HERMES_INTERACTIVE=1`` (so sudo password prompts work) but nobody is waiting

@@ -14,7 +14,7 @@ def available_backends() -> list[str]:
     """Names of usable rasterizer backends, in preference order."""
     backends = []
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         backends.append("pypdfium2")
     except ImportError:
         pass

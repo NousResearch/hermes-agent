@@ -103,7 +103,7 @@ def _hmac(key: bytes, msg: str) -> bytes:
 
 
 def signature(sts_text: str, secret_key: str, date: str, region: str, service: str) -> str:
-    k_date = _hmac(f"AWS4{secret_key}".encode("utf-8"), date)
+    k_date = _hmac(f"AWS4{secret_key}".encode(), date)
     k_region = _hmac(k_date, region)
     k_service = _hmac(k_region, service)
     k_signing = _hmac(k_service, "aws4_request")
@@ -305,7 +305,7 @@ def verify_remote_artifact(
         response = fetcher(url)
         if response.status >= 400:
             raise R2RequestError("GET", urlparse(url).path, response.status)
-        data = response._body  # noqa: SLF001 — loopback-test responses are small
+        data = response._body
         hash_obj = hashlib.new(algorithm)
         hash_obj.update(data)
         size = len(data)
@@ -864,7 +864,7 @@ def _feed_bundle_uris(appinstaller_xml: str | None) -> list[str]:
     if len(elements) != 1:
         return []
     uri_match = re.search(r"\bUri=\"([^\"]+)\"", elements[0])
-    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.I):
+    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.IGNORECASE):
         return [uri_match.group(1)]
     return []
 
@@ -900,7 +900,7 @@ def stale_feed_bundle_keys(
         for key in keys:
             if not key.startswith(prefix):
                 continue
-            if not re.search(r"\.(?:msixbundle|msix)$", key, re.I):
+            if not re.search(r"\.(?:msixbundle|msix)$", key, re.IGNORECASE):
                 continue  # pointers + metadata stay
             if key[len(prefix):] in referenced:
                 continue

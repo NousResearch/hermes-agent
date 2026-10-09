@@ -722,18 +722,14 @@ def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[
     Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
     matches a tree checked out at that commit."""
     from hermes_cli.plugins_cmd_catalog import catalog_install_record
-    enabled = _pc()._get_enabled_set()
-    for key in _pc()._read_install_metadata():
-        target = _pc()._plugins_dir() / key
-        record = catalog_install_record(target) if target.is_dir() else None
-        if not record or record["catalog_name"] != catalog_name:
-            continue
-        if ref and str(record["sha"]).lower() != ref.lower():
-            return None
-        manifest = _pc()._read_manifest(target)
-        installed_name = manifest.get("name") or target.name
-        return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
-    return None
+    target = _pc()._catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    if ref and str(catalog_install_record(target)["sha"]).lower() != ref.lower():
+        return None
+    manifest = _pc()._read_manifest(target)
+    installed_name = manifest.get("name") or target.name
+    return None if {installed_name, target.name} & _pc()._get_enabled_set() else (target, manifest, installed_name)
 
 
 def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:

@@ -112,7 +112,7 @@ class TestStaleInflightSelfHeal:
 
     def test_guard_stats_reported(self, cron_env, monkeypatch):
         """The guard must surface a countable forced-release signal."""
-        S, E, env = self._setup(cron_env, monkeypatch)
+        S, _E, env = self._setup(cron_env, monkeypatch)
         import cron.jobs as J
 
         S._running_job_ids.clear()

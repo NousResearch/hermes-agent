@@ -37,10 +37,10 @@ def _pick(payload: dict[str, Any], *keys: str) -> Any:
     return next((payload.get(key) for key in keys if payload.get(key)), payload.get(keys[-1]))
 
 
-_str = lambda value: str(value or "").strip()  # noqa: E731
-_list = lambda value: list(value or [])  # noqa: E731
-_dict = lambda value: dict(value or {})  # noqa: E731
-_nested = lambda model: (lambda value: model.from_dict(value) if value else None)  # noqa: E731
+_str = lambda value: str(value or "").strip()
+_list = lambda value: list(value or [])
+_dict = lambda value: dict(value or {})
+_nested = lambda model: (lambda value: model.from_dict(value) if value else None)
 
 
 def _serialize_value(value: Any) -> Any:

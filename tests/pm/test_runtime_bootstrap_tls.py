@@ -221,7 +221,7 @@ def test_cold_downloader_trusts_a_stored_intermediate_without_its_root(tmp_path)
     root_key, root_name, _ = issue("absent root")
     middle_key, middle_name, middle = issue("stored intermediate", (root_key, root_name))
     leaf_key, _, leaf = issue("leaf", (middle_key, middle_name))
-    pem = lambda cert: cert.public_bytes(serialization.Encoding.PEM)  # noqa: E731
+    pem = lambda cert: cert.public_bytes(serialization.Encoding.PEM)
     stores = {"stored": pem(middle), "unrelated": pem(issue("unrelated CA")[2])}
     for name, body in stores.items():
         (tmp_path / f"{name}.pem").write_bytes(body)

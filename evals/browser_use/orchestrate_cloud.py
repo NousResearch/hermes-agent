@@ -124,7 +124,7 @@ for task, model, rep in cells:
     t0 = time.time()
     try:
         sess, extra_env = provider.create(f"bubench-{task}-{rep}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         rec = {
             "arm": f"pr-{args.backend}",
             "task": task,
@@ -170,7 +170,7 @@ for task, model, rep in cells:
     finally:
         try:
             provider.close(sess)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"  close warning: {e}", flush=True)
     rec["arm"] = f"pr-{args.backend}"
     rec["cell_wall_s"] = round(time.time() - t0, 1)

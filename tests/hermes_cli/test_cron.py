@@ -321,7 +321,7 @@ class TestGatewayNotRunningWarning:
 
     def test_list_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
         create_job(prompt="Daily report", schedule="0 11 * * *")
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
         assert "Scheduler is not ready" in out
@@ -345,7 +345,7 @@ class TestExternalCronProviderStatus:
         )
         # Even with NO gateway process and NO ticker heartbeat, Chronos status
         # must NOT report a stall / "not firing".
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
         assert "chronos" in out
@@ -365,7 +365,7 @@ class TestExternalCronProviderStatus:
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
         )
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
         cron_command(
             Namespace(
                 cron_command="create",
@@ -576,7 +576,7 @@ class TestStatusSurfacesDeadScheduler:
         # tests/conftest.py hook in #118097 once that lands.)
         lock_dir.mkdir(exist_ok=True)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
         monkeypatch.setattr(
             "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
         )

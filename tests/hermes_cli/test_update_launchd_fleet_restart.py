@@ -100,7 +100,7 @@ class TestLaunchdGatewayLabelsForInstall:
         ]
 
     def test_no_profiles_means_no_fleet(self, monkeypatch):
-        monkeypatch.setattr(hermes_cli.profiles, "list_profiles", lambda: [])
+        monkeypatch.setattr(hermes_cli.profiles, "list_profiles", list)
         assert launchd_gateway_labels_for_install() == []
 
 

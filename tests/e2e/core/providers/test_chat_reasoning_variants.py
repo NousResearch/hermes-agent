@@ -75,7 +75,7 @@ def test_openrouter_reasoning_details_replayed_verbatim(tmp_path) -> None:
     h = Home(tmp_path)
     with FakeChatVariantServer(_reasoning_script("reasoning_details")) as srv:
         h.write(_impersonated_config("openrouter.ai"), dotenv={"OPENAI_API_KEY": "sk-or-fake"})
-        first, _ = _two_turn_reasoning_session(h, _proxy_env(srv))
+        _first, _ = _two_turn_reasoning_session(h, _proxy_env(srv))
         records = srv.main_records()
         invalid = srv.invalid_requests()
 

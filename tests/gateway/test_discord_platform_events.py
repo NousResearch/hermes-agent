@@ -73,7 +73,7 @@ _ensure_discord_mock()
 # checks in the adapter match the class our fixtures instantiate.
 _DiscordThread = sys.modules["discord"].Thread
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _adapter() -> DiscordAdapter:
@@ -203,7 +203,7 @@ class TestMessageEdited:
         a.set_platform_event_handler(handler)
         a._thread_id_and_chat_for_channel = MagicMock()
 
-        import hermes_cli.lifecycle as lifecycle
+        from hermes_cli import lifecycle
         orig = lifecycle.has_hook
         lifecycle.has_hook = lambda _n: False
         try:
@@ -354,7 +354,7 @@ class TestRunnerBoundaryIntegration:
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        import hermes_cli.lifecycle as lifecycle
+        from hermes_cli import lifecycle
         orig_invoke = lifecycle.invoke_hook
         lifecycle.invoke_hook = invoked
         try:
@@ -373,7 +373,7 @@ class TestRunnerBoundaryIntegration:
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        import hermes_cli.lifecycle as lifecycle
+        from hermes_cli import lifecycle
         orig_invoke = lifecycle.invoke_hook
         lifecycle.invoke_hook = invoked
         try:

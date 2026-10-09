@@ -64,7 +64,7 @@ def _voice_provider_status(kind: str, provider: str, rows: dict, default: tuple)
     return (f"{kind} ({label} — not installed)", False, hint)
 
 
-def _first_available_plugin_provider(registry: str, skip: str = None):
+def _first_available_plugin_provider(registry: str, skip: str | None = None):
     """display_name of the first plugin-registered provider in ``agent.<registry>`` that reports
     available (fail-soft: any error means none), skipping ``skip``."""
     try:
@@ -267,4 +267,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

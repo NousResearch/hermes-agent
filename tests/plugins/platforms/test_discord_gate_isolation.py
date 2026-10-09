@@ -214,7 +214,7 @@ class TestSlashGateIsolation:
             channel=chan, channel_id=111, user=types.SimpleNamespace(id=999, roles=[]),
         )
         # channel 111: allowed for A's gate...
-        allowed_a, reason_a = a._evaluate_slash_authorization(interaction)
+        _allowed_a, reason_a = a._evaluate_slash_authorization(interaction)
         # ...but B must reject it on ITS channel gate.
         allowed_b, reason_b = b._evaluate_slash_authorization(interaction)
         assert reason_a != "channel not in DISCORD_ALLOWED_CHANNELS"

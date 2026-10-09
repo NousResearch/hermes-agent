@@ -95,7 +95,7 @@ def run_hermes(fh: FakeHome, args: list[str], *, extra_env: dict[str, str] | Non
 
 def spawn_hermes(fh: FakeHome, args: list[str], *, extra_env: dict[str, str] | None = None,
                  log: Path) -> subprocess.Popen:
-    out = open(log, "w", encoding="utf-8")  # noqa: SIM115 - closed when the child is reaped
+    out = open(log, "w", encoding="utf-8")
     try:
         return subprocess.Popen(hermes_argv(*args), env=fh.env(extra_env), cwd=str(fh.root),
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, text=True)

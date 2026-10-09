@@ -15,7 +15,7 @@ from utils import base_url_host_matches
 logger = logging.getLogger(__name__)
 
 
-def bind_route_entry(agent: Any, entry: Dict[str, Any], provider: str, model: str) -> Optional[Tuple[str, str]]:
+def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
     so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
@@ -93,7 +93,7 @@ def bind_route_entry(agent: Any, entry: Dict[str, Any], provider: str, model: st
     return old_model, old_provider
 
 
-def reinstall_runtime_snapshot(agent: Any, rt: Dict[str, Any]) -> None:
+def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     """Put ``agent`` on the runtime recorded in ``rt`` (a ``_primary_runtime``-shaped snapshot):
     identity, client, caching flags, compressor, reasoning and prompt identity. Credential pool
     and fallback bookkeeping are the caller's. Raises on failure."""
@@ -137,7 +137,7 @@ def reinstall_runtime_snapshot(agent: Any, rt: Dict[str, Any]) -> None:
 
 
 def reinstall_primary_runtime(
-    agent: Any, rt: Dict[str, Any], primary_provider: str, primary_model: str, matches_primary,
+    agent: Any, rt: dict[str, Any], primary_provider: str, primary_model: str, matches_primary,
     load_primary_pool, prefetched_pool=None, prefetched: bool = False,
 ) -> None:
     """Put ``agent`` back on its ``_primary_runtime`` snapshot ``rt`` and clear the fallback state."""

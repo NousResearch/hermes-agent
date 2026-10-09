@@ -6,7 +6,7 @@ import pytest
 
 from hermes_cli import main, uninstall
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
-from tests.hermes_cli.test_data_uninstall import layout  # noqa: F401 — isolated home
+from tests.hermes_cli.test_data_uninstall import layout
 
 
 @pytest.mark.parametrize("entry", ["cli", "module", "cli-dry-run"])

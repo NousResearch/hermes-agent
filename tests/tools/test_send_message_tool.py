@@ -951,7 +951,7 @@ class TestParseTargetRef:
             ("email", "user@.com"),
         ]
         for platform, target in cases:
-            chat_id, _, is_explicit = _parse_target_ref(platform, target)
+            _chat_id, _, is_explicit = _parse_target_ref(platform, target)
             assert is_explicit is False, f"{platform}:{target}"
 
     def test_prefixes_and_suffixes_are_platform_scoped(self):

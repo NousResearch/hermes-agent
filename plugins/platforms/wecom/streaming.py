@@ -45,7 +45,7 @@ class WeComStreamExpiredError(RuntimeError):
 @dataclass
 class ReplyFrame:
     """A reply frame awaiting its aibot_respond_msg ack (FIFO per req_id)."""
-    body: Dict[str, Any]
+    body: dict[str, Any]
     future: asyncio.Future
     is_final: bool = False
     sent_at: Optional[float] = None
@@ -69,11 +69,11 @@ class StreamTurn:
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None  # cancel on EVERY turn-exit path
 
 
-def _stream_of(body: Dict[str, Any]) -> Dict[str, Any]:
+def _stream_of(body: dict[str, Any]) -> dict[str, Any]:
     return body.get("stream", {}) if isinstance(body.get("stream"), dict) else {}
 
 
-def _stream_desc(body: Dict[str, Any]) -> tuple:
+def _stream_desc(body: dict[str, Any]) -> tuple:
     stream = _stream_of(body)
     return stream.get("id", "N/A"), stream.get("finish", "N/A")
 
@@ -88,7 +88,7 @@ class WeComStreamMixin:
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     _REPLY_ACK_TIMEOUT = 15.0  # official REPLY_SEND_TIMEOUT_MS; shorter widened the double-send race
 
-    async def _send_reply_queued(self, reply_req_id: str, body: Dict[str, Any], *, is_final: bool = False, skip_if_pending: bool = False) -> Dict[str, Any]:
+    async def _send_reply_queued(self, reply_req_id: str, body: dict[str, Any], *, is_final: bool = False, skip_if_pending: bool = False) -> dict[str, Any]:
         """aibot_respond_msg with per-req_id ack tracking: is_final drains the pending ack then awaits its own;
         skip_if_pending returns ``{"skipped": True}`` while a prior ack is pending."""
         self._require_ws()
@@ -149,7 +149,7 @@ class WeComStreamMixin:
         if queue.pending_ack is None:
             self._reply_queues.pop(req_id, None)
 
-    def _resolve_reply_ack(self, req_id: str, payload: Dict[str, Any]) -> bool:
+    def _resolve_reply_ack(self, req_id: str, payload: dict[str, Any]) -> bool:
         """Resolve a pending reply ack. Returns True if handled."""
         queue = self._reply_queues.get(req_id)
         if queue is None or queue.pending_ack is None:
@@ -238,13 +238,13 @@ class WeComStreamMixin:
         encoded = content.encode("utf-8")
         return content if len(encoded) <= limit else encoded[:limit].decode("utf-8", errors="ignore")
 
-    async def _send_stream_reply(self, reply_req_id: str, stream_id: str, content: str, finish: bool = False) -> Dict[str, Any]:
+    async def _send_stream_reply(self, reply_req_id: str, stream_id: str, content: str, finish: bool = False) -> dict[str, Any]:
         """Send one ``msgtype: "stream"`` frame: intermediates non-blocking/skip-if-pending, the final frame awaits
         its ack so 846608/6000 are detected. Raises WeComStreamExpiredError on expiry."""
         truncated = self._truncate_stream_content(content or "", self.MAX_STREAM_CONTENT_LENGTH)
         if len(content or "") != len(truncated):
             logger.warning("[%s] Stream content truncated for stream_id=%s", self.name, stream_id)
-        body: Dict[str, Any] = {"msgtype": "stream", "stream": {"id": stream_id, "finish": bool(finish), "content": truncated}}
+        body: dict[str, Any] = {"msgtype": "stream", "stream": {"id": stream_id, "finish": bool(finish), "content": truncated}}
         if not finish:
             return await self._send_reply_queued(reply_req_id, body, is_final=False, skip_if_pending=True)
         response = await self._send_reply_queued(reply_req_id, body, is_final=True, skip_if_pending=False)
@@ -269,7 +269,7 @@ class WeComStreamMixin:
         # Chat-level expiry only blocks NEW turn creation; a known turn_id may still finalize.
         if not turn_id and chat in self._stream_expired_chats:
             return False
-        inner = lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=finalize, turn_id=turn_id)  # noqa: E731
+        inner = lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=finalize, turn_id=turn_id)
         # Finalize counts toward 30/min → control lane; intermediates are unmetered (no queue).
         return await self._enqueue_chat_send(chat, inner, is_control=True) if finalize else await inner()
 
@@ -360,7 +360,7 @@ class WeComStreamMixin:
                 self._retire_turn(turn, turn_id)
         return False
 
-    def supports_native_streaming(self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def supports_native_streaming(self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> bool:
         """Stream frames work in DMs and groups alike (groups just need a cached inbound req_id)."""
         del chat_type, metadata
         return True

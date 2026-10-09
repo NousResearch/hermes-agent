@@ -496,7 +496,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
-        return int(round(psutil.Process(pid).create_time() * 100))
+        return round(psutil.Process(pid).create_time() * 100)
     except Exception:
         return None
 
@@ -2116,7 +2116,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         exact_create_time = float(psutil.Process(pid).create_time())
     except Exception as exc:
         raise RuntimeError("exact gateway creation time is unavailable") from exc
-    if int(round(exact_create_time * 100)) != int(current):
+    if round(exact_create_time * 100) != int(current):
         raise RuntimeError("gateway process identity changed")
     return pid, exact_create_time
 

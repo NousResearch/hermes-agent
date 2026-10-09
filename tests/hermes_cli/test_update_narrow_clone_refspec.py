@@ -55,7 +55,7 @@ def _mk_narrow_clone(tmp_path: Path) -> tuple[Path, Path]:
 def test_check_fetch_materialises_tracking_ref_on_narrow_clone(
     tmp_path, monkeypatch, capsys
 ):
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
 
     clone, origin = _mk_narrow_clone(tmp_path)
     assert "refs/heads/*" not in _git(

@@ -246,6 +246,6 @@ def in_parallel(jobs: dict[str, Callable[[], object]]) -> dict[str, object]:
         for name, fut in futures.items():
             try:
                 out[name] = fut.result()
-            except BaseException as exc:  # noqa: BLE001 - handed to the cell
+            except BaseException as exc:
                 out[name] = exc
     return out

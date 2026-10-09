@@ -203,7 +203,7 @@ def is_bundled_payload(project_root: Path) -> bool:
     """
     try:
         return read_install_stamp(Path(project_root)).get("payload") == "bundled"
-    except Exception:  # noqa: BLE001 — a bad stamp must not take a caller down
+    except Exception:
         return False
 
 

@@ -167,7 +167,7 @@ def _explain_items(items: list[Any]) -> str:
                 ta.dump_json(ta.validate_python(item), warnings=False)
                 errors = []
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"{member.__name__}: {exc}")
         if errors:
             lines.append(f"input[{idx}] type={item['type']}: " + " | ".join(errors))
@@ -182,7 +182,7 @@ def validate_request(body: dict[str, Any]) -> str | None:
     body = _apply_vendor_deviations(body)
     try:
         _REQUEST_ADAPTER.dump_json(_REQUEST_ADAPTER.validate_python(body), warnings=False)
-    except Exception as exc:  # noqa: BLE001 - reported to the test verbatim
+    except Exception as exc:
         detail = _explain_items(body["input"]) if isinstance(body.get("input"), list) else ""
         return (detail or str(exc))[:4000]
     return None
@@ -350,14 +350,14 @@ def _handler_for(server: FakeResponsesServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self.path.rstrip("/").endswith("/models"):
                 self._json(200, {"object": "list", "data": [
                     {"id": MODEL_ID, "object": "model", "context_length": 128000}]})
                 return
             self._json(404, {"error": {"message": "not found"}})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             try:
                 body = json.loads(raw or b"{}")

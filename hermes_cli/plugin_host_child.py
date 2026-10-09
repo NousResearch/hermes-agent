@@ -61,7 +61,7 @@ class RemoteFacade:
 
     def __init__(self, runtime: "HostRuntime", plugin_key: str, name: str):
         self._runtime, self._plugin_key, self._name = runtime, plugin_key, name
-        self._methods: Dict[str, bool] = {}  # method name -> is a coroutine function in Hermes
+        self._methods: dict[str, bool] = {}  # method name -> is a coroutine function in Hermes
 
     def __getattr__(self, attr: str) -> Any:
         if attr.startswith("_"):
@@ -86,10 +86,10 @@ class RemotePluginContext:
     """What ``register(ctx)`` receives inside the host. Mirrors ``PluginContext``'s public surface as
     announced by Hermes at load, so ``hasattr(ctx, "register_x")`` answers the same as in-process."""
 
-    def __init__(self, runtime: "HostRuntime", plugin_key: str, info: Dict[str, Any]):
+    def __init__(self, runtime: "HostRuntime", plugin_key: str, info: dict[str, Any]):
         self._runtime, self._plugin_key = runtime, plugin_key
         self._methods = set(info.get("ctx_methods") or ())
-        self._facades: Dict[str, RemoteFacade] = {}
+        self._facades: dict[str, RemoteFacade] = {}
         self.manifest = types.SimpleNamespace(**(info.get("manifest") or {}))
         self.plugin_id = info.get("plugin_id") or plugin_key
         self.profile_name = info.get("profile_name")
@@ -109,7 +109,6 @@ class RemotePluginContext:
             def skipped(*_args: Any, **_kwargs: Any) -> None:
                 logger.warning("Plugin '%s': ctx.%s() is skipped in the plugin host (%s)",
                                self.manifest.name, name, HOST_SKIPPED_CTX_METHODS[name])
-                return None
             return skipped
         if name in HOST_REMOTE_FACADES:
             return self._facades.setdefault(name, RemoteFacade(self._runtime, self._plugin_key, name))
@@ -130,15 +129,15 @@ class HostRuntime:
     """Reference tables, the asyncio loop for async plugin code, and the request handler."""
 
     def __init__(self, reader, writer):
-        self.refs: Dict[int, Any] = {}
-        self.owners: Dict[int, str] = {}
+        self.refs: dict[int, Any] = {}
+        self.owners: dict[int, str] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
-        self.unload_callbacks: Dict[str, List[Callable[[], Any]]] = {}
-        self.modules: Dict[str, str] = {}
-        self.asgi_apps: Dict[str, Any] = {}
-        self.profiles: Dict[str, Dict[str, Any]] = {}
-        self.instance_modules: Dict[str, Any] = {}
+        self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
+        self.modules: dict[str, str] = {}
+        self.asgi_apps: dict[str, Any] = {}
+        self.profiles: dict[str, dict[str, Any]] = {}
+        self.instance_modules: dict[str, Any] = {}
         self.stopped = threading.Event()
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, name="plugin-host-loop", daemon=True).start()
@@ -167,9 +166,9 @@ class HostRuntime:
 
     def _describe_object(self, plugin_key: str, obj: Any) -> dict:
         """Method table + attribute plan for a provider object; every method runs here, in the host."""
-        methods: Dict[str, Any] = {}
+        methods: dict[str, Any] = {}
         instance = sorted(k for k in vars(obj) if not k.startswith("_")) if hasattr(obj, "__dict__") else []
-        live: List[str] = list(instance)
+        live: list[str] = list(instance)
         for name in dir(obj):
             if name.startswith("_") or name in instance:
                 continue
@@ -194,7 +193,7 @@ class HostRuntime:
         return Opaque("callable" if "__callable__" in ref else "object")
 
     # -- outgoing ---------------------------------------------------------------------------------
-    def _send_call(self, method: str, plugin_key: str, payload: Dict[str, Any], *, allow_objects: bool) -> Any:
+    def _send_call(self, method: str, plugin_key: str, payload: dict[str, Any], *, allow_objects: bool) -> Any:
         refs = functools.partial(self.ref_for, plugin_key, allow_objects=allow_objects)
         payload = {**payload, "plugin": plugin_key,
                    "args": encode(list(payload.pop("args", ())), refs),
@@ -217,7 +216,7 @@ class HostRuntime:
         return asyncio.run_coroutine_threadsafe(_on_behalf_of(coro, serving_request()), self.loop)
 
     # -- incoming ---------------------------------------------------------------------------------
-    def handle(self, method: str, params: Dict[str, Any], _origin: Optional[int]) -> Any:
+    def handle(self, method: str, params: dict[str, Any], _origin: Optional[int]) -> Any:
         handler = _HANDLERS.get(method)
         if handler is None:
             raise ValueError(f"unknown plugin host request {method!r}")
@@ -233,13 +232,13 @@ class HostRuntime:
     def _encode_result(self, plugin_key: str, value: Any) -> Any:
         return encode(value, functools.partial(self.ref_for, plugin_key, allow_objects=False))
 
-    def _decode_args(self, params: Dict[str, Any]):
+    def _decode_args(self, params: dict[str, Any]):
         return decode(params.get("args") or [], None), decode(params.get("kwargs") or {}, None)
 
-    def op_hello(self, _params: Dict[str, Any]) -> Dict[str, Any]:
+    def op_hello(self, _params: dict[str, Any]) -> dict[str, Any]:
         return {"protocol": PROTOCOL_VERSION, "pid": os.getpid(), "python": sys.version.split()[0]}
 
-    def op_load(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def op_load(self, params: dict[str, Any]) -> dict[str, Any]:
         plugin_key = str(params["plugin_key"])
         target = _import_plugin(params)
         register = target if callable(target) and not isinstance(target, types.ModuleType) \
@@ -251,7 +250,7 @@ class HostRuntime:
         self._run(register(RemotePluginContext(self, plugin_key, params)))
         return {"module": module_name}
 
-    def op_load_instance(self, params: Dict[str, Any]) -> Any:
+    def op_load_instance(self, params: dict[str, Any]) -> Any:
         """Category plugins (memory provider, context engine, cron scheduler): import the directory,
         run ``register(ctx)`` capturing the one ``capture`` registration, else instantiate the first
         subclass of ``base``. Other registrations reach Hermes only when it bound a ctx for them."""
@@ -264,7 +263,7 @@ class HostRuntime:
         self.modules[plugin_key] = module.__name__
         base = _import_base(str(params["base"]))
         capture = str(params["capture"])
-        captured: List[Any] = []
+        captured: list[Any] = []
         register = getattr(module, "register", None)
         if callable(register):
             ctx = _CapturingContext(self, plugin_key, params, capture, base, captured,
@@ -287,7 +286,7 @@ class HostRuntime:
             return None
         return self._describe_object(plugin_key, captured[0])
 
-    def op_profile_call(self, params: Dict[str, Any]) -> Any:
+    def op_profile_call(self, params: dict[str, Any]) -> Any:
         """Run one overridden method (or callable field) of a model-provider profile, loading the
         plugin on first use in this host process. Addressed by name, so it survives host restarts."""
         profiles = self.profiles.get(str(params["path"]))
@@ -298,7 +297,7 @@ class HostRuntime:
         args, kwargs = self._decode_args(params)
         return encode(self._run(target(*args, **kwargs)))
 
-    def op_asgi(self, params: Dict[str, Any]) -> Any:
+    def op_asgi(self, params: dict[str, Any]) -> Any:
         """Serve one dashboard API request with the plugin's FastAPI ``router`` (loaded once)."""
         api_path = Path(str(params["dashboard_dir"])) / str(params["api_file"])
         app = self.asgi_apps.get(str(api_path))
@@ -318,7 +317,7 @@ class HostRuntime:
             app.include_router(router)
             self.asgi_apps[str(api_path)] = app
 
-        async def request() -> Dict[str, Any]:
+        async def request() -> dict[str, Any]:
             import httpx
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://plugin-host") as client:
@@ -331,7 +330,7 @@ class HostRuntime:
 
         return encode(self._run(request()))
 
-    def op_invoke(self, params: Dict[str, Any]) -> Any:
+    def op_invoke(self, params: dict[str, Any]) -> Any:
         ref = int(params["ref"])
         fn = self.refs.get(ref)
         if fn is None:
@@ -339,7 +338,7 @@ class HostRuntime:
         args, kwargs = self._decode_args(params)
         return self._encode_result(self.owners.get(ref, ""), self._run(fn(*args, **kwargs)))
 
-    def op_obj_invoke(self, params: Dict[str, Any]) -> Any:
+    def op_obj_invoke(self, params: dict[str, Any]) -> Any:
         ref = int(params["ref"])
         obj = self.refs.get(ref)
         if obj is None:
@@ -350,7 +349,7 @@ class HostRuntime:
         args, kwargs = self._decode_args(params)
         return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
 
-    def op_obj_getattr(self, params: Dict[str, Any]) -> Any:
+    def op_obj_getattr(self, params: dict[str, Any]) -> Any:
         obj = self.refs.get(int(params["ref"]))
         name = str(params["name"])
         if obj is None:
@@ -359,14 +358,14 @@ class HostRuntime:
             return {"__missing__": name}
         return self._encode_result(self.owners.get(int(params["ref"]), ""), getattr(obj, name))
 
-    def op_release(self, params: Dict[str, Any]) -> None:
+    def op_release(self, params: dict[str, Any]) -> None:
         """Drop objects whose Hermes-side proxies were garbage-collected."""
         with self._lock:
             for ref in params.get("refs") or ():
                 self.refs.pop(int(ref), None)
                 self.owners.pop(int(ref), None)
 
-    def op_config_schema(self, params: Dict[str, Any]) -> Any:
+    def op_config_schema(self, params: dict[str, Any]) -> Any:
         """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
         path = Path(str(params["path"]))
         spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{path.parent.name}", path)
@@ -376,14 +375,14 @@ class HostRuntime:
         spec.loader.exec_module(module)
         return encode(getattr(module, "CONFIG_SCHEMA", None))
 
-    def op_obj_setattr(self, params: Dict[str, Any]) -> None:
+    def op_obj_setattr(self, params: dict[str, Any]) -> None:
         obj = self.refs.get(int(params["ref"]))
         name = str(params["name"])
         if obj is None or name.startswith("_"):
             raise AttributeError(name)
         setattr(obj, name, decode(params.get("value"), None))
 
-    def op_unload(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def op_unload(self, params: dict[str, Any]) -> dict[str, Any]:
         plugin_key = str(params["plugin_key"])
         errors = []
         for callback in reversed(self.unload_callbacks.pop(plugin_key, [])):
@@ -401,13 +400,13 @@ class HostRuntime:
                 sys.modules.pop(name, None)
         return {"errors": errors}
 
-    def op_shutdown(self, _params: Dict[str, Any]) -> None:
+    def op_shutdown(self, _params: dict[str, Any]) -> None:
         for plugin_key in list(self.unload_callbacks):
             self.op_unload({"plugin_key": plugin_key})
         self.stopped.set()
 
 
-_HANDLERS: Dict[str, Callable[[HostRuntime, Dict[str, Any]], Any]] = {
+_HANDLERS: dict[str, Callable[[HostRuntime, dict[str, Any]], Any]] = {
     "hello": HostRuntime.op_hello, "load": HostRuntime.op_load, "load_instance": HostRuntime.op_load_instance,
     "asgi": HostRuntime.op_asgi, "profile_call": HostRuntime.op_profile_call,
     "invoke": HostRuntime.op_invoke,
@@ -422,8 +421,8 @@ class _CapturingContext(RemotePluginContext):
     """``register(ctx)`` for a category plugin: the category's own registration is kept here; the rest
     forward to Hermes when it bound a context (memory providers), else are no-ops."""
 
-    def __init__(self, runtime: HostRuntime, plugin_key: str, info: Dict[str, Any], capture: str,
-                 base: type, captured: List[Any], *, forward: bool):
+    def __init__(self, runtime: HostRuntime, plugin_key: str, info: dict[str, Any], capture: str,
+                 base: type, captured: list[Any], *, forward: bool):
         super().__init__(runtime, plugin_key, info)
         self._capture, self._base, self._captured, self._forward = capture, base, captured, forward
 
@@ -454,7 +453,7 @@ async def _on_behalf_of(awaitable: Any, origin: Optional[int]) -> Any:
     return await awaitable
 
 
-def _import_plugin(params: Dict[str, Any]) -> Any:
+def _import_plugin(params: dict[str, Any]) -> Any:
     """Import a directory plugin under the module name Hermes assigned, or resolve an entry point."""
     if params.get("entrypoint"):
         for ep in importlib.metadata.entry_points().select(group=_ENTRY_POINTS_GROUP):
@@ -499,17 +498,17 @@ def _take_protocol_streams():
     os.dup2(devnull, 0)
     os.close(devnull)
     os.dup2(2, 1)
-    sys.stdin = open(os.devnull, encoding="utf-8-sig")  # noqa: SIM115 — lives for the process
+    sys.stdin = open(os.devnull, encoding="utf-8-sig")
     sys.stdout = sys.stderr
     return reader, writer
 
 
-def capture_profiles(path: str, module_name: str) -> List[Any]:
+def capture_profiles(path: str, module_name: str) -> list[Any]:
     """Import a model-provider plugin and return the profiles it passes to ``register_provider``."""
     import providers
     from providers.base import ProviderProfile
     providers.list_providers()  # bundled + known profiles register before the capture window
-    captured: List[Any] = []
+    captured: list[Any] = []
     original = providers.register_provider
     providers.register_provider = captured.append  # type: ignore[assignment]
     try:
@@ -524,11 +523,11 @@ def capture_profiles(path: str, module_name: str) -> List[Any]:
     return captured
 
 
-def describe_profile(profile: Any) -> Dict[str, Any]:
+def describe_profile(profile: Any) -> dict[str, Any]:
     """Profile data (instance fields) plus the methods and callable fields that must run here."""
     from providers.base import ProviderProfile
-    fields: Dict[str, Any] = {}
-    calls: Dict[str, Any] = {}
+    fields: dict[str, Any] = {}
+    calls: dict[str, Any] = {}
     for name, value in vars(profile).items():
         if name.startswith("_"):
             continue
@@ -555,7 +554,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
     import json
     reader, writer = _take_protocol_streams()
     del reader
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
     try:
         payload = {"profiles": [describe_profile(p) for p in capture_profiles(path, module_name)]}
     except Exception as exc:
@@ -567,7 +566,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 
 def main() -> int:
     reader, writer = _take_protocol_streams()
-    import hermes_bootstrap  # noqa: F401 — PM dependency environments, like every Hermes entry point
+    import hermes_bootstrap
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
                         format="%(levelname)s %(name)s: %(message)s")
     runtime = HostRuntime(reader, writer)

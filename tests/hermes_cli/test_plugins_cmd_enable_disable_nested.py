@@ -110,7 +110,7 @@ def test_fallback_compares_the_preinteraction_selection(plugin_world, monkeypatc
     before = config_path.read_bytes()
     selected = world.selected()
     monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
-    monkeypatch.setattr(plugins_cmd, "_provider_categories", lambda: [])
+    monkeypatch.setattr(plugins_cmd, "_provider_categories", list)
     monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setitem(plugins_cmd.sys.modules, "curses", None)
     answers = iter(("1", ""))

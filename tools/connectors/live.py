@@ -20,7 +20,7 @@ class OperationAlreadyOpen(RuntimeError):
         self.existing = existing
 
 
-_open: Dict[Tuple[str, str], ConnectionOperation] = {}
+_open: dict[tuple[str, str], ConnectionOperation] = {}
 _lock = threading.Lock()
 
 
@@ -30,11 +30,11 @@ def _profile_key(profile_home: Optional[str]) -> str:
     return hermes_home_key(profile_home or get_process_hermes_home())
 
 
-def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
+def _key(session_key: str, profile_home: Optional[str]) -> tuple[str, str]:
     return _profile_key(profile_home), session_key
 
 
-def open(operation: ConnectionOperation) -> None:  # noqa: A001 - the verb is the API
+def open(operation: ConnectionOperation) -> None:
     operation.profile_key = hermes_home_key()
     key = (operation.profile_key, operation.session_key)
     with _lock:

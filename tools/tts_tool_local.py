@@ -31,13 +31,13 @@ _TTS_MODEL_CACHE_MAX = 3
 # Provider name -> the cache it populates (warm/release in tts_tool_lifecycle; a new local engine
 # adds a row here plus a loader in _local_tts_warmers()). Piper keyed on absolute .onnx path
 # (+cuda flag); KittenTTS on model name.
-_piper_voice_cache: Dict[str, Any] = {}
-_kittentts_model_cache: Dict[str, Any] = {}
-_LOCAL_TTS_MODEL_CACHES: Dict[str, Dict[str, Any]] = {
+_piper_voice_cache: dict[str, Any] = {}
+_kittentts_model_cache: dict[str, Any] = {}
+_LOCAL_TTS_MODEL_CACHES: dict[str, dict[str, Any]] = {
     "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache}
 
 
-def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
+def _tts_cache_get_or_load(cache: dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
     """Get ``key`` from ``cache`` or load it, LRU-bounded at ``_TTS_MODEL_CACHE_MAX`` (a hit refreshes
     recency via pop + reinsert; eviction only releases the slot, not live references)."""
     if key in cache:
@@ -57,7 +57,7 @@ def _run_helper(cmd: list, timeout: int) -> subprocess.CompletedProcess:
 
 
 # --- NeuTTS (subprocess via tools/neutts_synth.py so the ~500MB model exits after use) ---
-def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_neutts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     neutts_config = tts_config.get("neutts") or {}
     wav_path = _wav_sidecar_path(output_path)
     cmd = [
@@ -112,7 +112,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
     return str(cached)
 
 
-def _load_piper_voice_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+def _load_piper_voice_for_config(tts_config: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     """Resolve + load (or fetch from cache) the selected Piper voice -> ``(voice, piper_config)``.
     Shared by synthesis and ``warm_tts_provider`` so a warm-up fills exactly the slot synthesis hits."""
     PiperVoice = _origin()._import_piper()
@@ -137,7 +137,7 @@ def _load_piper_voice_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[
 _PIPER_ADVANCED_KNOBS = ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio", "speaker_id")
 
 
-def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_piper_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     import wave
     voice, piper_config = _load_piper_voice_for_config(tts_config)
     # Bad speaker_id drops to 0 (Piper's default); bools are rejected (they'd coerce to 1/0).
@@ -168,7 +168,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # --- KittenTTS (local ONNX, 25-80MB models, CPU only) ---
-def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+def _load_kittentts_model_for_config(tts_config: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     """Load (or fetch from cache) the KittenTTS model; returns ``(model, kittentts_config)``."""
     KittenTTS = _origin()._import_kittentts()
     kt_config = _section(tts_config, "kittentts")
@@ -183,7 +183,7 @@ def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, D
     return _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model), kt_config
 
 
-def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_kittentts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     model, kt_config = _load_kittentts_model_for_config(tts_config)
     audio = model.generate(  # numpy array at 24kHz
         text, voice=kt_config.get("voice", DEFAULT_KITTENTTS_VOICE),

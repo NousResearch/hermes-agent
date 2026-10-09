@@ -32,7 +32,7 @@ from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
-from hermes_cli.cli_commands_session_tools import (  # noqa: F401  moved there (ratchet); re-imported so existing `from cli_commands_mixin import _t` consumers keep working
+from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.browser_connect import (
@@ -661,7 +661,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _print_diff_body(self, diff: str, stat_hint: str, limit: int = 400) -> None:
         """Print a diff, capped at ``limit`` lines with a pointer to the --stat form."""
-        print("")
+        print()
         diff_lines = diff.splitlines()
         if len(diff_lines) > limit:
             self._print_diff_text("\n".join(diff_lines[:limit]))

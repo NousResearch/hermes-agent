@@ -156,4 +156,4 @@ class RelayMediaClient:
         return await asyncio.get_running_loop().run_in_executor(None, _get)
 
 
-__all__ = ["RelayMediaClient", "media_base_url", "MEDIA_MAX_BYTES"]
+__all__ = ["MEDIA_MAX_BYTES", "RelayMediaClient", "media_base_url"]

@@ -24,7 +24,7 @@ from tests.ci.desktop_release_roles import (
     universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _seed_repo, _git, _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -401,7 +401,7 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
     from tests.scripts.test_release_channels import object_server
     _origin, clone = _seed_repo(tmp_path)
     commit = _git("rev-parse", "HEAD", cwd=clone)
-    with object_server() as (url, objects, headers, requests, faults):
+    with object_server() as (url, objects, _headers, requests, _faults):
         # run_shell redirects only the R2 network endpoint; the controller,
         # permission CLI, pushed Git source and both workflow scripts run for real.
         from types import SimpleNamespace
@@ -457,7 +457,7 @@ def test_receiver_allocation_uses_official_identity_only_inside_scope(tmp_path):
     from scripts.releases.channel_releases import product_identity
     from scripts.releases.r2_scope import R2Scope
 
-    with object_server() as (url, objects, *_):
+    with object_server() as (url, _objects, *_):
         pub = publisher(url)
         with pytest.raises(ValueError, match="disposable"):
             allocate_receivers(pub, "a" * 40, "1.2.3", "a" * 40)

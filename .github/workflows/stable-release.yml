@@ -87,7 +87,7 @@ jobs:
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -523,7 +523,7 @@ jobs:
     secrets: inherit
     with:
       release-phase: publish
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:

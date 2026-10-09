@@ -189,7 +189,7 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
-    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+    def _get_status_bar_snapshot(self) -> dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
@@ -982,7 +982,7 @@ class CLIStatusBarMixin:
     # ── status bar rendering ──────────────────────────────────────────────────
 
     @staticmethod
-    def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:
+    def _status_bar_goal_segment(snapshot: dict[str, Any]) -> str:
         """``⊙ goal 3/20`` while a goal is active, else ``""`` (paused/done goals already
         print their own glyph lines in the thread)."""
         if not snapshot.get("goal_active"):

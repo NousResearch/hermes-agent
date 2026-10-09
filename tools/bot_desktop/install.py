@@ -49,7 +49,7 @@ def _try_flock(path: Path):
     """Open + non-blocking exclusive flock; None when another process holds it."""
     import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(path, "a+", encoding="utf-8")  # noqa: SIM115 — held open for the life of the install slot
+    fh = open(path, "a+", encoding="utf-8")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

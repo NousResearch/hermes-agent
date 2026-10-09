@@ -32,7 +32,7 @@ def _is_computer_use_dir(path: Path) -> bool:
     return "register_computer_use_provider" in source or "ComputerUseProvider" in source
 
 
-def _iter_provider_dirs() -> List[Tuple[str, Path]]:
+def _iter_provider_dirs() -> list[tuple[str, Path]]:
     """``(name, path)`` for bundled then user providers; bundled wins on collisions."""
     dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_CU_PLUGINS_DIR)]
     seen = {name for name, _ in dirs}
@@ -43,7 +43,7 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
-def discover_computer_use_providers() -> List[Tuple[str, str]]:
+def discover_computer_use_providers() -> list[tuple[str, str]]:
     """``[(name, description), ...]`` from plugin.yaml only: listing never imports a provider."""
     return [(name, _loader.read_plugin_description(child)) for name, child in _iter_provider_dirs()]
 

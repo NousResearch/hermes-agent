@@ -415,8 +415,8 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
     return base_ref, base_label
 
 
-def _setup_worktree(repo_root: str = None, sync_base: bool = True,
-                    name: Optional[str] = None) -> Optional[Dict[str, str]]:
+def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
+                    name: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
 
     *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
@@ -639,7 +639,7 @@ def _worktree_merge_cache_path() -> Path:
     return get_hermes_home() / "cache" / "worktree_merge_verdicts.json"
 
 
-def _load_worktree_merge_cache() -> Dict[str, bool]:
+def _load_worktree_merge_cache() -> dict[str, bool]:
     """Load the ``git cherry`` verdict cache. Missing/corrupt cache = empty."""
     try:
         entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8-sig")).get("verdicts")
@@ -649,7 +649,7 @@ def _load_worktree_merge_cache() -> Dict[str, bool]:
     return {k: v for k, v in entries.items() if isinstance(v, bool)} if isinstance(entries, dict) else {}
 
 
-def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
+def _save_worktree_merge_cache(verdicts: dict[str, bool]) -> None:
     """Atomically persist the newest ``_WORKTREE_MERGE_CACHE_MAX`` verdicts. Never raises."""
     try:
         items = list(verdicts.items())[-_WORKTREE_MERGE_CACHE_MAX:]
@@ -659,7 +659,7 @@ def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
 
 
 def _worktree_commits_all_merged_upstream(
-    worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[Dict[str, bool]] = None,
+    worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[dict[str, bool]] = None,
 ) -> bool:
     """Whether every local-only commit is patch-equivalent (``git cherry``) to upstream. Fails SAFE -> False.
 
@@ -714,7 +714,7 @@ def _worktree_current_branch(worktree_path: str, timeout: int) -> Optional[str]:
 
 
 def _worktree_branch_pr_merged(
-    worktree_path: str, timeout: int = 15, cache: Optional[Dict[str, bool]] = None,
+    worktree_path: str, timeout: int = 15, cache: Optional[dict[str, bool]] = None,
 ) -> bool:
     """Whether the branch's PR is MERGED on GitHub (``gh pr list``). Fails SAFE toward False.
 
@@ -749,7 +749,7 @@ def _worktree_branch_pr_merged(
         return False
 
 
-def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Dict[str, str]]:
+def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[dict[str, str]]:
     """``{branch: sha}`` for every branch on origin (one ``ls-remote``), or None = cannot verify, preserve.
 
     Managed installs fetch a single-branch refspec, so pushed PR branches have no
@@ -769,7 +769,7 @@ def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Di
 
 
 def _worktree_branch_pushed_exact(
-    worktree_path: str, remote_heads: Optional[Dict[str, str]], timeout: int = 10,
+    worktree_path: str, remote_heads: Optional[dict[str, str]], timeout: int = 10,
 ) -> bool:
     """Whether the branch head is EXACTLY what origin holds (tree redundant; reap it, keep the branch).
 

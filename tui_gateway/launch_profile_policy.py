@@ -27,10 +27,10 @@ from typing import Dict, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_snapshot: Optional[Dict[str, str]] = None
+_snapshot: Optional[dict[str, str]] = None
 
 
-def capture_launch_env() -> Dict[str, str]:
+def capture_launch_env() -> dict[str, str]:
     """Freeze the process env as the launch profile's own; the first capture wins.
 
     Called at activation, immediately before the first secondary home is registered as
@@ -109,7 +109,7 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     return True
 
 
-def _launch_env() -> Dict[str, str]:
+def _launch_env() -> dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
@@ -117,7 +117,7 @@ def _launch_env() -> Dict[str, str]:
     return capture_launch_env() if is_multiplex_active() else dict(os.environ)
 
 
-def launch_terminal_env() -> Dict[str, str]:
+def launch_terminal_env() -> dict[str, str]:
     """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
 
     Production always captured at activation; a first capture here only happens when the
@@ -126,7 +126,7 @@ def launch_terminal_env() -> Dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
+def launch_secret_scope(launch_home: "str | Path") -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or

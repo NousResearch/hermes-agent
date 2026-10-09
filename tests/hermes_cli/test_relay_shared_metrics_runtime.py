@@ -818,8 +818,8 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from tools import approval
-    import tools.approval_prompt as approval_prompt
-    import tools.approval_context as approval_context
+    from tools import approval_prompt
+    from tools import approval_context
 
     assert real_binding_runtime._native is not None
     base = {

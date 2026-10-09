@@ -197,7 +197,7 @@ def test_the_staged_submit_row_carries_the_uid_its_db_row_was_written_with(monke
     """The turn adopts the staged dict as its user message; if it lacked the row's uid, the next host copy
     (in-place compaction) would mint a second identity for the same message."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid, key = _desktop_session(monkeypatch, db)
+    sid, _key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         with session["history_lock"]:

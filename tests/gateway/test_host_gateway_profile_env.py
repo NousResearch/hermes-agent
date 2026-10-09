@@ -180,7 +180,7 @@ class TestSettledHostRecordDecidesRestart:
         """The updater sits on the named profile's home; the host record proves hostness."""
         from hermes_cli.gateway import _restart_argv_is_host_gateway
 
-        default_home, worker_home = _two_homes(tmp_path)
+        _default_home, worker_home = _two_homes(tmp_path)
         self._publish_live_host_record(
             monkeypatch, tmp_path, home=worker_home, profiles=("default", "worker"),
         )
@@ -234,7 +234,7 @@ class TestDuplicateRefusalNamesEnvClaim:
         """Default inherited the token from the process env; worker configured it in .env."""
         from gateway.run import GatewayRunner
 
-        default_home, worker_home = _two_homes(tmp_path)
+        _default_home, worker_home = _two_homes(tmp_path)
         _inherit_worker_env(monkeypatch, worker_home)
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)

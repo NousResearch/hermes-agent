@@ -2010,7 +2010,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
+        text, _inbound_type, _media_urls, _media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")

@@ -165,7 +165,7 @@ def test_a_checkout_move_names_a_held_index_lock_apart_from_a_permission_error(r
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     cmd = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-    git = lambda *a: subprocess.run([*cmd, *a], check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+    git = lambda *a: subprocess.run([*cmd, *a], check=True, capture_output=True, text=True).stdout.strip()
     repo.mkdir()
     git("init", "-q")
     (repo / "a").write_text("a")

@@ -12,7 +12,7 @@ import pytest
 
 from pm.plugin_inputs import Candidates, Selection, StagedUpdate
 
-from tests.pm.test_worker import client, isolated_python, _current_environment  # noqa: F401
+from tests.pm.test_worker import client, isolated_python, _current_environment
 from tests.pm._fixtures import worker_toolchain
 
 

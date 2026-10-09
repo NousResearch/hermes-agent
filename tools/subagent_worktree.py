@@ -72,7 +72,7 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
         logger.debug("subagent worktree: could not update .gitignore: %s", exc)
 
 
-def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
     repo_root = resolve_repo_root(parent_cwd)
     if not repo_root:
@@ -103,14 +103,14 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
 
 
-def _base_payload(info: Dict[str, str]) -> Dict[str, Any]:
+def _base_payload(info: dict[str, str]) -> dict[str, Any]:
     """Result-entry schema the parent expects (no creation-side internals)."""
     return {"path": info.get("path", ""), "branch": info.get("branch", ""),
             "commits": 0, "dirty": False, "pruned": False}
 
 
-def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
-                                   unmeasured: str = "commits/dirty") -> Dict[str, Any]:
+def mark_worktree_payload_unproven(payload: dict[str, Any], reason: str, *,
+                                   unmeasured: str = "commits/dirty") -> dict[str, Any]:
     """Flag a worktree result payload as un-inspected, in place.
 
     The parent only sees this dict, so the uncertainty must travel in it or "0 commits, clean"
@@ -129,12 +129,12 @@ def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
     return payload
 
 
-def unproven_worktree_payload(info: Dict[str, str], reason: str) -> Dict[str, Any]:
+def unproven_worktree_payload(info: dict[str, str], reason: str) -> dict[str, Any]:
     """Complete un-inspected payload for ``delegate_tool`` when finalize raises."""
     return mark_worktree_payload_unproven(_base_payload(info), reason)
 
 
-def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> Dict[str, Any]:
+def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> dict[str, Any]:
     """Inspect (and possibly prune) a child worktree after the child finishes.
 
     Prunes only when *prune*, commits==0, clean tree AND both git probes succeeded; otherwise
@@ -193,7 +193,7 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     return payload
 
 
-def build_worktree_context_note(info: Dict[str, str]) -> str:
+def build_worktree_context_note(info: dict[str, str]) -> str:
     """Context block telling the child to work inside its isolated worktree."""
     return (
         "\n\n[WORKTREE ISOLATION] You are working in an isolated git worktree "

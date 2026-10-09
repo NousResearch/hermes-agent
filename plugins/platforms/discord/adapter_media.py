@@ -78,7 +78,7 @@ class DiscordMediaMixin:
 
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        file_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -129,8 +129,8 @@ class DiscordMediaMixin:
 
 
     async def send_multiple_images(
-        self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+        self, chat_id: str, images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0,
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
@@ -160,9 +160,9 @@ class DiscordMediaMixin:
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
-            files: List[Any] = []
-            captions: List[str] = []
-            skip_notices: List[str] = []
+            files: list[Any] = []
+            captions: list[str] = []
+            skip_notices: list[str] = []
             aiohttp_session = None
             try:
                 for image_url, alt_text in chunk:
@@ -276,7 +276,7 @@ class DiscordMediaMixin:
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
         from plugins.platforms.discord.adapter import _prompt_target_id, discord
@@ -359,7 +359,7 @@ class DiscordMediaMixin:
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         return await self._send_local_file(
@@ -410,7 +410,7 @@ class DiscordMediaMixin:
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
         from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type
@@ -425,7 +425,7 @@ class DiscordMediaMixin:
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an animated GIF natively as a Discord file attachment."""
         return await self._send_url_media(
@@ -437,7 +437,7 @@ class DiscordMediaMixin:
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         return await self._send_local_file(
@@ -449,7 +449,7 @@ class DiscordMediaMixin:
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         return await self._send_local_file(

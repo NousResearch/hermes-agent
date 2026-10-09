@@ -36,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
 
 
 def _build_agent(monkeypatch):
@@ -920,7 +920,7 @@ def test_run_codex_stream_skips_post_terminal_drain_without_socket(monkeypatch):
     open after completion can neither hang the turn nor discard the billed response."""
     import threading
 
-    import agent.codex_runtime as codex_runtime
+    from agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     message_item = SimpleNamespace(
@@ -980,7 +980,7 @@ def test_run_codex_stream_owner_close_does_not_retry_raw_when_managed_close_rais
     """A managed close that already closes the provider must not trigger a second raw close."""
     import threading
 
-    import agent.codex_runtime as codex_runtime
+    from agent import codex_runtime
     from agent import relay_llm
 
     agent = _build_agent(monkeypatch)
@@ -1040,7 +1040,7 @@ def test_run_codex_stream_post_terminal_timeout_keeps_close_on_reader_thread(mon
     """The timeout thread may shutdown the socket, but only the reader thread may release its FD."""
     import threading
 
-    import agent.codex_runtime as codex_runtime
+    from agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     owner = threading.current_thread().name
@@ -1108,7 +1108,7 @@ def test_run_codex_stream_post_terminal_clean_drain_never_shutdowns(monkeypatch)
     """A provider that closes inside the budget must stay on the ordinary owner-thread path."""
     import threading
 
-    import agent.codex_runtime as codex_runtime
+    from agent import codex_runtime
 
     agent = _build_agent(monkeypatch)
     socket_calls = []
@@ -1160,8 +1160,8 @@ def test_run_codex_stream_post_terminal_clean_drain_never_shutdowns(monkeypatch)
 def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):
     """Both mutable request boundaries must reject literal Harmony wire tokens."""
     agent = _build_agent(monkeypatch)
-    setattr(agent, "_disable_streaming", True)
-    token = f"<\x7cstart\x7c>"
+    agent._disable_streaming = True
+    token = "<\x7cstart\x7c>"
     captured = {}
 
     def _request_middleware(request, **_context):
@@ -1212,8 +1212,8 @@ def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monk
 def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
     """Other Responses-compatible providers remain byte-identical."""
     agent = _build_copilot_agent(monkeypatch)
-    setattr(agent, "_disable_streaming", True)
-    token = f"<\x7cstart\x7c>"
+    agent._disable_streaming = True
+    token = "<\x7cstart\x7c>"
     captured = {}
 
     def _capture_api_call(api_kwargs):
@@ -1236,16 +1236,16 @@ def test_codex_backend_detection_is_narrow(monkeypatch):
     assert copilot._is_codex_backend() is False
 
     # Exact backend URL detection still works for an explicitly custom route.
-    setattr(codex, "provider", "custom")
+    codex.provider = "custom"
     assert codex._is_codex_backend() is True
-    setattr(codex, "api_mode", "chat_completions")
+    codex.api_mode = "chat_completions"
     assert codex._is_codex_backend() is False
 
 
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
     agent = _build_copilot_agent(monkeypatch)
-    setattr(agent, "_disable_streaming", True)
+    agent._disable_streaming = True
     captured = {}
 
     def _message_item(item_id, *, text, phase, status):
@@ -1320,7 +1320,7 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
 def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
     """Execution middleware cannot reintroduce an over-length provider key."""
     agent = _build_agent(monkeypatch)
-    setattr(agent, "_disable_streaming", True)
+    agent._disable_streaming = True
     captured = {}
     long_key = "paperclip:" + "x" * 130
 

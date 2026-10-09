@@ -69,7 +69,7 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     from hermes_cli.source_build import source_build_env
 
     intent = []
-    def acquire(name, *, base_env, explicit):
+    def acquire(name, *, base_env, explicit, verify=True):
         intent.append(explicit)
         return Runner(name, base_env)
     monkeypatch.setattr(pm, "ensure", acquire)
@@ -108,7 +108,7 @@ def source_checkout(tmp_path, monkeypatch):
     monkeypatch.delenv("NPM_CONFIG_USERCONFIG", raising=False)
     acquired = []
 
-    def acquire(name, *, base_env=None, explicit=False):
+    def acquire(name, *, base_env=None, explicit=False, verify=True):
         acquired.append(name)
         assert name == "npm"
 
@@ -369,7 +369,7 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
 def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
     """The update skips the desktop build only when the shipped app's baked commit is HEAD
     and its receipt is current; a moved HEAD or an unreadable stamp means build."""
-    import hermes_cli.main_desktop as main_desktop
+    from hermes_cli import main_desktop
 
     root = tmp_path / "checkout"
     root.mkdir()

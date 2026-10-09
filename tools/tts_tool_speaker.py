@@ -69,7 +69,7 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
         _unlink_quietly(tmp_path)
 
 
-def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> List[bytes]:
+def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> list[bytes]:
     """Collect one sentence's PCM chunks up to the ``None`` sentinel."""
     return list(iter(chunk_queue.get, None))
 
@@ -82,7 +82,7 @@ def _first_written_artifact(raw: object, requested: str) -> str:
     declared ``format`` rewrites the suffix, and voice-compatible delivery ffmpeg-converts to
     ``.ogg``. Gating playback on the requested path alone drops every such sentence silently,
     so prefer the first reported artifact that actually exists and is non-empty."""
-    candidates: List[str] = []
+    candidates: list[str] = []
     try:
         payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
         if isinstance(payload, dict):
@@ -173,7 +173,7 @@ class _StreamerPlayback:
         self.output_stream = None
         self._use_device = self._device_usable()
         self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
-        self._prefetch_threads: List[threading.Thread] = []
+        self._prefetch_threads: list[threading.Thread] = []
         self._prefetch_sem = threading.Semaphore(3)
         self._worker = threading.Thread(target=self._playback_worker, daemon=True)
         self._worker.start()
@@ -311,7 +311,7 @@ class _StreamerPlayback:
         try:
             from tools.voice_mode import mark_audio_output_active
         except Exception:
-            mark_audio_output_active = lambda _active: None  # noqa: E731
+            mark_audio_output_active = lambda _active: None
         self._np, self._reinit_count, self._current_stream, self._current_rate = _np, 0, None, None
         mark_audio_output_active(True)
         try:

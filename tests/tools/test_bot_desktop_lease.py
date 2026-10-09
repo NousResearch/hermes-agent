@@ -120,7 +120,6 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     def _approval_cycles_the_lease(scope, args, session_id=""):
         lease.acquire("human")
         lease.release("human")
-        return None
 
     monkeypatch.setattr(tool, "_request_approval", _approval_cycles_the_lease)
     res = json.loads(tool.handle_computer_use({"action": "click", "coordinate": [1, 1]}))

@@ -76,13 +76,13 @@ def _fake_cli(tmp_path, body):
 class TestModeDetection:
     def test_default_on_when_cli_available(self, monkeypatch):
         """Backend unset: Browser Use mode is the default when the CLI runs."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is True
 
     def test_default_off_when_cli_unavailable(self, monkeypatch):
         """Backend unset + no runnable CLI: keep the built-in browser tools."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
@@ -132,7 +132,7 @@ class TestSubprocessEnvironment:
         from types import ModuleType
 
         browser_tool = ModuleType("tools.browser_tool")
-        browser_tool._build_browser_env = lambda: {}
+        browser_tool._build_browser_env = dict
         monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
@@ -197,7 +197,7 @@ class TestSubprocessEnvironment:
 
 class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):
-        import tools.browser_tool as browser_tool
+        from tools import browser_tool
 
         monkeypatch.setattr(browser_tool, "_is_browser_use_cli_mode", lambda: True)
         assert bt_install.check_browser_requirements() is False
@@ -371,7 +371,7 @@ class TestLegacyCloudMigration:
         """No cloud_provider configured + BROWSER_USE_API_KEY set: credential
         auto-detection prefers Browser Use (even when Browserbase creds are
         also present), which now means Browser Use mode."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
         monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
         monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "bb-project")
@@ -554,7 +554,7 @@ class TestBackendCdpResolution:
         """``cloud_provider: nous`` (the `hermes tools` managed row) must resolve through the
         provider: the picker never writes the legacy ``use_gateway`` flag, and the direct-API
         branch leaves browser_exec with no CDP endpoint at all (#108310)."""
-        import tools.browser_tool as bt  # noqa: F401 — imported for parity with sibling tests
+        import tools.browser_tool as bt
 
         class _BUProvider:
             name = "browser-use"
@@ -978,7 +978,7 @@ class TestBrowserExec:
 class TestDefaultDowngradeNotice:
     def _isolate(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
 
     def test_notice_when_default_and_cli_missing(self, tmp_path, monkeypatch):
         self._isolate(tmp_path, monkeypatch)
@@ -1188,7 +1188,7 @@ class TestTimeoutProcessGroupKill:
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently
         before the group kill)."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
         pid_file = tmp_path / "grandchild.pid"
         cli = _fake_cli(tmp_path, (
             "cat > /dev/null\n"

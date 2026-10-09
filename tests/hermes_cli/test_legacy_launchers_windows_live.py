@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-import hermes_cli.gateway_windows as gateway_windows
+from hermes_cli import gateway_windows
 
 
 @pytest.mark.platforms("windows")

@@ -158,7 +158,7 @@ def add_comment_xml(doc, runs, text, author, initials) -> str:
     root = _comments_root(doc)
     if root is None:
         root = etree.fromstring(
-            f'<w:comments xmlns:w="{W}"/>'.encode("utf-8"))
+            f'<w:comments xmlns:w="{W}"/>'.encode())
         from docx.opc.packuri import PackURI
         from docx.opc.part import Part
         blob = etree.tostring(root, xml_declaration=True,
@@ -257,7 +257,7 @@ def main() -> int:
         return 0
 
     if args.cmd == "add":
-        para, runs = find_anchor_runs(doc, args.target)
+        _para, runs = find_anchor_runs(doc, args.target)
         if not runs:
             print(json.dumps({"ok": False,
                               "error": f"target not found: {args.target}"}))

@@ -93,10 +93,8 @@ class TestGatewayPinningFailsClosed:
 
     @staticmethod
     def _assert_no_route_change(runner):
-        getattr(runner.session_store, "switch_session").assert_not_called()
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_not_called()
+        runner.session_store.switch_session.assert_not_called()
+        runner.session_store.advance_compression_session.assert_not_called()
 
 
     @pytest.mark.asyncio
@@ -113,7 +111,7 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once_with(
+        runner.session_store.switch_session.assert_called_once_with(
             current.session_key, "sess_live", expected_session_id=current.session_id,
         )
 
@@ -170,9 +168,7 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is tip
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
+        runner.session_store.advance_compression_session.assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
 
     @pytest.mark.asyncio
     async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
@@ -203,9 +199,7 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is tip
-        getattr(
-            runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+        runner.session_store.advance_compression_session.assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
 
 
 

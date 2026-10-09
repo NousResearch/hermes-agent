@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import gateway.media_fetch as media_fetch
+from gateway import media_fetch
 from gateway.platforms.base import BasePlatformAdapter
 from tools.environments.base import BaseEnvironment, FileFetchError
 

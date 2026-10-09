@@ -50,7 +50,7 @@ _THUMB_URI_PREFIX = "data:image/jpg;base64,"
 _MEDIA_KIND_PRECEDENCE = (("audio/", MessageType.VOICE), ("image/", MessageType.PHOTO))  # first match wins
 
 
-def _parse_comma_list(value: str) -> List[str]:
+def _parse_comma_list(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
@@ -140,8 +140,8 @@ class SimplexAdapter(BasePlatformAdapter):
         self._last_ws_activity = 0.0
         self._pending_corr_ids: set = set()  # cosmetic echo filter: corrIds we minted, bounded
         self._max_pending_corr = 200
-        self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
-        self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
+        self._pending_file_transfers: dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
+        self._pending_responses: dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
         # SimpleX has no client-side split, so the split delay equals the plain one.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
@@ -355,8 +355,8 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.debug("SimpleX: ignoring message with no sender")
             return
         # Attachment: chatItem.chatItem.file (sibling of meta/content/chatDir).
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         file_info = chat_item_data.get("file")
         if file_info and isinstance(file_info, dict):
             file_source = file_info.get("fileSource", {}) or {}
@@ -451,7 +451,7 @@ class SimplexAdapter(BasePlatformAdapter):
         return SendResult(success=True) if result is not None else SendResult(success=False, error=error)
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send text; ``MEDIA:<path>`` tags (TTS / audio tools) are stripped and sent as native voice
         notes or documents. The text send is fire-and-forget: the daemon doesn't always return a corrId
@@ -471,7 +471,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 return media_result
         return SendResult(success=True)
 
-    async def list_channels(self) -> Optional[List[Dict[str, Any]]]:
+    async def list_channels(self) -> Optional[list[dict[str, Any]]]:
         """Enumerate contacts and allowed groups for the channel directory.
 
         Returns ``None`` (not ``[]``) when the WebSocket is down or the daemon is unresponsive so
@@ -483,7 +483,7 @@ class SimplexAdapter(BasePlatformAdapter):
         resp = await self._send_command("/contacts", timeout=10.0)
         if resp is None:
             return None
-        channels: List[Dict[str, Any]] = []
+        channels: list[dict[str, Any]] = []
         for contact in resp.get("contacts") or []:
             if not isinstance(contact, dict):
                 continue
@@ -599,7 +599,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """SimpleX has no typing-indicator API — no-op."""
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         is_group = chat_id.startswith("group:")
         return {"chat_id": chat_id, "type": "group" if is_group else "dm", "name": chat_id[6:] if is_group else chat_id}
 
@@ -609,7 +609,7 @@ def check_requirements() -> bool:
     if not _get_scoped_secret("SIMPLEX_WS_URL"):
         return False
     try:
-        import websockets  # noqa: F401
+        import websockets
         return True
     except ImportError:
         return False
@@ -641,8 +641,8 @@ def _env_enablement() -> Optional[dict]:
 
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
-    thread_id: Optional[str] = None, media_files: Optional[List[str]] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+    thread_id: Optional[str] = None, media_files: Optional[list[str]] = None, force_document: bool = False,
+) -> dict[str, Any]:
     """Ephemeral WebSocket send for ``tools/send_message_tool`` when the gateway runner is not in
     this process (``hermes cron``). ``thread_id``/``force_document`` are signature parity only;
     ``media_files`` is accepted but only the text body is delivered — SimpleX file transfers need

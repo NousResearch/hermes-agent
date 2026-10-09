@@ -247,6 +247,19 @@ def test_release_gates_extract_consumer_facing_versions():
     )
     assert '"$package/bin/hermes" --version' in nix_check
     assert "actual != expected" in nix_check
+    # A path: flake has no git metadata; without ?rev= the stamp has no commit
+    # and the packaged CLI reports "unknown".
+    assert 'release-source?rev=$GITHUB_SHA' in nix_check
+    flake_check = next(step["run"] for step in nix["flake-check"]["steps"] if step.get("name") == "nix flake check")
+    assert "release-source?rev={1}" in flake_check and "github.sha" in flake_check
+
+
+def test_versioned_docker_images_belong_to_one_attempt():
+    # The final vX.Y.Z does not exist until publish; a second attempt pushing
+    # under it collides with the first attempt's immutable manifest list.
+    jobs = workflow("stable-release.yml")["jobs"]
+    for name in ("docker", "publish-docker"):
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():

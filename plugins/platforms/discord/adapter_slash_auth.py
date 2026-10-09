@@ -22,7 +22,7 @@ class DiscordSlashAuthMixin:
 
     def _evaluate_slash_authorization(
         self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> tuple[bool, Optional[str]]:
         """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.

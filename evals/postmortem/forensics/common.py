@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 USAGE_COLS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
 
 
-def _lstsq(rows: List[List[float]], y: List[float]) -> List[float]:
+def _lstsq(rows: list[list[float]], y: list[float]) -> list[float]:
     """Ordinary least squares without numpy (4 unknowns): normal equations solved by Gaussian elimination."""
     n = len(rows[0])
     ata = [[sum(r[i] * r[j] for r in rows) for j in range(n)] for i in range(n)]
@@ -51,10 +51,10 @@ class Run:
     db_path: Path
     out_dir: Path
     root: str
-    sessions: Dict[str, Dict[str, Any]]
-    depth: Dict[str, int]
-    in_run: List[str]                      # root + descendants, rollover excluded, dispatch order
-    price_per_token: Dict[str, float]      # fitted: USD per token for each USAGE_COLS entry
+    sessions: dict[str, dict[str, Any]]
+    depth: dict[str, int]
+    in_run: list[str]                      # root + descendants, rollover excluded, dispatch order
+    price_per_token: dict[str, float]      # fitted: USD per token for each USAGE_COLS entry
     _conn: sqlite3.Connection = field(repr=False)
 
     # ── construction ──────────────────────────────────────────────────────────────────────────
@@ -67,16 +67,16 @@ class Run:
         return ap
 
     @classmethod
-    def from_args(cls, argv: Optional[List[str]] = None, description: str = "") -> "Run":
+    def from_args(cls, argv: Optional[list[str]] = None, description: str = "") -> "Run":
         a = cls.parser(description).parse_args(argv)
         return cls.open(a.db, root=a.root, out=a.out)
 
     @classmethod
-    def open(cls, db: str, *, root: Optional[str] = None, out: str = "postmortem_out") -> "Run":  # noqa: C901
+    def open(cls, db: str, *, root: Optional[str] = None, out: str = "postmortem_out") -> "Run":
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         sessions = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sessions")}
-        children: Dict[Optional[str], List[str]] = collections.defaultdict(list)
+        children: dict[Optional[str], list[str]] = collections.defaultdict(list)
         for sid, s in sessions.items():
             children[s.get("parent_session_id")].append(sid)
         rollover = cls._rollover_ids(conn, sessions)
@@ -90,8 +90,8 @@ class Run:
                             n += 1; stack.append(c)
                 return n
             root = str(max((sid for sid in sessions if sessions[sid].get("parent_session_id") is None), key=size))
-        depth: Dict[str, int] = {}
-        order: List[str] = []
+        depth: dict[str, int] = {}
+        order: list[str] = []
         stack = [(root, 0)]
         while stack:
             sid, d = stack.pop()
@@ -103,7 +103,7 @@ class Run:
         return cls(Path(db), out_dir, root, sessions, depth, order, price, conn)
 
     @staticmethod
-    def _rollover_ids(conn: sqlite3.Connection, sessions: Dict[str, Dict[str, Any]]) -> set:
+    def _rollover_ids(conn: sqlite3.Connection, sessions: dict[str, dict[str, Any]]) -> set:
         """Children created by in-place compression rollover, not by delegation: a child whose ``source``
         is a top-level surface (cli/tui/telegram/...), not ``subagent``, whose parent shares that source,
         and which started within a few seconds of the parent ending. Their whole later lifetime belongs to
@@ -125,7 +125,7 @@ class Run:
         return out
 
     @staticmethod
-    def _fit_pricing(rows: Iterable[Dict[str, Any]]) -> Dict[str, float]:
+    def _fit_pricing(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
         X, y = [], []
         for s in rows:
             cost = s.get("estimated_cost_usd")
@@ -148,10 +148,10 @@ class Run:
     def cost(self, sid: str) -> float:
         return float(self.sessions[sid].get("estimated_cost_usd") or 0.0)
 
-    def messages(self, sid: str, cols: str = "*") -> List[Dict[str, Any]]:
+    def messages(self, sid: str, cols: str = "*") -> list[dict[str, Any]]:
         return [dict(r) for r in self._conn.execute(f"SELECT {cols} FROM messages WHERE session_id=? ORDER BY id", (sid,))]
 
-    def iter_messages(self, sids: Iterable[str], cols: str = "*") -> Iterator[Dict[str, Any]]:
+    def iter_messages(self, sids: Iterable[str], cols: str = "*") -> Iterator[dict[str, Any]]:
         for sid in sids:
             yield from self.messages(sid, cols)
 
@@ -162,8 +162,8 @@ class Run:
         r = self._conn.execute("SELECT length(prompt) AS n FROM system_prompts WHERE hash=?", (h,)).fetchone()
         return int(r["n"]) if r else 0
 
-    def by_depth(self) -> Dict[int, List[str]]:
-        out: Dict[int, List[str]] = collections.defaultdict(list)
+    def by_depth(self) -> dict[int, list[str]]:
+        out: dict[int, list[str]] = collections.defaultdict(list)
         for sid in self.in_run:
             out[self.depth[sid]].append(sid)
         return dict(out)
@@ -173,7 +173,7 @@ class Run:
         p.write_text(json.dumps(data, indent=1, default=str) if not name.endswith(".md") else str(data), encoding="utf-8")
         return p
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         tot = {c: sum(float(self.sessions[s].get(c) or 0) for s in self.in_run) for c in USAGE_COLS}
         return {
             "root": self.root, "sessions": len(self.in_run), "children": len(self.in_run) - 1,

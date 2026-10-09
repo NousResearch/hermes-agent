@@ -12,15 +12,15 @@ ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 _TARGET_FIELDS = frozenset({"name", "mcp"})
 
 
-def normalize_targets(raw: Any) -> Tuple[List[str], List[str], Optional[str]]:
+def normalize_targets(raw: Any) -> tuple[list[str], list[str], Optional[str]]:
     if raw is None:
         return [], [], None
     if isinstance(raw, (str, dict)):
         raw = [raw]
     if not isinstance(raw, list):
         return [], [], "'connectors' must be a list of names or {name, mcp} objects."
-    managed: List[str] = []
-    mcp: List[str] = []
+    managed: list[str] = []
+    mcp: list[str] = []
     for item in raw:
         if isinstance(item, dict):
             unknown = sorted(set(item) - _TARGET_FIELDS)
@@ -42,7 +42,7 @@ def normalize_targets(raw: Any) -> Tuple[List[str], List[str], Optional[str]]:
     return managed, mcp, None
 
 
-def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional[str]:
+def validate_action(action: str, managed: list[str], mcp: list[str]) -> Optional[str]:
     if action not in ALL_ACTIONS:
         return (
             f"action must be one of {', '.join(ALL_ACTIONS)}. "
@@ -71,7 +71,7 @@ def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional
     return None
 
 
-def catalog_names() -> Set[str]:
+def catalog_names() -> set[str]:
     try:
         from hermes_cli.mcp_catalog import list_catalog
 
@@ -81,7 +81,7 @@ def catalog_names() -> Set[str]:
         return set()
 
 
-def hosted_names() -> Optional[Set[str]]:
+def hosted_names() -> Optional[set[str]]:
     try:
         from tools.connectors.gateway.client import ConnectorClient
         from tools.connectors.gateway.config import connectors_available

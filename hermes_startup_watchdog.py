@@ -144,7 +144,7 @@ def _append_dump(write, failure_msg: str) -> None:
         logger.debug(failure_msg, exc_info=True)
 
 
-def _write_dump_record(record: Dict[str, Any]) -> None:
+def _write_dump_record(record: dict[str, Any]) -> None:
     """Append a one-line JSON metadata record beside the faulthandler dump."""
     _append_dump(
         lambda fh: fh.write(json.dumps(record, default=str) + "\n"),

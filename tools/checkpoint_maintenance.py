@@ -139,7 +139,7 @@ def prune_checkpoints(
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
     orphan_allowlist: Optional[set] = None,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.
 
     A project entry is deleted when either:
@@ -194,9 +194,9 @@ def prune_checkpoints(
 
 
 def _prune_checkpoints(
-    base: Path, result: Dict[str, int], retention_days: int, delete_orphans: bool,
+    base: Path, result: dict[str, int], retention_days: int, delete_orphans: bool,
     max_total_size_mb: int, orphan_allowlist: Optional[set],
-) -> Dict[str, int]:
+) -> dict[str, int]:
     size_before = _dir_size_bytes(base)
 
     # --- Legacy pre-v2 per-project shadow repos (kept directly under base) ---
@@ -367,7 +367,7 @@ def maybe_auto_prune_checkpoints(
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
 
     Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
@@ -377,7 +377,7 @@ def maybe_auto_prune_checkpoints(
     "error": optional str}``.
     """
     base = checkpoint_base or _resolve_checkpoint_base()
-    out: Dict[str, object] = {"skipped": False}
+    out: dict[str, object] = {"skipped": False}
 
     try:
         if not base.exists():
@@ -421,7 +421,7 @@ def maybe_auto_prune_checkpoints(
     return out
 
 
-def auto_prune_from_config() -> Dict[str, object]:
+def auto_prune_from_config() -> dict[str, object]:
     """``maybe_auto_prune_checkpoints`` driven by the ``checkpoints:`` config section — the one
     startup/housekeeping entry point for the CLI and the gateway. ``delete_orphans`` is never
     honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
@@ -471,7 +471,7 @@ def checkpoint_footprint_notice() -> Optional[str]:
 # Public helpers for `hermes checkpoints` CLI
 # ---------------------------------------------------------------------------
 
-def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
+def store_status(checkpoint_base: Optional[Path] = None) -> dict:
     """Return a summary of the shadow store.
 
     ``{"base": path, "store_size_bytes": N, "legacy_size_bytes": N,
@@ -486,7 +486,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     both layouts.
     """
     base = checkpoint_base or _resolve_checkpoint_base()
-    out: Dict = {
+    out: dict = {
         "base": str(base),
         "store_size_bytes": 0,
         "legacy_size_bytes": 0,
@@ -559,7 +559,7 @@ def _rmtree_force(path: Path) -> None:
     rmtree_readonly(path)
 
 
-def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_all(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
@@ -581,7 +581,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     return out
 
 
-def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_legacy(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0, "errors": 0}

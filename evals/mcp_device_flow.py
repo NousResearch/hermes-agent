@@ -38,7 +38,7 @@ def oauth_fixture(mode="success"):
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             wire.append({"path": self.path, "method": "GET"})
             if self.path == "/mcp":
                 if self.headers.get("Authorization") == "Bearer fixture-access":
@@ -62,7 +62,7 @@ def oauth_fixture(mode="success"):
                 return self.reply(200, metadata)
             self.reply(404, {})
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             data = json.loads(raw) if "json" in self.headers.get("Content-Type", "") else {
                 key: value[0] for key, value in parse_qs(raw.decode()).items()}

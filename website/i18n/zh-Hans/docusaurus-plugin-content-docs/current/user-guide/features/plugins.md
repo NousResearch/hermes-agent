@@ -164,6 +164,8 @@ hermes plugins enable <name>      # 添加到允许列表
 hermes plugins disable <name>     # 从允许列表移除并添加到禁用列表
 ```
 
+如果你保存过工具选择（`hermes tools`，即 `platform_toolsets` 显式列出工具集），禁用插件时也会把它的工具集从这些已保存的列表中移除，启用时再加回去。CLI 与 Desktop/TUI/仪表盘开关的行为一致。没有已保存的选择时不会改动列表：插件的工具集默认开启。
+
 执行 `hermes plugins install owner/repo` 后，会询问 `Enable 'name' now? [y/N]` — 默认为否。脚本化安装时可用 `--enable` 或 `--no-enable` 跳过提示。
 
 ### 允许列表不控制的内容

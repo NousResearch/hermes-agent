@@ -51,7 +51,7 @@ def load_patterns(path: Path = PATTERNS) -> list[dict]:
     for p in data["patterns"]:
         # ``path_regex`` (optional) restricts a pattern to files whose repo-relative path matches.
         path_rx = re.compile(p["path_regex"]) if p.get("path_regex") else None
-        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.M), "_path_rx": path_rx})
+        out.append({**p, "_rx": re.compile(p["pattern_regex"], re.MULTILINE), "_path_rx": path_rx})
     return out
 
 

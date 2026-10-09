@@ -97,7 +97,7 @@ class GGUFHeader:
     def _arch_key(self, suffix: str):
         return self.metadata.get(f"{self.architecture}.{suffix}")
 
-    def _arch_int(suffix: str, doc: str = ""):  # noqa: N805 — property factory, deleted below
+    def _arch_int(suffix: str, doc: str = ""):
         return property(lambda self: int(self._arch_key(suffix) or 0), doc=doc)
 
     n_layer = _arch_int("block_count")

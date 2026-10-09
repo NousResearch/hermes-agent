@@ -355,7 +355,7 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
                 entry = tags.get(name)
                 sha, target = (entry[0], entry[1]) if entry else ("", "")
                 if sha:
-                    lines.append(f"{sha}\t{ref if ref.endswith('^{}') else ref}")
+                    lines.append(f"{sha}\t{ref}")
                     if ref.endswith("^{}"):
                         lines[-1] = f"{target}\t{ref}"
             return "\n".join(lines)
@@ -447,7 +447,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
     manifest_digest = hashlib.sha256(b"m").hexdigest()
-    _tags, releases, run = _sequencer_fixture(
+    _tags, _releases, run = _sequencer_fixture(
         "0.21.5", manifest_digest=manifest_digest, drafts_on_claim_tag=True)
     events = []
     head = ["0.21.4"]

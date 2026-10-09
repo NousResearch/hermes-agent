@@ -592,7 +592,7 @@ def format_steer_marker(steer_text: str) -> str:
 STEER_DISPLAY_KIND = "steer"
 
 
-def steer_user_row(steer_text: str) -> Dict[str, Any]:
+def steer_user_row(steer_text: str) -> dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
@@ -1001,7 +1001,7 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
 def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
-    known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
+    known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None
     os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
     return f"  OS: {os_line}" if os_line else ""
 
@@ -1014,7 +1014,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if formatted is None:
         formatted = ""
         try:
-            import tools.terminal_tool as terminal_tool  # heavy; only needed for non-local backends
+            from tools import terminal_tool  # heavy; only needed for non-local backends
         except Exception as e:
             logger.debug("Backend probe unavailable (import failed): %s", e)
         else:

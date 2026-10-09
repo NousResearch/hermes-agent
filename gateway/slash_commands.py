@@ -943,7 +943,7 @@ class GatewaySlashCommandsMixin(
         if (store := self.session_store) is not None:
             # A first-message /yolo has no routing entry yet; materialize it so the flag has a home.
             persisted = (await self.async_session_store.get_or_create_session(event.source)).yolo is True
-            persist = lambda on: store.set_session_yolo(session_key, on)  # noqa: E731
+            persist = lambda on: store.set_session_yolo(session_key, on)
         # Off the loop: the persist is a routing-store write (thread-safe, like AsyncSessionStore's calls).
         enable = await asyncio.to_thread(toggle_session_yolo, session_key, persisted=persisted, persist=persist)
         return EphemeralReply(t("gateway.yolo.enabled" if enable else "gateway.yolo.disabled"))

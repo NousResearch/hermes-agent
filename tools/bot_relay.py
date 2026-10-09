@@ -637,7 +637,7 @@ class TurnBusyError(RuntimeError):
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
+                         f"queued behind it for ~{round(waited_seconds)}s without it finishing. "
                          "The message was NOT delivered; retry shortly.")
 
 

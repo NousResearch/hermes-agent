@@ -30,9 +30,9 @@ CALLS = {
 def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypatch):
     from pm.shell import bash
     from tools.registry import registry
-    import tools.file_tools  # noqa: F401 - populate schemas
-    import tools.web_tools  # noqa: F401
-    import tools.terminal_tool  # noqa: F401
+    import tools.file_tools
+    import tools.web_tools
+    import tools.terminal_tool
 
     shell = bash()
     assert shell

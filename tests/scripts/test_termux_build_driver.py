@@ -145,7 +145,7 @@ def test_missing_prepared_payload_is_rejected_before_frontend_work(build_fixture
     ("build_deb.sh", ["node-deps.mjs", "tui.mjs", "build_deb.sh"]),
 ])
 def test_child_failure_stops_sequence_even_with_stale_product(build_fixture, stage, reached):
-    repo, payload, out, log, env = build_fixture
+    repo, _payload, out, log, env = build_fixture
     stale = repo / ".build/termux/tui/dist/entry.js"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale product")

@@ -16,7 +16,7 @@ from tests.ci.desktop_release_roles import (
     commit_summary, native_builds, needs_of, selection_gates, stage_step, termux_builder, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -212,7 +212,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     patches "succeed" with a plausible diff while landing in the wrong directory).
     """
 
-    def __init__(self, terminal_env, cwd: str = None):
+    def __init__(self, terminal_env, cwd: str | None = None):
         self.env = terminal_env
         # Never os.getcwd(): that is the HOST path, absent inside container backends.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
@@ -220,12 +220,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Ordinary executables: bool cache (hits AND misses). rg is special — it has
         # an off-PATH resolver and may be installed mid-session — so only successful
         # rg resolutions are cached (see SearchMixin._resolve_command).
-        self._command_cache: Dict[str, bool] = {}
-        self._rg_resolution_cache: Dict[str, str] = {}
-        self._rg_modified_capability: Dict[str, Optional[str]] = {}
+        self._command_cache: dict[str, bool] = {}
+        self._rg_resolution_cache: dict[str, str] = {}
+        self._rg_modified_capability: dict[str, Optional[str]] = {}
 
-    def _exec(self, command: str, cwd: str = None, timeout: int = None,
-              stdin_data: str = None) -> ExecuteResult:
+    def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
+              stdin_data: str | None = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
         init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX)."""
         kwargs = {}
@@ -467,7 +467,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     pass
             return True
 
-    def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
+    def _is_likely_binary(self, path: str, content_sample: str | None = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
         if has_binary_extension(path):
             return True
@@ -714,7 +714,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._escape_shell_arg(sys.executable)
         return "python3"
 
-    def _exec_python_snippet(self, snippet: str, py: str = None) -> ExecuteResult:
+    def _exec_python_snippet(self, snippet: str, py: str | None = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
         Base64-encodes the snippet so it survives every shell/quoting layer

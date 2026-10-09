@@ -278,7 +278,7 @@ def test_form_layout_detects_problems(workdir: Path):
 def _raster_available() -> bool:
     import shutil
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         return True
     except ImportError:
         return shutil.which("pdftoppm") is not None

@@ -90,7 +90,7 @@ class TestRuntimeResolution:
 
     @pytest.fixture(autouse=True)
     def _stub_portal_credentials(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
         monkeypatch.setattr(rp, "load_pool", lambda p: SimpleNamespace(
             has_credentials=lambda: False,

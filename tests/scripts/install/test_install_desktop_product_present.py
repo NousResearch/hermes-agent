@@ -45,6 +45,6 @@ def test_install_sh_without_desktop_build(tmp_path):
 def test_install_ps1_candidates_match_install_sh():
     body = INSTALL_PS1.read_text(encoding="utf-8")
     fn = body[body.index("function Test-DesktopProductPresent"):]
-    listed = re.search(r"foreach \(\$candidate in @\((.*?)\)\)", fn, re.S)
+    listed = re.search(r"foreach \(\$candidate in @\((.*?)\)\)", fn, re.DOTALL)
     assert listed, "Test-DesktopProductPresent candidate list not found"
     assert set(re.findall(r'"([^"]+)"', listed.group(1))) == set(UNPACKED_DIRS)

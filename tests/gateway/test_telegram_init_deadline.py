@@ -1,8 +1,8 @@
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio

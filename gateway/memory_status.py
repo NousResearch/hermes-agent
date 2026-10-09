@@ -75,12 +75,12 @@ def collect_memory_status(
     home: Optional[Path] = None,
     *,
     now: Optional[datetime] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """``memory`` block for ``/api/status``; ``home`` scopes to a profile (``None`` =
     active), ``now`` is injectable.  Never raises — a down gateway or corrupt files
     yield ``pressure="unknown"`` plus whatever fields could be recovered."""
     moment = now or datetime.now(timezone.utc)
-    status: Dict[str, Any] = {
+    status: dict[str, Any] = {
         "pressure": "unknown", "gateway_rss_mb": None, "system_total_mb": None, "system_available_mb": None,
         "swap_used_mb": None, "sampled_at": None, "last_boot_unclean": False, "last_boot_suspected_oom": False,
         # Identity of the CURRENT life (sentinel started_at): the dashboard keys

@@ -402,7 +402,7 @@ class MCPOAuthManager:
                 return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):
-                entry.provider._initialized = False  # noqa: SLF001
+                entry.provider._initialized = False
             logger.info("MCP OAuth '%s': tokens file changed (mtime %d -> %d), forcing reload", server_name, old, mtime_ns)
             return True
 

@@ -371,7 +371,7 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
-def _image_part_chars(part: Dict[str, Any], image_cost: int) -> int:
+def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:
     """Char-equivalent of one image content part: the per-image cost learned from provider usage
     (x4 chars/token), never the base64 payload length. A single native screenshot priced as text
     read as ~100K+ tokens and selected the giant-conversation watchdog tiers (#63871, #76411)."""
@@ -466,7 +466,7 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     return None
 
 
-def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
+def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     """Build the validated provider-routing object shared by request paths.
 
     ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
@@ -510,7 +510,7 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
         if nous_profile is not None:
             anthropic_kwargs.setdefault("extra_body", {}).update(
                 nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
-    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
+    except Exception as exc:
         logger.debug("Nous Portal extra_body merge failed: %s", exc)
     return anthropic_kwargs
 
@@ -861,7 +861,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
         return "⚙ processing prompt"
-    except Exception:  # noqa: BLE001 — a status nicety must never break a call
+    except Exception:
         return None
 
 
@@ -4050,5 +4050,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
-__all__ = ["interruptible_api_call", "build_api_kwargs", "build_assistant_message", "try_activate_fallback",
-    "handle_max_iterations", "cleanup_task_resources", "interruptible_streaming_api_call"]
+__all__ = [
+    "build_api_kwargs",
+    "build_assistant_message",
+    "cleanup_task_resources",
+    "handle_max_iterations",
+    "interruptible_api_call",
+    "interruptible_streaming_api_call",
+    "try_activate_fallback",
+]

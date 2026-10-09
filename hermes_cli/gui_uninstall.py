@@ -48,7 +48,7 @@ def desktop_install_record() -> Path:
     """Where ``hermes update`` records the installed ``Hermes.app`` copies it keeps current. The apps
     are machine-wide, so the record sits under the default root whichever profile runs; deleting it
     is what stops an uninstalled app from being put back by the next update."""
-    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    from hermes_constants import get_default_hermes_root
     return get_default_hermes_root() / "desktop-installed-apps.json"
 
 

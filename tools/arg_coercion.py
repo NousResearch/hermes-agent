@@ -17,7 +17,7 @@ from tools.registry import registry
 logger = logging.getLogger("model_tools")
 
 
-def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
     if not args or not isinstance(args, dict):
         return args

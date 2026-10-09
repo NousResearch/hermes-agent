@@ -281,7 +281,7 @@ class Leg:
                      writable=[self.root], timeout=timeout)
 
     def popen(self, *args: str) -> subprocess.Popen:
-        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")  # noqa: SIM115
+        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")
         return subprocess.Popen(
             H.sandbox_argv([*_KILLED_RUN_PREFIX, self.hermes, *args], writable=[self.root]),
             env=self.env, cwd=str(self.install), stdin=subprocess.DEVNULL,

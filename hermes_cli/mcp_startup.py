@@ -15,8 +15,8 @@ _mcp_discovery_lock = threading.Lock()
 # override): a shared Desktop/dashboard backend serving several profiles runs one discovery per
 # profile instead of the first profile to build an agent claiming the slot for everybody (#67605).
 # A single-profile process has exactly one key, so behaviour is the old single-slot form.
-_mcp_discovery_started: Set[str] = set()
-_mcp_discovery_thread: Dict[str, threading.Thread] = {}
+_mcp_discovery_started: set[str] = set()
+_mcp_discovery_thread: dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
 # ``None`` = no filter (spawn every configured server). Set once at CLI

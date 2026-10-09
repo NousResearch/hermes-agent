@@ -1307,7 +1307,6 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
 
     async def never_returns(*_args, **_kwargs):
         await hung.wait()
-        return None
 
     runner._send_restart_notification = never_returns
     runner._claim_pending_obligations = AsyncMock(return_value=[])

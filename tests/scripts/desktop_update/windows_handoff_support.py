@@ -115,7 +115,7 @@ class _HeldLock:
         deadline = time.monotonic() + 30
         while True:
             try:
-                self._f = open(home / (MARKER + '.lock'), 'a+b')   # noqa: SIM115  # windows-footgun: ok — binary mode
+                self._f = open(home / (MARKER + '.lock'), 'a+b')   # windows-footgun: ok — binary mode
                 return
             except PermissionError:   # the script holds it right now
                 assert time.monotonic() < deadline, 'never got the marker lock'

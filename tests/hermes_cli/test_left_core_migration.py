@@ -236,7 +236,7 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
         plugin.mkdir(parents=True)
         return {"ok": True}
 
-    quiet = lambda message: None  # noqa: E731
+    quiet = lambda message: None
     monkeypatch.setattr(mpm, "catalog_source", lambda name: None)
     assert lcm.migrate_home(home, install=install, say=quiet) == []
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
@@ -266,7 +266,7 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     git_error = ("Could not download the plugin from https://github.com/x/y. Check the address.\n"
                  "Details: Cloning into '/h/plugins/.install-1'...\n"
                  "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com\n")
-    failing = lambda name: {"ok": False, "error": git_error}  # noqa: E731
+    failing = lambda name: {"ok": False, "error": git_error}
     monkeypatch.setattr(lcm, "_install_into", lambda h: failing)
     said = []
     assert lcm.recover_at_startup(say=said.append) == []

@@ -326,7 +326,26 @@ def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> s
     configured_provider = _cfg_provider(model_cfg)
     if provider == "actual":
         configured_provider = _models.normalize_provider(configured_provider)
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
+    if not _same_registered_provider(provider, configured_provider):
+        return ""
+    cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    if cfg_url and _stale_cross_provider_config_base_url(provider, cfg_url):
+        logger.warning("ignoring model.base_url %s: it is another provider's canonical endpoint, not %s's "
+                       "(left over from a provider switch; fix: hermes config unset model.base_url)", cfg_url, provider)
+        return ""
+    return cfg_url
+
+
+def _stale_cross_provider_config_base_url(provider: str, cfg_url: str) -> bool:
+    """Whether a persisted ``model.base_url`` under *provider* is another provider's canonical
+    endpoint — judged only for subscription-routed (OAuth) providers, whose endpoint the provider
+    itself fixes: openai-codex requests on ``https://api.anthropic.com`` all 404 behind an
+    outage-looking retry message (#135676). Key-based providers keep every override — region
+    endpoints (minimax → minimax-cn) and proxies are deliberate user choices (#6039)."""
+    pconfig = PROVIDER_REGISTRY.get(str(provider or "").strip().lower())
+    if pconfig is None or "oauth" not in str(getattr(pconfig, "auth_type", "") or ""):
+        return False
+    return is_foreign_provider_endpoint(provider, cfg_url)
 
 
 def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:

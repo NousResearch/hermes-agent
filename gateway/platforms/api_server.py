@@ -129,9 +129,20 @@ def _approval_request_event(run_id: str, approval_data: Optional[dict[str, Any]]
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
-except ImportError:
+except ImportError as _aiohttp_import_error:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+    # The adapter registry only reports its registered requirement text ("API Server:
+    # aiohttp not installed"), which is also reused for Webhook/MSGraph and hides the
+    # real cause. Log the actual exception here so a missing api_server is diagnosable
+    # from the boot log in minutes: the usual cause is a dependency generation that
+    # dropped the payload's extras (aiohttp ships in [all] via [sms] and in [messaging]).
+    logging.getLogger(__name__).warning(
+        "api_server: aiohttp is not importable from the running dependency environment "
+        "(%s); the API server adapter will not start. Rebuild the install's dependency "
+        "generation with the payload's extras (`hermes pm install`).",
+        _aiohttp_import_error, exc_info=True,
+    )
 
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting

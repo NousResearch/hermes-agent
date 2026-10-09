@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import logging
 import os
 import re
 import site
@@ -16,6 +17,8 @@ import sys
 from pathlib import Path
 
 from pm.environments import install_state_dir, selected_venv, site_packages, venv_bin_dir
+
+logger = logging.getLogger(__name__)
 
 
 def running_environment(project_root: Path) -> Path | None:
@@ -61,6 +64,27 @@ def _replace(value: str, old: Path, new: Path) -> str:
                            for part in value.split(os.pathsep))
 
 
+def _lost_extras(previous: Path, selected: Path) -> list[str]:
+    """Extras whose anchors live in *previous*'s site-packages but not in *selected*'s.
+
+    A selection that drops a feature the running environment had cannot satisfy the process
+    being swapped onto it: after adoption the import fails, and dependents quietly degrade
+    (aiohttp -> ``AIOHTTP_AVAILABLE`` False -> api_server never listens; 2026-10-09). The
+    probe is a filesystem check per anchor, so it costs nothing on the hot path and needs no
+    import of the trees involved.
+    """
+    from pm.extras import ANCHORS, _anchors, _installed_in
+
+    old, new = site_packages(previous), site_packages(selected)
+    lost = []
+    for extra in sorted(ANCHORS):
+        anchors = _anchors(extra)
+        if all(_installed_in(old, anchor) for anchor in anchors) \
+                and not all(_installed_in(new, anchor) for anchor in anchors):
+            lost.append(extra)
+    return lost
+
+
 def adopt(previous: Path, selected: Path, running: Path) -> bool:
     """Swap this process from ``previous`` onto ``selected``; False means only a restart can load it."""
     from hermes_cli.runtime_state import lease_generation
@@ -70,6 +94,19 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
     if selected.resolve() == previous.resolve():
         return True
     if _loaded_from_changed(previous, selected):
+        return False
+    lost = _lost_extras(previous, selected)
+    if lost:
+        # Refuse rather than silently run a downgraded environment: this process keeps the
+        # features it was started with, and the warning names the generation to rebuild. A
+        # restart still boots the selected generation, so whoever reads this must fix the
+        # selection (rebuild it with the payload's extras) rather than restart and forget.
+        logger.warning(
+            "refusing to adopt dependency generation %s in this process: it is missing %s, "
+            "which %s provides. Rebuild the generation with the payload's extras "
+            "(`hermes pm install`) before restarting; a restart would boot it and lose those "
+            "features.", selected.parent.name, ", ".join(lost), previous.parent.name,
+        )
         return False
     lease_generation(selected)  # The old lease stays: loaded modules keep reading from it.
     old, new = site_packages(previous), site_packages(selected)

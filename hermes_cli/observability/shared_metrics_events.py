@@ -76,6 +76,11 @@ def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
     _compression_attempt.pending = (trigger, tokens_before)
 
 
+def discard_compression_attempt() -> None:
+    """Clear this thread's pending attempt without recording a shared metric."""
+    _compression_attempt.pending = None
+
+
 def finish_compression_attempt(
     commit_status: str, failure_class: str | None, context_length: Any, agent: Any = None,
 ) -> None:

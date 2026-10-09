@@ -641,12 +641,50 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+def _hermes_checkout_root() -> str:
+    """Absolute root of the running checkout (parent of ``tools/``).
+
+    Derived from the running file's location — never a hardcoded path — so the emitted runner
+    argv works for any install layout and can never drift from the code actually running.
+    """
+    return str(Path(__file__).resolve().parents[1])
+
+
+def _runner_bootstrap_argv(script: str) -> list[str]:
+    """Interpreter-bound runner invocation that carries its own import path.
+
+    THIS process has Hermes importable only because its launcher (or a self-importing argv)
+    inserted the checkout in-process; a freshly spawned child inherits none of that. A bare
+    ``[sys.executable, script]`` therefore dies with ``ModuleNotFoundError: No module named
+    'ruamel'`` the moment the runner reaches its first Hermes helper — ``from utils import
+    ...`` pulls ``hermes_yaml``, which imports ruamel — whenever ``sys.executable`` is the
+    bare store python (observed live: a teammate DM failed as "Live admission outcome unknown:
+    No module named 'ruamel'"). Emit the launcher's own bootstrap instead: re-insert the
+    derived checkout root and let ``hermes_bootstrap`` perform the canonical dependency
+    activation, so the child imports from any cwd and with any PYTHONPATH. Mirrors
+    ``hermes_cli.kanban_db_dispatch._module_hermes_argv``; keep the two in lockstep.
+    """
+    code = (
+        "import os, sys, runpy; "
+        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+        "os.environ.pop('VIRTUAL_ENV', None); "
+        f"sys.path.insert(0, {_hermes_checkout_root()!r}); "
+        "import hermes_bootstrap; "
+        # Restore the plain ``python <script> <args...>`` argv contract: sys.argv[0] must be
+        # the script, so ``main(sys.argv[1:])`` still sees ``--run-delivery`` first.
+        "sys.argv = sys.argv[1:]; "
+        "runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    return [sys.executable, "-I", "-c", code, script]
+
+
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
-                   "stdin" if stdin_file else "query-file", dm_file]
+    mode = "stdin" if stdin_file else "query-file"
+    runner_argv = [*_runner_bootstrap_argv(str(Path(__file__).resolve())), "--run-delivery",
+                   mode, dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
     runner_argv.extend(argv)
@@ -655,8 +693,10 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
         # paths executable there; backslash paths are parsed as command names (exit 127).
         runner_argv = [part.replace("\\", "/") for part in runner_argv]
     if author:
-        # Inserted after the slash rewrite: JSON escapes are backslashes too.
-        runner_argv[3:3] = ["--author", json.dumps(author, separators=(",", ":"))]
+        # Inserted after the slash rewrite: JSON escapes are backslashes too. Anchored on the
+        # ``--run-delivery`` token, never an index — the prefix is the bootstrap argv now.
+        at = runner_argv.index("--run-delivery") + 1
+        runner_argv[at:at] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 
 

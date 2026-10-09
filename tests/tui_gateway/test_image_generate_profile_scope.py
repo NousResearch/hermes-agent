@@ -68,7 +68,10 @@ def hosted(tmp_path, monkeypatch):
 
 
 def _probe(params: dict) -> dict:
-    resp = server._methods["image.generate"]("rid-probe", {"probe": True, **params})
+    # Go through the JSON-RPC admission gate (param validation) like a real client does.
+    resp = server.handle_request(
+        {"id": "rid-probe", "method": "image.generate", "params": {"probe": True, **params}}
+    )
     assert "error" not in resp, resp.get("error")
     return resp["result"]
 

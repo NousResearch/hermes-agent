@@ -1,7 +1,7 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: bc34c1ca8a34f3776373f83d1f0b82b2cc544b07
-version: "0.1.7"
+sha: f3a58389ff789ad98eec80a51ebcf4bec23fb439
+version: "0.1.8"
 description: >-
   A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
   and temporary interests, prepares reminders, maintains memory and a quiet Feed,
@@ -9,6 +9,8 @@ description: >-
   directly to the current profile's Bot Chat and run an assistant turn there. One Skill and six recurring
   Cron jobs, including weekly outcome/cost review and monthly workflow audit.
   These two scheduled reports propose changes and also go to Bot Chat.
+  A native output hook finalizes approved patrol/watch notice bodies; other
+  conversations and review reports are unchanged.
   Disclosure: first load creates profile-local muse files/SQLite state and owned
   scripts/Cron jobs; conversation hooks retain short real-user excerpts for upkeep;
   scheduled work uses the user's configured model/tools and may incur their normal
@@ -19,10 +21,10 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/bc34c1ca8a34f3776373f83d1f0b82b2cc544b07/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/f3a58389ff789ad98eec80a51ebcf4bec23fb439/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]
-  provides_hooks: [pre_llm_call, post_llm_call, on_session_end]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, on_session_end]
   provides_middleware: []
   requires_env: []

@@ -1,7 +1,7 @@
 name: hermes-live-voice
 repo: https://github.com/Synero/hermes-live-voice
-sha: 4a536f1c66f80d2978359dafaf92f7570dcfca6e
-version: "0.2.4"
+sha: 88cf7ba465765b2bc40cc855b6f956a91bdf4864
+version: "0.2.5"
 description: 'Full-duplex Live Voice for Hermes Desktop — GPT-Live-1 on the ChatGPT/Codex subscription via the local Codex app-server, with live transcript, voice tool calls and task delegation to the user chat.'
 maintainer: Synero
 tier: community

@@ -12,9 +12,9 @@ parses.
 
 import pytest
 
-import agent.skill_bundles as skill_bundles
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
+from agent import skill_bundles
+from agent import skill_commands
+from tools import skills_tool
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,

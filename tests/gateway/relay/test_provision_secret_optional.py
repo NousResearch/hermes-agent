@@ -23,7 +23,7 @@ import os
 
 import pytest
 
-import gateway.relay as relay
+from gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_WAKE_URL",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
 
 
 class _Resp:
@@ -61,7 +61,7 @@ class _Resp:
 
 
 def _post_returning(monkeypatch, body: str) -> None:
-    def _fake_json_post(url, token, payload, timeout):  # noqa: ANN001
+    def _fake_json_post(url, token, payload, timeout):
         return _Resp(body.encode())
 
     monkeypatch.setattr(relay, "_json_post", _fake_json_post, raising=True)

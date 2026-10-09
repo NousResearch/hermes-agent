@@ -349,7 +349,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             user_cfg = _load_gateway_config()
             gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
             section = gw.get(name) if isinstance(gw, dict) else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         return section if isinstance(section, dict) else None
 
@@ -412,7 +412,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             for profile_pending in (getattr(self, "_profile_failed_platforms", {}) or {}).values():
                 for platform in profile_pending or {}:
                     add_platform(platform)
-        except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
+        except Exception:
             logger.debug(
                 "scale-to-zero: active messaging platforms unreadable — staying awake",
                 exc_info=True,
@@ -425,7 +425,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         from gateway.relay import relay_wake_url
         try:
             return relay_wake_url()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def _scale_to_zero_should_arm(self) -> bool:
@@ -450,7 +450,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 messaging_is_relay_only_or_absent(active), active or "none",
                 "set" if self._relay_wake_url_or_none() else "MISSING",
             )
-        except Exception:  # noqa: BLE001 - diagnostics must never block startup
+        except Exception:
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
     def _scale_to_zero_is_idle(self) -> bool:
@@ -461,7 +461,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         def _read_or_awake(label: str, fn: Callable[[], Any], busy_sentinel: Any) -> Any:
             try:
                 return fn()
-            except Exception:  # noqa: BLE001 - unreadable source => assume busy
+            except Exception:
                 logger.debug("scale-to-zero: %s unreadable — staying awake", label, exc_info=True)
                 return busy_sentinel
 
@@ -496,7 +496,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """Best-effort runtime status write; failures are debug-logged with ``fail_msg``."""
         try:
             self._update_runtime_status(state)
-        except Exception:  # noqa: BLE001 - status is best-effort
+        except Exception:
             logger.debug(fail_msg, exc_info=True)
 
     def _relay_adapter_for_dormancy(self):
@@ -580,7 +580,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                             "scale-to-zero: connector did not ack going_idle — staying awake "
                             "rather than freezing a live destination"
                         )
-                except Exception:  # noqa: BLE001 - dormancy is best-effort
+                except Exception:
                     dormant_ok = False
                     logger.debug("scale-to-zero: go_dormant failed", exc_info=True)
                 # After a wake the drained inbound updates _last_inbound_at; give it a window so we
@@ -598,7 +598,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 await self._scale_to_zero_self_suspend()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - the watcher must never crash the gateway
+            except Exception:
                 logger.debug("scale-to-zero watcher iteration error", exc_info=True)
 
     async def _scale_to_zero_self_suspend(self) -> None:
@@ -642,7 +642,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "scale-to-zero: %s not accepted — machine stays awake (fail-awake); will "
                     "retry on the next idle window", lever,
                 )
-        except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
+        except Exception:
             logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
             self._scale_to_zero_abandon_suspend()
 
@@ -695,7 +695,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             # Trust the adapter's answer rather than the absence of an exception: it deliberately
             # never raises, so "did not throw" proves nothing.
             return method() is True
-        except Exception:  # noqa: BLE001 - never blocks the suspend it precedes
+        except Exception:
             logger.debug("scale-to-zero: redial hold toggle failed", exc_info=True)
             return False
 
@@ -756,7 +756,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         needs_attention: Optional[bool] = None, retrying_since: Any = _UNSET,
     ) -> None:
         from gateway.run import _write_runtime_status_quiet
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
         if needs_attention is not None:
             extra["needs_attention"] = needs_attention
         if retrying_since is not _UNSET:
@@ -808,7 +808,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     async def _drain_active_agents(
         self, timeout: float, cron_timeout: Optional[float] = None
-    ) -> tuple[Dict[str, Any], bool]:
+    ) -> tuple[dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
         loop = asyncio.get_running_loop()
         last_counts = self._drain_work_counts()
@@ -1169,7 +1169,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 from gateway.shutdown_flush import flush_agent_history_to_file
                 flush_agent_history_to_file(getattr(agent, "session_id", None), _session_messages)
 
-    async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
+    async def _finalize_shutdown_agents(self, active_agents: dict[str, Any]) -> None:
         for session_key, agent in active_agents.items():
             self._flush_agent_transcript_at_shutdown(agent)
             # Off-loop + bounded: plugin on_session_finalize hooks can do arbitrary synchronous work

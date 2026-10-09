@@ -49,7 +49,7 @@ async def test_repeated_identical_error_trips_breaker_and_stays_silent(caplog):
 @pytest.mark.asyncio
 async def test_real_sdk_start_with_issue_type_error_is_bounded_and_fatal(caplog):
     dingtalk_stream = pytest.importorskip("dingtalk_stream")
-    import websockets.exceptions  # noqa: F401 — in-gateway state: the SDK's own loop swallows the error
+    import websockets.exceptions
 
     adapter = _adapter()
     client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential("id", "secret"))

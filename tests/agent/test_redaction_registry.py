@@ -9,8 +9,17 @@ All tests call ``redact_sensitive_text(..., force=True)`` so results
 don't depend on the HERMES_REDACT_SECRETS environment of the test run,
 and reset the plugin registry around each test so module-global state
 never leaks between tests.
+
+That reset is SCOPED to this module (t_0bc8c699). The registry is keyed by
+registration source, but ``_reset_plugin_redaction_patterns()`` drops every
+source — so resetting it here also dropped plugins that register at *import*
+time (``plugins/memory/honcho/oauth.py`` registers ``plugin:honcho``), leaving
+Honcho tokens unmasked for every later test file in the same process.
+``_isolated_registry`` snapshots the sources this module does not own and hands
+them back (matcher included) on exit.
 """
 
+import contextlib
 import importlib.util
 
 import pytest
@@ -26,12 +35,29 @@ from agent.redact import (
 NVAPI_KEY = "nvapi-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdEFGH"
 NVAPI_PATTERN = r"nvapi-[A-Za-z0-9_-]{20,}"
 
+# Stand-in for another plugin's import-time registration (e.g. ``plugin:honcho``).
+FOREIGN_PATTERN = r"zz-foreign-[A-Za-z0-9]{12,}"
+FOREIGN_TOKEN = "zz-foreign-abcdefghijkl012"
+
+
+@contextlib.contextmanager
+def _isolated_registry():
+    """Empty registry for this module's own assertions, foreign sources restored after."""
+    foreign = {source: list(patterns)
+               for source, patterns in redact_mod._PLUGIN_PREFIX_PATTERNS.items()}
+    _reset_plugin_redaction_patterns()
+    try:
+        yield
+    finally:
+        redact_mod._PLUGIN_PREFIX_PATTERNS.clear()
+        redact_mod._PLUGIN_PREFIX_PATTERNS.update(foreign)
+        redact_mod._rebuild_prefix_matcher()  # globals are read at call time; rebuild, don't just patch the dict
+
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    _reset_plugin_redaction_patterns()
-    yield
-    _reset_plugin_redaction_patterns()
+    with _isolated_registry():
+        yield
 
 
 # ── Baseline ────────────────────────────────────────────────────────────
@@ -115,6 +141,33 @@ def test_reset_restores_baseline():
     # Built-ins still intact after reset.
     sk = "sk-proj-AbCdEf1234567890GhIjKl"
     assert sk not in redact_sensitive_text(sk, force=True)
+
+
+# ── Isolation contract (t_0bc8c699) ─────────────────────────────────────
+
+
+def test_isolation_hands_back_sources_it_does_not_own():
+    """This module's reset is per-test isolation, not a global wipe.
+
+    Regression: ``_reset_plugin_redaction_patterns()`` drops EVERY source, so the
+    autouse reset used to wipe ``plugin:honcho`` — registered at import time by
+    ``plugins/memory/honcho/oauth.py`` — and the two masking tests in
+    ``tests/honcho_plugin/test_auth_recovery.py`` then saw Honcho tokens come back
+    verbatim when both files ran in one process. Both files pass alone; only the
+    combined run failed.
+    """
+    assert register_redaction_patterns([FOREIGN_PATTERN], source="plugin:foreign-probe") == 1
+    try:
+        with _isolated_registry():
+            # Inside the isolation the probe is gone — which is what this module wants.
+            assert "plugin:foreign-probe" not in redact_mod._PLUGIN_PREFIX_PATTERNS
+            assert FOREIGN_TOKEN in redact_sensitive_text(FOREIGN_TOKEN, force=True)
+        # Outside it the probe is back, via the matcher too — not only the dict.
+        assert "plugin:foreign-probe" in redact_mod._PLUGIN_PREFIX_PATTERNS
+        assert FOREIGN_TOKEN not in redact_sensitive_text(f"x {FOREIGN_TOKEN}", force=True)
+    finally:
+        redact_mod._PLUGIN_PREFIX_PATTERNS.pop("plugin:foreign-probe", None)
+        redact_mod._rebuild_prefix_matcher()
 
 
 # ── PluginContext wiring ────────────────────────────────────────────────

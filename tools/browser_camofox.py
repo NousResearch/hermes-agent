@@ -127,8 +127,19 @@ def is_camofox_mode() -> bool:
     if selected is not None:
         _log_backend_resolution_once(selected == "camofox", False)
         return selected == "camofox"
+    # Legacy auto-detect: a Camofox-family URL activates the lane. CAMOFOX_URL is the local
+    # sidecar address; a tenant-key gateway configured only via SEKRETO_URL speaks the same
+    # compat API and must resolve to the same lane (transport routes it MCP-only).
     _log_backend_resolution_once(bool(get_camofox_url()), False)
-    return bool(get_camofox_url())
+    if get_camofox_url():
+        return True
+    try:
+        from tools.browser_mcp_transport import _backend_url
+        if _backend_url():
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:

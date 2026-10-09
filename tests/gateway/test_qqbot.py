@@ -103,15 +103,18 @@ class TestVoiceAttachmentSSRFProtection:
         from plugins.platforms.qqbot.adapter import QQAdapter, _ssrf_redirect_guard
 
         client = mock.AsyncMock()
-        with mock.patch("plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
+        with mock.patch(
+            "tools.url_safety.create_ssrf_safe_async_client", return_value=client,
+        ) as factory, mock.patch(
+            "qqbot_agent_sdk.api_client.QQApiClient.get_gateway_url",
+            new=mock.AsyncMock(side_effect=RuntimeError("stop after client creation")),
+        ):
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
-            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
-
             connected = asyncio.run(adapter.connect())
 
         assert connected is False
-        assert async_client_cls.call_count == 1
-        kwargs = async_client_cls.call_args.kwargs
+        assert factory.call_count == 1
+        kwargs = factory.call_args.kwargs
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 

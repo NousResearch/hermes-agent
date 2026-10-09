@@ -111,7 +111,7 @@ def setup_qqbot() -> None:
     credentials = None
     if _gw().prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0) == 0:
         try:
-            from .onboard import qr_register
+            from .sdk_bridge import qr_register
             credentials = qr_register()
         except KeyboardInterrupt:
             print()

@@ -2297,6 +2297,8 @@ all = [
     { name = "mcp" },
     { name = "pyasn1" },
     { name = "python-multipart" },
+    { name = "qqbot-agent-sdk" },
+    { name = "qrcode" },
     { name = "starlette" },
     { name = "uvicorn" },
     { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
@@ -2409,6 +2411,10 @@ parallel-web = [
 ]
 piper = [
     { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+]
+qqbot = [
+    { name = "qqbot-agent-sdk" },
+    { name = "qrcode" },
 ]
 silk = [
     { name = "pilk" },
@@ -2582,6 +2588,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
+    { name = "hermes-agent", extras = ["qqbot"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
@@ -2643,9 +2650,11 @@ requires-dist = [
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.8" },
     { name = "pywin32", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=306,<312" },
     { name = "pywinpty", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.0.5,<4" },
+    { name = "qqbot-agent-sdk", marker = "extra == 'qqbot'", specifier = "==1.2.2" },
     { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'feishu'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'messaging'", specifier = "==7.4.2" },
+    { name = "qrcode", marker = "extra == 'qqbot'", specifier = "==7.4.2" },
     { name = "requests", marker = "python_full_version >= '3.14'", specifier = "==2.33.0" },
     { name = "resvg-py", marker = "python_full_version >= '3.14'", specifier = "==0.4.0" },
     { name = "rich", marker = "python_full_version >= '3.14'", specifier = "==14.3.3" },
@@ -2686,7 +2695,7 @@ requires-dist = [
     { name = "winrt-windows-services-store", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.2.1,<4" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "qqbot", "google", "youtube", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5393,6 +5402,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "qqbot-agent-sdk"
+version = "1.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "cryptography" },
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c7/f4/f53b8297233ecc6301061144ea216d42e1eb23e944803a90e58cdbe4e97b/qqbot_agent_sdk-1.2.2.tar.gz", hash = "sha256:2fed2c66a6033cdd522c652fa749f72cdaaec9dc9e603d2c6b5d1e17bce27e75", size = 60383, upload-time = "2026-05-07T09:02:58.554Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/09/32b04d3f68e2c6797c5d09cd1b0c47cbd30efc28aba6b9f9c9256ba0b543/qqbot_agent_sdk-1.2.2-py3-none-any.whl", hash = "sha256:e16d2f29c9c1df6dea990ba6fb07fce35a1c23ea2f0ce9d32b24a019ea45af25", size = 67011, upload-time = "2026-05-07T09:02:57.219Z" },
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ from typing import Any, Callable, Deque, Optional
 
 import acp
 from acp.schema import (
-    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
+    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, Cost, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
@@ -366,7 +366,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """``usage_update`` for Zed's context indicator: ``size`` = context window, ``used`` =
-        estimated request pressure (system prompt + history + tool schemas)."""
+        estimated request pressure (system prompt + history + tool schemas). ``cost`` carries
+        the cumulative session cost per the Session Usage RFD and stays unset when the agent
+        has no known price (0.0 / unpriced model) rather than reporting a bogus zero."""
         compressor = getattr(state.agent, "context_compressor", None)
         size = int(getattr(compressor, "context_length", 0) or 0)
         if size <= 0:
@@ -376,7 +378,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         except Exception:
             logger.debug("Could not estimate ACP native context usage", exc_info=True)
             used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
-        return UsageUpdate(session_update="usage_update", size=max(size, 0), used=max(used, 0))
+        update = UsageUpdate(session_update="usage_update", size=max(size, 0), used=max(used, 0))
+        cumulative = getattr(state.agent, "session_estimated_cost_usd", None)
+        try:
+            amount = round(float(cumulative), 6) if cumulative is not None else None
+        except (TypeError, ValueError):
+            amount = None
+        if amount is not None and amount > 0:
+            update.cost = Cost(amount=amount, currency="USD")
+        return update
 
     async def _send_usage_update(self, state: SessionState) -> None:
         if self._conn and (update := self._build_usage_update(state)) is not None:

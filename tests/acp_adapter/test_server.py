@@ -221,6 +221,7 @@ class TestSessionOps:
         state.agent.context_compressor = MagicMock(context_length=100_000)
         state.agent._cached_system_prompt = "system"
         state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
+        state.agent.session_estimated_cost_usd = 0.0
 
         with patch(
             "agent.model_metadata.estimate_request_tokens_rough",
@@ -232,6 +233,36 @@ class TestSessionOps:
         assert update.session_update == "usage_update"
         assert update.size == 100_000
         assert update.used == 25_000
+        assert update.cost is None
+
+    def test_build_usage_update_reports_cumulative_session_cost(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = []
+        state.agent.session_estimated_cost_usd = 0.0123456789
+
+        with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=1_000):
+            update = agent._build_usage_update(state)
+
+        assert update.cost is not None
+        assert update.cost.amount == 0.012346
+        assert update.cost.currency == "USD"
+
+    def test_build_usage_update_omits_cost_when_agent_has_none(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = []
+        # A non-numeric accumulator (unpriced model, restore glitch) must not crash or emit a cost.
+        state.agent.session_estimated_cost_usd = "unpriced"
+
+        with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=1_000):
+            update = agent._build_usage_update(state)
+
+        assert update.cost is None
 
 
 

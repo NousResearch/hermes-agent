@@ -113,32 +113,65 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             dispatcher.events.task_done()
 
 
-def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
-    try:
-        from hermes_cli import plugins
+def _manager_hook_callbacks(manager: Any, hook_name: str) -> tuple[Callable[..., Any], ...]:
+    iterator = getattr(manager, "iter_hook_callbacks", None)
+    if callable(iterator):
+        callbacks = iterator(hook_name)
+    else:
+        callbacks = getattr(manager, "_hooks", {}).get(hook_name, ())
+    return tuple(callbacks) if isinstance(callbacks, (tuple, list)) else ()
 
-        callbacks = plugins.iter_hook_callbacks(hook_name)
-        if callbacks:
-            return callbacks
-        # ``iter_hook_callbacks`` is also used by test doubles and older
-        # embedders that expose only the snapshot method. The public
-        # ``has_hook`` gate is the established lazy-discovery contract; use it
-        # when an undiscovered manager returned an empty snapshot, then retry
-        # the snapshot after discovery.
-        if not plugins.has_hook(hook_name):
-            return ()
-        return plugins.iter_hook_callbacks(hook_name)
+
+def _registered_callbacks(
+    hook_name: str, manager: Any = None
+) -> tuple[Callable[..., Any], ...]:
+    """Snapshot one manager without resolving it again through the global registry."""
+    lock = None
+    if manager is None:
+        manager = _active_plugin_manager()
+        if manager is not None:
+            lock = getattr(manager, "_discovery_lock", None)
+    if manager is None:
+        return ()
+
+    if lock is not None and not lock.acquire(blocking=False):
+        return ()
+    try:
+        if not getattr(manager, "_discovered", True):
+            discover = getattr(manager, "discover_and_load", None)
+            if callable(discover):
+                discover()
+        return _manager_hook_callbacks(manager, hook_name)
     except Exception:
         logger.debug("plugin stream hook callback lookup failed: %s", hook_name, exc_info=True)
         return ()
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def _active_plugin_manager():
-    """Return the manager for this context, or None when plugin lookup fails."""
+    """Return the manager for this context, or None when lookup must fail open."""
     try:
         from hermes_cli import plugins
 
-        return plugins.get_plugin_manager()
+        getter = plugins.get_plugin_manager
+        if getattr(getter, "__module__", None) != getattr(plugins, "__name__", None):
+            return getter()
+        condition = getattr(plugins, "_plugin_manager_teardown_condition", None)
+        home_key = getattr(plugins, "_plugin_home_key", None)
+        teardown_owners = getattr(plugins, "_plugin_manager_teardown_owners", None)
+        if condition is None or not callable(home_key) or teardown_owners is None:
+            return getter()
+        if not condition.acquire(blocking=False):
+            return None
+        try:
+            if home_key() in teardown_owners:
+                return None
+            # Don't take host-publication locks while holding the manager registry lock.
+            return getter(_attach_hosts=False)
+        finally:
+            condition.release()
     except Exception:  # health: allow BLE001 -- observer lookup must fail open without blocking the token path
         logger.debug("plugin stream hook manager lookup failed", exc_info=True)
         return None
@@ -186,14 +219,16 @@ def _observer_payload_size(payload: dict[str, Any]) -> int | None:
 
 @contextmanager
 def _registered_dispatch_scope(hook_name: str):
-    """Snapshot callbacks before taking the manager lock, then validate while holding it.
+    """Snapshot callbacks under a nonblocking manager lock and validate the scope.
 
-    This preserves the existing lazy callback lookup without reversing the manager-registry lock
-    order. The lock remains held through dispatcher creation and enqueue, so unload either follows
-    a completed enqueue and retires it, or changes the lifetime token first and makes the stale
-    enqueue a no-op.
+    Discovery holds only this captured manager's lock; no global manager lookup can race a
+    reservation. The lock remains held through dispatcher creation and enqueue, so unload either
+    follows a completed enqueue and retires it, or wins the lock and makes the stale enqueue a no-op.
     """
     manager = _active_plugin_manager()
+    if manager is None:
+        yield _FALLBACK_SCOPE, (), False
+        return
     scope_key = _active_manager_scope(manager)
     try:
         from hermes_cli.plugins import PluginManager
@@ -201,18 +236,14 @@ def _registered_dispatch_scope(hook_name: str):
         is_plugin_manager = isinstance(manager, PluginManager)
     except ImportError:
         is_plugin_manager = False
-    callbacks = _registered_callbacks(hook_name)
     manager_lock = getattr(manager, "_discovery_lock", None)
-    if manager_lock is None:
-        yield scope_key, callbacks, True
-        return
-
     # Never make the observer producer wait behind a discovery/reload transaction. It is safe to
     # drop this observation while the manager is busy; lifecycle teardown will retire the old queue.
-    if not manager_lock.acquire(blocking=False):
-        yield scope_key, callbacks, False
+    if manager_lock is not None and not manager_lock.acquire(blocking=False):
+        yield scope_key, (), False
         return
     try:
+        callbacks = _registered_callbacks(hook_name, manager)
         still_current = _active_manager_scope(manager) is scope_key
         if is_plugin_manager:
             current_hooks = getattr(manager, "_hooks", {})
@@ -221,7 +252,8 @@ def _registered_dispatch_scope(hook_name: str):
             )
         yield scope_key, callbacks, still_current
     finally:
-        manager_lock.release()
+        if manager_lock is not None:
+            manager_lock.release()
 
 
 def _stop_dispatcher(
@@ -294,26 +326,32 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
     return ready
 
 
-def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
-    """Queue an observer hook without running plugin code on the caller.
-
-    The shared dispatcher keeps one daemon worker and bounded FIFO per
-    registered callback. Payload graphs over ``_MAX_OBSERVER_EVENT_BYTES``
-    are dropped whole; fields are never truncated. ``put_nowait`` makes the
-    producer non-blocking; a full queue drops its oldest pending event so a
-    slow consumer cannot grow memory or delay the agent. Callback exceptions
-    are isolated in the worker.
-    """
-    event_payload = dict(payload)
-    payload_size = _observer_payload_size(event_payload)
-    if payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
-        logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
-        return False
+def _enqueue_plugin_observer_hook(
+    hook_name: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    payload_factory: Callable[[], dict[str, Any]] | None = None,
+) -> bool:
+    event_payload: dict[str, Any] = {}
+    if payload_factory is None:
+        event_payload = dict(payload if payload is not None else {})
+        payload_size = _observer_payload_size(event_payload)
+        if payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
+            logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
+            return False
     queued = False
     event_context = contextvars.copy_context()
     with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
         if not still_current:
             return False
+        if payload_factory is not None:
+            if not callbacks:
+                return False
+            event_payload = dict(payload_factory())
+            payload_size = _observer_payload_size(event_payload)
+            if payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
+                logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
+                return False
         dispatchers, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
         for dispatcher in dispatchers:
             # A Context cannot be entered concurrently by two workers. Each
@@ -337,16 +375,40 @@ def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
     return queued
 
 
+def _enqueue_plugin_observer_hook_with_payload_factory(
+    hook_name: str, payload_factory: Callable[[], dict[str, Any]]
+) -> bool:
+    """Build and validate payload only after nonblocking callback discovery succeeds."""
+    return _enqueue_plugin_observer_hook(hook_name, payload_factory=payload_factory)
+
+
+def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
+    """Queue an observer hook without running plugin code on the caller.
+
+    The shared dispatcher keeps one daemon worker and bounded FIFO per
+    registered callback. Payload graphs over ``_MAX_OBSERVER_EVENT_BYTES``
+    are dropped whole; fields are never truncated. ``put_nowait`` makes the
+    producer non-blocking; a full queue drops its oldest pending event so a
+    slow consumer cannot grow memory or delay the agent. Callback exceptions
+    are isolated in the worker.
+    """
+    return _enqueue_plugin_observer_hook(hook_name, payload=payload)
+
+
 def retire_plugin_observer_dispatchers(
-    manager: Any, *, unload_all: bool
+    manager: Any,
+    *,
+    unload_all: bool,
+    callbacks_to_retire: set[tuple[str, int]] | None = None,
 ) -> list[_ConsumerDispatcher]:
-    """Retire dispatchers owned by a manager unload while its discovery lock is held.
+    """Retire dispatchers owned by a manager before plugin registrations are released.
 
     Unload-all rotates the opaque lifetime token so an enqueue that captured the old generation
-    cannot attach to a reloaded manager. Targeted unload only retires callbacks no longer present.
-    Retirement is marked before releasing the discovery lock; a worker that already passed its
-    retirement gate may finish, but queued work cannot begin after that boundary. Queue discard
-    and bounded joining happen after the manager lock is released. Cached sibling profiles remain active.
+    cannot attach to a reloaded manager. Targeted unload retires every dispatcher whose callback
+    registration is removed, even when another plugin still registers the same callable. Retirement
+    is marked before releasing the discovery lock; a worker that already passed its gate may finish,
+    but queued work cannot begin after that boundary. Queue discard and bounded joining happen after
+    the manager lock is released. Cached sibling profiles remain active.
     """
     scope_key = _active_manager_scope(manager)
     manager_hooks = getattr(manager, "_hooks", {})
@@ -363,7 +425,12 @@ def retire_plugin_observer_dispatchers(
             key_scope, hook_name, callback_id = key
             if key_scope is not scope_key:
                 continue
-            if unload_all or callback_id not in live_callback_ids.get(hook_name, set()):
+            should_retire = unload_all or (
+                (hook_name, callback_id) in callbacks_to_retire
+                if callbacks_to_retire is not None
+                else callback_id not in live_callback_ids.get(hook_name, set())
+            )
+            if should_retire:
                 dispatcher = _dispatchers.pop(key)
                 dispatcher.retired = True
                 stale.append(dispatcher)

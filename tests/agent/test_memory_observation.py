@@ -133,29 +133,268 @@ def test_prefetch_result_rejects_list_subclass_without_iteration():
         )
 
 
+def test_external_prefetch_does_not_run_tuple_subclass_methods_on_the_turn_thread(
+    monkeypatch,
+):
+    _disable_hook(monkeypatch)
+    overrides_called = threading.Event()
+    release = threading.Event()
+
+    class HostileTuple(tuple):
+        def __new__(cls, values):
+            return tuple.__new__(cls, values)
+
+        def __iter__(self):
+            overrides_called.set()
+            release.wait(timeout=5.0)
+            return tuple.__iter__(self)
+
+        def __len__(self):
+            overrides_called.set()
+            raise RuntimeError("overridden tuple length ran")
+
+        def __getitem__(self, index):
+            overrides_called.set()
+            raise RuntimeError("overridden tuple index ran")
+
+    class ExternalProvider(FakeMemoryProvider):
+        def prefetch(
+            self, query, *, session_id=""
+        ) -> Any:
+            return MemoryPrefetchResult(
+                context="usable context",
+                observations=(HostileTuple((_observation({"valid": True}),))),
+            )
+
+    manager = MemoryManager(external_prefetch_timeout=0.1)
+    manager.add_provider(ExternalProvider(name="external"))
+    result_box = {}
+    finished = threading.Event()
+
+    def prefetch():
+        try:
+            result_box["result"] = manager.prefetch_all_result("question")
+        except BaseException as exc:
+            result_box["error"] = exc
+        finally:
+            finished.set()
+
+    caller = threading.Thread(target=prefetch)
+    caller.start()
+    try:
+        assert finished.wait(timeout=2.0)
+        assert "error" not in result_box
+        assert not overrides_called.is_set()
+        assert result_box["result"].context == "usable context"
+        assert result_box["result"].observations[0].payload == {"valid": True}
+    finally:
+        release.set()
+        caller.join(timeout=5.0)
+        manager.shutdown_all()
+    assert not caller.is_alive()
+
+
+def test_external_prefetch_does_not_run_mapping_get_on_the_turn_thread(monkeypatch):
+    _disable_hook(monkeypatch)
+    getter_called = threading.Event()
+    release_getter = threading.Event()
+
+    class HostileObservation(Mapping):
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+        def __iter__(self):
+            return iter(())
+
+        def __len__(self):
+            return 0
+
+        def get(self, key, default=None):
+            getter_called.set()
+            release_getter.wait(timeout=5.0)
+            return default
+
+    class ExternalProvider(FakeMemoryProvider):
+        def prefetch(
+            self, query, *, session_id=""
+        ) -> Any:
+            return MemoryPrefetchResult(
+                context="usable context", observations=(HostileObservation(),)
+            )
+
+    manager = MemoryManager(external_prefetch_timeout=0.1)
+    manager.add_provider(ExternalProvider(name="external"))
+    result_box = {}
+    finished = threading.Event()
+
+    def prefetch():
+        result_box["result"] = manager.prefetch_all_result("question")
+        finished.set()
+
+    caller = threading.Thread(target=prefetch)
+    caller.start()
+    try:
+        assert finished.wait(timeout=2.0)
+        assert not getter_called.is_set()
+        assert result_box["result"].context == "usable context"
+        assert result_box["result"].observations == ()
+    finally:
+        release_getter.set()
+        caller.join(timeout=5.0)
+        manager.shutdown_all()
+    assert not caller.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("mapping_result", "colliding_field"),
+    [(True, "context"), (False, "source_kind")],
+)
+def test_external_prefetch_does_not_compare_untrusted_dict_keys_on_turn_thread(
+    monkeypatch, mapping_result, colliding_field
+):
+    _disable_hook(monkeypatch)
+    compare_keys = threading.Event()
+    comparison_called = threading.Event()
+    release_comparison = threading.Event()
+
+    class HostileKey:
+        def __hash__(self):
+            return hash(colliding_field)
+
+        def __eq__(self, other):
+            if other == colliding_field and compare_keys.is_set():
+                comparison_called.set()
+                release_comparison.wait(timeout=5.0)
+            return False
+
+    def mapping_with_collision(fields):
+        result = {HostileKey(): "ignored"}
+        result.update(fields)
+        return result
+
+    class ExternalProvider(FakeMemoryProvider):
+        def prefetch(self, query, *, session_id="") -> Any:
+            if mapping_result:
+                result = mapping_with_collision(
+                    {"context": "usable context", "observations": ()}
+                )
+            else:
+                candidate: Any = mapping_with_collision(
+                    {
+                        "source_kind": "fixture_context",
+                        "schema": "fixture.context",
+                        "version": 1,
+                        "payload": {"valid": True},
+                    }
+                )
+                result = MemoryPrefetchResult(
+                    context="usable context",
+                    observations=(candidate,),
+                )
+            compare_keys.set()
+            return result
+
+    manager = MemoryManager(external_prefetch_timeout=0.1)
+    manager.add_provider(ExternalProvider(name="external"))
+    result_box = {}
+    finished = threading.Event()
+
+    def prefetch():
+        result_box["result"] = manager.prefetch_all_result("question")
+        finished.set()
+
+    caller = threading.Thread(target=prefetch)
+    caller.start()
+    try:
+        assert finished.wait(timeout=2.0)
+        assert not comparison_called.is_set()
+        assert result_box["result"].context == "usable context"
+        if mapping_result:
+            assert result_box["result"].observations == ()
+        else:
+            assert result_box["result"].observations[0].source_kind == "fixture_context"
+    finally:
+        release_comparison.set()
+        caller.join(timeout=5.0)
+        manager.shutdown_all()
+    assert not caller.is_alive()
+
+
+def test_external_prefetch_normalizes_int_subclass_before_comparison(monkeypatch):
+    _disable_hook(monkeypatch)
+    comparison_called = threading.Event()
+    release_comparison = threading.Event()
+
+    class HostileVersion(int):
+        def __lt__(self, other):
+            comparison_called.set()
+            release_comparison.wait(timeout=5.0)
+            return int.__lt__(self, other)
+
+    class ExternalProvider(FakeMemoryProvider):
+        def prefetch(
+            self, query, *, session_id=""
+        ) -> Any:
+            return MemoryPrefetchResult(
+                context="usable context",
+                observations=(
+                    MemoryObservation(
+                        source_kind="fixture_context",
+                        schema="fixture.context",
+                        version=HostileVersion(1),
+                        payload={"valid": True},
+                    ),
+                ),
+            )
+
+    manager = MemoryManager(external_prefetch_timeout=0.1)
+    manager.add_provider(ExternalProvider(name="external"))
+    result_box = {}
+    finished = threading.Event()
+
+    def prefetch():
+        result_box["result"] = manager.prefetch_all_result("question")
+        finished.set()
+
+    caller = threading.Thread(target=prefetch)
+    caller.start()
+    try:
+        assert finished.wait(timeout=2.0)
+        assert not comparison_called.is_set()
+        assert result_box["result"].context == "usable context"
+        assert result_box["result"].observations[0].version == 1
+        assert type(result_box["result"].observations[0].version) is int
+    finally:
+        release_comparison.set()
+        caller.join(timeout=5.0)
+        manager.shutdown_all()
+    assert not caller.is_alive()
+
+
 def _capture_hook(monkeypatch, events):
     """Install a deterministic in-process memory observer for manager tests."""
-    from hermes_cli import plugins
     import agent.plugin_stream_hooks as dispatcher
 
-    def enqueue_hook(name, **kwargs):
+    def enqueue_hook(name, payload_factory):
         assert name == "memory_prefetch"
-        events.append(kwargs)
+        events.append(payload_factory())
         return True
 
     monkeypatch.setattr(
-        plugins,
-        "has_hook",
-        lambda name: name == "memory_prefetch",
+        dispatcher,
+        "_enqueue_plugin_observer_hook_with_payload_factory",
+        enqueue_hook,
     )
-    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", enqueue_hook)
 
 
 def _disable_hook(monkeypatch):
-    from hermes_cli import plugins
+    import agent.plugin_stream_hooks as dispatcher
 
-    monkeypatch.setattr(plugins, "iter_hook_callbacks", lambda _name: ())
-    monkeypatch.setattr(plugins, "has_hook", lambda _name: False)
+    monkeypatch.setattr(
+        dispatcher,
+        "_enqueue_plugin_observer_hook_with_payload_factory",
+        lambda _name, _payload_factory: False,
+    )
 
 
 def _stub_direct_prefetch(monkeypatch):
@@ -483,47 +722,204 @@ def test_no_event_for_string_only_prefetch(monkeypatch):
     assert events == []
 
 
-def test_prefetch_observation_skips_context_digest_without_consumer(monkeypatch):
+def test_prefetch_observation_lazily_discovers_consumer_and_delivers_digest(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as dispatcher
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    dispatcher.shutdown_plugin_observer_dispatcher()
+    home = (tmp_path / "lazy-memory-observer").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugin_manager = plugins.PluginManager(scope_key=str(home))
+    plugin_manager._discovered = False
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: plugin_manager)
+
+    discovered = threading.Event()
+    delivered = threading.Event()
+    received = {}
+
+    def observer(**payload):
+        received.update(payload)
+        delivered.set()
+
+    def discover_and_load():
+        plugins.PluginContext(
+            plugins.PluginManifest(name="lazy-memory-observer"), plugin_manager
+        ).register_hook("memory_prefetch", observer)
+        plugin_manager._discovered = True
+        discovered.set()
+
+    monkeypatch.setattr(plugin_manager, "discover_and_load", discover_and_load)
+    context = "résumé context"
+    result = MemoryPrefetchResult(
+        context=context,
+        observations=(_observation(),),
+    )
+    token = set_hermes_home_override(home)
+    try:
+        MemoryManager._emit_prefetch_observation(
+            result,
+            query="question",
+            session_id="session",
+            task_id="task",
+            turn_id="turn",
+        )
+        assert discovered.is_set()
+        assert delivered.wait(timeout=5.0)
+    finally:
+        reset_hermes_home_override(token)
+        dispatcher.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    encoded = context.encode("utf-8")
+    assert received["query"] == "question"
+    assert received["session_id"] == "session"
+    assert received["task_id"] == "task"
+    assert received["turn_id"] == "turn"
+    assert received["observations"] is result.observations
+    assert received["context_sha256"] == hashlib.sha256(encoded).hexdigest()
+    assert received["context_byte_length"] == len(encoded)
+
+
+def test_prefetch_observation_skips_context_digest_without_consumer(monkeypatch, tmp_path):
     """No registered observer means merged context is never encoded."""
     from hermes_cli import plugins
-    import agent.plugin_stream_hooks as dispatcher
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = (tmp_path / "no-memory-observer").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugin_manager = plugins.PluginManager(scope_key=str(home))
+    plugin_manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: plugin_manager)
+
+    context_encoded = threading.Event()
 
     class ExplodingContext(str):
         def encode(self, *_args, **_kwargs):
+            context_encoded.set()
             raise AssertionError("context digest should be gated off")
 
-    monkeypatch.setattr(plugins, "has_hook", lambda _name: False)
-    monkeypatch.setattr(
-        dispatcher,
-        "enqueue_plugin_observer_hook",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("enqueue should be gated off")
-        ),
-    )
+    token = set_hermes_home_override(home)
+    try:
+        MemoryManager._emit_prefetch_observation(
+            MemoryPrefetchResult(
+                context=ExplodingContext("large merged context"),
+                observations=(_observation(),),
+            ),
+            query="question",
+            session_id="session",
+            task_id="task",
+            turn_id="turn",
+        )
+    finally:
+        reset_hermes_home_override(token)
 
-    MemoryManager._emit_prefetch_observation(
-        MemoryPrefetchResult(
-            context=ExplodingContext("large merged context"),
-            observations=(_observation(),),
-        ),
-        query="question",
-        session_id="session",
-        task_id="task",
-        turn_id="turn",
+    assert not context_encoded.is_set()
+
+
+def test_prefetch_observation_drops_without_waiting_for_reserved_manager(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = (tmp_path / "reserved-observer").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        plugin_manager = plugins.get_plugin_manager()
+        plugin_manager._discovered = True
+        plugins.PluginContext(
+            plugins.PluginManifest(name="reserved-memory-observer"), plugin_manager
+        ).register_hook("memory_prefetch", lambda **_kwargs: None)
+    finally:
+        reset_hermes_home_override(token)
+
+    reservation_entered = threading.Event()
+    release_reservation = threading.Event()
+    reservation_errors = []
+
+    def reserve_home():
+        scoped = set_hermes_home_override(home)
+        try:
+            with reserve_plugin_manager_for_home(home):
+                reservation_entered.set()
+                assert release_reservation.wait(timeout=10.0)
+        except BaseException as exc:
+            reservation_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+
+    context_encoded = threading.Event()
+
+    class ExplodingContext(str):
+        def encode(self, *_args, **_kwargs):
+            context_encoded.set()
+            raise AssertionError("reserved observer must not digest context")
+
+    result = MemoryPrefetchResult(
+        context=ExplodingContext("large merged context"),
+        observations=(_observation(),),
     )
+    emit_completed = threading.Event()
+    emit_errors = []
+
+    def emit():
+        scoped = set_hermes_home_override(home)
+        try:
+            MemoryManager._emit_prefetch_observation(
+                result,
+                query="question",
+                session_id="session",
+                task_id="task",
+                turn_id="turn",
+            )
+        except BaseException as exc:
+            emit_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+            emit_completed.set()
+
+    reservation = threading.Thread(target=reserve_home)
+    emitter = None
+    try:
+        reservation.start()
+        assert reservation_entered.wait(timeout=5.0)
+        emitter = threading.Thread(target=emit)
+        emitter.start()
+        assert emit_completed.wait(timeout=3.0)
+        assert not emit_errors
+        assert not context_encoded.is_set()
+    finally:
+        release_reservation.set()
+        reservation.join(timeout=5.0)
+        if emitter is not None:
+            emitter.join(timeout=5.0)
+
+    assert not reservation.is_alive()
+    assert emitter is not None and not emitter.is_alive()
+    assert not reservation_errors
 
 
 def test_prefetch_observation_digest_is_preserved_for_consumer(monkeypatch):
     """An opted-in consumer still receives the exact UTF-8 digest envelope."""
-    from hermes_cli import plugins
     import agent.plugin_stream_hooks as dispatcher
 
     events = []
-    monkeypatch.setattr(plugins, "has_hook", lambda name: name == "memory_prefetch")
+
+    def capture_payload(name, payload_factory):
+        events.append((name, payload_factory()))
+        return True
+
     monkeypatch.setattr(
         dispatcher,
-        "enqueue_plugin_observer_hook",
-        lambda name, **kwargs: events.append((name, kwargs)) or True,
+        "_enqueue_plugin_observer_hook_with_payload_factory",
+        capture_payload,
     )
     context = "résumé context"
     result = MemoryPrefetchResult(context=context, observations=(_observation(),))
@@ -751,11 +1147,9 @@ def test_operation_budget_bounds_provider_traversal_and_preserves_later_context(
     assert [item.payload["index"] for item in result.observations] == list(
         range(MAX_MEMORY_OBSERVATIONS)
     )
-    # MAX + 1 is the only look-ahead needed to prove that the prefix is
-    # truncated; the large tail is never visited or encoded.
-    assert first_observations.accessed_indices == list(
-        range(MAX_MEMORY_OBSERVATIONS + 1)
-    )
+    # The tuple subclass's iterator is never trusted; the result still obeys
+    # the operation cap and keeps later providers' context.
+    assert first_observations.accessed_indices == []
     assert later_observations.accessed_indices == []
     warnings = [
         record
@@ -825,7 +1219,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
 
     assert result.context == "first provider context\n\nsecond provider context"
     assert [item.provider for item in result.observations] == ["builtin"]
-    assert second_observations.accessed_indices == [0]
+    assert second_observations.accessed_indices == []
     assert direct_calls == ["builtin", "external"]
     warnings = [
         record
@@ -876,23 +1270,77 @@ def test_malformed_observation_keeps_each_provider_context_and_result_tuple(
     assert isinstance(events[0]["observations"], tuple)
 
 
+def test_mapping_accessor_exception_drops_only_observation_and_keeps_context(
+    monkeypatch,
+):
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+
+    class BrokenObservation(Mapping):
+        def __getitem__(self, key):
+            raise RuntimeError("broken mapping accessor")
+
+        def __iter__(self):
+            return iter(())
+
+        def __len__(self):
+            return 0
+
+        def get(self, key, default=None):
+            raise RuntimeError("broken mapping get")
+
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="usable provider context",
+                observations=(BrokenObservation(),),  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable provider context"
+    assert result.observations == ()
+
+
+def test_mapping_result_keeps_valid_context_when_observations_are_malformed(
+    monkeypatch,
+):
+    _disable_hook(monkeypatch)
+
+    class MappingProvider(FakeMemoryProvider):
+        def prefetch(self, query, *, session_id=""):
+            return {"context": "usable context", "observations": object()}
+
+    manager = MemoryManager()
+    manager.add_provider(MappingProvider(name="builtin"))
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable context"
+    assert result.observations == ()
+
+
 def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
     events = []
     event_lock = threading.Lock()
     import agent.plugin_stream_hooks as dispatcher
 
-    def capture_thread_safe(name, **kwargs):
+    def capture_thread_safe(name, payload_factory):
         assert name == "memory_prefetch"
         with event_lock:
-            events.append(kwargs)
+            events.append(payload_factory())
         return []
 
     # The deterministic test observer serializes capture so assertions do not
     # depend on callback timing.
-    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
     monkeypatch.setattr(
-        "hermes_cli.plugins.has_hook",
-        lambda name: name == "memory_prefetch",
+        dispatcher,
+        "_enqueue_plugin_observer_hook_with_payload_factory",
+        capture_thread_safe,
     )
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
@@ -929,16 +1377,16 @@ def test_concurrent_same_session_turns_keep_explicit_ids_bound(monkeypatch):
     event_lock = threading.Lock()
     import agent.plugin_stream_hooks as dispatcher
 
-    def capture_thread_safe(name, **kwargs):
+    def capture_thread_safe(name, payload_factory):
         assert name == "memory_prefetch"
         with event_lock:
-            events.append(kwargs)
+            events.append(payload_factory())
         return []
 
-    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
     monkeypatch.setattr(
-        "hermes_cli.plugins.has_hook",
-        lambda name: name == "memory_prefetch",
+        dispatcher,
+        "_enqueue_plugin_observer_hook_with_payload_factory",
+        capture_thread_safe,
     )
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
@@ -1605,13 +2053,16 @@ def test_node_budget_exhausted_tail_is_bounded_by_inspected_cap(monkeypatch, cap
     )
 
 
-def test_observation_iterator_failure_keeps_context_and_valid_prefix(monkeypatch, caplog):
-    """A broken tuple-subclass iterator drops only the observation tail."""
+def test_observation_tuple_subclass_iterator_is_bypassed_and_context_is_kept(
+    monkeypatch,
+):
+    """Read valid tuple storage without invoking the provider's iterator override."""
     _disable_hook(monkeypatch)
+    iterator_called = threading.Event()
 
     class BrokenTuple(tuple):
         def __iter__(self):
-            yield tuple.__getitem__(self, 0)
+            iterator_called.set()
             raise RuntimeError("broken observation iterator")
 
     manager = MemoryManager()
@@ -1625,12 +2076,14 @@ def test_observation_iterator_failure_keeps_context_and_valid_prefix(monkeypatch
         )
     )
 
-    with caplog.at_level("WARNING", logger="agent.memory_manager"):
-        result = manager.prefetch_all_result("question")
+    result = manager.prefetch_all_result("question")
 
     assert result.context == "usable context"
-    assert [item.payload for item in result.observations] == [{"kept": True}]
-    assert any("observation container" in record.message for record in caplog.records)
+    assert [item.payload for item in result.observations] == [
+        {"kept": True},
+        {"available": True},
+    ]
+    assert not iterator_called.is_set()
 
 
 def test_structured_prefetch_context_subclass_is_normalized_before_spill(

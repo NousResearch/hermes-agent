@@ -1029,19 +1029,18 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
 # ``websockets.connect`` becomes a single dispatcher that merges the per-thread ping overrides registered by
 # the calling profile, so profiles no longer race over the global patch or restore each other's hooks while
 # a sibling is still connected.
-_WS_ISOLATION_LOCK = threading.Lock()
-_WS_ISOLATION_INSTALLED = False
-_ws_isolation_state = threading.local()  # per WS thread: .loop and .connect_kwargs
+_ws_isolation_state = threading.local()  # rebound to the shared SDK state on installation
 
 
 class _ThreadLocalLoopProxy:
     """Forwards attribute access to the current thread's registered loop."""
 
-    def __init__(self, fallback: Any) -> None:
+    def __init__(self, fallback: Any, state: Any) -> None:
         self._fallback = fallback
+        self._state = state
 
     def _target(self) -> Any:
-        return getattr(_ws_isolation_state, "loop", None) or self._fallback
+        return getattr(self._state, "loop", None) or self._fallback
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._target(), name)
@@ -1052,15 +1051,21 @@ class _ThreadLocalLoopProxy:
 
 def _install_lark_ws_isolation(ws_client_module: Any) -> None:
     """Install the thread-dispatching shims once per process (idempotent)."""
-    global _WS_ISOLATION_INSTALLED
-    with _WS_ISOLATION_LOCK:
-        if _WS_ISOLATION_INSTALLED:
+    global _ws_isolation_state
+    # Plugin namespaces have independent globals but patch the same SDK module.
+    # Atomic dict.setdefault elects one lock across concurrent namespace imports.
+    lock = vars(ws_client_module).setdefault("_hermes_ws_isolation_lock", threading.Lock())
+    with lock:
+        state = getattr(ws_client_module, "_hermes_ws_isolation_state", None)
+        if state is not None:
+            _ws_isolation_state = state
             return
-        ws_client_module.loop = _ThreadLocalLoopProxy(ws_client_module.loop)
+        state = threading.local()
+        ws_client_module.loop = _ThreadLocalLoopProxy(ws_client_module.loop, state)
         real_connect = ws_client_module.websockets.connect
 
         def _dispatch_connect(*args: Any, **kwargs: Any) -> Any:
-            overrides = getattr(_ws_isolation_state, "connect_kwargs", None) or {}
+            overrides = getattr(state, "connect_kwargs", None) or {}
             for key, value in overrides.items():
                 kwargs.setdefault(key, value)
             return real_connect(*args, **kwargs)
@@ -1075,7 +1080,7 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         async def _receive_message_loop_exit_notify(self: Any) -> None:
             # The SDK schedules this coroutine right after the websocket handshake succeeded, so its
             # entry is the only in-thread proof that a (re)built link is actually up.
-            on_link_up = getattr(_ws_isolation_state, "on_link_up", None)
+            on_link_up = getattr(state, "on_link_up", None)
             if on_link_up is not None:
                 on_link_up()
             try:
@@ -1091,7 +1096,7 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 # A *normal* return means the SDK's own ladder already reconnected (it scheduled a
                 # fresh receive loop) and must NOT stop the loop. Deliberate disconnects nil
                 # ``_ws_client`` first, so the supervisor exits without restarting.
-                adapter = getattr(_ws_isolation_state, "adapter", None)
+                adapter = getattr(state, "adapter", None)
                 if adapter is None or getattr(adapter, "_running", True):
                     logger.exception(
                         "[Feishu] lark WS receive loop died; stopping the worker "
@@ -1103,7 +1108,8 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 asyncio.get_running_loop().stop()
 
         ws_client_module.Client._receive_message_loop = _receive_message_loop_exit_notify
-        _WS_ISOLATION_INSTALLED = True
+        ws_client_module._hermes_ws_isolation_state = state
+        _ws_isolation_state = state
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:

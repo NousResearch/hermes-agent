@@ -97,7 +97,7 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
     lark.ws = lark_ws
     for name, mod in (("lark_oapi", lark), ("lark_oapi.ws", lark_ws), ("lark_oapi.ws.client", client_mod)):
         monkeypatch.setitem(sys.modules, name, mod)
-    monkeypatch.setattr(fa, "_WS_ISOLATION_INSTALLED", False)
+
     monkeypatch.setattr(fa, "FEISHU_WEBSOCKET_AVAILABLE", True)
     monkeypatch.setattr(fa, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO=1)))
 

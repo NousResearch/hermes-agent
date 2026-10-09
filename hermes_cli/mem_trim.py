@@ -159,6 +159,9 @@ def trim_memory(
     by reference counting; cycles wait for ``trim_memory_when_idle``, the timer lanes' one full
     collection per quiet period. The forced collection otherwise stays only where memory is the
     emergency (agent-cache pressure eviction) or the process is single-session (slash worker).
+
+    A successful trim logs at INFO when forced or on every ``log_every_n``-th eligible call (default
+    60: roughly hourly for an idle gateway), and at DEBUG otherwise.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:

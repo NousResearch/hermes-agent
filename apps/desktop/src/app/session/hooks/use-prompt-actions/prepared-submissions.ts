@@ -22,28 +22,50 @@ export interface PreparedSubmission {
 // separate store and read on every journal access, so a reload (fresh module memory) still honors
 // it; module memory only covers a tombstone write that itself failed. A tombstone hides only the
 // entry carrying that exact id, never a newer send that reused the journal key.
-const SPENT_KEY = 'hermes.desktop.preparedSubmissions.spent.v1'
+// One localStorage key per tombstone: every window of the origin shares this storage with
+// last-writer-wins per KEY, so a single blob let one window's read-modify-write drop the tombstone
+// another window had just written for a different entry (and a reload then re-adopted that
+// admitted input). Each retirement now writes only the record it owns.
+const SPENT_PREFIX = 'hermes.desktop.preparedSubmissions.spent.v2:'
+// The pre-v2 single blob: still honored, drained entry by entry as each tombstone clears.
+const LEGACY_SPENT_KEY = 'hermes.desktop.preparedSubmissions.spent.v1'
 const retired = new Map<string, string>()
 
-function readSpent(): Record<string, string> {
-  const raw = window.localStorage.getItem(SPENT_KEY)
+function readLegacySpent(): Record<string, string> {
+  const raw = window.localStorage.getItem(LEGACY_SPENT_KEY)
   const parsed: unknown = raw ? JSON.parse(raw) : {}
 
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? { ...(parsed as Record<string, string>), ...Object.fromEntries(retired) }
-    : Object.fromEntries(retired)
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
+}
+
+function readSpent(): Record<string, string> {
+  const spent = readLegacySpent()
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+    const id = key?.startsWith(SPENT_PREFIX) ? window.localStorage.getItem(key) : null
+
+    if (key && id) { spent[key.slice(SPENT_PREFIX.length)] = id }
+  }
+
+  return { ...spent, ...Object.fromEntries(retired) }
 }
 
 function writeSpent(key: string, id: string | undefined): void {
-  const raw = window.localStorage.getItem(SPENT_KEY)
-  const spent: Record<string, string> = raw ? JSON.parse(raw) : {}
+  if (id !== undefined) {
+    window.localStorage.setItem(SPENT_PREFIX + key, id)
 
-  if (id === undefined && !(key in spent)) { return }
+    return
+  }
 
-  if (id === undefined) { delete spent[key] } else { spent[key] = id }
+  window.localStorage.removeItem(SPENT_PREFIX + key)
+  const legacy = readLegacySpent()
 
-  if (Object.keys(spent).length) { window.localStorage.setItem(SPENT_KEY, JSON.stringify(spent)) }
-  else { window.localStorage.removeItem(SPENT_KEY) }
+  if (!(key in legacy)) { return }
+  delete legacy[key]
+
+  if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_SPENT_KEY, JSON.stringify(legacy)) }
+  else { window.localStorage.removeItem(LEGACY_SPENT_KEY) }
 }
 
 // A journal, not an automatic outbox. Only an explicit retry may reuse an

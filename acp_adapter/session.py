@@ -536,8 +536,15 @@ class SessionManager:
         }
         resolve_error: Exception | None = None
         try:
+            # A restored session's persisted base_url is the endpoint the conversation ran on: a named
+            # custom entry persists its runtime name ("custom") plus that URL, so without handing it
+            # back here the resolve raises (bare custom without credentials) and the agent silently
+            # falls back to the config default provider — whose URL the next persist then writes
+            # back, permanently rerouting the session (#135688). Only http(s) URLs qualify;
+            # process:// rows resolve exactly as before.
             runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+                requested=requested_provider or config_provider, target_model=(model or default_model) or None,
+                explicit_base_url=(base_url if isinstance(base_url, str) and base_url.startswith("http") else None))
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

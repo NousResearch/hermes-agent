@@ -147,7 +147,10 @@ export function displayPathSuffix(raw: string): string {
   // Fit the compact menu's mono line without a second CSS ellipsis.
   const maxLength = 34
 
-  if (path.length <= maxLength) {return path}
+  if (path.length <= maxLength) {
+    return path
+  }
+
   const suffix = path.split('/').slice(-2).join('/')
   const tail = suffix.length <= maxLength - 2 ? suffix : pathLeaf(path)
 

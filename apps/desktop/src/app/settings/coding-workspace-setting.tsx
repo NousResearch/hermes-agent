@@ -19,7 +19,10 @@ export function CodingWorkspaceSetting({ profile }: { profile: ProfileScope }) {
   const enabled = getNested(config ?? {}, 'desktop.coding.show_controls') === true
 
   const toggle = async (on: boolean) => {
-    if (!config || busy) {return}
+    if (!config || busy) {
+      return
+    }
+
     const key = hermesConfigKey(profile)
     setBusy(true)
     await client.cancelQueries({ queryKey: key, exact: true })
@@ -28,7 +31,10 @@ export function CodingWorkspaceSetting({ profile }: { profile: ProfileScope }) {
     try {
       const result = await saveHermesConfigRecord({ desktop: { coding: { show_controls: on } } }, profile)
 
-      if (!result.ok) {throw new Error(copy.saveFailed)}
+      if (!result.ok) {
+        throw new Error(copy.saveFailed)
+      }
+
       await client.invalidateQueries({ queryKey: key, exact: true })
     } catch (error) {
       client.setQueryData(key, config)
@@ -38,6 +44,13 @@ export function CodingWorkspaceSetting({ profile }: { profile: ProfileScope }) {
     }
   }
 
-  return <ToggleRow checked={enabled} description={copy.showControlsDescription} disabled={busy || !config}
-    label={copy.showControls} onChange={on => void toggle(on)} />
+  return (
+    <ToggleRow
+      checked={enabled}
+      description={copy.showControlsDescription}
+      disabled={busy || !config}
+      label={copy.showControls}
+      onChange={on => void toggle(on)}
+    />
+  )
 }

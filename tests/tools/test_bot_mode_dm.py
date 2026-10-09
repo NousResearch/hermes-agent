@@ -616,26 +616,38 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     target = home / "profiles" / "researcher"
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    live_owner = {"owner": owner}
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: live_owner["owner"])
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
     monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
+    claims = []
 
     def fail_later():
-        time.sleep(0.05)
-        claimed = live.claim_pending_delivery(target, owner)
-        assert claimed is not None
-        live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+        # Claim only once _run_delivery has queued the DM: a fixed sleep claimed too early on a
+        # loaded runner, got None, and the runner then waited forever on the still-live owner.
+        deadline = time.monotonic() + 10
+        while not claims and time.monotonic() < deadline:
+            claimed = live.claim_pending_delivery(target, owner)
+            if claimed is None:
+                time.sleep(0.01)
+            else:
+                claims.append(claimed)
+        if not claims:
+            live_owner["owner"] = None  # release the runner so the test fails instead of hanging
+            return
+        live.complete_delivery(target, claims[0]["delivery_id"], status="failed", error="HTTP 429 rate limit")
 
     failing = threading.Thread(target=fail_later)
     failing.start()
     try:
         assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
     finally:
-        failing.join(timeout=2)
+        failing.join(timeout=12)
+    assert claims, "the queued DM was never claimable"
     first = json.loads(capsys.readouterr().out)
     assert first["status"] == "failed"
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
@@ -703,7 +715,6 @@ def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, 
         claimed = live.claim_pending_delivery(tmp_path, owner)
         assert claimed is not None
         live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
-        return None
 
     monkeypatch.setattr(live, "find_canonical_live_owner", settle_during_owner_check)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
@@ -726,7 +737,6 @@ def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch,
 
     def owner_gone_then_settle(_home):
         settling.start()
-        return None
 
     monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone_then_settle)
     try:

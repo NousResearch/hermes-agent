@@ -5,7 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import contextlib
-from hermes_cli.cli_output import line_input  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -19,7 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import setup_platforms  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli import gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -31,9 +31,9 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
-from gateway.restart import (  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -45,7 +45,7 @@ from gateway.restart import (  # noqa: F401 — resolved lazily by siblings thro
     resolve_restart_exit_wait_budget,
     resolve_systemd_timeout_stop_sec,
 )
-from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
     is_managed,
@@ -56,7 +56,7 @@ from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings th
 )
 
 # display_hermes_home is imported lazily: hermes_constants may be a cached pre-update version.
-from hermes_cli.setup import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.setup import (
     print_header,
     print_info,
     print_success,
@@ -825,7 +825,7 @@ def find_windows_gateway_services(
         return []
     try:
         if psutil_module is None:
-            import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
+            import psutil as psutil_module  # type: ignore[no-redef]
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
         from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots
@@ -977,9 +977,9 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str], home: str | None = None) -> bool:
+    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv (on Windows under ``home``, the one it ran on) after exit."""
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv), home=home)
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -1055,7 +1055,7 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     return env
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None, home: str | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1074,7 +1074,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     if sys.platform == "win32":
         try:
             from hermes_cli.gateway_windows import windowless_gateway_restart_spec
-            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv))
+            run_argv, respawn_cwd, respawn_env_overlay = windowless_gateway_restart_spec(list(run_argv), home=home)
         except Exception:
             # Fall back to the original argv: a visible window beats a failed respawn.
             respawn_cwd = ""
@@ -2923,8 +2923,16 @@ def get_launchd_plist_path() -> Path:
     import pwd
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    # Real account home: profile mode may point HOME at a profile dir.
-    home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # Real account home: profile mode may point HOME at a profile dir. Sandboxed/app-hosted
+    # shells can expose a UID that pwd cannot resolve (#57292); fall back to the shared
+    # real-home resolver (HERMES_REAL_HOME → HOME → pwd → ~, profile home skipped) instead
+    # of crashing launchd commands.
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    except (KeyError, ImportError, OSError):
+        from hermes_constants import get_real_home
+
+        home = Path(get_real_home())
     return home / "Library" / "LaunchAgents" / f"{name}.plist"
 
 
@@ -3368,7 +3376,7 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     import re
     return re.sub(
         r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.S,
+        _normalize_service_definition(text), flags=re.DOTALL,
     )
 
 
@@ -3386,42 +3394,8 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
-    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))  # noqa: E731
+    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))
     return norm(installed) == norm(expected)
-
-
-def _temp_home_in_service_definition(definition: str) -> str | None:
-    """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
-    test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
-    import re
-    import tempfile
-    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S)
-    temp_roots = {
-        Path(tempfile.gettempdir()).resolve(),
-        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
-    }
-    for raw in candidates:
-        try:
-            resolved = Path(raw.strip().strip('"')).resolve()
-        except (OSError, ValueError):
-            continue
-        if any(resolved == root or root in resolved.parents for root in temp_roots):
-            return raw.strip()
-    return None
-
-
-def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
-    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
-    temp_home = _temp_home_in_service_definition(definition)
-    if temp_home is None:
-        return False
-    print(f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a temporary directory ({temp_home}).")
-    print(
-        "  This usually means a test/E2E environment exported HERMES_HOME. "
-        "Unset it (or run from a clean shell) and retry."
-    )
-    return True
 
 
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
@@ -3444,6 +3418,11 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
+    # Every boot/start/restart lands here: never rewrite a unit pinning another home (checked before
+    # systemd_unit_is_current adopts the unit's home into os.environ).
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not unit_belongs_to_caller(unit_path, system, "rewrite"):
+        return False
     # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
     current = systemd_unit_is_current(system=system)
     if _retire_hermes_replace_dropin(system=system):
@@ -3463,7 +3442,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3608,7 +3587,7 @@ def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
 
 
 def _get_cron_drain_timeout() -> float:
-    """Return the configured cron-only drain floor in seconds.
+    """Return the configured cron and api_server (/v1) drain floor in seconds.
 
     See #82161.
     """
@@ -3632,9 +3611,16 @@ def systemd_install(
     run_as_user: str | None = None,
     enable_on_startup: bool = True,
     non_interactive: bool = False,
+    force_unit_path: bool = False,
 ):
     if system:
         _require_root_for_system_service("install")
+
+    # A unit pinning another home is another install's gateway, --force included; --force-unit-path repoints.
+    unit_path = get_systemd_unit_path(system=system)
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not force_unit_path and not unit_belongs_to_caller(unit_path, system, "overwrite", run_as_user):
+        sys.exit(1)
 
     # Offer to remove legacy units first: alongside the new unit they flap-fight for the bot token.
     if has_legacy_hermes_units():
@@ -3645,15 +3631,15 @@ def systemd_install(
             remove_legacy_hermes_units(interactive=False)
             print()
 
-    unit_path = get_systemd_unit_path(system=system)
     scope_label = _service_scope_label(system)
     sudo, scope_flag, user_flag = _systemd_cli_bits(system)
 
-    # Existing system units already pin HERMES_HOME; adopt it before any regenerate.
-    if unit_path.exists():
+    # Existing system units already pin HERMES_HOME; adopt it before any regenerate. A repoint keeps the
+    # caller's home (adopting the old one would regenerate the unit unchanged).
+    if unit_path.exists() and not force_unit_path:
         _sync_hermes_home_from_systemd_unit(system=system)
 
-    if unit_path.exists() and not force:
+    if unit_path.exists() and not (force or force_unit_path):
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {scope_label} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
@@ -3683,7 +3669,7 @@ def systemd_install(
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)
@@ -3986,7 +3972,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # =============================================================================
 
 
-from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_launchd import (
     get_launchd_label,
     _probe_launchd_domain_for_label,
     _launchd_domain,
@@ -4702,7 +4688,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
-from hermes_cli.gateway_setup_wizard import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_setup_wizard import (
     _PLATFORMS,
     _all_platforms,
     _platform_status,
@@ -4930,7 +4916,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     for profile in profiles:
         try:
             fn(f"gateway-{profile}")
-        except Exception as exc:  # noqa: BLE001 — report and continue
+        except Exception as exc:
             errors.append((profile, exc))
     succeeded = len(profiles) - len(errors)
     verb = "stopped" if action == "stop" else "restarted"
@@ -5238,6 +5224,7 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
     systemd_install(
         force=force, system=system, run_as_user=run_as_user,
         enable_on_startup=start_on_login, non_interactive=non_interactive,
+        force_unit_path=getattr(args, "force_unit_path", False),
     )
     if start_now:
         systemd_start(system=system)
@@ -5263,7 +5250,8 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False,
+                        force_unit_path=getattr(args, "force_unit_path", False))
     elif backend == "windows":
         _gw_windows().install(
             force=force,

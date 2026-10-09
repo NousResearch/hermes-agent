@@ -76,7 +76,10 @@ export function resetCodingWorkspaceDraft(owner: CodingWorkspaceOwner): void {
 export function enableCodingWorkspaceControls(owner: CodingWorkspaceOwner): void {
   const key = codingWorkspaceKey(owner)
 
-  if (!$codingWorkspaceDrafts.get()[key]) {resetCodingWorkspaceDraft(owner)}
+  if (!$codingWorkspaceDrafts.get()[key]) {
+    resetCodingWorkspaceDraft(owner)
+  }
+
   publish(key, { ...$codingWorkspaceDrafts.get()[key], controlsEnabled: true })
 }
 
@@ -144,9 +147,14 @@ async function readCodingWorkspace(
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
-  if (!draft?.intent) {throw new Error('Select a project first')}
+  if (!draft?.intent) {
+    throw new Error('Select a project first')
+  }
 
-  if (draft.prepared || draft.sessionId) {throw new Error('Workspace is already prepared')}
+  if (draft.prepared || draft.sessionId) {
+    throw new Error('Workspace is already prepared')
+  }
+
   publish(key, { ...draft, status: 'inspecting', error: undefined })
 
   try {
@@ -154,7 +162,10 @@ async function readCodingWorkspace(
       path: draft.intent.path
     })
 
-    if (!current(key, draft)) {throw new Error('Workspace draft changed during inspection')}
+    if (!current(key, draft)) {
+      throw new Error('Workspace draft changed during inspection')
+    }
+
     const live = $codingWorkspaceDrafts.get()[key]
 
     if (live.status !== 'preparing' && !live.prepared) {
@@ -163,15 +174,18 @@ async function readCodingWorkspace(
         status: 'ready',
         inspection,
         intent: inspection.repoRoot
-          ? modeOnRepo ? { ...live.intent!, mode: modeOnRepo, existingPath: undefined } : live.intent
+          ? modeOnRepo
+            ? { ...live.intent!, mode: modeOnRepo, existingPath: undefined }
+            : live.intent
           : { ...draft.intent, mode: 'folder' }
       })
     }
 
     return inspection
   } catch (error) {
-    if (current(key, draft))
-      {publish(key, { ...$codingWorkspaceDrafts.get()[key], status: 'error', error: String(error) })}
+    if (current(key, draft)) {
+      publish(key, { ...$codingWorkspaceDrafts.get()[key], status: 'error', error: String(error) })
+    }
 
     throw error
   }
@@ -181,13 +195,21 @@ export function prepareCodingWorkspace(owner: CodingWorkspaceOwner): Promise<Cod
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
-  if (!draft?.intent) {return Promise.resolve(null)}
+  if (!draft?.intent) {
+    return Promise.resolve(null)
+  }
 
-  if (draft.prepared) {return Promise.resolve(draft.prepared)}
+  if (draft.prepared) {
+    return Promise.resolve(draft.prepared)
+  }
+
   const operationKey = JSON.stringify([key, draft.requestId])
   const pending = preparing.get(operationKey)
 
-  if (pending) {return pending}
+  if (pending) {
+    return pending
+  }
+
   publish(key, { ...draft, status: 'preparing', error: undefined })
 
   const operation = request<CodingWorkspacePrepared>(draft.owner, 'projects.workspace.prepare', {
@@ -195,14 +217,18 @@ export function prepareCodingWorkspace(owner: CodingWorkspaceOwner): Promise<Cod
     requestId: draft.requestId
   })
     .then(prepared => {
-      if (!current(key, draft)) {throw new Error('Workspace draft changed during preparation')}
+      if (!current(key, draft)) {
+        throw new Error('Workspace draft changed during preparation')
+      }
+
       publish(key, { ...$codingWorkspaceDrafts.get()[key], status: 'ready', prepared })
 
       return prepared
     })
     .catch(error => {
-      if (current(key, draft))
-        {publish(key, { ...$codingWorkspaceDrafts.get()[key], status: 'error', error: String(error) })}
+      if (current(key, draft)) {
+        publish(key, { ...$codingWorkspaceDrafts.get()[key], status: 'error', error: String(error) })
+      }
 
       throw error
     })
@@ -221,7 +247,9 @@ export function rememberCodingWorkspaceSession(
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
-  if (draft && draft.requestId === requestId) {publish(key, { ...draft, createdSession })}
+  if (draft && draft.requestId === requestId) {
+    publish(key, { ...draft, createdSession })
+  }
 }
 
 export const codingWorkspaceCreatedSession = (owner: CodingWorkspaceOwner): SessionCreateResponse | undefined =>
@@ -231,13 +259,16 @@ export function bindCodingWorkspace(owner: CodingWorkspaceOwner, sessionId: stri
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
-  if (draft?.prepared) {publish(key, { ...draft, status: 'bound', sessionId })}
+  if (draft?.prepared) {
+    publish(key, { ...draft, status: 'bound', sessionId })
+  }
 }
 
 export function failCodingWorkspace(owner: CodingWorkspaceOwner, error: unknown, requestId?: string): void {
   const key = codingWorkspaceKey(owner)
   const draft = $codingWorkspaceDrafts.get()[key]
 
-  if (draft && (!requestId || draft.requestId === requestId))
-    {publish(key, { ...draft, status: 'error', error: String(error) })}
+  if (draft && (!requestId || draft.requestId === requestId)) {
+    publish(key, { ...draft, status: 'error', error: String(error) })
+  }
 }

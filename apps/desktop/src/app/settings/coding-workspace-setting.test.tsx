@@ -21,7 +21,10 @@ vi.mock('@/i18n', async () => {
   return { useI18n: () => ({ t: en }) }
 })
 
-afterEach(() => { cleanup(); vi.clearAllMocks() })
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
 describe('coding controls setting', () => {
   it('rolls back a refused write without changing another connection cache', async () => {
@@ -33,7 +36,11 @@ describe('coding controls setting', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const otherKey = ['hermes-config-record', JSON.stringify(other)]
     client.setQueryData(otherKey, { desktop: { coding: { show_controls: true } } })
-    render(<QueryClientProvider client={client}><CodingWorkspaceSetting profile={scope} /></QueryClientProvider>)
+    render(
+      <QueryClientProvider client={client}>
+        <CodingWorkspaceSetting profile={scope} />
+      </QueryClientProvider>
+    )
     const toggle = await screen.findByRole('switch', { name: 'Show coding controls' })
     await waitFor(() => expect(toggle).toHaveProperty('disabled', false))
     await act(async () => fireEvent.click(toggle))
@@ -47,7 +54,11 @@ describe('coding controls setting', () => {
     mocks.read.mockResolvedValue({ desktop: { repo_scan_enabled: false }, model: 'unchanged' })
     mocks.save.mockResolvedValue({ ok: true })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><CodingWorkspaceSetting profile={scope} /></QueryClientProvider>)
+    render(
+      <QueryClientProvider client={client}>
+        <CodingWorkspaceSetting profile={scope} />
+      </QueryClientProvider>
+    )
     const toggle = await screen.findByRole('switch', { name: 'Show coding controls' })
     await waitFor(() => expect(toggle).toHaveProperty('disabled', false))
     expect(toggle.getAttribute('aria-checked')).toBe('false')

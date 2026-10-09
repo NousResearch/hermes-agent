@@ -90,9 +90,11 @@ export function applySessionInfoStatePatch(
   patch: SessionRuntimeStatePatch
 ): ClientSessionState {
   if (
-    (patch.agentWorktree === undefined || JSON.stringify(patch.agentWorktree) === JSON.stringify(state.agentWorktree)) &&
+    (patch.agentWorktree === undefined ||
+      JSON.stringify(patch.agentWorktree) === JSON.stringify(state.agentWorktree)) &&
     (patch.branch === undefined || patch.branch === state.branch) &&
-    (patch.codingWorkspace === undefined || JSON.stringify(patch.codingWorkspace) === JSON.stringify(state.codingWorkspace)) &&
+    (patch.codingWorkspace === undefined ||
+      JSON.stringify(patch.codingWorkspace) === JSON.stringify(state.codingWorkspace)) &&
     (patch.cwd === undefined || patch.cwd === state.cwd) &&
     (patch.fast === undefined || patch.fast === state.fast) &&
     (patch.model === undefined || patch.model === state.model) &&

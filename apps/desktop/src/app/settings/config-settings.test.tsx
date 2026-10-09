@@ -99,9 +99,15 @@ describe('ConfigSettings autosave', () => {
     client.setQueryData(['hermes-config-record'], config)
     client.setQueryData(['hermes-config-schema'], { fields: {} })
     const { ConfigSettings } = await import('./config-settings')
-    render(<StrictMode><MemoryRouter><QueryClientProvider client={client}>
-      <ConfigSettings activeSectionId="safety" importInputRef={createRef<HTMLInputElement>()} />
-    </QueryClientProvider></MemoryRouter></StrictMode>)
+    render(
+      <StrictMode>
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <ConfigSettings activeSectionId="safety" importInputRef={createRef<HTMLInputElement>()} />
+          </QueryClientProvider>
+        </MemoryRouter>
+      </StrictMode>
+    )
     expect(await screen.findByRole('switch')).toBeTruthy()
     expect(saveHermesConfig).not.toHaveBeenCalled()
   })

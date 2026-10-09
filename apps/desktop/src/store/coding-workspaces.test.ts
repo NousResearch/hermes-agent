@@ -111,17 +111,30 @@ it('read-only non-Git inspection selects folder mode without initializing Git', 
 
 it('Initialize is an explicit write that continues the same draft on the current checkout', async () => {
   setCodingWorkspaceIntent(owner, { path: '/folder', mode: 'worktree' })
-  vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ path: '/folder', repoRoot: null, branch: null, dirty: false, worktrees: [] })
+  vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+    path: '/folder',
+    repoRoot: null,
+    branch: null,
+    dirty: false,
+    worktrees: []
+  })
   await inspectCodingWorkspace(owner)
   const before = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
   expect(before.intent?.mode).toBe('folder')
   vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
-    path: '/folder', repoRoot: '/folder', branch: 'main', dirty: true, branches: ['main'],
+    path: '/folder',
+    repoRoot: '/folder',
+    branch: 'main',
+    dirty: true,
+    branches: ['main'],
     worktrees: [{ path: '/folder', branch: 'main', isMain: true, dirty: true }]
   })
   await initializeCodingWorkspace(owner)
   expect(vi.mocked(requestGatewayForAgent).mock.calls[1].slice(0, 4)).toEqual([
-    'local', 'coder', 'projects.workspace.initialize', { path: '/folder', profile: 'coder' }
+    'local',
+    'coder',
+    'projects.workspace.initialize',
+    { path: '/folder', profile: 'coder' }
   ])
   const after = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
   // Same draft (same request identity), now a Git project on the checkout that holds the files.

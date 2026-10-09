@@ -16,13 +16,13 @@ from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
 from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
-from hermes_cli.tools_config_cua import (  # noqa: F401
+from hermes_cli.tools_config_cua import (
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
     _cua_driver_contract_status, _cua_driver_install_ready)
-from hermes_cli.tools_config_post_setup import (  # noqa: F401
+from hermes_cli.tools_config_post_setup import (
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
     _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
-from hermes_cli.tools_config_providers import (  # noqa: F401
+from hermes_cli.tools_config_providers import (
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
@@ -31,12 +31,12 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
     _select_plugin_image_gen_provider, _select_plugin_video_gen_provider, STT_MODEL_CATALOG, _configure_stt_model,
     _write_provider_config, apply_provider_selection, _configure_provider, _reconfigure_provider,
     _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
-from hermes_cli.tools_config_mcp import (  # noqa: F401
+from hermes_cli.tools_config_mcp import (
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
 
 def _pip_install(
-    args: List[str], *, timeout: int = 300, capture_output: bool = True
+    args: list[str], *, timeout: int = 300, capture_output: bool = True
 ) -> NoReturn:
     # Shim to suppress old updater work until relaunch, not install or report success.
     from hermes_cli._old_updater import stop_for_relaunch
@@ -55,7 +55,7 @@ def install_cua_driver(*args, **kwargs) -> NoReturn:
     stop_for_relaunch()
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
-_warned_invalid_platform_toolsets: Set[str] = set()
+_warned_invalid_platform_toolsets: set[str] = set()
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -87,7 +87,6 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -106,7 +105,8 @@ def gui_toolset_label(label: str) -> str:
 
 
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
-# auto-enables when xAI creds exist; its check_fn still gates the schema.
+# auto-enables when xAI creds exist; its check_fn still gates the schema. ``spotify`` and ``a2a`` are plugin
+# toolsets (catalog / bundled plugin) that stay opt-in once installed.
 _DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
@@ -166,7 +166,7 @@ def _get_plugin_toolset_keys() -> set:
         return set()
 
 
-def _checklist_toolset_keys(platform: str) -> Set[str]:
+def _checklist_toolset_keys(platform: str) -> set[str]:
     """Toolset keys the ``hermes tools`` checklist offers for ``platform`` (mirrors ``_prompt_toolset_checklist``);
     read-time-resolved toolsets (recovered composites, MCP names) are NOT here."""
     return {
@@ -256,13 +256,13 @@ TOOL_CATEGORIES = {
                  stt_provider="openai", **_NOUS, managed_nous_feature="stt",
                  override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
             _row("OpenAI", "paid", "whisper-1, gpt-4o-transcribe, gpt-transcribe", [_OPENAI_VOICE_KEY], stt_provider="openai"),
-            _row("Groq", "free tier", "Whisper large-v3 family — very fast",
+            _row("Groq", "free tier", "whisper-large-v3-turbo, whisper-large-v3 — very fast",
                  [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
-            _row("xAI", tag="grok-stt — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
+            _row("xAI", tag="Grok Voice Transcribe — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
-            # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
-            # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
+            _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
+                 [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
         ],
     },
@@ -345,10 +345,6 @@ TOOL_CATEGORIES = {
                  post_setup="browser_use_cli"),
         ],
     },
-    "spotify": {
-        "name": "Spotify", "icon": "🎵",
-        "providers": [_row("Spotify Web API", tag="PKCE OAuth — opens the setup wizard", post_setup="spotify")],
-    },
     "computer_use": {
         "name": "Computer Use (macOS/Windows/Linux)", "icon": "🖱️",
         # Runtime backends ship for macOS, Windows, Linux (X11; Wayland via XWayland). Gaps surface via `computer-use doctor`.
@@ -384,12 +380,12 @@ _PLATFORM_ENABLE_ENV_VARS = (
     ("whatsapp", "WHATSAPP_ENABLED"), ("qqbot", "QQ_APP_ID"))
 
 
-def _get_enabled_platforms() -> List[str]:
+def _get_enabled_platforms() -> list[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
     return ["cli"] + [platform for platform, env_var in _PLATFORM_ENABLE_ENV_VARS if get_env_value(env_var)]
 
 
-def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
+def _platform_toolset_summary(config: dict, platforms: Optional[list[str]] = None) -> dict[str, set[str]]:
     """Enabled toolsets per platform (``platforms`` defaults to ``_get_enabled_platforms()``)."""
     if platforms is None:
         platforms = _get_enabled_platforms()
@@ -407,7 +403,7 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
-def enabled_mcp_server_names(config: dict) -> Set[str]:
+def enabled_mcp_server_names(config: dict) -> set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
@@ -437,7 +433,7 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
 _RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset()
 
 
-def _enable_recently_shipped_toolsets(enabled_toolsets: Set[str], config: dict, platform: str) -> None:
+def _enable_recently_shipped_toolsets(enabled_toolsets: set[str], config: dict, platform: str) -> None:
     """Turn on toolsets that shipped after this platform's saved list (mutates ``enabled_toolsets``). Both "no"s
     outlive this: unchecking records ``known_builtin_toolsets`` (declined), and ``agent.disabled_toolsets`` is
     subtracted last in :func:`_get_platform_tools`."""
@@ -460,7 +456,7 @@ def _enable_recently_shipped_toolsets(enabled_toolsets: Set[str], config: dict, 
         enabled_toolsets.add(ts_key)
 
 
-def _configurable_subset_of(tool_names: Set[str], platform: str) -> Set[str]:
+def _configurable_subset_of(tool_names: set[str], platform: str) -> set[str]:
     """Configurable toolsets whose STATIC membership is within ``tool_names`` (``include_registry=False``: a
     runtime-registered tool the composite never listed must not drop the whole toolset)."""
     from toolsets import resolve_toolset
@@ -470,7 +466,7 @@ def _configurable_subset_of(tool_names: Set[str], platform: str) -> Set[str]:
         and (ts_tools := set(resolve_toolset(ts_key, include_registry=False))) and ts_tools <= tool_names}
 
 
-def _default_off_toolsets(platform: str, explicitly_configured: bool) -> Set[str]:
+def _default_off_toolsets(platform: str, explicitly_configured: bool) -> set[str]:
     """Toolsets to strip from an implicit (composite-derived) enable set. A platform named after a default-off
     toolset keeps it, except platform-restricted ones (``discord`` on discord stays OFF).
     Platform-native default-off toolsets (``discord`` on discord) are off for unconfigured platforms as a
@@ -483,19 +479,19 @@ def _default_off_toolsets(platform: str, explicitly_configured: bool) -> Set[str
     return default_off
 
 
-def _configurable_keys() -> Set[str]:
+def _configurable_keys() -> set[str]:
     return {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
 
-def _platform_default_keys() -> Set[str]:
+def _platform_default_keys() -> set[str]:
     return {p["default_toolset"] for p in PLATFORMS.values()}
 
 
 def _explicit_toolsets(
-    toolset_names: List[str], explicit_known_keys: Set[str], config: dict, platform: str,
-    explicitly_configured: bool) -> Set[str]:
+    toolset_names: list[str], explicit_known_keys: set[str], config: dict, platform: str,
+    explicitly_configured: bool) -> set[str]:
     """Enabled set when the saved list names configurable/plugin keys directly (subset inference over
-    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, spotify]``) still expands the
+    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, discord]``) still expands the
     composite; _DEFAULT_OFF_TOOLSETS applies to that implicit expansion only."""
     from toolsets import resolve_toolset, TOOLSETS
 
@@ -509,7 +505,7 @@ def _explicit_toolsets(
     return enabled
 
 
-def _composite_toolsets(toolset_names: List[str], platform: str, explicitly_configured: bool) -> Set[str]:
+def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_configured: bool) -> set[str]:
     """Enabled set inferred from composite names by reverse-mapping tool names (only while no explicit list is
     saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
     from toolsets import resolve_toolset
@@ -523,8 +519,8 @@ def _composite_toolsets(toolset_names: List[str], platform: str, explicitly_conf
     return enabled - default_off
 
 
-def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: List[str], plugin_ts_keys: Set[str]) -> Set[str]:
-    """Plugin toolsets: on by default unless default-off (bundled spotify) or "known" for this platform
+def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str]) -> set[str]:
+    """Plugin toolsets: on by default unless default-off (catalog spotify) or "known" for this platform
     (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
     return {
@@ -561,7 +557,20 @@ def _coerce_platform_toolsets_value(value, platform: str):
     return value
 
 
-def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
+def _platform_toolsets_explicitly_saved(config: dict, platform: str) -> bool:
+    """True when ``platform_toolsets.<platform>`` holds an explicitly saved LIST (even ``[]``).
+
+    ``_get_platform_tools``'s ``explicitly_configured`` flag without re-running the resolver
+    (post-coercion, so a list-literal string counts too): an unset key or a non-list value
+    falls back to the platform default. Callers use this to tell an explicit zero-tool
+    selection (fail closed, #82010) from an absent one ("no restriction").
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    raw = platform_toolsets.get(platform)
+    return isinstance(_coerce_platform_toolsets_value(raw, platform), list)
+
+
+def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = _coerce_platform_toolsets_value(platform_toolsets.get(platform), platform)
@@ -639,7 +648,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     return enabled_toolsets
 
 
-def _prune_toolsets_stripped_by_disabled(enabled_toolsets: Set[str], disabled_names: List[str]) -> Set[str]:
+def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_names: list[str]) -> set[str]:
     """Drop disabled names AND every toolset whose tools the runtime would strip anyway.
 
     The agent subtracts ``agent.disabled_toolsets`` at TOOL granularity (``model_tools._select_tool_names``),
@@ -653,12 +662,12 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: Set[str], disabled_na
 
     remaining = enabled_toolsets - set(disabled_names)
     resolved = {name: set(resolve_toolset(name)) if validate_toolset(name) else set() for name in remaining}
-    surviving: Set[str] = set().union(*resolved.values())
+    surviving: set[str] = set().union(*resolved.values())
     _apply_toolset_selection(surviving, disabled_names, quiet_mode=True, disable=True)
     return {name for name, tools in resolved.items() if not tools or tools & surviving}
 
 
-def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str, *, skip: Set[str]) -> None:
+def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str, *, skip: set[str]) -> None:
     """Add non-configurable platform toolsets (discord, feishu_*) in place: in the default composite but not in
     CONFIGURABLE_TOOLSETS, so never in a checklist or saved list. Runs for BOTH ``_get_platform_tools`` branches."""
     from toolsets import resolve_toolset, TOOLSETS
@@ -683,8 +692,8 @@ def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str,
 
 
 def _merge_mcp_servers(
-    config: dict, toolset_names: List[str], explicit_passthrough: Set[str], include_default_mcp_servers: bool
-) -> Set[str]:
+    config: dict, toolset_names: list[str], explicit_passthrough: set[str], include_default_mcp_servers: bool
+) -> set[str]:
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
     globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
     enabled_mcp_servers = enabled_mcp_server_names(config)
@@ -712,7 +721,7 @@ def _warn_all_invalid_platform_toolsets(platform: str, explicit: list) -> None:
             platform, ", ".join(named))
 
 
-def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
+def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[str]):
     """Save the selected toolset keys for a platform to config."""
     config.setdefault("platform_toolsets", {})
     # Drop platform-scoped toolsets that don't apply here, so the "Configure all platforms" checklist (or a
@@ -759,7 +768,7 @@ def _provider_env_ready(provider: dict) -> bool:
 
 
 def _toolset_has_keys(
-    ts_key: str, config: dict = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
+    ts_key: str, config: dict | None = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
 ) -> bool:
     """Check if a toolset's required API keys are configured."""
     if config is None:
@@ -791,10 +800,10 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 # --- Token Estimation ---
 # Profile-keyed cache so one process can serve distinct plugin tool catalogs.
-_tool_token_cache: Optional[Dict[tuple[str, int], Dict[str, int]]] = None
+_tool_token_cache: Optional[dict[tuple[str, int], dict[str, int]]] = None
 
 
-def _estimate_tool_tokens() -> Dict[str, int]:
+def _estimate_tool_tokens() -> dict[str, int]:
     """tiktoken (cl100k_base) tokens per tool name from the serialised OpenAI schema; cached per process and
     registry generation, {} if tiktoken/registry unavailable."""
     global _tool_token_cache
@@ -803,7 +812,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     scope = hermes_home_key()
     _tool_token_cache = _tool_token_cache or {}
     try:
-        import model_tools  # noqa: F401 — triggers full tool discovery
+        import model_tools
         from tools.registry import registry
         cache_key = (scope, registry._generation)
     except Exception:
@@ -825,7 +834,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return counts
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli", *, force_fresh: bool = True) -> Set[str]:
+def _prompt_toolset_checklist(platform_label: str, enabled: set[str], platform: str = "cli", *, force_fresh: bool = True) -> set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -925,7 +934,7 @@ def _configure_shared_metrics_interactive(config: dict) -> None:
         save_config(config)
 
 
-def _print_toolset_diff(added: Set[str], removed: Set[str], *, indent: str = "  ") -> None:
+def _print_toolset_diff(added: set[str], removed: set[str], *, indent: str = "  ") -> None:
     """Print ``+ label`` / ``- label`` lines for a checklist change."""
     for ts in sorted(added):
         print(color(f"{indent}+ {_toolset_label(ts)}", Colors.GREEN))
@@ -933,7 +942,7 @@ def _print_toolset_diff(added: Set[str], removed: Set[str], *, indent: str = "  
         print(color(f"{indent}- {_toolset_label(ts)}", Colors.RED))
 
 
-def _toolsets_needing_setup(new_enabled: Set[str], config: dict) -> List[str]:
+def _toolsets_needing_setup(new_enabled: set[str], config: dict) -> list[str]:
     """Selected toolsets still missing provider/API-key setup, sorted (opened even when the selection is unchanged)."""
     return [
         ts_key for ts_key in sorted(new_enabled)
@@ -941,7 +950,7 @@ def _toolsets_needing_setup(new_enabled: Set[str], config: dict) -> List[str]:
     ]
 
 
-def _configure_newly_added(added: Set[str], already: Set[str], config: dict) -> None:
+def _configure_newly_added(added: set[str], already: set[str], config: dict) -> None:
     """Configure newly enabled toolsets that need keys, skipping those already handled."""
     for ts_key in _toolsets_needing_setup(added - already, config):
         _configure_toolset(ts_key, config)
@@ -953,7 +962,7 @@ def _platform_menu_label(config: dict, pkey: str) -> str:
     return f"Configure {PLATFORMS[pkey]['label']}  ({count}/{total} enabled)"
 
 
-def _print_tools_summary(config: dict, enabled_platforms: List[str]) -> None:
+def _print_tools_summary(config: dict, enabled_platforms: list[str]) -> None:
     """``hermes tools --summary``: enabled toolsets per platform, non-interactive."""
     total = len(_get_effective_configurable_toolsets())
     print(color("☤ Tool Summary", Colors.CYAN, Colors.BOLD))
@@ -967,7 +976,7 @@ def _print_tools_summary(config: dict, enabled_platforms: List[str]) -> None:
     print()
 
 
-def _configure_list(to_configure: List[str], config: dict, *, selected: bool = True) -> None:
+def _configure_list(to_configure: list[str], config: dict, *, selected: bool = True) -> None:
     """Announce then configure each toolset in ``to_configure``."""
     if not to_configure:
         return
@@ -982,14 +991,14 @@ def _configure_list(to_configure: List[str], config: dict, *, selected: bool = T
         _configure_toolset(ts_key, config)
 
 
-def _checklist_diff(new_enabled: Set[str], prev: Set[str], platform: str) -> tuple[Set[str], Set[str]]:
+def _checklist_diff(new_enabled: set[str], prev: set[str], platform: str) -> tuple[set[str], set[str]]:
     """``(added, removed)`` scoped to the checklist universe, so read-time toolsets (MCP names) the user never
     saw a checkbox for don't print as spurious removals."""
     universe = _checklist_toolset_keys(platform)
     return (new_enabled - prev) & universe, (prev - new_enabled) & universe
 
 
-def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
+def _first_install_flow(config: dict, enabled_platforms: list[str]) -> None:
     """Fresh install: one checklist per platform, no menu, keys prompted for every enabled tool."""
     for pkey in enabled_platforms:
         pinfo = PLATFORMS[pkey]
@@ -1011,11 +1020,11 @@ def _first_install_flow(config: dict, enabled_platforms: List[str]) -> None:
         print()
 
 
-def _current_platform_tools(config: dict, pkey: str) -> Set[str]:
+def _current_platform_tools(config: dict, pkey: str) -> set[str]:
     return _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
 
-def _apply_platform_checklist(config: dict, pkey: str, new_enabled: Set[str], prev: Set[str], already: Set[str],
+def _apply_platform_checklist(config: dict, pkey: str, new_enabled: set[str], prev: set[str], already: set[str],
                               *, indent: str = "  ", header: bool = False) -> None:
     """Print the diff, configure newly added toolsets not in ``already``, and write the platform list.
     Keys for newly enabled tools not already handled by the selected-tool pass, so a tool enabled globally
@@ -1028,7 +1037,7 @@ def _apply_platform_checklist(config: dict, pkey: str, new_enabled: Set[str], pr
     _save_platform_tools(config, pkey, new_enabled)
 
 
-def _configure_platforms(config: dict, platform_keys: List[str], *, all_platforms: bool = False) -> bool:
+def _configure_platforms(config: dict, platform_keys: list[str], *, all_platforms: bool = False) -> bool:
     """Checklist + key setup + save for one platform, or for every platform at once (the 'Configure all
     platforms (global)' menu entry). Returns True when config was saved."""
     label = "All platforms" if all_platforms else PLATFORMS[platform_keys[0]]["label"]
@@ -1052,7 +1061,7 @@ def _configure_platforms(config: dict, platform_keys: List[str], *, all_platform
     return True
 
 
-def tools_command(args=None, first_install: bool = False, config: dict = None):
+def tools_command(args=None, first_install: bool = False, config: dict | None = None):
     """Entry point for `hermes tools` / `hermes setup tools`. ``first_install`` skips the menu (checklist + key
     prompts); a wizard-passed ``config`` receives platform_toolsets so its final save_config() keeps them."""
     if config is None:

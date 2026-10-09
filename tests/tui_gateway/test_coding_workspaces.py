@@ -276,8 +276,9 @@ def test_completion_base_inspection_uses_exact_owner_fallback(tmp_path, monkeypa
         assert owned.is_relative_to(tmp_path)
         owned.mkdir(parents=True)
     (get_profile_dir("alpha") / "config.yaml").write_text(json.dumps({"terminal": {"cwd": str(alpha)}}))
-    # beta intentionally has no configured cwd: preserve complete.path's launch fallback too.
-    for profile, expected in (("alpha", alpha), ("beta", launch), ("default", launch)):
+    (get_profile_dir("beta") / "beta.txt").write_text("beta")
+    # An unset named profile resolves its own home, never the launch profile's workspace.
+    for profile, expected in (("alpha", alpha), ("beta", get_profile_dir("beta")), ("default", launch)):
         base = call("complete.path", word="", profile=profile, cwd=None)["sourceCwd"]
         menu = call("complete.path", word="@file:", profile=profile, cwd=None)
         assert base == str(expected)

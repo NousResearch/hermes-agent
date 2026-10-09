@@ -39,7 +39,7 @@ def fingerprint(material: str) -> str:
 class CachedFetch:
     """A set of fetched secret values plus when they were fetched."""
 
-    secrets: Dict[str, str]
+    secrets: dict[str, str]
     fetched_at: float
 
     def is_fresh(self, ttl_seconds: float) -> bool:
@@ -144,7 +144,7 @@ class SecretCache(Generic[K]):
     """
 
     def __init__(self, basename: str, *, key_serializer: Callable[[K], str]) -> None:
-        self.memory: Dict[K, CachedFetch] = {}
+        self.memory: dict[K, CachedFetch] = {}
         self.disk: DiskCache[K] = DiskCache(basename, key_serializer=key_serializer)
 
     def lookup(self, key: K, ttl_seconds: float, home_path: Optional[Path] = None,

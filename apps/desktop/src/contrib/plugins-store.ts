@@ -111,6 +111,25 @@ export function dropPlugin(id: string): void {
   handles.delete(id)
 }
 
+/** Turn on the desktop half of unified package *packageName*. A half ships
+ *  opt-in to match its inert agent half, so turning the package on (the
+ *  install dialog's "Enable after install", the hub's Agent switch) turns the
+ *  half on too instead of leaving a second switch to find. *keepUserChoice*
+ *  leaves a half the user explicitly switched off alone. */
+export async function enablePackageDesktopHalf(packageName: string, { keepUserChoice = false } = {}): Promise<void> {
+  const decisions = $pluginDecisions.get()
+
+  for (const record of Object.values($pluginRecords.get())) {
+    if (record.packageName !== packageName || record.status !== 'disabled') {
+      continue
+    }
+
+    if (!keepUserChoice || !(record.id in decisions)) {
+      await setPluginEnabled(record.id, true)
+    }
+  }
+}
+
 /** Live toggle: deactivate + remember, or forget + reactivate. */
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<void> {
   saveDecisions({ ...$pluginDecisions.get(), [id]: enabled })

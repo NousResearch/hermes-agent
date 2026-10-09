@@ -9,29 +9,56 @@ import type { CodingWorkspaceDraft } from '@/store/coding-workspaces'
 import { CodingWorkspaceControls } from './coding-workspace-controls'
 import { workspaceRowClassName } from './workspace-row'
 
-const mocks = vi.hoisted(() => ({ inspect: vi.fn(), initialize: vi.fn(), set: vi.fn(), request: vi.fn(), register: vi.fn(), config: vi.fn((..._args: unknown[]) => ({ data: {} })) }))
+const mocks = vi.hoisted(() => ({
+  inspect: vi.fn(),
+  initialize: vi.fn(),
+  set: vi.fn(),
+  request: vi.fn(),
+  register: vi.fn(),
+  config: vi.fn((..._args: unknown[]) => ({ data: {} }))
+}))
+
 vi.mock('@/app/hooks/use-config-record', () => ({ useHermesConfigRecord: (...a: unknown[]) => mocks.config(...a) }))
 vi.mock('@/store/coding-workspaces', async () => {
   const { atom } = await import('nanostores')
 
-  return { $codingWorkspaceDrafts: atom({}), codingWorkspaceKey: (o: unknown) => JSON.stringify(o),
-    setCodingWorkspaceIntent: (...a: unknown[]) => mocks.set(...a), inspectCodingWorkspace: (...a: unknown[]) => mocks.inspect(...a),
+  return {
+    $codingWorkspaceDrafts: atom({}),
+    codingWorkspaceKey: (o: unknown) => JSON.stringify(o),
+    setCodingWorkspaceIntent: (...a: unknown[]) => mocks.set(...a),
+    inspectCodingWorkspace: (...a: unknown[]) => mocks.inspect(...a),
     initializeCodingWorkspace: (...a: unknown[]) => mocks.initialize(...a),
     registerCodingWorkspaceFolder: (...a: unknown[]) => mocks.register(...a),
-    listCodingWorkspaceProjects: (owner: { connectionId: string; profile: string }) => mocks.request(owner.connectionId, owner.profile, 'projects.list', { profile: owner.profile }).then((r: { projects: unknown[] }) => r.projects) }
+    listCodingWorkspaceProjects: (owner: { connectionId: string; profile: string }) =>
+      mocks
+        .request(owner.connectionId, owner.profile, 'projects.list', { profile: owner.profile })
+        .then((r: { projects: unknown[] }) => r.projects)
+  }
 })
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: (...a: unknown[]) => mocks.request(...a) }))
-vi.mock('@/i18n', async () => { const { en } = await import('@/i18n/en');
+vi.mock('@/i18n', async () => {
+  const { en } = await import('@/i18n/en')
 
- return { useI18n: () => ({ t: en }) } })
+  return { useI18n: () => ({ t: en }) }
+})
 
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()
 })
-afterEach(() => { cleanup(); vi.clearAllMocks() })
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 const owner = { connectionId: 'source-a', profile: 'coder', draftKey: 'draft:one' }
 const project = { id: 'p_one', name: 'One project', primary_path: '/repo', archived: false, folders: [] }
 
@@ -45,11 +72,21 @@ function mount(draft?: any, onSelectFolder = vi.fn()) {
 
 describe('coding workspace controls', () => {
   it('shares bound StatusRow chrome and a fixed leading slot through inspection and preparation', () => {
-    const reference = render(<StatusRow className={workspaceRowClassName} leading={<span />}>Bound summary</StatusRow>)
+    const reference = render(
+      <StatusRow className={workspaceRowClassName} leading={<span />}>
+        Bound summary
+      </StatusRow>
+    )
+
     const chrome = reference.container.firstElementChild!
 
-    const draft: CodingWorkspaceDraft = { owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'worktree' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false, worktrees: [] } }
+    const draft: CodingWorkspaceDraft = {
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo', mode: 'worktree' },
+      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false, worktrees: [] }
+    }
 
     const view = mount(draft)
     const row = () => view.container.querySelector('.coding-status-bar')!
@@ -77,24 +114,48 @@ describe('coding workspace controls', () => {
   })
 
   it.each([
-    [{ mode: 'existing', existingPath: '/repo/.worktrees/task' }, 'task/real', 'task/real', 'Existing worktree · task/real'],
+    [
+      { mode: 'existing', existingPath: '/repo/.worktrees/task' },
+      'task/real',
+      'task/real',
+      'Existing worktree · task/real'
+    ],
     [{ mode: 'existing', existingPath: '/repo/.worktrees/task' }, null, 'task', 'Existing worktree · task'],
     [{ mode: 'worktree', base: 'release' }, 'main', 'New worktree · release', 'New worktree · release'],
     [{ mode: 'worktree', base: 'main' }, 'main', 'New worktree', 'New worktree']
-  ])('reflects the selected checkout/base in the visible and accessible summary: %s', (choice, branch, visible, accessible) => {
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', ...choice },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false,
-        worktrees: [{ path: '/repo/.worktrees/task', branch }] } })
-    const trigger = screen.getByRole('button', { name: `Work in: ${accessible}` })
-    expect(trigger.textContent).toBe(visible)
-    expect(trigger.querySelector('.codicon-chevron-down')).toBeTruthy()
-  })
+  ])(
+    'reflects the selected checkout/base in the visible and accessible summary: %s',
+    (choice, branch, visible, accessible) => {
+      mount({
+        owner,
+        requestId: 'r',
+        status: 'ready',
+        intent: { path: '/repo', ...choice },
+        inspection: {
+          path: '/repo',
+          repoRoot: '/repo',
+          branch: 'main',
+          dirty: false,
+          worktrees: [{ path: '/repo/.worktrees/task', branch }]
+        }
+      })
+      const trigger = screen.getByRole('button', { name: `Work in: ${accessible}` })
+      expect(trigger.textContent).toBe(visible)
+      expect(trigger.querySelector('.codicon-chevron-down')).toBeTruthy()
+    }
+  )
 
   it('keeps a prepared-but-unsent workspace compact while retaining its branch, exact path and failure', () => {
     const cwd = '/home/person/.hermes/profiles/coder/cache/project/.worktrees/prepared-task'
-    mount({ owner, requestId: 'r', status: 'error', intent: { path: '/repo', mode: 'worktree' },
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'error',
+      intent: { path: '/repo', mode: 'worktree' },
       inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false, worktrees: [] },
-      prepared: { cwd, branch: 'task/prepared' }, error: 'Send failed; retry the draft' })
+      prepared: { cwd, branch: 'task/prepared' },
+      error: 'Send failed; retry the draft'
+    })
     const trigger = screen.getByRole('button', { name: 'Work in: New worktree · task/prepared' })
     expect(trigger.textContent).toBe('New worktree · task/prepared')
     expect(trigger.querySelector('span')?.getAttribute('title')).toBe(cwd)
@@ -104,8 +165,20 @@ describe('coding workspace controls', () => {
   })
 
   it('shows the actual branch and lets new worktrees choose a base without creating anything', async () => {
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'worktree' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'feature/actual', branches: ['main', 'feature/actual'], dirty: true, worktrees: [] } })
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo', mode: 'worktree' },
+      inspection: {
+        path: '/repo',
+        repoRoot: '/repo',
+        branch: 'feature/actual',
+        branches: ['main', 'feature/actual'],
+        dirty: true,
+        worktrees: []
+      }
+    })
     expect(screen.queryByRole('combobox', { name: 'From branch' })).toBeNull()
     expect(screen.queryByText('Created on first Send, not now.')).toBeNull()
     const workIn = screen.getByRole('button', { name: 'Work in: New worktree' })
@@ -124,7 +197,15 @@ describe('coding workspace controls', () => {
 
   it('offers Initialize Git only for a plain folder and never while the draft is locked', async () => {
     const folder = { path: '/folder', repoRoot: null, branch: null, dirty: false, worktrees: [] }
-    const view = mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/folder', mode: 'folder' }, inspection: folder })
+
+    const view = mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/folder', mode: 'folder' },
+      inspection: folder
+    })
+
     const workIn = screen.getByRole('button', { name: 'Work in: Project folder' })
     fireEvent.keyDown(workIn, { key: 'Enter' })
     expect(screen.getByRole('menuitemradio', { name: 'Project folder' }).getAttribute('aria-checked')).toBe('true')
@@ -136,35 +217,73 @@ describe('coding workspace controls', () => {
     expect(mocks.set).not.toHaveBeenCalled()
     view.unmount()
 
-    mount({ owner, requestId: 'r', status: 'preparing', intent: { path: '/folder', mode: 'folder' }, inspection: folder })
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'preparing',
+      intent: { path: '/folder', mode: 'folder' },
+      inspection: folder
+    })
     fireEvent.keyDown(screen.getByRole('button', { name: 'Work in: Project folder' }), { key: 'Enter' })
-    expect(screen.getByRole('menuitem', { name: /Initialize Git repository/ }).getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByRole('menuitem', { name: /Initialize Git repository/ }).getAttribute('aria-disabled')).toBe(
+      'true'
+    )
     cleanup()
 
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'current' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false, worktrees: [{ path: '/repo', branch: 'main', isMain: true }] } })
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo', mode: 'current' },
+      inspection: {
+        path: '/repo',
+        repoRoot: '/repo',
+        branch: 'main',
+        dirty: false,
+        worktrees: [{ path: '/repo', branch: 'main', isMain: true }]
+      }
+    })
     fireEvent.keyDown(screen.getByRole('button', { name: 'Work in: Current checkout' }), { key: 'Enter' })
     expect(screen.queryByRole('menuitem', { name: /Initialize Git repository/ })).toBeNull()
   })
 
   it('offers existing checkout path, branch, dirty state and warns about sharing', async () => {
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'existing' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false,
-        worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real', dirty: true, sharedSessions: 2 }] } })
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo', mode: 'existing' },
+      inspection: {
+        path: '/repo',
+        repoRoot: '/repo',
+        branch: 'main',
+        dirty: false,
+        worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real', dirty: true, sharedSessions: 2 }]
+      }
+    })
     fireEvent.keyDown(screen.getByRole('button', { name: /^Work in: Existing worktree/ }), { key: 'Enter' })
     expect(screen.getByText('This checkout may be shared with other chats. Changes are not isolated.')).toBeTruthy()
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Choose checkout' }), { key: 'ArrowRight' })
     const option = await screen.findByRole('menuitemradio', { name: /task\/real.*Uncommitted changes/ })
     expect(option.textContent).toContain('/repo/.worktrees/task')
     fireEvent.click(option)
-    expect(mocks.set).toHaveBeenCalledWith(owner, { path: '/repo', mode: 'existing', existingPath: '/repo/.worktrees/task' })
+    expect(mocks.set).toHaveBeenCalledWith(owner, {
+      path: '/repo',
+      mode: 'existing',
+      existingPath: '/repo/.worktrees/task'
+    })
   })
 
   it.each(['pointer', 'keyboard'])('preserves the selected existing checkout on %s mode reselection', async input => {
     const intent = { path: '/repo', mode: 'existing', existingPath: '/repo/.worktrees/task' }
 
-    const inspection = { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false,
-      worktrees: [{ path: intent.existingPath, branch: 'task/real', dirty: false }] }
+    const inspection = {
+      path: '/repo',
+      repoRoot: '/repo',
+      branch: 'main',
+      dirty: false,
+      worktrees: [{ path: intent.existingPath, branch: 'task/real', dirty: false }]
+    }
 
     mocks.inspect.mockResolvedValue(inspection)
     mount({ owner, requestId: 'r', status: 'ready', intent, inspection })
@@ -172,8 +291,8 @@ describe('coding workspace controls', () => {
     const checked = screen.getByRole('menuitemradio', { name: 'Existing worktree' })
     expect(checked.getAttribute('aria-checked')).toBe('true')
 
-    const activate = (item: HTMLElement) => input === 'pointer'
-      ? fireEvent.click(item) : fireEvent.keyDown(item, { key: 'Enter' })
+    const activate = (item: HTMLElement) =>
+      input === 'pointer' ? fireEvent.click(item) : fireEvent.keyDown(item, { key: 'Enter' })
 
     activate(checked)
     expect(mocks.set).not.toHaveBeenCalled()
@@ -192,34 +311,61 @@ describe('coding workspace controls', () => {
   it.each([
     ['worktree', 'New worktree', 'From branch main', 'main'],
     ['existing', 'Existing worktree', 'Choose checkout', 'task/real · /repo/.worktrees/task']
-  ] as const)('disables already-open %s submenu choices when preparation locks the draft', async (mode, label, submenu, option) => {
-    const draft: CodingWorkspaceDraft = { owner, requestId: 'r', status: 'ready',
-      intent: { path: '/repo', mode, existingPath: '/repo/.worktrees/task' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', branches: ['main'], dirty: false,
-        worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real' }] } }
+  ] as const)(
+    'disables already-open %s submenu choices when preparation locks the draft',
+    async (mode, label, submenu, option) => {
+      const draft: CodingWorkspaceDraft = {
+        owner,
+        requestId: 'r',
+        status: 'ready',
+        intent: { path: '/repo', mode, existingPath: '/repo/.worktrees/task' },
+        inspection: {
+          path: '/repo',
+          repoRoot: '/repo',
+          branch: 'main',
+          branches: ['main'],
+          dirty: false,
+          worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real' }]
+        }
+      }
 
-    const view = mount(draft)
-    fireEvent.keyDown(screen.getByRole('button', { name: new RegExp(`^Work in: ${label}`) }), { key: 'Enter' })
-    fireEvent.keyDown(screen.getByRole('menuitem', { name: submenu }), { key: 'ArrowRight' })
-    expect((await screen.findByRole('menuitemradio', { name: option })).getAttribute('aria-disabled')).not.toBe('true')
+      const view = mount(draft)
+      fireEvent.keyDown(screen.getByRole('button', { name: new RegExp(`^Work in: ${label}`) }), { key: 'Enter' })
+      fireEvent.keyDown(screen.getByRole('menuitem', { name: submenu }), { key: 'ArrowRight' })
+      expect((await screen.findByRole('menuitemradio', { name: option })).getAttribute('aria-disabled')).not.toBe(
+        'true'
+      )
 
-    view.rerender(<CodingWorkspaceControls draft={{ ...draft, status: 'preparing' }} onSelectFolder={vi.fn()} owner={owner} />)
-    const choice = screen.getByRole('menuitemradio', { name: option })
-    expect(choice.getAttribute('aria-disabled')).toBe('true')
-    expect(choice.hasAttribute('data-disabled')).toBe(true)
-    fireEvent.click(choice)
-    fireEvent.keyDown(choice, { key: 'Enter' })
-    expect(mocks.set).not.toHaveBeenCalled()
-    expect(mocks.inspect).not.toHaveBeenCalled()
-  })
+      view.rerender(
+        <CodingWorkspaceControls draft={{ ...draft, status: 'preparing' }} onSelectFolder={vi.fn()} owner={owner} />
+      )
+      const choice = screen.getByRole('menuitemradio', { name: option })
+      expect(choice.getAttribute('aria-disabled')).toBe('true')
+      expect(choice.hasAttribute('data-disabled')).toBe(true)
+      fireEvent.click(choice)
+      fireEvent.keyDown(choice, { key: 'Enter' })
+      expect(mocks.set).not.toHaveBeenCalled()
+      expect(mocks.inspect).not.toHaveBeenCalled()
+    }
+  )
 
   it('describes the main checkout when Current is selected from a linked worktree', () => {
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo/.worktrees/task', mode: 'current' },
-      inspection: { path: '/repo/.worktrees/task', repoRoot: '/repo/.worktrees/task', branch: 'feature', dirty: false,
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo/.worktrees/task', mode: 'current' },
+      inspection: {
+        path: '/repo/.worktrees/task',
+        repoRoot: '/repo/.worktrees/task',
+        branch: 'feature',
+        dirty: false,
         worktrees: [
           { path: '/repo/.worktrees/task', branch: 'feature', dirty: false, activeSessionCount: 1 },
           { path: '/repo', branch: 'main', dirty: true, isMain: true, activeSessionCount: 3 }
-        ] } })
+        ]
+      }
+    })
     fireEvent.keyDown(screen.getByRole('button', { name: 'Work in: Current checkout' }), { key: 'Enter' })
     expect(screen.getByText('main · /repo · Uncommitted changes')).toBeTruthy()
     expect(screen.getByText('In use · 3')).toBeTruthy()
@@ -227,9 +373,19 @@ describe('coding workspace controls', () => {
   })
 
   it('identifies a selected checkout already used by active chats', () => {
-    mount({ owner, requestId: 'r', status: 'ready', intent: { path: '/repo', mode: 'existing', existingPath: '/repo/.worktrees/task' },
-      inspection: { path: '/repo', repoRoot: '/repo', branch: 'main', dirty: false,
-        worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real', dirty: true, activeSessionCount: 2 }] } })
+    mount({
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/repo', mode: 'existing', existingPath: '/repo/.worktrees/task' },
+      inspection: {
+        path: '/repo',
+        repoRoot: '/repo',
+        branch: 'main',
+        dirty: false,
+        worktrees: [{ path: '/repo/.worktrees/task', branch: 'task/real', dirty: true, activeSessionCount: 2 }]
+      }
+    })
     fireEvent.keyDown(screen.getByRole('button', { name: /^Work in: Existing worktree/ }), { key: 'Enter' })
     expect(screen.getByText('In use · 2')).toBeTruthy()
   })
@@ -242,11 +398,23 @@ describe('coding workspace controls', () => {
   })
 
   it('filters the native project radio menu and navigates with arrows, Enter and Escape without resetting a reselected draft', async () => {
-    mocks.request.mockResolvedValue({ projects: [project,
-      { ...project, id: 'two', name: 'Other project', primary_path: '/other' },
-      { ...project, id: 'archived', name: 'Archived', archived: true },
-      { ...project, id: 'empty', name: 'No folder', primary_path: null }] })
-    const intent = { projectId: project.id, path: '/repo', mode: 'existing', existingPath: '/repo/task', base: 'custom' }
+    mocks.request.mockResolvedValue({
+      projects: [
+        project,
+        { ...project, id: 'two', name: 'Other project', primary_path: '/other' },
+        { ...project, id: 'archived', name: 'Archived', archived: true },
+        { ...project, id: 'empty', name: 'No folder', primary_path: null }
+      ]
+    })
+
+    const intent = {
+      projectId: project.id,
+      path: '/repo',
+      mode: 'existing',
+      existingPath: '/repo/task',
+      base: 'custom'
+    }
+
     mount({ owner, intent, status: 'ready' })
     const trigger = screen.getByRole('button', { name: 'Project: repo' })
     fireEvent.keyDown(trigger, { key: 'Enter' })
@@ -258,7 +426,9 @@ describe('coding workspace controls', () => {
     expect(screen.queryByRole('menuitemradio', { name: /Other project/ })).toBeNull()
     search.focus()
     fireEvent.keyDown(search, { key: 'ArrowDown' })
-    await waitFor(() => expect(window.document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'No project' })))
+    await waitFor(() =>
+      expect(window.document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'No project' }))
+    )
     fireEvent.keyDown(window.document.activeElement!, { key: 'ArrowDown' })
     await waitFor(() => expect(window.document.activeElement).toBe(chosen))
     fireEvent.keyDown(window.document.activeElement!, { key: 'Enter' })
@@ -297,11 +467,20 @@ describe('coding workspace controls', () => {
   it('disables already-open project choices and Browse when preparation locks the draft', async () => {
     mocks.request.mockResolvedValue({ projects: [project] })
     const browse = vi.fn()
-    const draft: CodingWorkspaceDraft = { owner, requestId: 'r', status: 'ready', intent: { path: '/other', mode: 'worktree' } }
+
+    const draft: CodingWorkspaceDraft = {
+      owner,
+      requestId: 'r',
+      status: 'ready',
+      intent: { path: '/other', mode: 'worktree' }
+    }
+
     const view = mount(draft, browse)
     fireEvent.keyDown(screen.getByRole('button', { name: /Project/ }), { key: 'Enter' })
     await screen.findByRole('menuitemradio', { name: /One project/ })
-    view.rerender(<CodingWorkspaceControls draft={{ ...draft, status: 'preparing' }} onSelectFolder={browse} owner={owner} />)
+    view.rerender(
+      <CodingWorkspaceControls draft={{ ...draft, status: 'preparing' }} onSelectFolder={browse} owner={owner} />
+    )
 
     for (const item of [...screen.getAllByRole('menuitemradio'), screen.getByRole('menuitem', { name: 'Browse…' })]) {
       expect(item.getAttribute('aria-disabled')).toBe('true')
@@ -316,23 +495,48 @@ describe('coding workspace controls', () => {
 
   it('chooses a project with read-only inspection and never navigates or prepares a checkout', async () => {
     mocks.request.mockResolvedValue({ projects: [project], active_id: project.id })
-    mocks.inspect.mockResolvedValue({ path: '/repo', repoRoot: '/repo', branch: 'feature/actual', dirty: true, worktrees: [] })
+    mocks.inspect.mockResolvedValue({
+      path: '/repo',
+      repoRoot: '/repo',
+      branch: 'feature/actual',
+      dirty: true,
+      worktrees: []
+    })
     mount()
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Project/ }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Project/ }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /One project/ }))
-    await waitFor(() => expect(mocks.set).toHaveBeenCalledWith(owner, { projectId: 'p_one', path: '/repo', mode: 'worktree' }))
+    await waitFor(() =>
+      expect(mocks.set).toHaveBeenCalledWith(owner, { projectId: 'p_one', path: '/repo', mode: 'worktree' })
+    )
     expect(mocks.inspect).toHaveBeenCalledWith(owner)
     expect(mocks.request).toHaveBeenCalledWith('source-a', 'coder', 'projects.list', { profile: 'coder' })
   })
 
-  it.each(['current', 'worktree', undefined])('honors the owner-scoped default checkout %s in the project picker', async mode => {
-    mocks.config.mockReturnValue({ data: { desktop: { coding: { default_checkout: mode } } } })
-    mocks.request.mockResolvedValue({ projects: [project] })
-    mocks.inspect.mockResolvedValue({ path: '/repo', repoRoot: '/repo', worktrees: [] })
-    mount()
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Project/ }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: /One project/ }))
-    await waitFor(() => expect(mocks.set).toHaveBeenCalledWith(owner, { projectId: project.id, path: project.primary_path, mode: mode ?? 'worktree' }))
-    expect(mocks.config).toHaveBeenCalledWith({ connectionId: owner.connectionId, profile: owner.profile })
-  })
+  it.each(['current', 'worktree', undefined])(
+    'honors the owner-scoped default checkout %s in the project picker',
+    async mode => {
+      mocks.config.mockReturnValue({ data: { desktop: { coding: { default_checkout: mode } } } })
+      mocks.request.mockResolvedValue({ projects: [project] })
+      mocks.inspect.mockResolvedValue({ path: '/repo', repoRoot: '/repo', worktrees: [] })
+      mount()
+      fireEvent.pointerDown(screen.getByRole('button', { name: /Project/ }), {
+        button: 0,
+        ctrlKey: false,
+        pointerType: 'mouse'
+      })
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: /One project/ }))
+      await waitFor(() =>
+        expect(mocks.set).toHaveBeenCalledWith(owner, {
+          projectId: project.id,
+          path: project.primary_path,
+          mode: mode ?? 'worktree'
+        })
+      )
+      expect(mocks.config).toHaveBeenCalledWith({ connectionId: owner.connectionId, profile: owner.profile })
+    }
+  )
 })

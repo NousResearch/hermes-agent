@@ -17,7 +17,8 @@ import { cn } from '@/lib/utils'
 // Reuse these instead of re-deriving per menu so every searchable/compact menu
 // reads identically.
 export const dropdownMenuRow = 'gap-2 rounded-none px-2.5 py-1 text-xs'
-export const dropdownMenuSectionLabel = 'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide'
+export const dropdownMenuSectionLabel =
+  'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-secondary)'
 
 // Keys that must reach Radix's menu handler (navigation/close). Everything else
 // is a filter keystroke and is stopped so the menu's typeahead doesn't hijack it.
@@ -221,7 +222,9 @@ function DropdownMenuSearch({
 
           onKeyDown?.(event)
 
-          if (event.defaultPrevented) {return}
+          if (event.defaultPrevented) {
+            return
+          }
 
           // Radix only enters its roving items when the menu itself owns focus;
           // an embedded search input must hand off explicitly.
@@ -230,8 +233,9 @@ function DropdownMenuSearch({
             event.stopPropagation()
             const menu = event.currentTarget.closest('[role="menu"]')
 
-            const items = Array.from(menu?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([data-disabled])') ?? [])
-              .filter(item => item.closest('[role="menu"]') === menu)
+            const items = Array.from(
+              menu?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([data-disabled])') ?? []
+            ).filter(item => item.closest('[role="menu"]') === menu)
 
             const target = event.key === 'ArrowDown' ? items[0] : items.at(-1)
             target?.focus()

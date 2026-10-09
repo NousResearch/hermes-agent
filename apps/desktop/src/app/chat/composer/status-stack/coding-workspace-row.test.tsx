@@ -14,24 +14,55 @@ import { workspaceRowClassName } from '../workspace-row'
 
 const probe = vi.hoisted(() => vi.fn())
 vi.mock('@/store/coding-status', () => ({
-  registerRepoStatusCwd: (cwd?: string) => { probe(cwd) },
-  repoStatusForCwd: (cwd?: string) => atom(cwd ? { added: 12, removed: 3, ahead: 0, behind: 0, untracked: 0, branch: 'task/a', defaultBranch: 'main', detached: false } : null),
+  registerRepoStatusCwd: (cwd?: string) => {
+    probe(cwd)
+  },
+  repoStatusForCwd: (cwd?: string) =>
+    atom(
+      cwd
+        ? {
+            added: 12,
+            removed: 3,
+            ahead: 0,
+            behind: 0,
+            untracked: 0,
+            branch: 'task/a',
+            defaultBranch: 'main',
+            detached: false
+          }
+        : null
+    ),
   repoWorktreesForCwd: () => atom([])
 }))
 const { CodingStatusRow } = await import('./coding-row')
 
-const binding: CodingWorkspaceBinding = { requestId: 'a', projectId: 'project-a', sourcePath: '/repo', cwd: '/repo/.worktrees/a', repoRoot: '/repo', branch: 'task/a' }
+const binding: CodingWorkspaceBinding = {
+  requestId: 'a',
+  projectId: 'project-a',
+  sourcePath: '/repo',
+  cwd: '/repo/.worktrees/a',
+  repoRoot: '/repo',
+  branch: 'task/a'
+}
 
 async function bind(workspace: CodingWorkspaceBinding, mode: 'local' | 'remote' = 'local') {
   setPrimaryGateway({ connectionState: 'open' } as never, 'coder')
   await ensureGatewayForProfile('coder')
   setPrimaryGatewayConnectionId(mode)
-  $sessionStates.set({ a: { storedSessionId: 'stored-a', codingWorkspace: workspace, branch: workspace.branch || '' } as ClientSessionState })
+  $sessionStates.set({
+    a: { storedSessionId: 'stored-a', codingWorkspace: workspace, branch: workspace.branch || '' } as ClientSessionState
+  })
   setSessionOwnerHint('stored-a', { connectionId: mode, profile: 'coder', mode })
   $connection.set({ connectionId: mode, profile: 'coder', mode } as never)
 }
 
-afterEach(() => { cleanup(); $sessionStates.set({}); _resetSessionOwnerHintsForTests(); $connection.set(null); vi.clearAllMocks() })
+afterEach(() => {
+  cleanup()
+  $sessionStates.set({})
+  _resetSessionOwnerHintsForTests()
+  $connection.set(null)
+  vi.clearAllMocks()
+})
 
 it.each([
   ['remote', 'followup', 'followup'],
@@ -54,13 +85,20 @@ it('starts another workspace through the exact owner new-chat flow, with selecto
   const newChat = vi.spyOn(profile, 'newSessionInAgent').mockImplementation(() => undefined)
   const old = $sessionStates.get().a
   render(<CodingStatusRow repoPath="/WRONG" sessionId="a" />)
-  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/a' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/a' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse'
+  })
   const action = await screen.findByRole('menuitem', { name: 'New chat in another workspace…' })
   expect(screen.queryByRole('menuitem', { name: 'Open folder' })).toBeNull()
   expect(probe).toHaveBeenCalledWith(undefined)
   expect(probe).not.toHaveBeenCalledWith(binding.cwd)
   fireEvent.click(action)
-  expect(newChat).toHaveBeenCalledWith({ connectionId: 'remote', profile: 'coder', mode: 'remote' }, { codingWorkspaceControls: true, workspaceTarget: null })
+  expect(newChat).toHaveBeenCalledWith(
+    { connectionId: 'remote', profile: 'coder', mode: 'remote' },
+    { codingWorkspaceControls: true, workspaceTarget: null }
+  )
   expect($sessionStates.get().a).toBe(old)
   newChat.mockRestore()
 })
@@ -68,16 +106,28 @@ it('starts another workspace through the exact owner new-chat flow, with selecto
 it('surfaces failed native reveal instead of losing the rejection', async () => {
   await bind(binding)
   clearNotifications()
-  window.hermesDesktop = { ...window.hermesDesktop, revealPath: vi.fn().mockRejectedValue(new Error('unreadable folder')) } as never
+  window.hermesDesktop = {
+    ...window.hermesDesktop,
+    revealPath: vi.fn().mockRejectedValue(new Error('unreadable folder'))
+  } as never
   render(<CodingStatusRow sessionId="a" />)
-  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/a' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/a' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse'
+  })
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Open folder' }))
-  await waitFor(() => expect($notifications.get().some(item => JSON.stringify(item).includes('unreadable folder'))).toBe(true))
+  await waitFor(() =>
+    expect($notifications.get().some(item => JSON.stringify(item).includes('unreadable folder'))).toBe(true)
+  )
 })
 
 it.each([
   [binding, 'repo · Worktree · task/a'],
-  [{ ...binding, cwd: '/home/person/.hermes/profiles/coder/cache/very-long-project-name/.worktrees/task-ui' }, 'repo · Worktree · task/a'],
+  [
+    { ...binding, cwd: '/home/person/.hermes/profiles/coder/cache/very-long-project-name/.worktrees/task-ui' },
+    'repo · Worktree · task/a'
+  ],
   [{ ...binding, cwd: '/repo' }, 'repo · Current checkout · task/a'],
   [{ ...binding, cwd: '/notes', sourcePath: '/notes', repoRoot: null, branch: null }, 'notes · Folder'],
   [{ ...binding, projectName: 'Named Project', mode: 'existing' as const }, 'Named Project · Worktree · task/a']
@@ -89,7 +139,17 @@ it.each([
   window.hermesDesktop = { ...window.hermesDesktop, revealPath } as never
   const onOpen = vi.fn()
   const onSwitchBranch = vi.fn()
-  const view = render(<CodingStatusRow onBranchOff={vi.fn()} onOpen={onOpen} onSwitchBranch={onSwitchBranch} repoPath="/WRONG" sessionId="a" />)
+
+  const view = render(
+    <CodingStatusRow
+      onBranchOff={vi.fn()}
+      onOpen={onOpen}
+      onSwitchBranch={onSwitchBranch}
+      repoPath="/WRONG"
+      sessionId="a"
+    />
+  )
+
   const summary = screen.getByRole('button', { name: label })
   expect(view.container.querySelectorAll('.coding-status-bar')).toHaveLength(1)
   fireEvent.pointerDown(summary, { button: 0, ctrlKey: false, pointerType: 'mouse' })
@@ -104,7 +164,10 @@ it.each([
   expect(screen.queryByText(label, { selector: '[data-slot="dropdown-menu-label"]' })).toBeNull()
 
   // Same surface-header chrome as the pre-bind draft row and the classic branch strip.
-  for (const token of workspaceRowClassName.split(' ')) { expect(summary.closest('.coding-status-bar')?.classList.contains(token)).toBe(true) }
+  for (const token of workspaceRowClassName.split(' ')) {
+    expect(summary.closest('.coding-status-bar')?.classList.contains(token)).toBe(true)
+  }
+
   expect(screen.queryByRole('menuitem', { name: /Switch to/ })).toBeNull()
   expect(screen.queryByRole('combobox')).toBeNull()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy path' }))

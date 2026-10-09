@@ -42,7 +42,15 @@ export function AttachmentList({
   )
 }
 
-function AttachmentPill({ attachment, onRemove, onUseAsProject }: { attachment: ComposerAttachment; onRemove?: (id: string) => void; onUseAsProject?: (path: string) => void }) {
+function AttachmentPill({
+  attachment,
+  onRemove,
+  onUseAsProject
+}: {
+  attachment: ComposerAttachment
+  onRemove?: (id: string) => void
+  onUseAsProject?: (path: string) => void
+}) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -201,7 +209,11 @@ function AttachmentPill({ attachment, onRemove, onUseAsProject }: { attachment: 
               )}
             </span>
           </button>
-          {attachment.kind === 'folder' && attachment.path && onUseAsProject && <Button onClick={() => onUseAsProject(attachment.path!)} size="micro" type="button" variant="ghost">{t.codingWorkspace.useAsProject}</Button>}
+          {attachment.kind === 'folder' && attachment.path && onUseAsProject && (
+            <Button onClick={() => onUseAsProject(attachment.path!)} size="micro" type="button" variant="ghost">
+              {t.codingWorkspace.useAsProject}
+            </Button>
+          )}
           {onRemove && (
             <button
               aria-label={c.removeAttachment(attachment.label)}

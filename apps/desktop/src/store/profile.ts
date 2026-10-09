@@ -438,17 +438,22 @@ export interface NewChatBackendOwner extends Omit<AgentProfileRoute, 'connection
 export function resolveNewChatBackendOwner(): NewChatBackendOwner {
   const explicit = $newChatRoute.get()
 
-  if (explicit) {return explicit}
+  if (explicit) {
+    return explicit
+  }
+
   const profile = $newChatProfile.get()
 
   if (profile && $newChatConnectionId.get() === null) {
     return { connectionId: null, profile: normalizeProfileKey(profile) }
   }
 
-  return resolveNewChatOwnerRoute() ?? {
-    connectionId: null,
-    profile: normalizeProfileKey(profile || $activeGatewayProfile.get())
-  }
+  return (
+    resolveNewChatOwnerRoute() ?? {
+      connectionId: null,
+      profile: normalizeProfileKey(profile || $activeGatewayProfile.get())
+    }
+  )
 }
 
 /**

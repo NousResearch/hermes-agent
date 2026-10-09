@@ -78,7 +78,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
         # into remote backends' container UID.
         write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Failed to store full web_extract text for %s: %s", url, exc)
         return None
 
@@ -150,7 +150,7 @@ def _binary_payload_kind(text: str) -> str:
     return ""
 
 
-def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dict) -> None:
+def _truncate_results(results: list[dict], char_limit: int, debug_call_data: dict) -> None:
     """In place: replace each successful entry's content with its base64-cleaned, budgeted text;
     per-page truncation metrics go into ``debug_call_data``."""
     for result in results:
@@ -181,7 +181,7 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
             logger.info("%s (%d chars, whole)", url, len(clean))
 
 
-def _trim_results(results: List[dict]) -> List[dict]:
+def _trim_results(results: list[dict]) -> list[dict]:
     """Keep only url/title/content/error per entry (+ blocked_by_policy when present)."""
     return [
         {

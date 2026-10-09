@@ -23,7 +23,12 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
-import { $codingWorkspaceDrafts, codingWorkspaceKey, enableCodingWorkspaceControls, setCodingWorkspaceIntent } from '@/store/coding-workspaces'
+import {
+  $codingWorkspaceDrafts,
+  codingWorkspaceKey,
+  enableCodingWorkspaceControls,
+  setCodingWorkspaceIntent
+} from '@/store/coding-workspaces'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
 import {
@@ -87,6 +92,7 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setSessions,
   setSessionStartedAt,
   setTurnStartedAt,
@@ -1735,6 +1741,15 @@ describe('resumeSession failure recovery', () => {
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
     clearSessionTodos('runtime-1')
+    // Persisted owner hints are global module state; the hint-hygiene tests
+    // below write them and must not leak into later describes' resumes.
+    // storage: true also clears the persisted copy (cf. the integrations test
+    // file) — this suite's hint writes must not survive into a fresh suite run.
+    _resetSessionOwnerHintsForTests({ storage: true })
+    // Same for this describe's source-override: mockReset() restores the
+    // default-preserving spy (the real registry read), unlike
+    // restoreAllMocks() below, which is a no-op for factory-created vi.fn().
+    vi.mocked(activeGatewayConnectionId).mockReset()
     vi.restoreAllMocks()
   })
 
@@ -2613,6 +2628,108 @@ describe('resumeSession failure recovery', () => {
 
     expect($resumeFailedSessionId.get()).toBe('stored-1')
     expect($activeSessionId.get()).toBeNull()
+  })
+
+  // #97809 remaining edge: older builds persisted a `local` owner hint for
+  // sessions whose rows carry no connection tag (the legacy primary-SSH
+  // path). Clicks repair it (openStoredSession drops the hint for untagged
+  // rows), but every pathname-driven resume (boot auto-restore, reconnect
+  // re-resume, stranded-view self-heal) funnels through here and used to
+  // trust the hint verbatim — dialing the Mac backend for a remote session
+  // and dying with "session not found". The row is the authority (same
+  // predicate as openStoredSession): a hint that disagrees with a
+  // connection-tagged row is stale by definition and must be dropped, not
+  // honored — repaired in the map too, so the poison does not survive into
+  // the next resume or any session-scoped RPC dispatch.
+  it('drops a legacy local owner hint when the row is untagged (#97809)', async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+    setSessionOwnerHint('stored-1', { connectionId: 'local', profile: 'default' })
+    // The row carries no connection tag: the session belongs to whichever
+    // backend served the list, so an explicit `local` hint is stale.
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    // The poisoned hint is repaired, not just ignored: a stale route left
+    // in the map re-poisons the next resume and every session-scoped RPC
+    // dispatch that consults the hint rung.
+    expect(getSessionOwnerHint('stored-1')).toBeUndefined()
+  })
+
+  it("keeps a current owner hint that agrees with the row's connection tag", async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+    setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
+    // A connection-tagged row is the authority: the hint naming the same
+    // connection is current and must survive the resume. This is the case
+    // the foreground-socket predicate got wrong — the hint legitimately
+    // names a connection the window is not currently looking at.
+    setSessions([storedSession({ connection_id: 'ssh-proxmox', id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect(getSessionOwnerHint('stored-1')).toMatchObject({ connectionId: 'ssh-proxmox' })
+  })
+
+  it("drops a remembered hint whose connection disagrees with the row's tag", async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+    // The hint names a different connection than the row: the row wins.
+    setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
+    setSessions([storedSession({ connection_id: 'ssh-vps', id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect(getSessionOwnerHint('stored-1')).toBeUndefined()
   })
 })
 
@@ -6785,7 +6902,15 @@ describe('coding workspace first send', () => {
     const owner = { connectionId: 'local', profile: 'coder', draftKey: '__new__' }
     $newChatRoute.set({ connectionId: owner.connectionId, profile: owner.profile })
     const oldKey = codingWorkspaceKey({ ...owner, draftKey: 'old-chat' })
-    const old = { owner: { ...owner, draftKey: 'old-chat' }, status: 'bound' as const, requestId: 'old', intent: null, sessionId: 'old-chat' }
+
+    const old = {
+      owner: { ...owner, draftKey: 'old-chat' },
+      status: 'bound' as const,
+      requestId: 'old',
+      intent: null,
+      sessionId: 'old-chat'
+    }
+
     $codingWorkspaceDrafts.set({ [oldKey]: old })
     let handle: HarnessHandle | null = null
     const ambient = vi.fn()
@@ -6793,7 +6918,11 @@ describe('coding workspace first send', () => {
     await waitFor(() => expect(handle).not.toBeNull())
     vi.mocked(requestGatewayForAgent).mockClear()
     act(() => handle!.startFreshSessionDraft({ codingWorkspaceControls: true, workspaceTarget: null }))
-    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]).toMatchObject({ controlsEnabled: true, intent: null, status: 'idle' })
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]).toMatchObject({
+      controlsEnabled: true,
+      intent: null,
+      status: 'idle'
+    })
     expect($codingWorkspaceDrafts.get()[oldKey]).toBe(old)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(ambient).not.toHaveBeenCalled()
@@ -6819,14 +6948,27 @@ describe('coding workspace first send', () => {
       expect(connection).toBeNull()
       expect(profile).toBe('coder')
 
-      if (method === 'projects.workspace.prepare') {return prepared as never}
+      if (method === 'projects.workspace.prepare') {
+        return prepared as never
+      }
 
-      if (method === 'session.create') {return { session_id: RUNTIME_SESSION_ID, stored_session_id: 'legacy-workspace', info: { cwd: prepared.cwd } } as never}
+      if (method === 'session.create') {
+        return {
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'legacy-workspace',
+          info: { cwd: prepared.cwd }
+        } as never
+      }
 
-      if (method === 'session.workspace.verify') {return { cwd: prepared.cwd } as never}
+      if (method === 'session.workspace.verify') {
+        return { cwd: prepared.cwd } as never
+      }
+
       throw new Error(`Unexpected RPC: ${method}`)
     })
-    await act(async () => { expect(await handle!.createBackendSessionForSend('work')).toBe(RUNTIME_SESSION_ID) })
+    await act(async () => {
+      expect(await handle!.createBackendSessionForSend('work')).toBe(RUNTIME_SESSION_ID)
+    })
     expect(ambient).not.toHaveBeenCalled()
     expect(retainGatewayForAgent).toHaveBeenCalledWith(null, 'coder', { spawnPriority: 'foreground' })
     expect($sessions.get().find(session => session.id === 'legacy-workspace')).toMatchObject({ profile: 'coder' })
@@ -6841,7 +6983,10 @@ describe('coding workspace first send', () => {
     setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
     const pending = deferred<unknown>()
     vi.mocked(requestGatewayForAgent).mockImplementation(async (_c, _p, method) => {
-      if (method === 'projects.workspace.prepare') {return (await pending.promise) as never}
+      if (method === 'projects.workspace.prepare') {
+        return (await pending.promise) as never
+      }
+
       throw new Error('unexpected session creation')
     })
     let handle: HarnessHandle | null = null
@@ -6853,8 +6998,11 @@ describe('coding workspace first send', () => {
     })
     const outcome = sending.catch(() => null)
 
-    if (change === 'new') {act(() => handle!.startFreshSessionDraft())}
-    else {$newChatRoute.set({ connectionId: 'remote-other', profile: 'omar', mode: 'remote' })}
+    if (change === 'new') {
+      act(() => handle!.startFreshSessionDraft())
+    } else {
+      $newChatRoute.set({ connectionId: 'remote-other', profile: 'omar', mode: 'remote' })
+    }
 
     await act(async () => {
       pending.resolve({ cwd: '/repo/.worktrees/old', projectId: 'p', repoRoot: '/repo', branch: 'old' })
@@ -6893,10 +7041,13 @@ describe('coding workspace first send', () => {
       vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
         expect([connection, profile]).toEqual([owner.connectionId, owner.profile])
 
-        if (method === 'projects.workspace.prepare') {return prepared as never}
+        if (method === 'projects.workspace.prepare') {
+          return prepared as never
+        }
 
-        if (method === 'session.create')
-          {return { session_id: runtime, stored_session_id: 'workspace-stored', info: { cwd: prepared.cwd } } as never}
+        if (method === 'session.create') {
+          return { session_id: runtime, stored_session_id: 'workspace-stored', info: { cwd: prepared.cwd } } as never
+        }
 
         if (method === 'session.close') {
           runtime = null
@@ -6921,10 +7072,14 @@ describe('coding workspace first send', () => {
             firstVerify = false
             await pending.promise
 
-            if (loss === 'reaped') {throw new Error('verification timeout')}
+            if (loss === 'reaped') {
+              throw new Error('verification timeout')
+            }
           }
 
-          if (params?.session_id !== runtime || !runtime) {throw new Error('Session not found')}
+          if (params?.session_id !== runtime || !runtime) {
+            throw new Error('Session not found')
+          }
 
           return { cwd: prepared.cwd, gatewayCwd: prepared.cwd } as never
         }
@@ -6943,11 +7098,12 @@ describe('coding workspace first send', () => {
       const outcome = sending.catch(() => null)
       await waitFor(() => expect(firstVerify).toBe(false))
 
-      if (loss !== 'reaped')
-        {$newChatRoute.set({
+      if (loss !== 'reaped') {
+        $newChatRoute.set({
           ...route,
           ...(loss === 'profile' ? { profile: 'other' } : { connectionId: 'other', mode: 'remote' as const })
-        })}
+        })
+      }
 
       await act(async () => {
         pending.resolve()
@@ -6958,9 +7114,9 @@ describe('coding workspace first send', () => {
       runtime = null
       $newChatRoute.set(route)
       await act(async () => {
-        await expect(handle!.createBackendSessionForSend('retained original request', undefined, undefined, owner.draftKey)).resolves.toBe(
-          'recovered-runtime'
-        )
+        await expect(
+          handle!.createBackendSessionForSend('retained original request', undefined, undefined, owner.draftKey)
+        ).resolves.toBe('recovered-runtime')
       })
       const draft = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
       expect(draft).toMatchObject({
@@ -6998,12 +7154,16 @@ describe('coding workspace first send', () => {
       calls.push(method)
       expect([_connection, _profile]).toEqual(['local', 'omar'])
 
-      if (method === 'projects.workspace.prepare') {return prepared as never}
+      if (method === 'projects.workspace.prepare') {
+        return prepared as never
+      }
 
       if (method === 'session.create') {
         expect(params).toMatchObject({ cwd: prepared.cwd, coding_workspace: prepared })
 
-        if (fail) {throw new Error('backend unavailable')}
+        if (fail) {
+          throw new Error('backend unavailable')
+        }
 
         return {
           session_id: RUNTIME_SESSION_ID,
@@ -7013,7 +7173,9 @@ describe('coding workspace first send', () => {
       }
 
       if (method === 'session.workspace.verify') {
-        if (failVerify) {throw new Error('verification timeout')}
+        if (failVerify) {
+          throw new Error('verification timeout')
+        }
 
         return { cwd: prepared.cwd, gatewayCwd: prepared.cwd } as never
       }
@@ -7025,17 +7187,17 @@ describe('coding workspace first send', () => {
     render(<Harness navigate={navigate} onReady={h => (handle = h)} requestGateway={vi.fn()} />)
     await waitFor(() => expect(handle).not.toBeNull())
     await act(async () => {
-      await expect(handle!.createBackendSessionForSend('keep draft', undefined, undefined, owner.draftKey)).rejects.toThrow(
-        'backend unavailable'
-      )
+      await expect(
+        handle!.createBackendSessionForSend('keep draft', undefined, undefined, owner.draftKey)
+      ).rejects.toThrow('backend unavailable')
     })
     expect(navigate).not.toHaveBeenCalled()
     expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].prepared).toEqual(prepared)
     fail = false
     await act(async () => {
-      await expect(handle!.createBackendSessionForSend('keep draft', undefined, undefined, owner.draftKey)).rejects.toThrow(
-        'verification timeout'
-      )
+      await expect(
+        handle!.createBackendSessionForSend('keep draft', undefined, undefined, owner.draftKey)
+      ).rejects.toThrow('verification timeout')
     })
     failVerify = false
     await act(async () => {

@@ -148,7 +148,7 @@ class TestCancelledCheckOwnership:
         # Fallback claims and installs ITS callback while the primary is
         # still unwinding.
         fallback_gen = _claim_compressor_attempt(compressor)
-        fallback_check = lambda: "fallback"  # noqa: E731
+        fallback_check = lambda: "fallback"
         _install_compression_cancelled_check(
             compressor, fallback_check, fallback_gen
         )
@@ -170,7 +170,7 @@ class TestCancelledCheckOwnership:
     def test_owner_clear_roundtrip(self):
         compressor = _compressor()
         gen = _claim_compressor_attempt(compressor)
-        check = lambda: True  # noqa: E731
+        check = lambda: True
         _install_compression_cancelled_check(compressor, check, gen)
         assert compressor._compression_cancelled_check is check
 

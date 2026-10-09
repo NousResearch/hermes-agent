@@ -14,7 +14,6 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -25,7 +24,11 @@ import {
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import {
+  profileScopeForSessionOwner,
+  requestForSessionProfile,
+  type SessionOwnerScope
+} from '@/store/session-request-router'
 import {
   $sessionTiles,
   publishSessionState,
@@ -505,47 +508,6 @@ export function useSessionTileDelegate({
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
           return { runtimeSessionId: runtimeId, storedSessionId: null }
-        }
-
-        if (storedSessionId) {
-          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
-          const owner = await ownerForStoredSession(storedSessionId)
-
-          const refresh = await transcriptRefreshIfBehind(storedSessionId, cached?.messages ?? [], {
-            profile: profileScopeForSessionOwner(owner)
-          })
-
-          // Only a competing view's surplus refuses the send; this window's own
-          // server-side turn residue is grafted and the prompt proceeds (#130031).
-          if (refresh?.competingView) {
-            updateSessionState(
-              runtimeId,
-              state => ({
-                ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refresh.messages,
-                pendingBranchGroup: null
-              }),
-              storedSessionId
-            )
-            notify({
-              kind: 'warning',
-              message: translateNow('desktop.staleSessionBody'),
-              title: translateNow('desktop.staleSessionTitle')
-            })
-
-            // Nothing was dispatched: the transcript was stale, so the prompt
-            // never reached a backend. Report an unprovable binding rather than
-            // success — the accepted-identity contract has no "refused" case,
-            // and a null storedSessionId can never equal the requested session,
-            // so callers never report delivery for this refusal.
-            return { runtimeSessionId: runtimeId, storedSessionId: null }
-          }
-
-          if (refresh) {
-            updateSessionState(runtimeId, state => ({ ...state, messages: refresh.messages }), storedSessionId)
-          }
         }
 
         const routedRequest = storedSessionId

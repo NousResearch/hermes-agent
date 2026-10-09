@@ -6,8 +6,12 @@ describe('displayPathSuffix', () => {
   it.each([
     ['/home/person/.hermes/profiles/coder/cache/projects/example/.worktrees/checkout', '…/.worktrees/checkout'],
     ['C:\\Users\\person\\AppData\\Local\\cache\\projects\\example\\.worktrees\\checkout', '…/.worktrees/checkout'],
-    ['/', '/'], ['C:\\', 'C:/'], ['/repo/task', '/repo/task'], ['C:\\src\\task', 'C:/src/task'],
-    ['/home/person/repo', '~/repo'], ['', '']
+    ['/', '/'],
+    ['C:\\', 'C:/'],
+    ['/repo/task', '/repo/task'],
+    ['C:\\src\\task', 'C:/src/task'],
+    ['/home/person/repo', '~/repo'],
+    ['', '']
   ])('keeps a useful suffix or intact short/root display for %s', (path, expected) => {
     expect(displayPathSuffix(path)).toBe(expected)
   })

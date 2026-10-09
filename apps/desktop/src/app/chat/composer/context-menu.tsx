@@ -91,7 +91,11 @@ export function ContextMenu({
 
           <DropdownMenuSeparator />
 
-          {onWorkInProject && <ContextMenuItem icon={FolderOpen} onSelect={onWorkInProject}>{t.codingWorkspace.workInProject}</ContextMenuItem>}
+          {onWorkInProject && (
+            <ContextMenuItem icon={FolderOpen} onSelect={onWorkInProject}>
+              {t.codingWorkspace.workInProject}
+            </ContextMenuItem>
+          )}
 
           <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
             {c.promptSnippets}

@@ -7,7 +7,10 @@ import { selectCodingWorkspaceIntent } from './coding-workspace-selection'
 const mocks = vi.hoisted(() => ({ request: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: (...a: unknown[]) => mocks.request(...a) }))
 const owner = { connectionId: 'local', profile: 'coder', draftKey: 'draft:folder' }
-beforeEach(() => { $codingWorkspaceDrafts.set({}); vi.clearAllMocks() })
+beforeEach(() => {
+  $codingWorkspaceDrafts.set({})
+  vi.clearAllMocks()
+})
 describe('workspace selection', () => {
   it('uses Project folder for non-Git paths and only inspects while selecting', async () => {
     mocks.request.mockResolvedValue({ path: '/folder', repoRoot: null, branch: null, dirty: false, worktrees: [] })

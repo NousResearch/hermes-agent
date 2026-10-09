@@ -618,9 +618,12 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text).timestamp()
+        parsed = datetime.fromisoformat(text)
     except Exception:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _coerce_str(value: Any) -> Optional[str]:

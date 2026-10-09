@@ -419,9 +419,15 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             return None
+        # Provider payloads sometimes omit the zone designator; API timestamps
+        # are de-facto UTC, so a naive value must not read as host-local time
+        # (.timestamp() would skew the cooldown by the host UTC offset).
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
     return None
 
 
@@ -2776,12 +2782,11 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
         if not (state and state.get("access_token")):
             return
         expires_at_ms = None
-        try:
-            raw = state.get("expires_at", "")
-            if raw:
-                expires_at_ms = int(datetime.fromisoformat(raw).timestamp() * 1000)
-        except Exception:
-            expires_at_ms = None
+        raw = state.get("expires_at", "")
+        if raw:
+            expires_at = _parse_absolute_timestamp(raw)
+            if expires_at is not None:
+                expires_at_ms = int(expires_at * 1000)
         seed.upsert("oauth", {
             "auth_type": AUTH_TYPE_OAUTH,
             "access_token": state["access_token"],

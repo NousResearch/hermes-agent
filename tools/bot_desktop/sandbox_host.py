@@ -312,3 +312,15 @@ def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tup
     if argv is None:
         raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
     return argv[0], argv[1:]
+
+
+def cua_cli_invocation(env: Any, profile: str, published: dict[str, str],
+                       call_argv: list[str]) -> tuple[str, list[str]]:
+    """``(command, args)`` running a one-shot ``call_argv`` (a ``cua-driver call ...`` CLI invocation, not the
+    long-lived MCP server) on the sandbox display -- the same exec prefix and env ``cua_mcp_invocation`` uses,
+    so the MCP->CLI fallback transport never falls back to a bare host-side call with no DISPLAY.
+    ``interactive=False``: a one-shot subprocess with ``stdin=DEVNULL`` needs no held-open stdin."""
+    argv = streams.remote_command(env, call_argv, child_env=published, user=_user_for(env), interactive=False)
+    if argv is None:
+        raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
+    return argv[0], argv[1:]

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -200,7 +201,9 @@ def _solve_only_for(uv_policy: dict, python: Path) -> None:
     from pm.filesystem import native
 
     probe = subprocess.run([native(python), "-I", "-c", "import platform, sys; print(sys.platform); print(platform.machine())"],
-                           capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
+                           capture_output=True, text=True,
+                           encoding="utf-8" if sys.platform == "win32" else None, errors="replace",
+                           check=True, timeout=60)
     sys_platform, machine = probe.stdout.split()
     host = f"sys_platform == {sys_platform!r} and platform_machine == {machine!r}"
     uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]

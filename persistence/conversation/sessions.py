@@ -91,6 +91,7 @@ __all__ = [
     "is_automatic_end_reason",
     "is_corrupt_model_config",
     "is_explicit_close_reason",
+    "is_own_dm_session",
     "normalize_activity_provenance",
     "parse_model_config",
     "sanitize_title",
@@ -224,6 +225,14 @@ def normalize_activity_provenance(provenance: Optional[str]) -> str:
 def workspace_key(row: Mapping[str, Any]) -> Optional[str]:
     """Workspace grouping key of a session row: the git repo root, else the cwd, else ``None``."""
     return (row.get("git_repo_root") or "").strip() or (row.get("cwd") or "").strip() or None
+
+
+def is_own_dm_session(row: Mapping[str, Any], user_id: Optional[str]) -> bool:
+    """Whether a session row is *user_id*'s own Telegram DM (what ``own_dm_of`` keeps). A DM's ``chat_id`` is its participant's user id, so it is the owner check; a row with no ``chat_id`` cannot prove ownership and is not owned."""
+    if not user_id or row.get("source") != "telegram" or row.get("chat_type") != "dm":
+        return False
+    chat_id = row.get("chat_id")
+    return bool(chat_id) and str(chat_id) == str(user_id)
 
 
 def parse_model_config(raw: Any) -> dict[str, Any]:
@@ -516,6 +525,8 @@ class SessionQuery:
     local_created_sources: Optional[tuple[str, ...]] = None
     #: Only rows in this workspace (``hermes -c``'s rule): the git repo root equals it, or a row without one has its cwd at or under it.
     workspace_key: Optional[str] = None
+    #: Only this Telegram user's own DM sessions (:func:`is_own_dm_session`; the Mini App's non-admin tier); ``None`` is unfiltered.
+    own_dm_of: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +542,8 @@ class SessionCountQuery:
     exclude_children: bool = False
     include_subagents: bool = False
     local_created_sources: Optional[tuple[str, ...]] = None
+    #: As :attr:`SessionQuery.own_dm_of`.
+    own_dm_of: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)

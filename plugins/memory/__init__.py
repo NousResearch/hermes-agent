@@ -9,6 +9,7 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -32,7 +33,7 @@ ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
 # only retract that profile's provider skills, never a sibling profile's.
 _REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
 # Native extensions whose first import must not race another thread (#58083 warm-up).
-_NATIVE_WARM_IMPORTS: Tuple[str, ...] = ("numpy",)
+_NATIVE_WARM_IMPORTS: tuple[str, ...] = ("numpy",)
 
 
 def _registered_skills_for_active_home() -> dict[str, Path]:
@@ -74,6 +75,27 @@ def _is_memory_provider_dir(path: Path) -> bool:
         return False
 
 
+def _defines_memory_provider(path: Path) -> bool:
+    """Parse (never import) the package's top-level modules for what ``_load_provider_from_dir`` can load:
+    a ``register_memory_provider(...)`` call or a ``MemoryProvider`` subclass. Unlike the discovery
+    heuristic, a docstring or comment naming the contract does not count."""
+    for module in sorted(path.glob("*.py")):
+        try:
+            tree = ast.parse(module.read_text(errors="replace", encoding="utf-8-sig"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        bases = {"MemoryProvider"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                                      for a in n.names if a.name == "MemoryProvider" and a.asname}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and "register_memory_provider" in (
+                    getattr(node.func, "attr", None), getattr(node.func, "id", None)):
+                return True
+            if isinstance(node, ast.ClassDef) and any(
+                    (getattr(b, "attr", None) or getattr(b, "id", None)) in bases for b in node.bases):
+                return True
+    return False
+
+
 def _is_bundled(provider_dir: Path) -> bool:
     return _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
 
@@ -87,12 +109,12 @@ def _module_name(provider_dir: Path, name: str) -> str:
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
 
 
-def _external_source_dirs() -> List[Path]:
+def _external_source_dirs() -> list[Path]:
     """User then project plugin roots that exist (precedence order)."""
     return [d for d in (_get_user_plugins_dir(), _get_project_plugins_dir()) if d]
 
 
-def _iter_provider_dirs() -> List[Tuple[str, Path]]:
+def _iter_provider_dirs() -> list[tuple[str, Path]]:
     """``(name, path)`` for bundled, then user-installed, then project-local; first-seen wins."""
     dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_MEMORY_PLUGINS_DIR)]
     seen = {name for name, _ in dirs}
@@ -163,7 +185,7 @@ def find_provider_entry_point(name: str):
     return next((ep for ep in _iter_entry_points() if ep.name == name), None)
 
 
-def list_memory_provider_names() -> List[str]:
+def list_memory_provider_names() -> list[str]:
     """Cheap name-only listing (directory scan + entry-point enumeration, no import or
     availability check) — safe at module-import time (dashboard dropdown)."""
     names = {name for name, _ in _iter_provider_dirs()}
@@ -171,7 +193,7 @@ def list_memory_provider_names() -> List[str]:
     return sorted(names)
 
 
-def discover_memory_providers() -> List[Tuple[str, str, bool]]:
+def discover_memory_providers() -> list[tuple[str, str, bool]]:
     """``[(name, description, is_available), ...]``; bundled wins on name collisions,
     then user directories, then pip."""
     results = [
@@ -520,7 +542,7 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
         registered.pop(qualified_name, None)
 
 
-def discover_plugin_cli_commands() -> List[dict]:
+def discover_plugin_cli_commands() -> list[dict]:
     """CLI commands for the **active** memory plugin only. Imports just its ``cli.py``
     (``register_cli(subparser)``), never the provider module, so it is safe during
     argparse setup. At most one dict: name/help/description/setup_fn/handler_fn/plugin."""

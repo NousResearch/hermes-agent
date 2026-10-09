@@ -168,13 +168,14 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     return session_id not in _cli()._single_query_finalize_attempted_session_ids
 
 
-def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown", agent=None) -> None:
+def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown", agent=None) -> list[str]:
     with suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session
+        from hermes_cli.lifecycle import finalize_session, session_end_messages
         from hermes_cli.session_hook_context import agent_session_identity
         context = agent_session_identity(agent)
         context["session_id"] = session_id
-        finalize_session(**context, platform=platform, reason=reason)
+        return session_end_messages(finalize_session(**context, platform=platform, reason=reason))
+    return []
 
 
 def _oneshot_agent_and_session(cli):
@@ -230,7 +231,10 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         return
 
     try:
-        _notify_session_finalize(session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason, agent=agent)
+        # stderr: one-shot stdout is the answer scripts parse.
+        for message in _notify_session_finalize(
+                session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason, agent=agent):
+            print(message, file=sys.stderr, flush=True)
     finally:
         _cli()._single_query_finalize_attempted_session_ids.add(session_id)
 

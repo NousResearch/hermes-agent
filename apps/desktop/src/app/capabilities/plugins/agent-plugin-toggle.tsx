@@ -22,10 +22,12 @@ interface AgentPluginToggleProps {
   size?: 'default' | 'xs'
   /** Also called on every flip (the card switch drives the Desktop half with it). */
   onToggle?: (enable: boolean) => void
+  /** Enable a unified Desktop half only after agent enablement succeeds. */
+  onEnabled?: () => void
 }
 
 /** Setup consent belongs to this scoped row, never the recovering live socket. */
-export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }: AgentPluginToggleProps) {
+export function AgentPluginToggle({ row, profile, label, busy, size, onToggle, onEnabled }: AgentPluginToggleProps) {
   const { t } = useI18n()
   const p = t.settings.plugins.agent
   const { requestGateway, gateway } = useGatewayRequest()
@@ -66,6 +68,10 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }:
           void toggleAgentPlugin(request, key, enable, failMessage, profile, {
             onSetupRequired: review => setSetup({ review, request, profile }),
             onRestartRequired
+          }).then(ok => {
+            if (ok && enable) {
+              onEnabled?.()
+            }
           })
         }}
         size={size}
@@ -99,6 +105,8 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }:
             if (!ok) {
               throw new Error(failMessage)
             }
+
+            onEnabled?.()
           }}
           open
           title={p.setupTitle}

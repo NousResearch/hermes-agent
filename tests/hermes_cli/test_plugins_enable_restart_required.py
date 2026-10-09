@@ -102,6 +102,9 @@ def test_enable_that_publishes_a_new_generation_asks_for_a_restart_and_loads_not
     plugin = _plugin(home)
     _boot(monkeypatch, _generation("gen1", with_dep=False))
     newer = _generation("gen2", with_dep=True)
+    cfg = load_config()
+    cfg["platform_toolsets"] = {"cli": ["hermes-cli"]}
+    save_config(cfg)
     monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", _admission(publish=newer))
 
     result = cmd.dashboard_set_agent_plugin_enabled("dep-fixture", enabled=True)

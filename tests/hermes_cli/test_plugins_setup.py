@@ -144,7 +144,7 @@ def test_reviewed_consent_flows_through_public_enable_surface(native, surface, m
         from tui_gateway import server
         response = server.handle_request({"id": 1, "method": "plugins.manage", "params": {
             "action": "toggle", "key": "native-fixture", "enable": True, "setup_consent": consent}})
-        assert response["result"]["ok"], response
+        assert response.get("result", {}).get("ok"), response
     assert (home / "runtime").exists()
     assert "native-fixture" in cmd._get_enabled_set()
 
@@ -212,7 +212,8 @@ def test_rpc_consent_is_bound_to_real_selected_profile(native, tmp_path, monkeyp
     consent = result["error"]["data"]["consent"]
     assert consent["hermes_home"] == str(selected)
     assert toggle(setup_consent=consent)["error"]["data"]["status"] == "consent_required"
-    assert toggle(profile="selected", setup_consent=consent)["result"]["plugin"]["status"] == "enabled"
+    enabled = toggle(profile="selected", setup_consent=consent)
+    assert enabled.get("result", {}).get("plugin", {}).get("status") == "enabled", enabled
     assert (selected / "runtime").exists()
     assert not (home / "runtime").exists()
     assert "native-fixture" not in cmd._get_enabled_set()

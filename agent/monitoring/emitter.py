@@ -26,7 +26,7 @@ class MonitoringEmitter:
 
     def __init__(self, *, enabled: bool = True) -> None:
         self._enabled = enabled
-        self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=_MAX_QUEUE)
+        self._q: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=_MAX_QUEUE)
         self._dropped = 0
         self._dispatched = 0
         self._stop = threading.Event()
@@ -122,7 +122,7 @@ class MonitoringEmitter:
         threading.Thread(target=_wait_for_completion, name="hermes-monitoring-flush", daemon=True).start()
         finished.wait(timeout=timeout)
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         return {"queued": self._q.qsize(), "dispatched": self._dispatched, "dropped": self._dropped, "subscribers": len(self._subscribers)}
 
     def close(self) -> None:
@@ -164,4 +164,4 @@ def reset_emitter_for_tests(emitter: Optional[MonitoringEmitter] = None) -> None
         _EMITTER = emitter
 
 
-__all__ = ["MonitoringEmitter", "get_emitter", "emit", "reset_emitter_for_tests"]
+__all__ = ["MonitoringEmitter", "emit", "get_emitter", "reset_emitter_for_tests"]

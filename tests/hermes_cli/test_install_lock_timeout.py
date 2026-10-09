@@ -70,7 +70,7 @@ def test_boot_activation_proceeds_while_the_install_is_locked(locked_install, mo
     """The issue's symptom, inverted: the backend reaches its dependency environment and can bind
     while a sibling holds the lock. Recovery belongs to whoever holds it, so it is skipped."""
     import pm.environments as runtime_paths
-    import hermes_cli.runtime_state as runtime_state
+    from hermes_cli import runtime_state
 
     repo, site = locked_install
     real_lock = runtime_state.runtime_lock

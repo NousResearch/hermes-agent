@@ -84,16 +84,17 @@ def _session_hook_identity(session: dict) -> dict:
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None,
-                             session: dict | None = None) -> None:
+                             session: dict | None = None) -> list[str]:
     """Fire session lifecycle hooks with CLI parity."""
     with contextlib.suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session, invoke_hook
+        from hermes_cli.lifecycle import finalize_session, invoke_hook, session_end_messages
         context = _session_hook_identity(session) if session is not None else {}
         context.update(session_id=session_id, platform=_resolve_agent_platform(platform))
         if event_type == "on_session_finalize":
-            finalize_session(**context)
+            return session_end_messages(finalize_session(**context))
         else:
             invoke_hook(event_type, **context)
+    return []
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
@@ -435,7 +436,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session), session)
+    # Returned to the client by ``session.close`` (the TUI shows them after its /new reset); reaper paths have no client.
+    session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session), session) or []
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.
@@ -733,7 +735,10 @@ def _interrupt_session_turn(
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
     """
     use_compute_host = _session_uses_compute_host(session)
-    should_interrupt = bool(session.get("running"))
+    # A manual compaction holds `running` with no run thread and its own finally releases it: Stop must not
+    # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
+    compressing = bool(session.get("_manual_compress_active"))
+    should_interrupt = bool(session.get("running")) and not compressing
     run_thread_alive = False
     if use_compute_host:
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
@@ -775,7 +780,7 @@ def _interrupt_session_turn(
             interrupt_for_session(
                 origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
                 parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
-        if not run_thread_alive:
+        if not run_thread_alive and not compressing:
             with session["history_lock"]:
                 if session.get("running"):
                     session["running"] = False

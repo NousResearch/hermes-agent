@@ -204,5 +204,3 @@ class TestOnSessionEndHook:
         expected = dict(session_id="hook_test_001", completed=False, interrupted=True,
                         model="claude-sonnet-4", platform="tui")
         assert expected.items() <= ends[-1].items()
-
-

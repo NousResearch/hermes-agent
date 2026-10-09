@@ -33,7 +33,7 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # ---------------------------------------------------------------------------
 
 
-def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
+def _write_auth_store(hermes_home: Path, nous_state: dict[str, Any]) -> Path:
     """Write an auth.json with the given nous state into a hermetic HERMES_HOME."""
     auth_path = hermes_home / "auth.json"
     auth_path.write_text(json.dumps({
@@ -43,6 +43,22 @@ def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
     return auth_path
 
 
+def test_nous_adapter_never_waits_on_a_free_tier_challenge_under_its_lock(tmp_path, monkeypatch):
+    """Every proxied request queues on the adapter lock, so the credential read inside it is a
+    background caller: a browser challenge is announced and raised, never waited on."""
+    from hermes_cli import anon_challenge
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {"access_token": "a", "refresh_token": "r"})
+    seen = []
+
+    def resolve(**_kwargs):
+        seen.append(anon_challenge._background.get())
+        return {"api_key": "k", "expires_at": "2099-01-01T00:00:00Z",
+                "base_url": "https://inference-api.nousresearch.com/v1"}
+
+    with patch("hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials", side_effect=resolve):
+        NousPortalAdapter().get_credential()
+    assert seen == [True]
 
 
 def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
@@ -228,9 +244,9 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
+from aiohttp import web
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import create_app
 
 
 class FakeAdapter(UpstreamAdapter):
@@ -290,7 +306,7 @@ async def _start_runner(app: "web.Application"):
     return runner, f"http://127.0.0.1:{port}"
 
 
-def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+def _build_fake_upstream(captured: dict[str, Any]) -> "web.Application":
     async def echo(request):
         body = await request.read()
         captured["requests"].append({
@@ -318,7 +334,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     return app
 
 
-def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+def _build_retrying_fake_upstream(captured: dict[str, Any]) -> "web.Application":
     async def maybe_unauthorized(request):
         body = await request.read()
         auth = request.headers.get("Authorization")
@@ -344,7 +360,7 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
 def test_server_strips_client_auth_header():
     """The client's Authorization header MUST NOT reach the upstream."""
     async def run():
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
@@ -394,7 +410,7 @@ def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, a
     refused ones never go upstream. A wildcard bind has no single origin of its own, and a
     DNS-rebound page's Origin always equals its Host, so no Origin is trusted there."""
     async def run():
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1"), bound_host=bound))
         authority = proxy_base.removeprefix("http://")

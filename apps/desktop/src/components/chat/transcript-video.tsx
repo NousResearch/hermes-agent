@@ -104,5 +104,5 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
     }
   }, [])
 
-  return <video onRateChange={onRateChange} ref={videoRef} {...props} />
+  return <video onRateChange={onRateChange} ref={videoRef} {...props} preload={props.preload ?? 'none'} />
 }

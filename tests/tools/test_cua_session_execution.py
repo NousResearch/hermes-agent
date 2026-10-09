@@ -385,7 +385,6 @@ def test_registry_task_alias_uses_private_transport_without_moving_approvals(tmp
 
     # A task-only dispatch still runs in its caller's approval context, not its transport owner's.
     approval_owner = session_id or 'task-only-caller'
-    monkeypatch.setenv('HERMES_COMPUTER_USE_BACKEND', 'cua')
     valid = [True]
     with tempfile.TemporaryDirectory(prefix='hc-alias-') as runtime:
         sock = socket.socket(socket.AF_UNIX)
@@ -436,6 +435,19 @@ def test_registry_task_alias_uses_private_transport_without_moving_approvals(tmp
             sock.close()
 
 
+def _select_inert_provider(monkeypatch):
+    from tools.computer_use.backend import ComputerUseProvider
+
+    class InertProvider(ComputerUseProvider):
+        name = "inert-fixture"
+
+        def create_backend(self, *, permission_mode):
+            from tools.computer_use.tool import _NoopBackend
+            return _NoopBackend()
+
+    monkeypatch.setattr("plugins.computer_use.get_active_provider", lambda: InertProvider())
+
+
 @pytest.mark.parametrize('session_id', [None, 'rotated-owner', 'other-owner'])
 @pytest.mark.parametrize('cached', [False, True], ids=['cold', 'cached-host'])
 def test_registry_task_alias_denies_before_backend_start(monkeypatch, session_id, cached):
@@ -444,7 +456,7 @@ def test_registry_task_alias_denies_before_backend_start(monkeypatch, session_id
     from tools.computer_use import tool
 
     # Even the fallback is inert: a broken lookup cannot touch a desktop.
-    monkeypatch.setenv('HERMES_COMPUTER_USE_BACKEND', 'noop')
+    _select_inert_provider(monkeypatch)
     starts = []
     monkeypatch.setattr(tool._NoopBackend, 'start', lambda self: starts.append(self))
     valid = [True]
@@ -496,7 +508,7 @@ def test_invalid_launch_context_is_non_retry_policy_denial(tmp_path, monkeypatch
         elif invalid == 'validation':
             valid[0] = False
         elif invalid == 'other-backend':
-            monkeypatch.setenv('HERMES_COMPUTER_USE_BACKEND', 'noop')
+            _select_inert_provider(monkeypatch)
         result = json.loads(registry.dispatch('computer_use',
             {'action': 'capture', 'app': 'screen'}, session_id='invalid-launch'))
         assert result['ok'] is False
@@ -509,7 +521,7 @@ def test_invalid_launch_context_is_non_retry_policy_denial(tmp_path, monkeypatch
         assert 'install' not in result.get('hint', '')
         reason = {'driver': 'driver executable unavailable', 'validation': 'validation failed',
                   'missing-launch': 'private_daemon', 'shared-daemon': 'private_daemon',
-                  'other-backend': 'requires the cua backend'}[invalid]
+                  'other-backend': 'does not support session execution contexts'}[invalid]
         assert reason in result['message']
         assert not marker.exists()
     finally:

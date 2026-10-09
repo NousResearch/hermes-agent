@@ -21,8 +21,8 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -53,7 +53,7 @@ class GatewayAgentCacheMixin:
         DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
         None so opting out of a non-None default still rebuilds. Includes the live tool registry
         generation: MCP reloads mutate the registry without touching config.yaml."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
             default = cfg_get(DEFAULT_CONFIG, section, key)
@@ -86,7 +86,9 @@ class GatewayAgentCacheMixin:
             instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
             if instance is None:
                 from plugins.memory import load_memory_provider
-                instance = load_memory_provider(name, register_skills=False)
+                from plugins.plugin_loader import bounded_load_wait
+                with bounded_load_wait():  # runs every turn: never stall on another thread's hung import
+                    instance = load_memory_provider(name, register_skills=False)
                 if instance is None:
                     return {}
                 cls._MEMORY_IDENTITY_PROVIDER_MEMO[name] = instance
@@ -158,7 +160,7 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
@@ -254,6 +256,38 @@ class GatewayAgentCacheMixin:
         # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
+
+    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any) -> str:
+        """The model *agent* was built to run, for the post-turn fallback check: what
+        ``_resolve_session_agent_runtime`` chose (session /model, then channel_overrides on the chat,
+        thread or parent, then the global model), canonicalized as ``AIAgent.__init__`` did on the
+        agent's PRIMARY route. The route a fallback moved it to would make that fallback look primary."""
+        from gateway.run import _resolve_gateway_model
+        primary = getattr(agent, "_primary_runtime", None) or {}
+        provider = primary.get("provider", getattr(agent, "provider", "")) or ""
+        # An override whose provider was unavailable this turn ran on the default route instead.
+        override = self._session_model_override(session_key) or {}
+        if override.get("model") and override.get("provider") in (None, "", provider):
+            model = override["model"]
+        elif source is not None:
+            model = self._resolve_model_for_channel(
+                source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+        else:
+            model = _resolve_gateway_model()
+        # Vendor prefix stripped on native providers, else the cached agent is evicted every turn,
+        # destroying prompt caching.
+        with suppress(Exception):
+            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
+            if provider and provider not in _AGGREGATOR_PROVIDERS:
+                model = normalize_model_for_provider(model, provider)
+        # The Nous welcome host runs its one model whatever the chat configured (pin_model_for_route).
+        with suppress(Exception):
+            from hermes_cli.anon_auth import pin_model_for_route
+            model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
+        return model
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
@@ -399,6 +433,14 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            try:
+                store.set_session_yolo(session_key, False)
+            except Exception:
+                # Never fails the boundary itself, but a surviving ON would come back after a restart.
+                logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result
@@ -583,13 +625,13 @@ class GatewayAgentCacheMixin:
             # Legacy 3-tuple keeps its 3-element shape for callers indexing ``cached[2]``.
             _cache[session_key] = (cached[0], cached[1], _live) + (() if _snapshot_sid is None else (_snapshot_sid,))
 
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
+    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: list[str]) -> None:
         """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
         if not session_key or not notes:
             return
         self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
-    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
+    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> list[str]:
         state = self._peek_session_state(session_key) if session_key else None
         if state is None:
             return []
@@ -730,11 +772,9 @@ class GatewayAgentCacheMixin:
         if src.platform == Platform.DISCORD:
             from gateway.session import _discord_tools_loaded
             discord_tools = "1" if _discord_tools_loaded() else "0"
-            # message_id: only PRESENCE is rendered (the id itself arrives per-turn in the user
-            # message) — keying on the value would re-render every message for zero byte change.
+            # message_id is not rendered (value nor presence): it arrives per-turn in the user message.
             discord_ids = (
                 _s(src.guild_id), _s(src.parent_chat_id), _s(src.thread_id), _s(src.chat_id),
-                "1" if src.message_id else "0",
             )
         # Slack's capability-aware platform note is gated on _slack_tools_loaded() — the gate state must
         # be in the key (same parity contract as the Discord gate above) so a config / MCP-registration
@@ -993,7 +1033,7 @@ class GatewayAgentCacheMixin:
         # refs) — len(plan) is 0 once the daemon thread finishes, hence the pre-captured count.
         return evicted_count
 
-    def _release_pressure_batch(self, plan: List[tuple]) -> None:
+    def _release_pressure_batch(self, plan: list[tuple]) -> None:
         """Release a pressure-evicted batch sequentially on one daemon thread, then ``malloc_trim`` so
         RSS actually falls. The plan is drained (``pop`` + ``del``), not iterated, so no local
         reference pins evicted agents during ``gc.collect`` + trim (else the valve over-evicts)."""
@@ -1053,7 +1093,7 @@ class GatewayAgentCacheMixin:
             return 0
         now = time.time()
         idle_ttl = self._agent_cache_idle_ttl()
-        to_evict: List[tuple] = []
+        to_evict: list[tuple] = []
         running_ids = self._running_agent_ids()
         with _lock:
             for key, entry in list(_cache.items()):

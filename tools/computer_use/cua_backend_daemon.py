@@ -67,8 +67,8 @@ def _validate_cua_driver_app_signature(app_path: str) -> None:
                        "refusing to launch it. (Set computer_use.allow_unsigned_driver: true in config.yaml only for "
                        "local unsigned driver builds.)")
 
-def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: List[str], *, platform: str,
-                                   app_path: Optional[str] = None) -> List[str]:
+def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: list[str], *, platform: str,
+                                   app_path: Optional[str] = None) -> list[str]:
     """Build the private-daemon launch while preserving macOS TCC identity."""
     if platform != "darwin":
         return [driver_cmd, *serve_args]
@@ -125,7 +125,7 @@ class _EmbeddedCuaDaemon:
                            "bounded mode — it will NOT bound this %s session. Migrate the manifest to version 3 to keep a "
                            "ceiling on approval-bypassed runs.", permission_mode)
         self.permission_mode, self._driver_cmd, self._command = permission_mode, driver_cmd, driver_cmd
-        self._mcp_args: List[str] = list(_driver._CUA_DRIVER_ARGS)
+        self._mcp_args: list[str] = list(_driver._CUA_DRIVER_ARGS)
         self._process: Any = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._launch_env = None
@@ -142,14 +142,14 @@ class _EmbeddedCuaDaemon:
             if len(os.fsencode(self.socket_path)) >= 104:
                 raise ValueError("runtime_dir path is too long for a private Unix socket")
 
-    def child_env(self) -> Dict[str, str]:
+    def child_env(self) -> dict[str, str]:
         env = {**_cb().cua_driver_child_env(**({"execution_context": self.execution_context} if self.execution_context else {})),
                "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
 
-    def _sanitized_env(self) -> Dict[str, str]:
+    def _sanitized_env(self) -> dict[str, str]:
         from tools.environments.local import _sanitize_subprocess_env
         if self.execution_context is not None:
             return _cb().sanitize_cua_child_env(self.child_env(), self.execution_context)
@@ -166,7 +166,7 @@ class _EmbeddedCuaDaemon:
                     self._stderr_tail.append(text)
                     logger.debug("embedded cua-driver: %s", text)
 
-    def _serve_args(self) -> List[str]:
+    def _serve_args(self) -> list[str]:
         serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
                       self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
         if self.manifest_applies:
@@ -246,7 +246,7 @@ class _EmbeddedCuaDaemon:
             logger.exception("failed to clean up embedded cua-driver startup")
         raise RuntimeError(f"{what}: {'; '.join(self._stderr_tail) or fallback}")
 
-    def _socket_ready(self, env: Dict[str, str]) -> bool:
+    def _socket_ready(self, env: dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
         argv = [self._command, "status", "--socket", self.socket_path]
         if self.execution_context is not None:
@@ -254,7 +254,7 @@ class _EmbeddedCuaDaemon:
         probe = _cb()._run_quiet(argv, timeout=2.0, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
-    def proxy_invocation(self) -> Tuple[str, List[str]]:
+    def proxy_invocation(self) -> tuple[str, list[str]]:
         if not self._running:
             raise RuntimeError("embedded cua-driver daemon is not running")
         return self._command, [*self._mcp_args, "--embedded", "--socket", self.socket_path]

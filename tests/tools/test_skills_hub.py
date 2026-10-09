@@ -156,6 +156,29 @@ class TestGitHubSourceFileFetch:
             "skill/references/foo%23bar.md"
         )
 
+    @pytest.mark.parametrize("gh_token", ["gh-live", "gh-dead"])
+    def test_rejected_token_falls_through_to_next_credential(self, monkeypatch, gh_token):
+        """A 401 on the .env token retries with `gh auth token`, then anonymously (#98725)."""
+        import tools.skills_hub as hub
+        auth = GitHubAuth()
+        monkeypatch.setattr(auth, "_try_pat", lambda: "pat-dead")
+        monkeypatch.setattr(auth, "_try_gh_cli", lambda: gh_token)
+        monkeypatch.setattr(auth, "_try_github_app", lambda: None)
+        sent = []
+
+        def fake_get(url, *, headers, **_kw):
+            sent.append(headers)
+            dead = headers.get("Authorization", "").endswith("-dead")
+            return httpx.Response(401 if dead else 200, content=b"body")
+
+        monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+        assert GitHubSource(auth)._fetch_file_bytes("o/r", "s/SKILL.md") == b"body"
+        expected = ["token pat-dead", "token gh-live"] if gh_token == "gh-live" else [
+            "token pat-dead", "token gh-dead", None]
+        assert [h.get("Authorization") for h in sent] == expected
+        assert sent[-1]["Accept"] == "application/vnd.github.v3.raw"
+        assert auth.rejected[0] == "GITHUB_TOKEN/GH_TOKEN"
+
 # ---------------------------------------------------------------------------
 # SkillsShSource
 # ---------------------------------------------------------------------------
@@ -234,7 +257,7 @@ class TestSkillsShSource:
         index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
                  "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
         shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
-        calls: List[str] = []
+        calls: list[str] = []
 
         def fake_get(url, *, timeout, headers=None):
             calls.append(url)
@@ -274,7 +297,7 @@ class TestSkillsShSource:
             if url.endswith("/contents/"):
                 # Root listing for shallow scan — return empty so it falls through
                 resp.status_code = 200
-                resp.json = lambda: []
+                resp.json = list
                 return resp
             if "/contents/" in url:
                 # All contents API calls fail (candidate paths miss)
@@ -1409,7 +1432,7 @@ class TestInstallPathSafety:
         # process then sees this test's tmp dir as the skills root. Set the
         # override attribute directly and delete it on teardown so the
         # module returns to dynamic resolution.
-        setattr(hub, "SKILLS_DIR", skills_dir)
+        hub.SKILLS_DIR = skills_dir
         try:
             yield skills_dir
         finally:
@@ -1510,7 +1533,7 @@ class TestInstallPathSafety:
         }))
 
         patch_lock_file(lock_path)
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
         assert ok is False
         assert sibling.exists()
         assert (sibling / "data").read_text() == "nope"
@@ -1538,7 +1561,7 @@ class TestInstallPathSafety:
         }))
 
         patch_lock_file(lock_path)
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
@@ -1924,7 +1947,7 @@ class _FakeSource(SkillSource):
     def source_id(self) -> str:
         return self._sid
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         self.calls += 1
         if self._sleep:
             time.sleep(self._sleep)

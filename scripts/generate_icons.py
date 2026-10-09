@@ -321,7 +321,7 @@ def girl_path(art: IconArt, girl: str) -> str:
     undeclared inkscape/sodipodi prefixes)."""
     if girl not in art.paths:
         src = art.girls[girl].read_text(encoding="utf-8-sig")
-        m = re.search(r"<path\b.*?/>", src, re.S)
+        m = re.search(r"<path\b.*?/>", src, re.DOTALL)
         assert m, f"no <path> found in {art.girls[girl].name}"
         path = re.sub(r'\s+(inkscape|sodipodi):[a-zA-Z-]+="[^"]*"', "", m.group(0))
         art.paths[girl] = path
@@ -881,7 +881,7 @@ def cmd_write(source: Path, out: Path) -> int:
             selected = desktop_art if rel.startswith("apps/desktop/") else art
             path.write_bytes(target_bytes(selected, kind, arg))
             written += 1
-        except Exception as exc:  # noqa: BLE001 - report all, then fail
+        except Exception as exc:
             failures += 1
             print(f"  !! {rel}: FAILED ({exc})")
     print(f"[write] wrote {written}/{len(TARGETS)} files")
@@ -926,7 +926,7 @@ def cmd_check(source: Path, out: Path) -> int:
         try:
             selected = desktop_art if rel.startswith("apps/desktop/") else art
             target_bytes(selected, kind, arg)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             problems.append(f"{rel}: REGENERATE FAILED ({exc})")
 
     # PNG targets must have the expected format + size
@@ -939,7 +939,7 @@ def cmd_check(source: Path, out: Path) -> int:
             im = Image.open(path)
             if im.format != fmt or im.size != size:
                 problems.append(f"{rel}: got {im.format} {im.size}, expected {fmt} {size}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             problems.append(f"{rel}: UNREADABLE ({exc})")
 
     # squircles must keep transparent corners (alpha extrema include 0)
@@ -984,7 +984,7 @@ def cmd_check(source: Path, out: Path) -> int:
             got = ico_sizes(path)
             if got != sizes:
                 problems.append(f"{rel}: ICO frames {got}, expected {sizes}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             problems.append(f"{rel}: UNREADABLE ({exc})")
 
     if not problems:

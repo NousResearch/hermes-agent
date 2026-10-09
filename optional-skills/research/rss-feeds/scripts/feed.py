@@ -145,11 +145,11 @@ def discover(page_url: str, page_html: bytes | None = None) -> list[str]:
         page_html, _ = fetch(page_url)
     text = page_html.decode("utf-8", "replace")
     found: list[str] = []
-    for m in re.finditer(r"<link\b[^>]*>", text, re.I):
+    for m in re.finditer(r"<link\b[^>]*>", text, re.IGNORECASE):
         tag = m.group(0)
-        type_m = re.search(r"""type\s*=\s*["']([^"']+)""", tag, re.I)
-        href_m = re.search(r"""href\s*=\s*["']([^"']+)""", tag, re.I)
-        rel_m = re.search(r"""rel\s*=\s*["']([^"']+)""", tag, re.I)
+        type_m = re.search(r"""type\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
+        href_m = re.search(r"""href\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
+        rel_m = re.search(r"""rel\s*=\s*["']([^"']+)""", tag, re.IGNORECASE)
         if not href_m or not type_m or type_m.group(1).lower() not in FEED_TYPES:
             continue
         if rel_m and "alternate" not in rel_m.group(1).lower():

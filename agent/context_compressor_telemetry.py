@@ -50,7 +50,7 @@ class CompressionTelemetryMixin:
             "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
             "summary_input_record_count": None, "summary_input_sampled_record_count": None,
             "summary_input_elided_record_count": None,
-            # Effect of a committed rewrite (filled by _record_compression_effect; defaults describe no rewrite).
+            # Candidate effect is captured by the compressor, then replaced with the exact committed shape.
             "method": "none", "items_dropped": 0, "messages_before": None, "messages_after": None,
             "tokens_before": None, "tokens_after": None, "tokens_reclaimed": None, "token_count_method": None,
             "tool_results_pruned": None, "reasoning_items_pruned": None,
@@ -120,4 +120,19 @@ class CompressionTelemetryMixin:
             tokens_after=tokens_after, tokens_reclaimed=tokens_before - tokens_after,
             token_count_method="estimate_rough", tool_results_pruned=tool_results_pruned,
             reasoning_items_pruned=reasoning_items_pruned,
+        )
+
+    def _record_committed_compression_effect(
+        self, messages_before: list[dict[str, Any]], messages_after: list[dict[str, Any]],
+    ) -> None:
+        """Replace candidate counts with the exact transcript shape that crossed the commit boundary."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        tokens_before = estimate_messages_tokens_rough(messages_before)
+        tokens_after = estimate_messages_tokens_rough(messages_after)
+        telemetry.update(
+            messages_before=len(messages_before), messages_after=len(messages_after),
+            tokens_before=tokens_before, tokens_after=tokens_after,
+            tokens_reclaimed=tokens_before - tokens_after, token_count_method="estimate_rough",
         )

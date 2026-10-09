@@ -258,7 +258,8 @@ text, the focus topic or error messages.
   `deterministic_fallback` (static anchors summary; `items_dropped` counts the
   replaced messages), `provider` (Codex) or `none`.
 - `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
-  `tokens_reclaimed` describe the compressor's rewrite.
+  `tokens_reclaimed` describe the transcript that crossed the commit boundary,
+  including retained `/compress here N` tail rows and boundary anchors.
   `token_count_method: estimate_rough` marks them as rough message-only
   estimates (system prompt and tool schemas excluded), so they compare like
   for like. `tool_results_pruned` and `reasoning_items_pruned` count the

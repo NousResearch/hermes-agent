@@ -151,6 +151,26 @@ def test_gate_blocked_attempt_logs_one_blocked_record_and_no_shared_metric(caplo
     assert shared_metric_rows == []
 
 
+def test_bypassed_attempt_does_not_leak_shared_metric_state_into_pool_saturation(caplog, shared_metric_rows):
+    from agent.conversation_compression import run_compress_context_with_progress_timeout
+
+    compressor = _compressor()
+    agent = _Agent(compressor)
+    with patch.object(type(compressor), "_compression_block_reason", return_value="cooldown:42"), \
+            patch.object(type(compressor), "_automatic_compression_blocked", return_value=True):
+        compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
+
+    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            run_compress_context_with_progress_timeout(
+                worker=lambda _fence: pytest.fail("a refused job must not run"), messages=_messages(),
+                system_prompt_fallback="system prompt", idle_timeout_seconds=5.0, total_ceiling_seconds=5.0,
+                telemetry_agent=agent,
+            )
+
+    assert shared_metric_rows == []
+
+
 class _CodexSession:
     def __init__(self, result):
         self.result = result
@@ -365,6 +385,7 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
         session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
         skip_context_files=True, skip_memory=True,
     )
+    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
     agent.compression_in_place = in_place
     agent.context_compressor.tail_token_budget = 10
     try:
@@ -378,6 +399,44 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     assert record["session_id"] == "db-session"
     assert (record["trigger_source"], record["method"]) == ("pre_api", "llm_summary")
     assert record["tokens_after"] is not None and record["middle_window_tokens"] is not None
+
+
+@pytest.mark.parametrize("in_place", [True, False])
+def test_committed_effect_includes_the_retained_partial_compression_tail(
+    caplog, tmp_path, monkeypatch, in_place,
+):
+    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        skip_context_files=True, skip_memory=True,
+    )
+    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
+    agent.compression_in_place = in_place
+    agent.context_compressor.tail_token_budget = 10
+    messages = _messages()
+    head, tail = messages[:-4], messages[-4:]
+    head_tokens = estimate_messages_tokens_rough(head)
+    try:
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+                compressed, _ = agent._compress_context(
+                    head, "sys", approx_tokens=80_000, force=True, verbatim_tail=tail,
+                )
+    finally:
+        agent.close()
+
+    [record] = _attempt_records(caplog)
+    assert record["commit_status"] == "committed"
+    assert record["messages_before"] == len(messages)
+    assert record["messages_after"] == len(compressed)
+    assert record["tokens_before"] > head_tokens
+    assert record["tokens_after"] == estimate_messages_tokens_rough(compressed)
+    assert record["tokens_reclaimed"] == record["tokens_before"] - record["tokens_after"]
 
 
 def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog, shared_metric_rows):

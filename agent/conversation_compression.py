@@ -33,7 +33,7 @@ from agent.context_engine import automatic_compaction_status_message, sanitize_m
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
-    _emit_compression_attempt_telemetry,
+    _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
 )
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
@@ -4257,10 +4257,10 @@ def compress_context(
     messages, compressed = phase.messages, phase.compressed
     messages_before_compression = phase.messages_before_compression
     approx_tokens, _pre_msg_count = phase.approx_tokens, phase.pre_msg_count
+    effect_messages_before = _snapshot_compression_effect_input(messages_before_compression, verbatim_tail)
     _commit_fence_entered = False
     try:
-        # Capture the verdict before rotation callbacks: lifecycle hooks may reset
-        # compressor fields on rebind; record only after the full boundary commits.
+        # Capture the verdict before rotation callbacks reset compressor fields on rebind.
         _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip = (
             bool(getattr(agent.context_compressor, name, False))
             for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
@@ -4293,8 +4293,7 @@ def compress_context(
         _warn_summary_or_aux_fallback(agent)
         # A just-delivered reply the engine folded away must stay live or the
         # next render drops it from the surface (#118900). It runs FIRST: the
-        # todo fold rewrites the trailing user row (its follower would no longer
-        # match) and both later passes place themselves around the tail, so the
+        # todo fold rewrites the trailing user row, and both later passes place themselves around the tail, so the
         # reply has to be back in its chronological slot before they look.
         from agent.conversation_compression_reply_anchor import _ensure_compressed_keeps_last_assistant_reply
 
@@ -4321,7 +4320,7 @@ def compress_context(
             # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
             # both); carry exactly that one row so the commit rewinds the durable original instead
             # of archiving it compacted=1 next to a fresh twin (display would show it twice). The
-            # todo fold / user-anchor rows added above are NOT carried: they keep their own class.
+            # todo fold / user-anchor rows above keep their own class and are not carried.
             carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
         )
         if commit.refused_prompt is not None:
@@ -4344,6 +4343,8 @@ def compress_context(
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )
+        if lifecycle.commit_status == "committed":
+            _record_committed_attempt_effect(agent, effect_messages_before, compressed, verbatim_tail, split_status)
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
@@ -4351,8 +4352,7 @@ def compress_context(
         )
         return compressed, new_system_prompt
     finally:
-        # Release the OLD session's lock only after rotation and all post-rotation
-        # bookkeeping; a waking contender then sees the NEW id and acquires on that.
+        # Release the old lock after rotation bookkeeping so a waking contender sees the new session id.
         try:
             lease.release()
         finally:

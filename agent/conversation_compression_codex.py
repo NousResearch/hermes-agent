@@ -50,7 +50,7 @@ def _record_codex_compaction_failure(agent: Any, error: str) -> None:
 
 def _compress_context_via_codex_app_server(
     agent: Any, messages: list, system_message: Optional[str], *, approx_tokens: Optional[int] = None,
-    task_id: str = "default", force: bool = False, started_at: float,
+    task_id: str = "default", force: bool = False, started_at: float, attempt_seed: dict[str, Any],
 ) -> tuple[list, str]:
     """Route compaction to Codex app-server for Codex-owned threads.
     Rewriting the local transcript would not shrink the Codex thread, so Codex compacts its own thread and
@@ -63,7 +63,7 @@ def _compress_context_via_codex_app_server(
     def _record(commit_status: str, failure_class: Optional[str], method: str = "none") -> None:
         _emit_bypassed_attempt_telemetry(
             agent, started_at, commit_status=commit_status, failure_class=failure_class, approx_tokens=approx_tokens,
-            route="codex_app_server", method=method,
+            route="codex_app_server", method=method, attempt_seed=attempt_seed,
         )
 
     _sid = getattr(agent, "session_id", None) or "none"

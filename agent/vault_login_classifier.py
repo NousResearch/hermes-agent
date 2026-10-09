@@ -150,6 +150,24 @@ def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginC
             continue
         if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+
+    # Some MFA widgets expose six anonymous text inputs, one per digit, without
+    # OTP metadata. Only the exact six-box, same-form, contiguous pattern qualifies.
+    if not out:
+        boxes = [c for c in controls
+                 if c.type in ("text", "tel", "number", "")
+                 and (c.max_length == 1 or c.max_length is None)
+                 and not c.autocomplete.strip()
+                 and not c.name.strip()
+                 and not c.label.strip()]
+        boxes.sort(key=lambda c: c.index)
+        for start in range(len(boxes) - 5):
+            group = boxes[start:start + 6]
+            if (len(group) == 6 and len(controls) == 6
+                    and len({c.form_index for c in group}) == 1
+                    and all(b.index - a.index == 1 for a, b in zip(group, group[1:]))):
+                out.extend(ClassifiedLoginControl(c, 80, "one-time-code") for c in group)
+                break
     return out
 
 
@@ -234,7 +252,9 @@ def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> li
     looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
     unrelated inputs."""
     best = max(otp_controls, key=lambda c: c.score)
-    boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
+    boxes = sorted((c for c in otp_controls
+                    if c.control.max_length == 1 or c.control.max_length is None),
+                   key=lambda c: c.control.index)
     if (len(boxes) == len(code)
             and len({b.control.form_index for b in boxes}) == 1
             and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):

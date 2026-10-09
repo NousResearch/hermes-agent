@@ -50,6 +50,43 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     return task_config
 
 
+def task_extra_body(task: str, task_config: dict[str, Any]) -> dict[str, Any]:
+    """Shallow copy of ``auxiliary.<task>.extra_body`` with ``reasoning_effort`` folded into
+    ``reasoning`` unless one is configured (more specific wins). MoA tasks are excluded: their
+    reasoning depth is per-slot in the preset. Compression defaults to thinking-off: a summary is
+    a mechanical merge, and with the main model's thinking inherited ON the effort burns the output
+    budget, so every summary lands as ``finish_reason=length`` and the PARTIAL guard aborts
+    compaction deterministically (#135602). An explicit ``reasoning_effort`` (any level, including
+    re-enabling) still wins; the reasoning-field/floor ladder in the caller already absorbs
+    endpoints that reject the disable."""
+    raw = task_config.get("extra_body")
+    result = dict(raw) if isinstance(raw, dict) else {}
+    if "reasoning" in result:
+        return result
+    effort = task_config.get("reasoning_effort")
+    if effort is None or effort == "":
+        if task == "compression":
+            result["reasoning"] = {"enabled": False}
+        return result
+    if task in ("moa_reference", "moa_aggregator"):
+        logger.warning(
+            "auxiliary.%s.reasoning_effort is not supported — MoA reasoning depth is per-slot: set reasoning_effort "
+            "on the preset's reference_models entries / aggregator instead (moa.presets.<name>...). Ignoring.",
+            task,
+        )
+        return result
+    from hermes_constants import parse_reasoning_effort
+    parsed = parse_reasoning_effort(effort)
+    if parsed is not None:
+        result["reasoning"] = parsed
+    else:
+        logger.warning(
+            "auxiliary.%s.reasoning_effort %r is not a valid level (none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
+            task, effort,
+        )
+    return result
+
+
 # The fields that together pick WHERE a call goes. They travel as one unit: a provider pinned on an
 # inheriting task must never pick up the base's base_url/api_key (that would send one vendor's key
 # to another's endpoint).

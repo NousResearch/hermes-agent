@@ -39,29 +39,41 @@ def relay(monkeypatch):
     return sent
 
 
-def test_same_text_after_isolated_complete_is_queued_not_dropped(monkeypatch, relay):
+def test_same_text_after_isolated_complete_is_queued_not_dropped(monkeypatch):
     session = _isolated_running_session("s1", "go")
     monkeypatch.setattr(server, "_sessions", {"s1": session})
-    server._relay_compute_host_rpc(_complete_frame("s1"))
-    assert relay and relay[0]["params"]["type"] == "message.complete"
-    # turn.done has not arrived yet: the session is still running in the parent.
-    assert session["running"] is True
-    with session["history_lock"]:
-        envelope = server._enqueue_prompt(session, "go", server._detached_ws_transport)
-    assert envelope is not None
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {"turn_isolation": True})
+    replies, dispatched = [], []
+
+    def receive_complete(message):
+        assert message["params"]["type"] == "message.complete"
+        assert session["running"] is True  # turn.done has not reached the parent.
+        replies.append(server._handle_busy_submit(
+            "next", "s1", session, "go", server._detached_ws_transport, queued=True))
+        return True
+
+    def dispatch(rid, sid, owning_session, text, **kwargs):
+        dispatched.append((rid, sid, owning_session is session, text))
+        return {"result": {"status": "streaming"}}
+
+    monkeypatch.setattr(server, "write_json", receive_complete)
+    monkeypatch.setattr(server, "_submit_prompt_to_compute_host", dispatch)
+    monkeypatch.setattr(server, "_compute_host_session_info", lambda session: {})
+    assert server._relay_compute_host_rpc(_complete_frame("s1")) is True
+    assert replies[0]["result"]["status"] == "queued"
+    assert session.get("queued_prompt") is not None
     assert session["queued_prompt"]["text"] == "go"
+    server._on_compute_host_turn_done("next", "s1", session, {
+        "type": "turn.done", "session_info_emitted": True})
+    assert dispatched == [("next", "s1", True, "go")]
+    assert session.get("queued_prompt") is None
 
 
-def test_error_complete_keeps_the_retained_inflight_turn(monkeypatch, relay):
+@pytest.mark.parametrize("isolated,status", [(True, "error"), (False, "complete")])
+def test_unsettled_complete_keeps_the_retained_inflight_turn(monkeypatch, relay, isolated, status):
     session = _isolated_running_session("s2", "go")
+    if not isolated:
+        session.pop("_compute_host_turn_id")
     monkeypatch.setattr(server, "_sessions", {"s2": session})
-    server._relay_compute_host_rpc(_complete_frame("s2", status="error"))
-    assert server._ac_inflight_original(session) == "go"
-
-
-def test_complete_for_a_non_isolated_turn_leaves_the_mirror_alone(monkeypatch, relay):
-    session = _isolated_running_session("s3", "go")
-    session.pop("_compute_host_turn_id")
-    monkeypatch.setattr(server, "_sessions", {"s3": session})
-    server._relay_compute_host_rpc(_complete_frame("s3"))
+    server._relay_compute_host_rpc(_complete_frame("s2", status=status))
     assert server._ac_inflight_original(session) == "go"

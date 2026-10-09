@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- +5 lines wiring the runtime_override fallback handoff into the
+# existing fallback activation path; no new public surface.  File split is a standalone refactor.
 """API-call helpers extracted from :class:`AIAgent`: non-streaming and streaming
 request drivers, request kwargs builder, assistant-message materializer,
 provider-fallback activator, max-iterations handler, per-turn resource cleanup.

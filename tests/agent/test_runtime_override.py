@@ -201,6 +201,9 @@ class TestApply:
             consume_runtime_override(agent)
         assert agent.model == "fallback-model"  # outer scope was superseded
         assert getattr(agent, "_active_runtime_override_scope", None) is None
+        # The nested chain is unlinked on exit, so nothing keeps the inner scope
+        # (or the outer one) reachable after the turn.
+        assert outer._children == []
 
     def test_consume_runtime_override_clears_the_turn_override(self):
         from agent.runtime_override import consume_runtime_override
@@ -728,3 +731,218 @@ class TestDurableProtectionRestore:
                 db.set_compression_fallback_streak("S1", 7)
 
         assert db.fallback_streak == 7
+
+
+# ---------------------------------------------------------------------------
+# Independent review round 2 (external reviewer, candidate 294a916703):
+# four failure paths the existing suite does not cover.  Each test pins the
+# CONTRACT, not the current implementation.
+# ---------------------------------------------------------------------------
+
+class TestReviewRoundTwoFailurePaths:
+    """P1-A / P1-B / P2-A / P2-B from the independent code review."""
+
+    # The durable-protection fixtures live on the sibling class; reuse them so
+    # both exercise the same production path.
+    _agent_with_recording_db = TestDurableProtectionRestore._agent_with_recording_db
+    _durable_state = staticmethod(TestDurableProtectionRestore._durable_state)
+
+    # ── P2-A: a fallback that supersedes the outer scope must survive an open
+    #          inner scope's exit ────────────────────────────────────────────
+
+    def test_fallback_supersedes_every_open_scope(self):
+        # consume_runtime_override() marks the REGISTERED (outermost) scope
+        # superseded.  If an inner scope is still open, its exit restores its own
+        # snapshot — which still describes the override route — and clobbers the
+        # fallback identity the handoff just established.
+        from agent.runtime_override import consume_runtime_override
+
+        agent = _FakeAgent()
+        with apply_runtime_override(agent, {"model": "override-model"}):
+            with apply_runtime_override(agent, {"model": "inner-model"}):
+                agent.model = "fallback-model"  # fallback activates mid-inner-scope
+                consume_runtime_override(agent)
+            # Inner exit must not resurrect the override route.
+            assert agent.model == "fallback-model"
+            assert agent._runtime_override == {}
+        assert agent.model == "fallback-model"
+
+    # ── P2-B: a _persist_disabled turn must not inherit the previous turn's
+    #          override ───────────────────────────────────────────────────────
+
+    def test_persist_disabled_turn_does_not_inherit_stale_override(self):
+        # The per-turn reset must happen BEFORE the _persist_disabled early
+        # return, or the stale agent._runtime_override stays readable by the
+        # API-call scope for this turn.
+        from agent.turn_context import _collect_pre_llm_call_context
+
+        agent = _FakeAgent()
+        agent.session_id = "S1"
+        agent._persist_disabled = True
+        agent._runtime_override = {"model": "stale-model"}
+
+        context, override = _collect_pre_llm_call_context(
+            agent,
+            effective_task_id="t1",
+            turn_id="turn1",
+            original_user_message="hi",
+            messages=[],
+            conversation_history=[],
+        )
+
+        assert (context, override) == ("", {})
+        assert agent._runtime_override == {}
+
+    # ── P1-A: a failed model-state projection must never leave the override
+    #          model paired with the session model's derived state ────────────
+
+    def test_projection_failure_never_leaves_a_mixed_route(self, monkeypatch):
+        # A failed projection must roll back EVERY route-owned datum, not just the
+        # model: identity, prompt-cache flags, reasoning, the compressor, request
+        # overrides, capabilities, the cached system prompt, and the per-request
+        # client/transport state all describe the same route.
+        _patch_model_owned_resolution(monkeypatch)
+        agent = _build_model_owned_agent()
+        session_cc = agent.context_compressor
+
+        def _route_state():
+            return (
+                agent.model,
+                agent._use_prompt_caching,
+                agent._use_native_cache_layout,
+                agent.reasoning_config,
+                agent._config_context_length,
+                agent._custom_providers,
+                dict(agent.request_overrides),
+                dict(agent.runtime_capabilities),
+                agent._cached_system_prompt,
+                dict(agent._client_kwargs),
+                dict(agent._transport_cache),
+            )
+
+        before = _route_state()
+
+        def _partial_then_boom(agent_arg, new_model, snapshot=None, **kwargs):
+            # The canonical projection writes the prompt-cache flags BEFORE the
+            # step that can fail (the compressor re-point/update), so a raise
+            # here is a half-projected agent, not a no-op.
+            agent_arg._use_prompt_caching = True
+            agent_arg._use_native_cache_layout = True
+            agent_arg.reasoning_config = {"enabled": True, "effort": "high"}
+            agent_arg.request_overrides = {"service_tier": "override"}
+            agent_arg.runtime_capabilities = {"native_compaction": True}
+            agent_arg._cached_system_prompt = "override-system-prompt"
+            agent_arg._client_kwargs["service_tier"] = "override"
+            agent_arg._transport_cache["chat_completions"] = "override-transport"
+            raise RuntimeError("projection boom")
+
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers._apply_model_owned_state", _partial_then_boom
+        )
+
+        with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+            # Fail open to the configured route — and only because the rollback
+            # completed: no datum still describes the override route, so the
+            # request cannot mix two models' context length, cache policy,
+            # reasoning state or request overrides.
+            assert _route_state() == before
+            assert agent.context_compressor is session_cc
+
+        # And the exit leaves nothing behind either.
+        assert _route_state() == before
+
+    def test_incomplete_rollback_refuses_to_issue_the_request(self, monkeypatch):
+        # Falling open is only safe when the rollback COMPLETED.  If restoring a
+        # route-owned value fails, the turn must not proceed on a partially
+        # restored route: the scope raises instead.
+        _patch_model_owned_resolution(monkeypatch)
+        agent = _build_model_owned_agent()
+        original_class = type(agent)
+
+        class _RefusingRestore(original_class):
+            def __setattr__(self, name, value):
+                if (
+                    name == "model"
+                    and value == "orig-model"
+                    and getattr(self, "_refuse_restore", False)
+                ):
+                    raise RuntimeError("cannot restore model")
+                super().__setattr__(name, value)
+
+        agent.__class__ = _RefusingRestore
+        agent._refuse_restore = True
+
+        def _boom(agent_arg, new_model, snapshot=None, **kwargs):
+            raise RuntimeError("projection boom")
+
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers._apply_model_owned_state", _boom
+        )
+
+        with pytest.raises(RuntimeError, match="partially restored route"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pytest.fail("the body must not run on a partially restored route")
+
+        # The override is still cleared, so no retry reads it as applied.
+        assert agent._runtime_override == {}
+
+    def test_incomplete_durable_rollback_refuses_to_issue_the_request(
+        self, monkeypatch
+    ):
+        # Spark review risk 4: a required durable setter failing during the
+        # rollback must count as an INCOMPLETE rollback — the scope may not report
+        # a finished recovery while session protection rows are still cleared.
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+
+        def _boom_model(agent_arg, new_model, snapshot=None, **kwargs):
+            raise RuntimeError("projection boom")
+
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers._apply_model_owned_state", _boom_model
+        )
+
+        def _boom_setter(session_id, streak):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(db, "set_compression_fallback_streak", _boom_setter)
+
+        with pytest.raises(RuntimeError, match="partially restored route"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pytest.fail("the body must not run after an incomplete rollback")
+
+        assert agent._runtime_override == {}
+
+    # ── P1-B: an incomplete durable snapshot must not be followed by the
+    #          destructive clears it cannot roll back ─────────────────────────
+
+    def test_incomplete_durable_snapshot_aborts_before_erasing_protection(
+        self, monkeypatch, caplog
+    ):
+        import logging
+
+        agent, db, _session_cc = self._agent_with_recording_db(monkeypatch)
+        baseline = self._durable_state(db)
+
+        def _boom(session_id):
+            raise RuntimeError("db down")
+
+        # One getter fails; the others still work.  The snapshot is therefore
+        # incomplete and the cooldown row could never be restored.
+        monkeypatch.setattr(db, "get_compression_failure_cooldown_row", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="agent.runtime_override"):
+            with apply_runtime_override(agent, {"model": _OVERRIDE_MODEL}):
+                pass
+
+        # Nothing durable was erased, because nothing that could not be rolled
+        # back was allowed to run.
+        assert self._durable_state(db) == baseline
+        assert db.cooldown_until is not None
+        # And it went through the shared abort path: the override is cleared and
+        # the scope is unregistered.
+        assert agent._runtime_override == {}
+        assert getattr(agent, "_active_runtime_override_scope", None) is None
+        assert any(
+            r.levelno == logging.WARNING and "snapshot failed" in r.getMessage()
+            for r in caplog.records
+        )

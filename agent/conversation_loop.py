@@ -1544,6 +1544,23 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _runtime_override_scope(agent: Any) -> Any:
+    """The turn's runtime_override scope, or a no-op context when none is set.
+
+    The override must be active before request assembly so every stage of the
+    turn observes one effective route; the scope restores the pre-override route
+    on exit, and a fallback handoff supersedes it via ``consume_runtime_override``.
+    """
+    override = getattr(agent, "_runtime_override", None) or {}
+    if not override:
+        from contextlib import nullcontext
+
+        return nullcontext()
+    from agent.runtime_override import apply_runtime_override
+
+    return apply_runtime_override(agent, override)
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1653,17 +1670,8 @@ def _run_conversation_turn(
         _run_phase(prepare_iteration, agent, s)
         # Scope 1: apply the turn's runtime_override BEFORE request assembly and
         # preflight, so every stage (assemble -> preflight -> announce -> the retry
-        # loop's build/perform/check) observes the same effective route. The scope
-        # restores the pre-override route on exit; a fallback handoff supersedes it
-        # via consume_runtime_override.
-        _runtime_ov = getattr(agent, "_runtime_override", None) or {}
-        if _runtime_ov:
-            from agent.runtime_override import apply_runtime_override as _apply_ro
-            _ro_cm = _apply_ro(agent, _runtime_ov)
-        else:
-            from contextlib import nullcontext as _nullcontext
-            _ro_cm = _nullcontext()
-        with _ro_cm:
+        # loop's build/perform/check) observes the same effective route.
+        with _runtime_override_scope(agent):
             _run_phase(assemble_api_request, agent, s)
             _pg = _run_phase(run_preflight_gate, agent, s)
             if _pg.action == "return":

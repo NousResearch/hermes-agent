@@ -799,10 +799,12 @@ def _collect_pre_llm_call_context(
     Returns ``(context, runtime_override)``.  ``runtime_override`` is also stored on
     ``agent._runtime_override`` — the single source the API-call scope reads — and is
     never written into the user message / session history."""
+    # Reset first — BEFORE the _persist_disabled early return: a turn whose hooks
+    # return no override must not inherit a stale one, and a turn that skips the
+    # hooks entirely must clear it too (the API-call scope reads this attribute).
+    agent._runtime_override = {}
     if getattr(agent, "_persist_disabled", False):
         return "", {}
-    # Reset first: a turn whose hooks return no override must not inherit a stale one.
-    agent._runtime_override = {}
     runtime_override: Dict[str, str] = {}
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook

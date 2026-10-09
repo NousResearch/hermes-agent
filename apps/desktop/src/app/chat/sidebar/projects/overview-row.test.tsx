@@ -3,10 +3,12 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectTree } from '@/store/projects'
 import type * as ProjectsStore from '@/store/projects'
 
 import type * as Model from './model'
-import { ProjectOverviewRow } from './overview-row'
+import { ProjectBackRow, ProjectOverviewRow } from './overview-row'
 import type { SidebarProjectTree } from './workspace-groups'
 
 afterEach(cleanup)
@@ -62,6 +64,39 @@ vi.mock('./project-menu', () => ({
 const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
+
+describe('ProjectBackRow', () => {
+  const node = (id: string, parentId = ''): SidebarProjectTree => ({ id, label: id, parentId }) as SidebarProjectTree
+
+  afterEach(() => {
+    $projectTree.set([])
+    $projectScope.set(ALL_PROJECTS)
+  })
+
+  // A project that nests under another was entered from it, so its back row lands on the parent —
+  // a drill-down walks back out one level at a time instead of jumping to the overview.
+  it('steps back into the parent of a nested project', () => {
+    $projectTree.set([node('p_dev'), node('p_child', 'p_dev')])
+    $projectScope.set('p_child')
+    render(<ProjectBackRow label="Back" onExit={vi.fn()} />)
+
+    fireEvent.click(screen.getByText('Back'))
+
+    expect($projectScope.get()).toBe('p_dev')
+  })
+
+  it('hands a top-level project to the caller, which leaves for the overview', () => {
+    $projectTree.set([node('p_dev')])
+    $projectScope.set('p_dev')
+    const onExit = vi.fn()
+    render(<ProjectBackRow label="Back" onExit={onExit} />)
+
+    fireEvent.click(screen.getByText('Back'))
+
+    expect(onExit).toHaveBeenCalledTimes(1)
+    expect($projectScope.get()).toBe('p_dev')
+  })
+})
 
 describe('ProjectOverviewRow', () => {
   afterEach(() => {

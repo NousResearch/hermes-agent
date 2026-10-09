@@ -1,8 +1,9 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { $projectScope } from '@/store/project-scope'
 import type * as ProjectsStore from '@/store/projects'
 
 import { SidebarSessionsSection } from '../sessions-section'
@@ -87,6 +88,9 @@ const node = (id: string, over: Partial<SidebarProjectTree> = {}): SidebarProjec
   }) as SidebarProjectTree
 
 const session = (id: string): SessionInfo => ({ id }) as SessionInfo
+
+const projectRowIds = (container: HTMLElement) =>
+  [...container.querySelectorAll<HTMLElement>('[data-sessions-project]')].map(el => el.dataset.sessionsProject)
 
 const renderOverview = (overview: SidebarProjectTree[], previews: Record<string, SessionInfo[]>) =>
   render(
@@ -213,5 +217,60 @@ describe('project nest rows', () => {
         rows
       })
     ).toBeNull()
+  })
+})
+
+describe('entered project: the projects nested inside it', () => {
+  const parent = node('p_parent', { label: 'Parent' })
+  const child = node('p_child', { label: 'Child', parentId: 'p_parent' })
+  const grandchild = node('p_grand', { label: 'Grandchild', parentId: 'p_child' })
+  const sibling = node('p_sibling', { label: 'Sibling', parentId: '' })
+  const projects = [parent, child, grandchild, sibling]
+
+  // The entered project IS the sidebar's scope — that is what the nested rows read to know which
+  // level they are drawing.
+  const renderEntered = (entered: string, onEnterProject: (id: string) => void = vi.fn()) => {
+    $projectScope.set(entered)
+
+    return render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={null}
+        label="Projects"
+        onArchiveSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onEnterProject={onEnterProject}
+        onNewSessionInWorkspace={vi.fn()}
+        onResumeSession={vi.fn()}
+        onToggle={vi.fn()}
+        onTogglePin={vi.fn()}
+        onToggleUnread={vi.fn()}
+        open
+        pinned={false}
+        projectBackRow={<div data-project-back="" />}
+        projectContent={projects.find(project => project.id === entered)}
+        projectOverview={projects}
+        sessions={[]}
+      />
+    )
+  }
+
+  it('shows the projects one level down, and enters the one clicked', () => {
+    const onEnterProject = vi.fn()
+    const { container } = renderEntered('p_parent', onEnterProject)
+
+    // Only its own children — the grandchild belongs to the level below, and `p_sibling` is not
+    // inside this project at all.
+    expect(projectRowIds(container)).toEqual(['p_child'])
+
+    fireEvent.click(screen.getByLabelText('Enter Child'))
+
+    expect(onEnterProject).toHaveBeenCalledWith('p_child')
+  })
+
+  it('drills another level: the entered child lists the projects nested under it', () => {
+    const { container } = renderEntered('p_child')
+
+    expect(projectRowIds(container)).toEqual(['p_grand'])
   })
 })

@@ -52,3 +52,28 @@ def test_assert_refuses_an_unviable_root(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="cannot resolve its dependencies"):
         gateway_launchd.assert_launcher_root_is_viable(tmp_path)
+
+
+def test_installed_launcher_root_is_recovered_from_a_definition():
+    definition = (
+        'do shell script "exec /Users/example/.hermes/hermes-agent/.hermes/bin/hermes '
+        '--run-module hermes_cli.stderr_timestamp --error-log /tmp/e.log -- '
+        '/Users/example/.hermes/hermes-agent/.hermes/bin/hermes gateway run --external-supervisor"'
+    )
+    assert gateway_launchd.installed_service_launcher_root(definition) == Path(
+        "/Users/example/.hermes/hermes-agent"
+    )
+
+
+def test_installed_launcher_root_is_recovered_from_a_workspace_definition():
+    definition = (
+        'exec /Users/example/.hermes/installs/abc/environments/def/workspace/.hermes/bin/hermes '
+        "gateway run"
+    )
+    assert gateway_launchd.installed_service_launcher_root(definition) == Path(
+        "/Users/example/.hermes/installs/abc/environments/def/workspace"
+    )
+
+
+def test_installed_launcher_root_is_none_without_a_launcher():
+    assert gateway_launchd.installed_service_launcher_root("<plist/>") is None

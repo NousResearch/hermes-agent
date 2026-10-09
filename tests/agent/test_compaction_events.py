@@ -17,7 +17,7 @@ import pytest
 
 from agent import compaction_events
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import CompressionCheckpointUnavailable, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
@@ -242,6 +242,38 @@ def test_codex_route_publishes_one_provider_record_per_exit(published, auto_mode
     assert (session_id, mark, payload["outcome"]) == ("codex-session", name, outcome)
     assert (payload["kind"], payload["scope"], payload["official"]) == ("provider_native", "provider", True)
     assert "boom" not in json.dumps(payload)
+
+
+def _raising_codex_agent():
+    def _compact_thread():
+        raise RuntimeError(f"boom {SECRET}")
+
+    agent = _codex_agent(None, "hermes")
+    agent._codex_session = SimpleNamespace(compact_thread=_compact_thread, close=lambda: None)
+    return agent
+
+
+def _checkpoint_required_codex_agent():
+    agent = _codex_agent(TurnResult(thread_id="t1"), "hermes")
+    agent.compression_checkpoint_required = True
+    return agent
+
+
+@pytest.mark.parametrize(
+    ("make_agent", "error"),
+    [
+        pytest.param(_raising_codex_agent, RuntimeError, id="compact-thread-raises"),
+        pytest.param(_checkpoint_required_codex_agent, CompressionCheckpointUnavailable, id="checkpoint-required"),
+    ],
+)
+def test_codex_route_that_raises_publishes_one_failed_attempt_mark(published, make_agent, error):
+    with pytest.raises(error):
+        compress_context(make_agent(), [{"role": "user", "content": SECRET}], "system", force=True)
+
+    [(session_id, mark, payload)] = published
+    assert (session_id, mark) == ("codex-session", "compaction.attempt")
+    assert (payload["kind"], payload["outcome"], payload["failure_class"]) == ("provider_native", "failed", "exception")
+    assert SECRET not in json.dumps(payload) and "boom" not in json.dumps(payload)
 
 
 def test_codex_native_compaction_observed_by_hermes_is_an_unofficial_provider_compaction(published):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -23,12 +24,16 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 def parse_duration_seconds(value: str) -> Optional[float]:
     """Parse ``5h`` / ``30m`` / ``2d`` / ``1w`` / ``90`` (bare = days, backward compatible with
-    ``--older-than 90``) into seconds. Returns None when the value doesn't look like a duration."""
+    ``--older-than 90``) into seconds. Returns None for invalid or non-finite durations."""
     s = str(value).strip().lower()
     if re.fullmatch(r"\d+(?:\.\d+)?", s):
-        return float(s) * 86400
-    m = _DURATION_RE.match(s)
-    return None if not m else float(m.group(1)) * _UNIT_SECONDS[m.group(2)[0]]
+        seconds = float(s) * 86400
+    else:
+        m = _DURATION_RE.match(s)
+        if not m:
+            return None
+        seconds = float(m.group(1)) * _UNIT_SECONDS[m.group(2)[0]]
+    return seconds if math.isfinite(seconds) else None
 
 
 def parse_point_in_time(value: str, flag: str) -> float:
@@ -43,13 +48,13 @@ def parse_point_in_time(value: str, flag: str) -> float:
         return time.time() - dur
     try:
         dt = datetime.fromisoformat(s)
-    except ValueError:
+        return dt.timestamp() if dt.tzinfo is None else dt.astimezone(timezone.utc).timestamp()
+    except (ValueError, OverflowError, OSError):
         raise ValueError(
             f"Invalid value for {flag}: '{value}'. Use a duration like '5h', "
             f"'30m', '2d', '1w', a bare number of days, or an ISO timestamp "
             f"like '2026-07-05' or '2026-07-05 14:30'."
         ) from None
-    return dt.timestamp() if dt.tzinfo is None else dt.astimezone(timezone.utc).timestamp()
 
 
 def format_epoch(ts: Optional[float]) -> str:

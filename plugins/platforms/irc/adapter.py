@@ -135,6 +135,12 @@ class IRCAdapter(BasePlatformAdapter):
         self.allowed_users: list = extra.get("allowed_users", [])
         # IRC nicks are case-insensitive — normalise for lookups
         self._allowed_users_lower: set = {u.lower() for u in self.allowed_users if isinstance(u, str)}
+        # Honour the open-access opt-in the interactive setup writes (IRC_ALLOW_ALL_USERS); without
+        # this the adapter gate below is the sole check and a stale allowed_users list silently
+        # overrides the operator's allow-all choice. Mirrors the central authz gate's read of the
+        # same flag, and the _ALLOW_ALL_ENV opt-in every other platform uses.
+        _allow_all_raw = _get_scoped_secret("IRC_ALLOW_ALL_USERS")
+        self._allow_all: bool = (_allow_all_raw or extra.get("allow_all_users", "") or "").lower() in _TRUTHY
         max_msg = extra.get("max_message_length")
         if max_msg is None:
             with contextlib.suppress(Exception):
@@ -307,7 +313,7 @@ class IRCAdapter(BasePlatformAdapter):
                     break
             else:
                 return
-        if self._allowed_users_lower and sender_nick.lower() not in self._allowed_users_lower:
+        if not self._allow_all and self._allowed_users_lower and sender_nick.lower() not in self._allowed_users_lower:
             logger.debug("IRC: ignoring message from unauthorized user %s", sender_nick)
             return
         await self._dispatch_message(text=text, chat_id=target if is_channel else sender_nick,

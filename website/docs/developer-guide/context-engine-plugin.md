@@ -81,7 +81,23 @@ last_total_tokens: int = 0
 threshold_tokens: int = 0        # when compression triggers
 context_length: int = 0          # model's full context window
 compression_count: int = 0       # how many times compress() has run
+summary_target_ratio: float = 0.20   # post-compaction target as a fraction of threshold_tokens
+last_real_prompt_tokens: int = 0     # last REAL provider prompt_tokens (not the -1 sentinel)
 ```
+
+`summary_target_ratio` is multiplied by `threshold_tokens` to derive the
+idle-compaction floor — the host will not summarize a thread that is already
+smaller than what compaction would reduce it to. Its default mirrors the
+built-in `ContextCompressor.summary_target_ratio`, so host behaviour is
+unchanged unless your engine deliberately overrides it.
+
+`last_real_prompt_tokens` holds the last provider-reported `prompt_tokens` that
+was a real reading, as opposed to the `-1` "compaction just ran, awaiting real
+usage" sentinel the host writes into `last_prompt_tokens`. The host reports it
+when it skips a preflight compaction because
+`should_defer_preflight_to_real_usage()` returned `True`; an engine that
+implements that hook should keep this field current, and an engine that does
+not can leave it at `0`.
 
 ### Optional methods
 

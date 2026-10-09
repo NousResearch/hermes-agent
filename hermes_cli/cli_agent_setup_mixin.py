@@ -622,7 +622,7 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger

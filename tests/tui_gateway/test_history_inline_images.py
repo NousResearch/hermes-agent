@@ -15,7 +15,7 @@ when asked; non-image content is byte-identical either way.
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session
 
 DATA_URI = "data:image/png;base64," + "a" * 128
 IMAGE_TURN = [

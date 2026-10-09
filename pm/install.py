@@ -530,8 +530,9 @@ def ensure(
 
     ``verify`` re-hashes an already-recorded entry and repairs it when the
     bytes moved. A deliberate install keeps that check. Shell activation
-    passes ``False``. It trusts the recorded digest, the same check startup
-    uses, because hashing every tool tree costs seconds per shell.
+    and the source-build tail (moments after the install/update's own PM
+    step) pass ``False``. It trusts the recorded digest, the same check
+    startup uses, because hashing every tool tree costs seconds per call.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
     install to a UI, including ordered multi-archive labels.

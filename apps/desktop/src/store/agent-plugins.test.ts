@@ -7,7 +7,8 @@ import {
   installAgentPlugin,
   isDesktopRelevantPlugin,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  updateAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -58,6 +59,44 @@ describe('installAgentPlugin', () => {
       ok: false,
       timedOut: true
     })
+  })
+})
+
+describe('updateAgentPlugin (#135565)', () => {
+  it('waits for a slow catalog re-pin instead of reporting the generic 30s timeout', async () => {
+    vi.useFakeTimers()
+
+    const request = vi.fn(
+      <T>(_method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
+        new Promise((resolve, reject) => {
+          if (params?.action === 'list') {
+            resolve({ plugins: [] } as T)
+            return
+          }
+
+          const deadline = setTimeout(
+            () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
+            timeoutMs
+          )
+
+          setTimeout(() => {
+            clearTimeout(deadline)
+            resolve({ ok: true } as T)
+          }, 45_000)
+        })
+    )
+
+    const update = updateAgentPlugin(request as never, 'demo', 'Update failed', 'research')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+
+    expect(await update).toEqual({ kind: 'applied' })
+    const updateCall = request.mock.calls.find(
+      ([, params]) => (params as { action?: string } | undefined)?.action === 'update'
+    )
+    // The re-pin repeats an install's expensive work, so it must not fall back
+    // to the 30s default RPC deadline.
+    expect((updateCall?.[2] as number | undefined) ?? 0).toBeGreaterThanOrEqual(120_000)
   })
 })
 

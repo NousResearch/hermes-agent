@@ -279,7 +279,10 @@ const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 // Installing a catalog package can clone a repository and resolve Python dependencies.
 // The ordinary Desktop RPC deadline is 30s, which can expire after the backend
 // has already begun an install that will succeed. Keep this wait bounded while
-// giving normal installs time to return their authoritative result.
+// giving normal installs time to return their authoritative result. A catalog
+// update re-pin repeats the same expensive work (clone, surface diff, dependency
+// check), so it shares this budget — otherwise the backend's authoritative
+// answer (including a dependency-consent refusal) dies at the 30s default.
 const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
@@ -390,7 +393,8 @@ export async function updateAgentPlugin(
       delta_lines?: string[]
     }>(
       'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
+      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (result?.consent_required) {

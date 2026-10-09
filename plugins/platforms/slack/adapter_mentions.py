@@ -262,8 +262,9 @@ def _extract_authored_urls_from_slack_blocks(blocks: Any) -> list[str]:
 
     Quoted, forwarded, preformatted, and code-styled subtrees describe content
     authored elsewhere and cannot establish provenance for sibling attachments.
-    A malformed top-level block list fails closed for provenance so arbitrary
-    nested ``url`` keys cannot hide a genuine legacy attachment as an unfurl.
+    A malformed top-level block list, or one nested past the recursion limit, fails
+    closed for provenance so arbitrary nested ``url`` keys cannot hide a genuine
+    legacy attachment as an unfurl.
     """
     if not isinstance(blocks, list) or any(
         not isinstance(block, dict) or not isinstance(block.get("type"), str)
@@ -302,7 +303,11 @@ def _extract_authored_urls_from_slack_blocks(blocks: Any) -> list[str]:
             if isinstance(value, (dict, list)):
                 _walk(value, nested_verbatim)
 
-    _walk(blocks)
+    try:
+        _walk(blocks)
+    except RecursionError:
+        logger.debug("[Slack] Block Kit tree too deep for URL provenance; treating as none")
+        return []
     return found
 
 

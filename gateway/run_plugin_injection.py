@@ -11,7 +11,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import dataclasses
+import hashlib
 import logging
+import time
 import weakref
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -122,6 +125,80 @@ class GatewayPluginInjectionMixin:
             logger.warning("Plugin message injection denied by current gateway authorization: plugin=%s %s",
                            plugin_id, target)
         return authorized
+
+    async def dispatch_synchronized_ingress(
+        self, *, session_key: str, session_id: str, content: str, origin: str,
+        source_message_id: str, author: Mapping[str, Any], idempotency_key: str,
+    ) -> dict:
+        """Inject one externally authenticated owner turn through its bound native adapter."""
+        if not self._plugin_injection_accepting():
+            return {"status": "unavailable"}
+        entry = await self.async_session_store.lookup_by_session_key(session_key)
+        if entry is None or entry.origin is None or str(entry.session_id) != str(session_id):
+            return {"status": "unavailable"}
+        source = self._restored_source(entry)
+        if source is None or not self._plugin_injection_authorized(
+                source, plugin_id="rych-conversation-sync", target=f"session={session_key}"):
+            return {"status": "unavailable"}
+        adapter = self._delivery_adapter_for(source)
+        if adapter is None:
+            return {"status": "unavailable"}
+        profile = str(getattr(entry, "transport_profile", None) or getattr(source, "profile", None) or "default")
+        platform_message_id = "sync:v1:" + hashlib.sha256(
+            "\x00".join((profile, session_key, origin, source_message_id)).encode("utf-8")
+        ).hexdigest()
+        if self.session_store.has_platform_message_id(session_id, platform_message_id):
+            inflight = getattr(self, "_synchronized_ingress_inflight", None)
+            if isinstance(inflight, dict):
+                inflight.pop(platform_message_id, None)
+            return {
+                "status": "persisted", "session_id": session_id,
+                "platform_message_id": platform_message_id, "replayed": True,
+            }
+        inflight = getattr(self, "_synchronized_ingress_inflight", None)
+        if not isinstance(inflight, dict):
+            inflight = self._synchronized_ingress_inflight = {}
+        started = inflight.get(platform_message_id)
+        if isinstance(started, (int, float)) and time.monotonic() - started < 300:
+            return {
+                "status": "queued", "session_id": session_id,
+                "platform_message_id": platform_message_id, "replayed": True,
+            }
+        inflight[platform_message_id] = time.monotonic()
+        sender = {
+            **({"id": str(author.get("id"))} if author.get("id") else {}),
+            **({"name": str(author.get("name"))} if author.get("name") else {}),
+            "is_bot": bool(author.get("is_bot", False)),
+        }
+        injected_source = dataclasses.replace(
+            source,
+            message_id=platform_message_id,
+            user_id=sender.get("id") or source.user_id,
+            user_name=sender.get("name") or source.user_name,
+            is_bot=sender["is_bot"],
+        )
+        event = MessageEvent(
+            text=content, message_type=MessageType.TEXT, source=injected_source,
+            user_id=injected_source.user_id, user_name=injected_source.user_name,
+            message_id=platform_message_id, internal=False, allow_gateway_control=False,
+            metadata={
+                "hermes_plugin_id": "rych-conversation-sync", "hermes_plugin_injection": True,
+                "gateway_session_key": session_key, "gateway_session_id": session_id,
+                "gateway_session_strict": True, "conversation_sync": True,
+                "sync_origin": origin, "sync_source_message_id": source_message_id,
+                "turn_author": sender, "sync_idempotency_key": idempotency_key,
+            },
+        )
+        try:
+            async with self._plugin_injection_scope(injected_source):
+                await adapter.handle_message(event)
+        except Exception:
+            inflight.pop(platform_message_id, None)
+            raise
+        return {
+            "status": "queued", "session_id": session_id,
+            "platform_message_id": platform_message_id, "replayed": False,
+        }
 
     async def _dispatch_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str

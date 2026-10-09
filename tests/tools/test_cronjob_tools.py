@@ -84,6 +84,13 @@ class TestScanCronPrompt:
     def test_destructive_rm_blocked(self):
         assert "Blocked" in _scan_cron_prompt("rm -rf /")
 
+    def test_temp_dir_cleanup_is_not_destructive_root_rm(self):
+        """Nightly scratch cleanup is a routine cron job; skills_guard exempts the same temp roots."""
+        for path in ("/tmp/build-cache", "/var/tmp/ci-artifacts", "/dev/shm/scratch"):
+            assert _scan_cron_prompt(f"Every night run the tests, then rm -rf {path} to free space.") == ""
+        for path in ("/etc", "/home/user", "/tmp/../etc", "/tmp/cache/../../etc"):
+            assert "Blocked" in _scan_cron_prompt(f"rm -rf {path}")
+
     def test_invisible_unicode_blocked(self):
         assert "Blocked" in _scan_cron_prompt("normal text\u200b")
         assert "Blocked" in _scan_cron_prompt("zero\ufeffwidth")

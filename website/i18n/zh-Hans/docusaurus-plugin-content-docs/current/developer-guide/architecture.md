@@ -120,9 +120,9 @@ hermes-agent/
 │   └── platforms/            # 20 个适配器：telegram、discord、slack、whatsapp、
 │                             #   signal、matrix、mattermost、email、sms、
 │                             #   dingtalk、feishu、wecom、wecom_callback、weixin、
-│                             #   bluebubbles、qqbot、webhook、api_server、
-│                             #   yuanbao
+│                             #   bluebubbles、webhook、api_server、yuanbao
 │
+├── plugins/platforms/        # 随包平台插件：telegram、discord、feishu、qqbot 等
 ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 ├── cron/                     # 调度器（jobs.py、scheduler.py）
 ├── plugins/memory/           # 记忆提供者插件

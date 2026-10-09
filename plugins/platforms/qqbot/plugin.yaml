@@ -1,0 +1,67 @@
+name: qqbot
+label: QQ Bot
+kind: platform
+version: 1.0.0
+description: >
+  QQ Bot gateway adapter (Official QQ Bot API v2). WebSocket gateway for
+  inbound events, REST for outbound text and media.
+author: Nous Research
+requires_env:
+  - name: QQ_APP_ID
+    description: "QQ Bot App ID from QQ Open Platform (q.qq.com)"
+    prompt: "QQ App ID"
+    url: "https://q.qq.com"
+    password: false
+  - name: QQ_CLIENT_SECRET
+    description: "QQ Bot Client Secret from QQ Open Platform"
+    prompt: "QQ Client Secret"
+    password: true
+optional_env:
+  - name: QQ_ALLOWED_USERS
+    description: "Comma-separated QQ user OpenIDs allowed to use the bot"
+    prompt: "QQ Allowed Users"
+    password: false
+  - name: QQ_GROUP_ALLOWED_USERS
+    description: "Comma-separated QQ group OpenIDs allowed to interact with the bot"
+    prompt: "QQ Group Allowed Users"
+    password: false
+  - name: QQ_ALLOW_ALL_USERS
+    description: "Allow all QQ users without an allowlist (true/false)"
+    prompt: "Allow All QQ Users"
+    password: false
+  - name: QQBOT_HOME_CHANNEL
+    description: "Default QQ channel/group for cron delivery and notifications"
+    prompt: "QQ Home Channel"
+    password: false
+  - name: QQBOT_HOME_CHANNEL_NAME
+    description: "Display name for the QQ home channel"
+    prompt: "QQ Home Channel Name"
+    password: false
+  - name: QQBOT_HOME_CHANNEL_THREAD_ID
+    description: "Thread id for the QQ home channel, when the target is a thread"
+    prompt: "QQ Home Channel Thread ID"
+    password: false
+  - name: QQ_MARKDOWN_SUPPORT
+    description: "Send QQ messages as markdown when the bot is allowed to (true/false)"
+    prompt: "QQ Markdown Support"
+    password: false
+  - name: QQ_SANDBOX
+    description: "Enable QQ sandbox mode for development testing (true/false)"
+    prompt: "QQ Sandbox Mode"
+    password: false
+  - name: QQ_PORTAL_HOST
+    description: "QQ Open Platform portal host (default q.qq.com)"
+    prompt: "QQ Portal Host"
+    password: false
+  - name: QQ_STT_API_KEY
+    description: "API key for QQ voice transcription fallback"
+    prompt: "QQ STT API Key"
+    password: true
+  - name: QQ_STT_BASE_URL
+    description: "Base URL for the QQ voice transcription provider"
+    prompt: "QQ STT Base URL"
+    password: false
+  - name: QQ_STT_MODEL
+    description: "Model name for the QQ voice transcription provider"
+    prompt: "QQ STT Model"
+    password: false

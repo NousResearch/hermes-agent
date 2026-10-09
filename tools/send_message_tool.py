@@ -18,7 +18,7 @@ from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _send_matrix_via_adapter, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -625,6 +625,7 @@ def _platform_max_length(platform):
 # WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
 # caption-capable, media_files sentinel for non-final chunks, forward force_document)
 _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
+                            "qqbot": ("QQ Bot", True, True, None, False),
                             "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
 
 
@@ -677,10 +678,9 @@ _CHUNKED_ROUTES = {
 # warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
 _TEXT_SENDERS = {
     **{name: partial(_registry_standalone_send, name)
-       for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom")},
+       for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom", "qqbot")},
     "signal": lambda pc, cid, chunk, tid: _send_signal(pc.extra, cid, chunk),
     "bluebubbles": lambda pc, cid, chunk, tid: _send_bluebubbles(pc.extra, cid, chunk),
-    "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
@@ -714,24 +714,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _, empty_media, sender = route
         return await _send_chunks(chunks, lambda chunk, is_last: sender(
             platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document))
-
-    # --- QQ Bot: native media via REST upload + MSG_TYPE_MEDIA (issue #37315).
-    # Guild channels are unsupported for native media (same as QQBotAdapter);
-    # C2C / group use /v2/{users|groups}/{id}/files then .../messages.
-    if platform == Platform.QQBOT and media_files:
-        qq_caption, _ = _media_caption_split(
-            message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
-        if qq_caption is not None:
-            return await _send_qqbot(pconfig, chat_id, "", media_files=media_files, caption=qq_caption)
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _send_qqbot(
-                pconfig, chat_id, chunk, media_files=media_files if is_last else None)
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
 
     # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
     warning = None

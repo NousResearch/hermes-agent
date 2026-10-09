@@ -61,16 +61,16 @@ class QQCloseError(Exception):
         super().__init__(f"WebSocket closed (code={self.code}, reason={self.reason})")
 
 
-from gateway.platforms.qqbot.constants import (
+from .constants import (
     API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
-from gateway.platforms.qqbot.utils import coerce_list as _coerce_list, build_user_agent
-from gateway.platforms.qqbot.chunked_upload import (
+from .utils import coerce_list as _coerce_list, build_user_agent
+from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
-from gateway.platforms.qqbot.keyboards import (
+from .keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
     parse_update_prompt_button_data)
@@ -1472,7 +1472,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, req: ApprovalRequest, reply_to: Optional[str] = None) -> SendResult:
         """Send a 3-button approval request (allow-once / allow-always / deny);
         clicks come back as INTERACTION_CREATE decoded by parse_approval_button_data."""
-        from gateway.platforms.qqbot.keyboards import build_approval_text
+        from .keyboards import build_approval_text
         keyboard = build_approval_keyboard(req.session_key, allow_permanent=getattr(req, "allow_permanent", True))
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 

@@ -1,10 +1,11 @@
 """Bundled-skill maintenance ops: reset, diff, list-modified, opt-out, remove-pristine.
 Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call time."""
 
+import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from tools.skills_sync_optional import _skill_file_list, _ss
+from tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
 
 
 def _bundled_state():
@@ -88,15 +89,21 @@ def ensure_bundled_skill(name: str) -> dict:
             f"'{name}' is a built-in skill, but a skill installed from the hub uses the same name and "
             f"shadows it. To get the built-in back: `hermes skills uninstall {name}`, then "
             f"`hermes skills install {name}`.")}
+    # The rglob walk does not descend a symlinked category the loader follows, so the canonical
+    # SKILL.md counts as present too.
     active = next((md.parent for md in ss._iter_active_skill_mds()
-                   if ss._read_skill_name(md, md.parent.name) == name), None)
+                   if ss._read_skill_name(md, md.parent.name) == name), None) or (
+        dest if (dest / "SKILL.md").is_file() else None)
     if active is not None or name in ss._build_external_skill_index():
         return {"ok": True, "action": "present", "path": active, "message": ""}
     try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
         from tools.skills_hub_install import _resolve_lock_install_path
         rel = dest.relative_to(ss._skills_dir()).as_posix()
         _resolve_lock_install_path(rel, dest.name)
-        ss._copy_dir(src, dest)
+        # A dir with no SKILL.md (a delete or earlier copy that died partway) is no skill; copying
+        # around its leftovers beats failing with EEXIST on every retry.
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest, ignore=_ignore_runtime_cache, dirs_exist_ok=True)
     except (OSError, ValueError) as e:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}

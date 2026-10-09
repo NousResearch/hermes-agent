@@ -744,3 +744,37 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
     assert f"'{name}' is a built-in skill" in error and f"`hermes skills uninstall {name}`" in error
     assert "already available" not in sink.getvalue()
     assert (stranger / "SKILL.md").read_text().endswith("stranger\n")
+
+
+def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundled(monkeypatch, tmp_path):
+    """Post-fix telemetry still showed `llm-wiki` failing as source=hub, filesystem_error: the
+    restore copied with copytree onto a dest dir left behind without its SKILL.md (EEXIST on every
+    retry), refused a skill already present behind a symlinked category the loader follows, and a
+    failed restore was labelled a hub install."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools import skill_usage, skills_sync
+
+    for stale in [n for n in vars(hub) if n.isupper() and n.endswith(("_DIR", "_FILE", "_LOG"))]:
+        monkeypatch.delitem(vars(hub), stale)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: pytest.fail("a bundled skill must not hit the hub"))
+    rows = []
+    monkeypatch.setattr("hermes_cli.observability.shared_metrics_events.record_extension_install",
+                        lambda **row: rows.append((row["source"], row["outcome"])))
+    src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["llm-wiki"]
+    dest = skill_usage._skills_dir() / src.parent.name / "llm-wiki"
+    console, _sink = _sink_console()
+
+    (dest / "wiki").mkdir(parents=True)  # stranded: user data kept, SKILL.md gone
+    (dest / "wiki" / "index.md").write_text("mine\n")
+    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is True
+    assert (dest / "SKILL.md").is_file() and (dest / "wiki" / "index.md").read_text() == "mine\n"
+
+    real = tmp_path / "real-category"
+    dest.parent.rename(real)
+    dest.parent.symlink_to(real, target_is_directory=True)
+    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is None  # present, no-op
+
+    (real / "llm-wiki" / "SKILL.md").unlink()  # missing behind the symlink: refused, and still bundled
+    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is False
+    assert rows == [("bundled", "success"), ("bundled", "failed")]

@@ -1481,6 +1481,16 @@ class TestHandleSendCrossWorkspaceResolution:
         }))
         return cache_file
 
+    def test_regression_pr4_unknown_slack_name_is_not_ambiguous(self, tmp_path, monkeypatch):
+        """An unknown channel must not be reported as a workspace collision."""
+        cache_file = self._write_directory(tmp_path, {
+            "slack": [{"id": "C_EXISTING", "name": "engineering", "type": "channel", "team_id": "T_A"}]
+        })
+        monkeypatch.setattr("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+        result = json.loads(send_message_tool({"target": "slack:enginering", "message": "hello"}))
+        assert "Could not resolve" in result["error"]
+        assert "Ambiguous" not in result["error"]
+
     def test_cross_workspace_ambiguous_name_returns_error(self, tmp_path, monkeypatch):
         """send_message refuses when the channel name is ambiguous across workspaces."""
         cache_file = self._write_directory(tmp_path, {
@@ -2408,3 +2418,40 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["live", "standalone", "media"])
+async def test_regression_pr4_workspace_reaches_real_slack_dispatch(monkeypatch, tmp_path, route):
+    """Resolved workspace must reach each real dispatch path without network I/O."""
+    from gateway.platform_registry import platform_registry
+    import hermes_cli.plugins
+
+    recorded = {}
+
+    class Adapter:
+        async def send(self, *, chat_id, content, metadata=None):
+            recorded["team"] = (metadata or {}).get("slack_team_id")
+            return SimpleNamespace(success=True, message_id="id")
+
+    async def standalone(pconfig, chat_id, content, **kwargs):
+        recorded["team"] = kwargs.get("team_id")
+        recorded["media"] = kwargs.get("media_files")
+        return {"success": True, "message_id": "id"}
+
+    fake_gateway = ModuleType("gateway.run")
+    fake_gateway._gateway_runner_ref = lambda: (
+        SimpleNamespace(adapters={Platform.SLACK: Adapter()}) if route == "live" else None
+    )
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway)
+    monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(platform_registry, "get", lambda name: SimpleNamespace(standalone_sender_fn=standalone, max_message_length=4000))
+    media = [(str(tmp_path / "image.png"), "image")] if route == "media" else []
+    result = await _send_to_platform(
+        Platform.SLACK, SimpleNamespace(token="synthetic", extra={}), "C_B", "hello",
+        thread_id="123.45", team_id="T_B", media_files=media,
+    )
+    assert result.get("success") is True
+    assert recorded["team"] == "T_B"
+    if media:
+        assert recorded["media"] == media

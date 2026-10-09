@@ -400,7 +400,7 @@ def _handle_send(args):
             # alongside the chat_id. Fall back to the legacy
             # ``resolve_channel_name`` for non-Slack platforms where the
             # strict resolver returns (chat_id, "").
-            from gateway.channel_directory import resolve_channel_name_strict, resolve_channel_name
+            from gateway.channel_directory import channel_name_is_ambiguous, resolve_channel_name_strict, resolve_channel_name
             strict = resolve_channel_name_strict(platform_name, target_ref)
             if strict is not None:
                 chat_id, resolved_team_id = strict
@@ -417,7 +417,7 @@ def _handle_send(args):
                 if legacy:
                     chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, legacy)
                 else:
-                    if platform_name == "slack":
+                    if platform_name == "slack" and channel_name_is_ambiguous(platform_name, target_ref):
                         return json.dumps({
                             "error": (
                                 f"Ambiguous Slack target '{target_ref}': the same "
@@ -741,6 +741,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    team_id="",
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -771,6 +772,8 @@ async def _send_via_adapter(
                 metadata = {}
                 if thread_id:
                     metadata["thread_id"] = thread_id
+                if platform_name == "slack" and team_id:
+                    metadata["slack_team_id"] = team_id
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
                 if not metadata:
@@ -800,6 +803,7 @@ async def _send_via_adapter(
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                **({"team_id": team_id} if platform_name == "slack" and team_id else {}),
             )
         except asyncio.CancelledError:
             raise
@@ -1065,6 +1069,7 @@ async def _send_to_platform(
                 thread_id=thread_id,
                 media_files=media_files,
                 caption=_sl_caption,
+                **({"team_id": team_id} if team_id else {}),
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1078,6 +1083,7 @@ async def _send_to_platform(
                 chunk,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
+                **({"team_id": team_id} if team_id else {}),
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1154,6 +1160,7 @@ async def _send_to_platform(
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
                 force_document=force_document,
+                team_id=team_id,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1177,19 +1184,7 @@ async def _send_to_platform(
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.SLACK:
-            # Slack migrated to a bundled plugin (#41112); delivery flows
-            # through the registry's standalone_sender_fn, which applies
-            # mrkdwn formatting and posts via the Slack Web API.
-            from gateway.platform_registry import platform_registry
-            _slack_entry = platform_registry.get("slack")
-            if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
-                result = {"error": "Slack plugin not registered or missing standalone_sender_fn"}
-            else:
-                result = await _slack_entry.standalone_sender_fn(
-                    pconfig, chat_id, chunk, thread_id=thread_id, team_id=team_id
-                )
-        elif platform == Platform.WHATSAPP:
+        if platform == Platform.WHATSAPP:
             result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)

@@ -93,6 +93,7 @@ def _slack_guard_check(
         from gateway.outbound_guard import verify_outbound
         return verify_outbound(
             chat_id,
+            platform="slack",
             operation=operation,
             allowed_extra_destinations=allowed_extra_destinations,
         )

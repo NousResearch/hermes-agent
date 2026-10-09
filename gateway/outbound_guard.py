@@ -114,6 +114,9 @@ class OutboundGuard:
     _active_chat_id: Optional[contextvars.ContextVar[object]] = field(
         default=None, init=False, repr=False, compare=False
     )
+    _active_platform: Optional[contextvars.ContextVar[Optional[str]]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
     _guard_name: str = field(default="outbound_guard", init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -127,10 +130,14 @@ class OutboundGuard:
             default=_NO_ACTIVE_INBOUND,
         )
 
-    def enter(self, chat_id: Optional[str]):
+        self._active_platform = contextvars.ContextVar(
+            f"outbound_guard_active_platform_{id(self)}", default=None
+        )
+
+    def enter(self, chat_id: Optional[str], *, platform=None):
         """Pin `chat_id` as the active inbound for the current task.
 
-        Returns a `ResetToken` (ContextVar token) — call `reset(token)`
+        Returns paired ContextVar tokens — call `reset(token)`
         in a `finally` block to restore the previous pinned chat_id.
 
         Passing `None` is allowed and means "handler is active but its
@@ -139,11 +146,16 @@ class OutboundGuard:
         "no handler is running", leave the guard untouched (the
         default state of the ContextVar is `_NO_ACTIVE_INBOUND`).
         """
-        return self._active_chat_id.set(chat_id)
+        return (
+            self._active_chat_id.set(chat_id),
+            self._active_platform.set(getattr(platform, "value", platform)),
+        )
 
     def reset(self, token) -> None:
         """Restore the previous pinned chat_id (use in `finally`)."""
-        self._active_chat_id.reset(token)
+        chat_token, platform_token = token
+        self._active_chat_id.reset(chat_token)
+        self._active_platform.reset(platform_token)
 
     @property
     def active_chat_id(self) -> Optional[str]:
@@ -170,10 +182,14 @@ class OutboundGuard:
         self,
         chat_id: Optional[str],
         *,
+        platform=None,
         operation: str = "adapter.send",
         allowed_extra_destinations: Optional[List[str]] = None,
     ) -> bool:
-        """Verify that `chat_id` matches the active inbound chat_id.
+        """Verify chat alignment and, when provided, destination platform.
+
+        Platform-aware callers cannot reuse a coincident chat ID on another
+        platform. Legacy chat-only callers retain their existing contract.
 
         Returns True in any of:
           * No handler is active (default ContextVar state) — startup,
@@ -233,6 +249,19 @@ class OutboundGuard:
                 operation, pinned,
             )
             return False
+        inbound_platform = self._active_platform.get()
+        outbound_platform = getattr(platform, "value", platform)
+        if inbound_platform is not None and outbound_platform is not None and inbound_platform != outbound_platform:
+            self.violations.append({
+                "operation": operation,
+                "active_inbound_chat_id": pinned,
+                "outbound_chat_id": chat_id,
+                "active_inbound_platform": inbound_platform,
+                "outbound_platform": outbound_platform,
+                "reason": "destination platform does not match inbound",
+            })
+            logger.warning("Refusing outbound platform misroute: inbound=%s outbound=%s", inbound_platform, outbound_platform)
+            return False
         if str(chat_id) == str(pinned):
             return True
         if allowed_extra_destinations and str(chat_id) in {
@@ -286,14 +315,14 @@ def get_global_guard() -> OutboundGuard:
     return _global_guard
 
 
-def pin_inbound(chat_id: Optional[str]):
+def pin_inbound(chat_id: Optional[str], *, platform=None):
     """Pin `chat_id` as the active inbound for the current task.
 
     Module-level proxy for `_global_guard.enter(chat_id)`. Returns a
     token that must be passed to `unpin_inbound(token)` in a `finally`
     block to restore the previous pin.
     """
-    return _global_guard.enter(chat_id)
+    return _global_guard.enter(chat_id, platform=platform)
 
 
 def unpin_inbound(token) -> None:
@@ -304,6 +333,7 @@ def unpin_inbound(token) -> None:
 def verify_outbound(
     chat_id: Optional[str],
     *,
+    platform=None,
     operation: str = "adapter.send",
     allowed_extra_destinations: Optional[List[str]] = None,
 ) -> bool:
@@ -319,6 +349,7 @@ def verify_outbound(
     """
     return _global_guard.verify_send(
         chat_id,
+        platform=platform,
         operation=operation,
         allowed_extra_destinations=allowed_extra_destinations,
     )

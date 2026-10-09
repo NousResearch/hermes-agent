@@ -480,3 +480,33 @@ def test_violations_clear_works_with_bounded_deque():
         assert guard.violation_count == 0
     finally:
         guard.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_regression_pr4_same_chat_id_on_other_platform_is_refused(tmp_path, monkeypatch):
+    """A chat-id collision must not authorize delivery on another platform."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.delivery import DeliveryRouter, DeliveryTarget
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = SimpleNamespace(send=AsyncMock())
+    router = DeliveryRouter(GatewayConfig(), {Platform.TELEGRAM: adapter})
+    token = pin_inbound("12345", platform=Platform.SLACK)
+    try:
+        with pytest.raises(ValueError, match="refused"):
+            await router._deliver_to_platform(DeliveryTarget(platform=Platform.TELEGRAM, chat_id="12345"), "private reply", None)
+    finally:
+        unpin_inbound(token)
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outbound_platform,expected", [("slack", True), ("telegram", False)])
+def test_regression_pr4_platform_pin_preserves_channel_allowlist(outbound_platform, expected):
+    """A same-platform explicit destination does not authorize another platform."""
+    guard = OutboundGuard()
+    token = guard.enter("inbound", platform="slack")
+    try:
+        assert guard.verify_send("approved", platform=outbound_platform, allowed_extra_destinations=["approved"]) is expected
+    finally:
+        guard.reset(token)
+    assert guard.verify_send("approved", platform="telegram") is True

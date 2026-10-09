@@ -479,7 +479,7 @@ class DeliveryRouter:
         # turn, it enforces alignment. See gateway/outbound_guard.py.
         try:
             from gateway.outbound_guard import verify_outbound
-            if not verify_outbound(target.chat_id, operation="delivery.send"):
+            if not verify_outbound(target.chat_id, platform=target.platform, operation="delivery.send"):
                 raise ValueError(
                     "refused: outbound chat_id does not match active inbound "
                     f"(target={target.chat_id}, platform={target.platform.value})"

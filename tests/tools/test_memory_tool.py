@@ -627,3 +627,18 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+@pytest.mark.parametrize("entries", [["Project uses Python"], ["Older project fact", "Newer project fact"]])
+def test_regression_pr4_memory_snapshot_accepts_exact_content_limit(tmp_path, monkeypatch, entries):
+    """Only delimiters actually present between entries consume the limit."""
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    content = ENTRY_DELIMITER.join(entries)
+    (tmp_path / "MEMORY.md").write_text(content, encoding="utf-8")
+    memory = MemoryStore(memory_char_limit=len(content))
+    memory.load_from_disk()
+    snapshot = memory._system_prompt_snapshot["memory"]
+    assert content in snapshot
+    assert "100%" in snapshot

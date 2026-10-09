@@ -688,6 +688,22 @@ def _is_cross_workspace_ambiguous(
     return len(tagged) > 1
 
 
+def channel_name_is_ambiguous(platform_name: str, name: str) -> bool:
+    """Distinguish a known workspace collision from an unknown channel name."""
+    channels = load_directory().get("platforms", {}).get(platform_name, [])
+    if any(ch.get("id") == name.strip() for ch in channels):
+        return False
+    query = _normalize_channel_query(name)
+    matches = [
+        ch for ch in channels
+        if _normalize_channel_query(ch["name"]) == query
+        or _normalize_channel_query(_channel_target_name(platform_name, ch)) == query
+    ]
+    if not matches:
+        matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
+    return _is_cross_workspace_ambiguous(matches, platform_name)
+
+
 def format_directory_for_display() -> str:
     """Format the channel directory as a human-readable list for the model."""
     directory = load_directory()

@@ -18,6 +18,8 @@ Each entry: what changed, why, upstream PR status, how to verify removal is safe
 **Root cause:** `_render_block()` injected all entries without truncation.
 `memory_char_limit: 2200` guarded writes only. File grew to 422KB / 4,318 entries → 118k tokens per session.
 
+**Retained-base check:** `a071f0c11453e3db2dc3d11a20562c1955b7fd9a` has size configuration and usage counters, but no render-time entry-selection loop. This adjustment is still present in the PR diff.
+
 **Verify safe to remove:** `grep -A5 '_render_block' tools/memory_tool.py | grep 'kept\|reversed'` — if upstream has this, our patch is redundant.
 
 ---
@@ -50,7 +52,7 @@ Superseded: `origin/main` already includes the psutil `Process(pid).create_time(
 
 | Entry | Was | Status |
 |-------|-----|--------|
-| `tools/memory_tool.py` render-time truncation | Active | ✅ Upstream has `_char_limit()` + `memory_char_limit` in `_render_block()` |
+| `tools/memory_tool.py` size configuration | Base behavior | `_char_limit()` and usage counters are in the retained main base; newest-first render-time truncation remains Active adjustment 1 |
 | `gateway/platforms/slack.py` loop prevention | Active | ✅ Upstream has `SLACK_FREE_RESPONSE_CHANNELS` + `SLACK_REQUIRE_MENTION` |
 | `gateway/status.py` macOS `_get_process_start_time` | Active (PR #16) | ✅ Upstream has full psutil + `/proc` fallback |
 | `tools/file_operations.py` portable `chmod =rw` | Active | ✅ Upstream has `chmod "=rw"` (confirmed 2026-07-31 via `git show upstream/main:tools/file_operations.py`) |
@@ -66,7 +68,7 @@ Superseded: `origin/main` already includes the psutil `Process(pid).create_time(
 | `.github/workflows/hermes-pr-tag-listener.yml` | Our shared-org PR tag listener dispatch — project-specific |
 | `.coderabbit.yaml` | Our CR config |
 | `gateway/outbound_guard.py` | Local cross-channel outbound misroute guard for our Slack/operator routing |
-| `optional-skills/` RTK plugin | Env-specific (RTK token rewriting) |
+| `plugins/rtk/` RTK plugin | Env-specific (RTK token rewriting) |
 | `.gitignore` additions | AO session files — harmless upstream but unnecessary |
 | `FORK_ADJUSTMENTS.md` | Fork divergence registry |
 

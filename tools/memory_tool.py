@@ -743,7 +743,7 @@ class MemoryStore:
             kept: List[str] = []
             total = 0
             for entry in reversed(entries):
-                entry_len = len(entry) + len(ENTRY_DELIMITER)
+                entry_len = len(entry) + (len(ENTRY_DELIMITER) if kept else 0)
                 if total + entry_len > limit:
                     break
                 kept.append(entry)

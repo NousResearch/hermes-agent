@@ -113,9 +113,8 @@ class TestRTKPlugin:
             )
         assert result is None
 
-    def test_rtk_rewrite_preserves_command_on_no_change(self, monkeypatch):
-        """If rtk rewrite returns the same command, plugin still returns the rewrite
-        directive (the prefix 'rtk' is the savings mechanism)."""
+    def test_rtk_rewrite_returns_changed_command(self, monkeypatch):
+        """A rewritten command produces the request-middleware directive."""
         from hermes_plugins.rtk import _rewrite_terminal_command
 
         monkeypatch.delenv("HERMES_RTK_DISABLE", raising=False)
@@ -131,6 +130,17 @@ class TestRTKPlugin:
         assert result is not None
         assert result["args"]["command"] == "rtk git status"
 
+    def test_rtk_rewrite_preserves_command_on_no_change(self, monkeypatch):
+        """An identical command is a pass-through, not a rewrite directive."""
+        from hermes_plugins.rtk import _rewrite_terminal_command
+
+        monkeypatch.delenv("HERMES_RTK_DISABLE", raising=False)
+        with (
+            patch("shutil.which", return_value="/usr/bin/rtk"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="git status", stderr="")),
+        ):
+            assert _rewrite_terminal_command("terminal", {"command": "git status"}) is None
+
     def test_rtk_rewrite_skips_when_command_missing(self):
         """RTK plugin returns None when args dict has no 'command' key."""
         from hermes_plugins.rtk import _rewrite_terminal_command
@@ -145,14 +155,19 @@ class TestRTKPlugin:
         """RTK plugin is disabled when HERMES_RTK_DISABLE is set."""
         from hermes_plugins.rtk import _rewrite_terminal_command
 
-        for value in ("1", "true", "yes", "on"):
-            monkeypatch.setenv("HERMES_RTK_DISABLE", value)
-            result = _rewrite_terminal_command(
-                tool_name="terminal",
-                args={"command": "git status"},
-            )
-            assert result is None
-            monkeypatch.delenv("HERMES_RTK_DISABLE", raising=False)
+        with (
+            patch("shutil.which", return_value="/usr/bin/rtk"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="rtk git status", stderr="")) as mock_run,
+        ):
+            for value in ("1", "true", "yes", "on"):
+                monkeypatch.setenv("HERMES_RTK_DISABLE", value)
+                result = _rewrite_terminal_command(
+                    tool_name="terminal",
+                    args={"command": "git status"},
+                )
+                assert result is None
+                mock_run.assert_not_called()
+                monkeypatch.delenv("HERMES_RTK_DISABLE", raising=False)
 
     def test_rtk_rewrite_env_disable_false_values_do_not_disable(self, monkeypatch):
         """Falsy env values should not disable RTK rewriting."""

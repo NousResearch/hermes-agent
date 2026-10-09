@@ -15534,8 +15534,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             from gateway.outbound_guard import pin_inbound
         try:
-            _outbound_token = _outbound_guard.enter(source.chat_id)
-            _singleton_token = pin_inbound(source.chat_id)
+            _outbound_token = _outbound_guard.enter(source.chat_id, platform=source.platform)
+            _singleton_token = pin_inbound(source.chat_id, platform=source.platform)
         except Exception:
             logger.debug("Failed to pin outbound chat_id guard", exc_info=True)
             _outbound_token = None
@@ -23648,12 +23648,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # triggering message id was carried as the progress/thread anchor
             # (see the Platform.SLACK branch above where
             # `_progress_thread_id = source.thread_id or event_message_id`).
-            # `_thread_metadata_for_source` keys off source.thread_id only and
-            # would return None here, dropping the thread anchor — so the
-            # queued-follow-up / stream-consumer delivery posts at the channel
-            # root. Mirror `_progress_metadata` and carry the anchor explicitly
-            # so the reply stays in-thread across compression/interrupt drains.
-            _status_thread_metadata = {"thread_id": _progress_thread_id}
+            # Keep source-scoped metadata (including the Slack workspace),
+            # then add the fallback anchor so queued/streamed delivery stays
+            # in the right workspace and thread across compression drains.
+            _status_thread_metadata = dict(self._thread_metadata_for_source(source, event_message_id) or {})
+            _status_thread_metadata["thread_id"] = _progress_thread_id
         else:
             _status_thread_metadata = (
                 self._thread_metadata_for_source(source, event_message_id)

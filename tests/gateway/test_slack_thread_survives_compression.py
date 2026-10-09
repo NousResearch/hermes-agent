@@ -116,6 +116,7 @@ def runner(monkeypatch, tmp_path):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
     r = GatewayRunner(GatewayConfig())
     # Match prod: streaming disabled → reply goes through the non-streaming
     # queued-delivery path that uses _status_thread_metadata.
@@ -144,6 +145,14 @@ async def test_slack_queued_reply_stays_in_thread_with_anchor_only(
     )
 
     adapter, captured = _make_slack_adapter()
+    sent_metadata = []
+    original_send = adapter.send
+
+    async def capture_send(*args, **kwargs):
+        sent_metadata.append(kwargs.get("metadata"))
+        return await original_send(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "send", capture_send)
     runner.adapters[Platform.SLACK] = adapter
 
     # Slack channel source where thread_id is None but a reply anchor
@@ -155,6 +164,7 @@ async def test_slack_queued_reply_stays_in_thread_with_anchor_only(
         chat_id=CHANNEL,
         chat_type="group",
         thread_id=None,
+        scope_id="T_WORKSPACE_B",
         user_id="U0A4G7LDJ4R",
         user_name="MCP Agent Mail",
     )
@@ -196,3 +206,6 @@ async def test_slack_queued_reply_stays_in_thread_with_anchor_only(
             f"Slack reply routed to wrong thread: thread_ts={c.get('thread_ts')!r} "
             f"expected {THREAD_TS!r}"
         )
+
+    assert sent_metadata
+    assert all((metadata or {}).get("slack_team_id") == "T_WORKSPACE_B" for metadata in sent_metadata)

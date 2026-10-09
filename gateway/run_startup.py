@@ -1701,7 +1701,14 @@ class GatewayStartupMixin:
         from gateway.run import load_gateway_config
         if not profile_name or profile_name == "default":
             return self.config, self.adapters
-        secondary = (self._profile_adapters or {}).get(profile_name)
+        # Canonical resolver, NOT a raw ``_profile_adapters`` lookup: a shared-bot satellite (a routed
+        # profile whose own bot credential was removed at multiplex migration) keeps an EMPTY
+        # ``_profile_adapters`` placeholder and must drain through the primary's adapters. A raw
+        # ``.get()`` saw ``{}`` and failed the handoff with "no live adapters" even though the default
+        # bot can deliver it (gateway/AGENTS.md transport matrix). A secondary that OWNS a credential
+        # whose adapter genuinely failed — and a profile with no route at all — still resolve to an
+        # empty map and fail closed below: never borrow the primary's bot for a non-satellite.
+        secondary = self._adapters_for_profile(profile_name)
         if not secondary:
             raise RuntimeError(f"profile '{profile_name}' has no live adapters in this gateway")
         try:

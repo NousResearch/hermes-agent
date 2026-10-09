@@ -214,3 +214,48 @@ async def test_secondary_profile_without_live_adapters_fails_loudly(monkeypatch)
             {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
             profile_name="medicina",
         )
+
+
+@pytest.mark.asyncio
+async def test_shared_bot_satellite_handoff_drains_through_primary(monkeypatch):
+    """A routed profile with NO own bot credential (token removed at multiplex migration)
+    must hand off through the default bot, not fail with 'no live adapters'.
+
+    Regression for the post-migration ``/handoff telegram`` breakage: butler is a shared-bot
+    satellite — its ``_profile_adapters`` entry is the empty ``{}`` placeholder and a
+    ``profile_routes`` entry targets it through the default bot. The raw ``_profile_adapters``
+    lookup saw ``{}`` and raised, so the CLI always timed out. The canonical
+    ``_adapters_for_profile`` resolver drains it through the primary's adapters.
+    """
+    from gateway.profile_routing import ProfileRoute
+
+    runner, captured = _make_multiplex_runner()
+    # Satellite: served, routed through the default bot, owns NO adapter of its own.
+    runner._profile_adapters = {"butler": {}}
+    runner._profile_failed_platforms = {}
+    runner.config.profile_routes = [
+        ProfileRoute(name="butler-dm", platform="telegram", profile="butler",
+                     chat_id="6719571041", bot_profile=None),
+    ]
+    monkeypatch.setattr(
+        "gateway.run._multiplex_profile_homes", lambda cfg: [("butler", None)],
+    )
+
+    used = {}
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+    )
+    monkeypatch.setattr("gateway.run.load_gateway_config", lambda: _config("6719571041"))
+
+    await runner._process_handoff(
+        {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+        profile_name="butler",
+    )
+
+    assert used["adapter_tag"] == "primary", (
+        "a shared-bot satellite must deliver through the default bot, not fail"
+    )
+    assert used["sent_via"] == "primary"
+    assert captured["session_key"].startswith("agent:butler:"), (
+        "the key must still carry the satellite's namespace"
+    )

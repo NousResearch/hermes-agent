@@ -12,6 +12,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.shell_heredoc import strip_inert_heredoc_bodies
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -203,8 +205,6 @@ def detect_hardline_command(command: str) -> tuple:
     # Do this before quote/escape normalization destroys quoted delimiters.
     # Only complete, quoted cat/tee data bodies qualify; interpreter input,
     # expanding bodies and ambiguous shell consumers remain visible.
-    from tools.shell_heredoc import strip_inert_heredoc_bodies
-
     command = strip_inert_heredoc_bodies(command, data_only=True)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was

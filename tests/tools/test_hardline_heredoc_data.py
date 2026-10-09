@@ -1,4 +1,4 @@
-"""Heredoc data is not executable shell syntax; never execute these fixtures."""
+"""Regression for #124551. Heredoc data is not shell syntax; never execute these fixtures."""
 import pytest
 
 from tools.approval_detection import detect_hardline_command

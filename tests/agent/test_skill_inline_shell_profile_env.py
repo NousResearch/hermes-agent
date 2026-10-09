@@ -16,6 +16,7 @@ def test_inline_shell_subprocess_uses_routed_profile_env(tmp_path, monkeypatch):
 
     # ``strip_launch_profile_env`` can identify this value as launch-profile residue.
     (launch_home / ".env").write_text("SKILL_INLINE_LAUNCH_ONLY=launch\n", encoding="utf-8")
+    (served_home / ".env").write_text("SKILL_INLINE_SERVED_ONLY=served\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     monkeypatch.setenv("SKILL_INLINE_LAUNCH_ONLY", "launch")
 
@@ -36,6 +37,7 @@ def test_inline_shell_subprocess_uses_routed_profile_env(tmp_path, monkeypatch):
     assert child_env is not None, "inline shell must receive an explicit routed child env"
     assert child_env.get("HERMES_HOME") == str(served_home)
     assert "SKILL_INLINE_LAUNCH_ONLY" not in child_env
+    assert child_env["SKILL_INLINE_SERVED_ONLY"] == "served"
 
 
 def test_inline_shell_unscoped_secret_scope_returns_error_without_spawning():

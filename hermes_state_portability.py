@@ -774,4 +774,10 @@ class SessionPortabilityMixin:
                 "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
             }
 
-        return self._execute_write(_do)
+        from hermes_state_media import drop_prepared, prepare_rows
+        rows = [msg for item in normalized for msg in item["messages"]]
+        prepare_rows(self.db_path, rows)  # image file I/O before the write lock
+        try:
+            return self._execute_write(_do)
+        finally:
+            drop_prepared(rows)

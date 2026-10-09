@@ -510,3 +510,104 @@ def test_rewind_from_reloaded_view_keeps_image_prefix_rows(db, kind):
     db.replace_messages("vision", [dict(m) for m in loaded[:-1]], active_only=True, archive_dropped=True)
     assert [m["id"] for m in db.get_messages("vision")] == ids[:-1]
     assert len([m for m in db.get_messages("vision", include_inactive=True) if not m["active"]]) == 1
+
+
+def test_stale_writer_never_resurrects_a_deleted_profile(tmp_path, monkeypatch):
+    """A writer still holding a deleted named profile's db_path must not recreate its home."""
+    from hermes_state_media import prepare_media_content
+
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "work"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    db_path = home / "state.db"
+    (root / "profiles" / ".deleted").mkdir()
+    home.rename(root / "profiles" / ".deleted" / "work")
+    content = _history("user")[0]["content"]
+    assert prepare_media_content(db_path, content) == (prepare_media_content(db_path, content)[0], None)
+    assert not home.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_symlinked_media_store_is_refused_for_write_and_read(db, tmp_path):
+    from hermes_state_media import prepare_media_content
+
+    content = _history("user")[0]["content"]
+    _flush(db, [{"role": "user", "content": content}])
+    store = tmp_path / "cache" / "transcript_media"
+    outside = tmp_path / "outside"
+    store.rename(outside)
+    store.symlink_to(outside, target_is_directory=True)
+    loaded = db.get_messages_as_conversation("vision", repair_alternation=True)[0]["content"]
+    assert DATA_URL not in json.dumps(loaded)  # read refused: text projection, not the outside file
+    before = sorted(p.name for p in outside.iterdir())
+    other = _history("user")[0]["content"]
+    other[1]["image_url"]["url"] = "data:image/png;base64," + base64.b64encode(b"other").decode()
+    assert prepare_media_content(db.db_path, other)[1] is None
+    assert sorted(p.name for p in outside.iterdir()) == before
+
+
+@pytest.mark.parametrize("failure", ["missing", "corrupt"])
+def test_profile_move_refuses_to_flatten_unavailable_media(db, tmp_path, failure):
+    content = _history("user")[0]["content"]
+    _flush(db, [{"role": "user", "content": content}])
+    path, = (tmp_path / "cache/transcript_media").iterdir()
+    path.unlink() if failure == "missing" else path.write_bytes(b"damaged")
+    payload = db.export_session_for_move("vision")
+    with SessionDB(db_path=tmp_path / "target/state.db") as target:
+        with pytest.raises(OSError, match="unavailable in the source store"):
+            target.import_moved_session(payload, profile_name="target")
+        assert target.get_session("vision") is None
+    assert db.get_messages("vision")[0]["media_content"]
+
+
+def test_media_file_io_runs_outside_the_write_transaction(db, monkeypatch):
+    """Image reads/hashes/writes never hold BEGIN IMMEDIATE, so a slow store cannot block every writer."""
+    import hermes_state_media
+
+    in_write = []
+    original_write = db._execute_write
+    def tracked_write(fn, *args, **kwargs):
+        def run(conn):
+            in_write.append(True)
+            try:
+                return fn(conn)
+            finally:
+                in_write.pop()
+        return original_write(run, *args, **kwargs)
+    monkeypatch.setattr(db, "_execute_write", tracked_write)
+    calls = []
+    for name in ("_get", "_put"):
+        real = getattr(hermes_state_media, name)
+        def guarded(*args, _real=real, _name=name):
+            calls.append(_name)
+            assert not in_write, f"{_name} ran inside the SQLite write transaction"
+            return _real(*args)
+        monkeypatch.setattr(hermes_state_media, name, guarded)
+
+    live = _history("envelope") + [{"role": "assistant", "content": "Done"}, {"role": "user", "content": "Again"}]
+    db.append_messages_batch("vision", [dict(m) for m in live])
+    loaded = db.get_messages_as_conversation("vision", repair_alternation=True)
+    db.replace_messages("vision", [dict(m) for m in loaded[:-1]], active_only=True, archive_dropped=True)
+    db.append_messages_batch("vision", [{"role": "user", "content": _history("user")[0]["content"]}])
+    db.rewind_to_message("vision", db.get_active_message_ids("vision")[-1])
+    payload = db.export_session_for_move("vision")
+    db.create_session("copy", "cli")
+    db.append_messages_batch("copy", [dict(m) for m in loaded])
+    target = SessionDB(db_path=db.db_path.parent / "target/state.db")
+    try:
+        target.import_moved_session(payload, profile_name="target")
+    finally:
+        target.close()
+    assert "_get" in calls and "_put" in calls
+
+
+@pytest.mark.platforms("posix")
+def test_first_publication_fsyncs_the_store_directory(db, tmp_path, monkeypatch):
+    import utils
+    from hermes_state_media import prepare_media_content
+
+    synced = []
+    monkeypatch.setattr(utils, "fsync_directory", lambda path: synced.append(path))
+    prepare_media_content(db.db_path, _history("user")[0]["content"])
+    assert synced == [tmp_path / "cache" / "transcript_media"]

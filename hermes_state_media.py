@@ -86,10 +86,22 @@ def _media_root(db_path) -> Path:
     return Path(db_path).parent / "cache" / "transcript_media"
 
 
+def _owned_root(root: Path) -> Path:
+    """Refuse a store reached through a symlinked ``cache`` or ``transcript_media`` (reads and writes alike)."""
+    if root.resolve() != root.parent.parent.resolve() / "cache" / "transcript_media":
+        raise OSError("transcript media store is not inside its profile")
+    return root
+
+
 def _put(root: Path, data: bytes) -> str:
+    from hermes_constants import assert_named_profile_home_live
+    from utils import fsync_directory
+
     digest = hashlib.sha256(data).hexdigest()
+    # A stale writer of a deleted profile must not resurrect its home (mkdir_under_hermes_home's contract).
+    assert_named_profile_home_live(root)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = root / digest
+    target = _owned_root(root) / digest
     if not target.is_symlink() and target.is_file():
         try:
             os.utime(target, follow_symlinks=False)
@@ -103,6 +115,7 @@ def _put(root: Path, data: bytes) -> str:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, target)
+        fsync_directory(root)  # the SQLite reference must never outlive the filename
     finally:
         Path(name).unlink(missing_ok=True)
     return digest
@@ -111,7 +124,7 @@ def _put(root: Path, data: bytes) -> str:
 def _get(root: Path, digest: str) -> bytes:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("invalid transcript media digest")
-    path = root / digest
+    path = _owned_root(root) / digest
     # A dangling link or a non-regular file must not block replay or escape the store.
     if path.is_symlink() or not path.is_file():
         raise OSError("transcript media is not a regular file")
@@ -187,8 +200,9 @@ def prepare_media_content(db_path, content: Any, media_content: Any = None, *, d
         return text, None
 
 
-def restore_media_content(db_path, sidecar: Any, fallback: Any, *, model: bool = True) -> Any:
-    """All-or-nothing replay: an unavailable image retains the old text-only behavior."""
+def restore_media_content(db_path, sidecar: Any, fallback: Any, *, model: bool = True, strict: bool = False) -> Any:
+    """All-or-nothing replay: an unavailable image retains the old text-only behavior.
+    ``strict`` raises instead, for a copy that must not silently become text (profile move)."""
     if not sidecar:
         return fallback
     try:
@@ -210,5 +224,42 @@ def restore_media_content(db_path, sidecar: Any, fallback: Any, *, model: bool =
             node[ref["path"][-1]] = ref["prefix"] + payload
         return content
     except (OSError, ValueError, TypeError, KeyError, IndexError):
+        if strict:
+            raise
         logger.debug("Cannot restore transcript media; keeping text projection", exc_info=True)
         return fallback
+
+
+# Image file I/O (read, hash, write, fsync) runs before BEGIN IMMEDIATE; the in-txn bind only reads this.
+_PREPARED = "_media_row"
+_MEDIA_SIDECAR = "_media_sidecar"
+
+
+def prepare_rows(db_path, messages: list) -> None:
+    for msg in messages:
+        if isinstance(msg, dict) and (has_images(msg.get("content")) or isinstance(msg.get("media_content"), str)):
+            content = msg.get("content")
+            msg[_PREPARED] = (content, *prepare_media_content(db_path, content, msg.get("media_content")))
+
+
+def drop_prepared(messages: list) -> None:
+    for msg in messages:
+        if isinstance(msg, dict):
+            msg.pop(_PREPARED, None)
+
+
+def prepared_media_content(db_path, msg: dict) -> tuple[Any, str | None]:
+    """The pre-lock result while the content object is unchanged; otherwise prepare now."""
+    prepared = msg.get(_PREPARED)
+    if prepared and prepared[0] is msg.get("content"):
+        return prepared[1], prepared[2]
+    return prepare_media_content(db_path, msg.get("content"), msg.get("media_content"))
+
+
+def media_identity(sidecar: Any) -> str | None:
+    """Image structure + digests: equal for a stored row and its rehydrated reload, without reading files."""
+    try:
+        stored = json.loads(sidecar)
+        return json.dumps([stored["content"], stored["images"]], sort_keys=True)
+    except (TypeError, ValueError, KeyError):
+        return None

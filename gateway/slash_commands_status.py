@@ -370,7 +370,7 @@ class GatewayStatusCommandsMixin:
         # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
-            filled = int(round(pct / 100 * 24))
+            filled = round(pct / 100 * 24)
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),

@@ -3916,9 +3916,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
-        # Per-attempt attribution reset + config-layer identity capture, BEFORE
-        # dispatch (#72636) — see AuxRouteAttributionMixin.
-        self._prepare_aux_route_attribution()
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
         _aux_route: dict[str, str] = {}
         call_kwargs: dict[str, Any] = {
@@ -3933,6 +3930,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
+        self._prepare_aux_route_attribution(call_kwargs)
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary

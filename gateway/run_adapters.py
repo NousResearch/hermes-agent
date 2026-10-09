@@ -783,7 +783,7 @@ class GatewayAdapterLifecycleMixin:
         (missing deps/creds), a registered plugin returning None, or an empty bot credential needs a config
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
         return (
             platform not in _BUILTIN_ADAPTERS
@@ -812,7 +812,7 @@ class GatewayAdapterLifecycleMixin:
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
             adapter = self._create_adapter(platform, platform_config)
@@ -827,7 +827,7 @@ class GatewayAdapterLifecycleMixin:
                     self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                     return
                 # Unregistered plugin: keep it queued and re-arm a failed load (capped) for the next tick.
-                from hermes_cli.plugins import get_plugin_manager
+                from plugin_runtime.lifecycle import get_plugin_manager
                 rearms = info.get("load_rearms", 0)
                 # Off the loop: the re-arm takes the manager's discovery lock, which a sweep or deferred load holds.
                 if rearms < _MAX_PLUGIN_LOAD_REARMS and await self._run_in_executor_with_context(
@@ -1082,7 +1082,7 @@ class GatewayAdapterLifecycleMixin:
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
             discover_plugins()
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -1908,7 +1908,7 @@ class GatewayAdapterLifecycleMixin:
                 "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False)
             )
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is None:  # registered but failed — never fall through to built-ins

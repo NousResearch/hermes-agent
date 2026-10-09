@@ -191,7 +191,7 @@ def _resolve_task_ownership(plugin_id: str) -> tuple[frozenset, frozenset]:
     owned: set = set()
     builtin: set = set()
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from plugin_runtime.api import get_plugin_auxiliary_tasks
         owned = {e.get("key") for e in get_plugin_auxiliary_tasks()
                  if e.get("plugin") == plugin_id and isinstance(e.get("key"), str) and e.get("key")}
     except Exception:  # pragma: no cover — registry unavailable
@@ -427,7 +427,7 @@ def _structured_spec(
 class PluginLlm:
     """Host-owned LLM access for one trusted plugin.
 
-    Constructed by :class:`hermes_cli.plugins.PluginContext` and exposed as
+    Constructed by :class:`plugin_runtime.context.PluginContext` and exposed as
     ``ctx.llm``; the constructor binds plugin identity for trust enforcement, so
     plugins should not instantiate it directly. Every public method is ``_gate``
     (trust checks → call kwargs) → ``_invoke_*`` (host ``call_llm`` or injected

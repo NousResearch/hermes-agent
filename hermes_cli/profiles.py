@@ -1010,6 +1010,20 @@ def format_profile_label(name: str, display_name: Optional[str]) -> str:
     return f"{dn} ({name})" if dn and dn != name else name
 
 
+def profile_command_details(profile_name=None, home_display=None) -> dict:
+    """Resolve profile display inputs at the application boundary for shared commands."""
+    from hermes_constants import display_hermes_home
+    profile_name = str(profile_name or "").strip() or get_active_profile_name()
+    home_display = str(home_display or "").strip() or display_hermes_home()
+    label = profile_name
+    try:
+        display = read_profile_meta(get_profile_dir(profile_name)).get("display_name", "")
+        label = format_profile_label(profile_name, display)
+    except Exception:
+        pass
+    return {"profile_name": profile_name, "home_display": home_display, "profile_label": label}
+
+
 def set_profile_display_name(profile_name: str, display_name: str) -> str:
     """Set (or clear, with ``""``) a presentation-only display name. Returns the stored value;
     raises ``ValueError`` over 64 chars."""
@@ -2131,6 +2145,31 @@ def get_active_profile_name() -> str:
     except ValueError:
         pass
     return "custom"
+
+
+def _plugin_settled_served_profiles() -> tuple[str, ...]:
+    """Live Gateway host record's settled profile roster for the public PluginContext contract."""
+    try:
+        from gateway.host_rendezvous import ROLE_GATEWAY, read_record
+
+        record = read_record(ROLE_GATEWAY)
+        return tuple(record.profiles) if record is not None else ()
+    except Exception:
+        return ()
+
+
+def _bind_plugin_profile_contract() -> None:
+    """Install host-owned profile policy behind the lower plugin-runtime API."""
+    from plugin_runtime.host_bindings import bind_plugin_host
+
+    bind_plugin_host(
+        profile_home=get_profile_dir,
+        validate_profile_name=validate_profile_name,
+        settled_served_profiles=_plugin_settled_served_profiles,
+    )
+
+
+_bind_plugin_profile_contract()
 
 
 def current_profile_name(default: str | None = None) -> str | None:

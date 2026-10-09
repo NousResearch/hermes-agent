@@ -127,7 +127,7 @@ def _normalize_slack_parent_command(text: str, message_type: MessageType) -> tup
     if not parent_parts or parent_parts[0] != "/hermes":
         return text, message_type
 
-    from hermes_cli.commands_platforms import slack_subcommand_map
+    from gateway.command_platforms import slack_subcommand_map
 
     payload = parent_parts[1].strip() if len(parent_parts) > 1 else ""
     subcommand_map = slack_subcommand_map()

@@ -384,7 +384,7 @@ def _serve(spool: Path) -> None:  # pragma: no cover - runs in the child process
     ledger._RETRY_BACKOFF_SECONDS = tuple(cfg.get("ledger_backoff", (0.5, 1.0)))
 
     from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, StreamingConfig
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from gateway.run import GatewayRunner
 
     cls = _adapter_class()

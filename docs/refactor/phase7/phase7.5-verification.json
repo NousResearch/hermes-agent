@@ -1,0 +1,212 @@
+{
+  "phase": "7.5",
+  "foundation": "e08d42e1abd3cd61d1bb73b8f6171e4b5924c33f",
+  "branch": "refactor/phase7-commands-tools",
+  "platform": "Windows",
+  "python": "3.11.15",
+  "verified_local_date": "2026-10-01",
+  "timezone": "America/Los_Angeles",
+  "full_file_totals": {
+    "files": 32,
+    "passed": 438,
+    "failed": 0,
+    "skipped": 10
+  },
+  "files": {
+    "tests/hermes_cli/test_cli_tools_command.py": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_web_server_executor_isolation.py": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tools/test_kanban_toolset_opt_in.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_tools_config.py": {
+      "passed": 45,
+      "failed": 0,
+      "skipped": 6
+    },
+    "tests/tools/test_platform_policy_boundary.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_gui_surface_toolsets.py": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_profiles_toolset_pin.py": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_profiles_configure.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_web_server.py": {
+      "passed": 181,
+      "failed": 0,
+      "skipped": 3
+    },
+    "tests/commands/test_busy_policy_invariants.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_desktop_slash_registry.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_availability.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_execution.py": {
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_registry.py": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_slash_access.py": {
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_approval_boundary.py": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_config_yaml_comment_preservation.py": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_slash_access_dispatch.py": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_config_toolsets.py": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/plugin_runtime/test_phase43_registration_ownership.py": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/plugin_runtime/test_phase465_runtime_api.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_command_discovery.py": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 1
+    },
+    "tests/gateway/test_discord_slash_auth.py": {
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_discord_slash_commands.py": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_discord_connect.py": {
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_telegram_forum_commands.py": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_reload_skills_discord_resync.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/plugin_runtime/test_phase464_manager_lifecycle.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_discord_skill_clamp_warning.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_approvals_command.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_command_description_fidelity.py": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_commands.py": {
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "focused_desktop": {
+    "file": "tests/tui_gateway/test_tui_gateway_server.py",
+    "runs": [
+      {
+        "selector": "tool or configure or canonical or runtime_policy",
+        "passed": 39,
+        "failed": 0
+      },
+      {
+        "selector": "catalog or complete or dispatch",
+        "passed": 24,
+        "failed": 0
+      }
+    ],
+    "selectors_may_overlap": true,
+    "full_file_completed": false
+  },
+  "baseline": {
+    "commands": 102,
+    "selection_cases": 2100,
+    "approved_explicit_empty_corrections": 104,
+    "frozen_evidence_changed": false
+  },
+  "compat_protected_entries": 2084,
+  "config_writer_audit_files": 1902,
+  "inventory": {
+    "references": 245,
+    "compatibility_entries": 36
+  },
+  "public_cli_help": true,
+  "initial_failure": "Executor-isolation test still patched the retired 7.4 CLI runtime helper; retargeted and final 3-test file passed.",
+  "adjacent_phases_integrated": false,
+  "installed_distribution_verified": false,
+  "package_discovery": true,
+  "gateway_projection_moved_verbatim": true
+}

@@ -6,7 +6,7 @@ resolution in the command registry. The CLI and gateway surfaces both
 route through these helpers, so the flag semantics are pinned here once.
 """
 
-from hermes_cli.commands import resolve_command
+from commands import resolve_command
 from hermes_cli.partial_compress import (
     DEFAULT_KEEP_LAST,
     extract_compress_flags,

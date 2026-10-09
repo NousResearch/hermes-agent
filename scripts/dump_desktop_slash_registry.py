@@ -20,7 +20,7 @@ OUT = ROOT / "apps" / "desktop" / "src" / "lib" / "desktop-slash-registry.json"
 
 def render() -> str:
     sys.path.insert(0, str(ROOT))
-    from hermes_cli.commands import desktop_surface_registry
+    from commands import desktop_surface_registry
 
     return json.dumps(desktop_surface_registry(), indent=2, sort_keys=True) + "\n"
 

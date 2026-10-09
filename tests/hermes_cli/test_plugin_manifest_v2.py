@@ -7,18 +7,18 @@ declare-only seam (surfaced, never installed).
 """
 
 import logging
-from types import SimpleNamespace
+import hermes_version
 
 import pytest
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
-    PluginManager,
     PluginManifest,
     SUPPORTED_MANIFEST_VERSION,
     resolve_plugin_load_order,
     validate_config_schema,
 )
+from plugin_runtime.manager import PluginManager
 
 
 def _write_plugin(base, name, manifest_extra=None, register_body="pass"):
@@ -398,11 +398,8 @@ class TestCtxHasPlugin:
 class TestRequiresHermes:
     def test_gate_reads_the_running_code_version_not_dist_metadata(self, monkeypatch):
         """Compatibility gates use the running code's base release version."""
-        from hermes_cli import plugins_manifest
-        monkeypatch.setattr(
-            "hermes_cli.version_info.get_version_info",
-            lambda: SimpleNamespace(base_version="0.21.4"),
-        )
+        from plugin_runtime import manifest as plugins_manifest
+        monkeypatch.setattr(hermes_version, "__version__", "0.21.4")
         assert plugins_manifest.running_hermes_version() == "0.21.4"
         assert plugins_manifest.version_satisfies(">=0.21.4", plugins_manifest.running_hermes_version())
 
@@ -414,13 +411,13 @@ class TestRequiresHermes:
         ("banana", "0.21.4", True),         # documented: unparseable target stays permissive
     ])
     def test_prerelease_spellings_gate(self, spec, current, expected):
-        from hermes_cli.plugins_manifest import version_satisfies
+        from plugin_runtime.manifest import version_satisfies
         assert version_satisfies(spec, current) is expected
 
     def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
         """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
         import sys
-        from hermes_cli import plugins_manifest
+        from plugin_runtime import manifest as plugins_manifest
         monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.2.3")
         _write_plugin(hermes_home / "plugins", "future", manifest_extra={"requires_hermes": ">=99.0"},
                       register_body="import sys; sys._rh_future = True")
@@ -550,7 +547,7 @@ class TestManifestParsingRobustness:
     def test_list_manifest_is_rejected_with_a_clear_reason_and_hooks_alias(self, hermes_home, caplog):
         """A list-typed plugin.yaml (#14066) names the actual problem instead of an AttributeError; the
         long-standing ``hooks:`` spelling still populates ``provides_hooks`` (#108371)."""
-        from hermes_cli.plugins_discovery import scan_directory
+        from plugin_runtime.discovery import scan_directory
         bad = hermes_home / "plugins" / "listy"
         bad.mkdir()
         (bad / "plugin.yaml").write_text("- name: listy\n")
@@ -569,14 +566,14 @@ class TestDirectoryPluginKeepsIdentityOverEntryPoint:
     carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
 
     def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
-        from hermes_cli.plugins_manifest import PluginManifest
+        from plugin_runtime.manifest import PluginManifest
         _write_plugin(hermes_home / "plugins", "twin")
         _enable(hermes_home, ["twin"])
         twin_ep = PluginManifest(name="twin", version="9.9.9", description="pip twin",
                                  source="entrypoint", path="twin_pkg:register", key="twin")
         monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [twin_ep])
         monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
-        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
+        monkeypatch.setattr("plugin_runtime.manager.discover_entrypoint_manifests", lambda: [twin_ep])
 
         mgr = PluginManager()
         mgr.discover_and_load()

@@ -103,8 +103,23 @@ def _preview(text: str, limit: int = 60) -> str:
 
 def _execute(command: str, **ctx_kwargs):
     """Run *command* through the shared slash executor on the gateway surface."""
-    from hermes_cli.slash_exec import CommandContext, execute_command
-    return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
+    from commands.execution import CommandContext, execute_command
+    options = dict(ctx_kwargs.pop("options", {}))
+    if command == "version":
+        from hermes_cli.banner import format_banner_version_label
+        options["version_label"] = format_banner_version_label
+    elif command == "egress":
+        from hermes_cli.proxy_cli import format_status_text
+        options["egress_status"] = format_status_text
+    elif command == "profile":
+        from hermes_cli.profiles import profile_command_details
+        options.update(profile_command_details(
+            options.get("profile_name"), options.get("home_display")))
+    elif command in {"help", "commands"}:
+        from gateway.command_presentation import gateway_help_lines
+        options.update(translate=t, help_lines=gateway_help_lines)
+    return execute_command(command, CommandContext(
+        surface="gateway", options=options, **ctx_kwargs))
 
 
 def _restart_notify_payload(event: MessageEvent) -> dict:
@@ -1276,7 +1291,7 @@ class GatewaySlashCommandsMixin(
         src = event.source
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
             try:
-                from gateway.platform_registry import platform_registry
+                from plugin_runtime.platform_registry import platform_registry
                 entry = platform_registry.get(src.platform.value)
                 if not entry or not entry.allow_update_command:
                     return t("gateway.update.platform_not_messaging")

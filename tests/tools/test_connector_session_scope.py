@@ -74,13 +74,15 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
 
 
 def test_ordinary_platform_defaults_grant_connections_without_widening_webhook():
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.config import has_xai_tool_credentials
+
+    from tools.platform_policy import get_platform_tools
     from toolsets import resolve_toolset
 
     for platform in ("cli", "telegram"):
-        enabled = _get_platform_tools({}, platform)
+        enabled = get_platform_tools({}, platform, xai_credentials_present=has_xai_tool_credentials)
         assert "connections" in enabled
         assert "manage_connections" in {name for ts in enabled for name in resolve_toolset(ts)}
-    assert "connections" not in _get_platform_tools({}, "webhook")
+    assert "connections" not in get_platform_tools({}, "webhook", xai_credentials_present=has_xai_tool_credentials)
     for selection in ([], ["safe"], ["file"]):
-        assert "connections" not in _get_platform_tools({"platform_toolsets": {"cli": selection}}, "cli")
+        assert "connections" not in get_platform_tools({"platform_toolsets": {"cli": selection}}, "cli", xai_credentials_present=has_xai_tool_credentials)

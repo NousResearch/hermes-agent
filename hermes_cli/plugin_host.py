@@ -202,7 +202,8 @@ class PluginHost:
     # -- loading ------------------------------------------------------------------------------------
     def load(self, manifest: Any, ctx: Any, *, module_name: Optional[str], entrypoint: bool) -> str:
         """Import ``manifest``'s plugin in the host and replay its registrations onto ``ctx``."""
-        from hermes_cli.plugins import PluginContext, manifest_key
+        from plugin_runtime.context import PluginContext
+        from plugin_runtime.manifest import manifest_key
         channel = self.ensure_started()
         plugin_key = manifest_key(manifest)
         self._contexts[plugin_key] = ctx
@@ -210,6 +211,7 @@ class PluginHost:
             "plugin_key": plugin_key, "plugin_id": ctx.plugin_id, "name": manifest.name,
             "path": manifest.path, "module_name": module_name, "entrypoint": entrypoint,
             "profile_name": self._base_context.copy().run(lambda: ctx.profile_name),
+            "profile_home": self._base_context.copy().run(lambda: ctx.profile_home),
             "manifest": {k: getattr(manifest, k, None) for k in (
                 "name", "version", "description", "author", "source", "path", "key", "kind",
                 "skill_namespace")},
@@ -257,7 +259,7 @@ class PluginHost:
         plugin_key = f"{capture}:{Path(plugin_dir).name}"
         if ctx is not None:
             self._contexts[plugin_key] = ctx
-        from hermes_cli.plugins import PluginContext
+        from plugin_runtime.context import PluginContext
         params = {
             "plugin_key": plugin_key, "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
             "name": Path(plugin_dir).name, "path": str(plugin_dir), "module_name": module_name,
@@ -402,7 +404,7 @@ class PluginHost:
         return self._encode_for_host(result)
 
     def _encode_for_host(self, value: Any) -> Any:
-        from hermes_cli.plugins_ledger import PluginRegistration
+        from plugin_runtime.registration import PluginRegistration
 
         def refs(obj: Any) -> Optional[dict]:
             if isinstance(obj, PluginRegistration):

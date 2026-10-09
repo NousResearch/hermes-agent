@@ -69,6 +69,8 @@ def test_plugin_engine_gets_context_length_on_init():
 
 def test_active_context_engine_tools_survive_explicit_platform_toolsets():
     """LCM-style recovery tools must survive saved `hermes tools` lists."""
+    from hermes_cli.config import has_xai_tool_credentials
+
     engine = _ToolEngine()
     cfg = {
         "context": {"engine": "stub"},
@@ -76,9 +78,9 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
         "agent": {},
     }
 
-    from hermes_cli.tools_config import _get_platform_tools
+    from tools.platform_policy import get_platform_tools
 
-    enabled_toolsets = _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+    enabled_toolsets = get_platform_tools(cfg, "cli", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
     assert "context_engine" in enabled_toolsets
 
     with (

@@ -127,7 +127,7 @@ class TestStartupPlatformIsolation:
             return MagicMock()
 
         with patch("gateway.status.publish_runtime_status"):
-            with patch("hermes_cli.plugins.discover_plugins"):
+            with patch("plugin_runtime.lifecycle.discover_plugins"):
                 with patch("hermes_cli.config.load_config", return_value={}):
                     with patch("agent.shell_hooks.register_from_config"):
                         with patch(
@@ -366,7 +366,7 @@ class TestPlatformReconnectWatcher:
         """An unregistered plugin platform (its deferred load failed at startup) heals on the next watcher
         tick: the adapter_unavailable branch re-arms the failed load instead of waiting for a manual
         reload-plugins or restart (#126356)."""
-        import hermes_cli.plugins as plugins_mod
+        from plugin_runtime import lifecycle as plugin_lifecycle
 
         runner = _make_runner()
         runner._update_platform_runtime_status = MagicMock()
@@ -380,10 +380,10 @@ class TestPlatformReconnectWatcher:
         manager = MagicMock()
         manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or on_loop.append(
             threading.current_thread() is threading.main_thread()) or True
-        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(plugin_lifecycle, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
-        monkeypatch.setattr("gateway.platform_registry.platform_registry.get",
+        monkeypatch.setattr("plugin_runtime.platform_registry.platform_registry.get",
                             lambda name: on_loop.append(threading.current_thread() is threading.main_thread()))
 
         for tick in range(6):
@@ -869,7 +869,7 @@ class TestVoiceInputCallbackWiring:
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
             with patch("gateway.status.publish_runtime_status"):
-                with patch("hermes_cli.plugins.discover_plugins"):
+                with patch("plugin_runtime.lifecycle.discover_plugins"):
                     with patch("hermes_cli.config.load_config", return_value={}):
                         with patch("agent.shell_hooks.register_from_config"):
                             with patch(

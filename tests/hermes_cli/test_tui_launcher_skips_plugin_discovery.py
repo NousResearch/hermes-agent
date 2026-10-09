@@ -1,4 +1,3 @@
-
 """Regression test: the TUI launcher must not spend time on plugin discovery.
 
 `hermes --tui` just spawns a Node process; the spawned tui_gateway backend
@@ -10,8 +9,8 @@ then redoes. Plain chat must still discover plugins.
 from __future__ import annotations
 
 from argparse import Namespace
-import sys
-import types
+
+import plugin_runtime.lifecycle as plugin_lifecycle
 
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
@@ -20,26 +19,13 @@ from hermes_cli import mcp_startup
 def _install_discover_spy(monkeypatch):
     calls = []
 
-    def _discover():
+    def _discover(*_args, **_kwargs):
         calls.append("discover")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(
-            discover_plugins=_discover,
-            # main.py now kicks discovery off in a background thread; both
-            # entry points count as "discovery work happened in the launcher".
-            start_background_plugin_discovery=_discover,
-        ),
-    )
-    # The plain-chat path also arms MCP discovery. Its config probe imports
-    # ``hermes_cli.plugins`` (replaced by the stub above), fails, and falls
-    # back to "assume configured", which spawned a REAL ``cli-mcp-discovery``
-    # daemon thread that was still importing ``tools.mcp_tool`` when pytest
-    # exited. A daemon thread inside a C-extension import at interpreter
-    # finalization dies via pthread_exit → glibc "FATAL: exception not
-    # rethrown" → SIGABRT. Plugin discovery is the only subject here.
+    monkeypatch.setattr(plugin_lifecycle, "discover_plugins", _discover)
+    monkeypatch.setattr(plugin_lifecycle, "start_background_plugin_discovery", _discover)
+    # The plain-chat path also arms MCP discovery. Keep that separate daemon
+    # out of this test: plugin discovery is the only subject here.
     monkeypatch.setattr(
         mcp_startup, "start_background_mcp_discovery", lambda **_kw: None
     )

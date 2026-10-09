@@ -35,8 +35,8 @@ class TestHandleFunctionCall:
         """
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
-            patch("hermes_cli.plugins.has_hook", return_value=True),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("plugin_runtime.api.has_hook", return_value=True),
+            patch("plugin_runtime.api.invoke_hook") as mock_invoke_hook,
         ):
             handle_function_call("web_search", {"q": "test"}, task_id="t1")
 
@@ -59,8 +59,8 @@ class TestHandleFunctionCall:
         result = json.dumps({"output": "", "exit_code": 1, "error": None})
         with (
             patch("model_tools.registry.dispatch", return_value=result),
-            patch("hermes_cli.plugins.has_hook", return_value=True),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("plugin_runtime.api.has_hook", return_value=True),
+            patch("plugin_runtime.api.invoke_hook") as mock_invoke_hook,
         ):
             assert handle_function_call("terminal", {"command": "false"}) == result
 
@@ -98,14 +98,15 @@ class TestHandleFunctionCall:
             (),
             {"_middleware": {"tool_request": [fake_invoke_middleware], "tool_execution": [execution_middleware]}},
         )()
-        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("plugin_runtime.api.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("plugin_runtime.lifecycle.delivery_manager", lambda: manager)
+        monkeypatch.setattr("plugin_runtime.api.has_middleware", lambda kind: bool(manager._middleware.get(kind)))
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "plugin_runtime.api.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("plugin_runtime.api.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(
@@ -131,7 +132,7 @@ class TestHandleFunctionCall:
         from hermes_cli import lifecycle
 
         hook_calls = []
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", lambda *_args, **_kwargs: [])
         monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
         monkeypatch.setattr(
             lifecycle,
@@ -163,7 +164,7 @@ class TestHandleFunctionCall:
         from hermes_cli import lifecycle
 
         hook_calls = []
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", lambda *_args, **_kwargs: [])
         monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
         monkeypatch.setattr(
             lifecycle,
@@ -227,8 +228,8 @@ class TestPreToolCallBlocking:
             dispatch_called = True
             raise AssertionError("dispatch should not run when blocked")
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("plugin_runtime.api.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
@@ -248,7 +249,7 @@ class TestPreToolCallBlocking:
                 return [{"action": "block", "message": "Blocked"}]
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not run")))
         monkeypatch.setattr("tools.file_tools_read_tracking.notify_other_tool_call",
@@ -269,7 +270,7 @@ class TestPreToolCallBlocking:
                 ]
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 
@@ -297,8 +298,8 @@ class TestPreToolCallBlocking:
             "agent.relay_runtime.apply_tool_request_intercepts",
             rewrite,
         )
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("plugin_runtime.api.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("plugin_runtime.api.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
 
         handle_function_call(
@@ -539,7 +540,6 @@ class TestBrowserRetrievalHints:
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):
     """#111105: a same-size config.yaml swapped in with the old mtime must change the memo key."""
     import os
-    import shutil
 
     from model_tools import _tool_defs_cache_key
 
@@ -550,6 +550,6 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
-        shutil.copy2(other, cfg)
+        os.replace(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert _tool_defs_cache_key(None, None, False) != before

@@ -126,3 +126,13 @@ def clear_providers() -> None:
     with _lock:
         _providers.clear()
         _scoped_providers.clear()
+
+
+from plugin_runtime.host_bindings import bind_plugin_host
+
+bind_plugin_host(
+    dashboard_auth_provider_type=DashboardAuthProvider,
+    dashboard_auth_register=register_global_provider,
+    dashboard_auth_unregister=unregister_global_provider,
+    dashboard_auth_clear=clear_providers,
+)

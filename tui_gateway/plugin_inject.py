@@ -14,6 +14,7 @@ from __future__ import annotations
 import atexit
 
 from .method_ctx import bind_module
+from .methods_tools import refresh_plugin_sessions
 
 # Identity for the process-owned host. A later owner can replace it; clear is
 # identity-conditional so this process cannot drop that replacement.
@@ -74,11 +75,15 @@ def install_tui_message_injector(manager=None) -> None:
     gets the host, and managers created later pick it up, without touching the
     messaging-gateway slot.
     """
-    from hermes_cli.plugins import get_plugin_manager, publish_tui_message_host
+    from plugin_runtime.lifecycle import get_plugin_manager, publish_tui_message_host
 
     global _atexit_registered
     if manager is None:
-        publish_tui_message_host(_TUI_INJECT_OWNER, inject_tui_session_message)
+        publish_tui_message_host(
+            _TUI_INJECT_OWNER,
+            inject_tui_session_message,
+            refresh_plugin_sessions,
+        )
         manager = get_plugin_manager()
         if not _atexit_registered:
             atexit.register(clear_tui_message_injector)
@@ -88,7 +93,7 @@ def install_tui_message_injector(manager=None) -> None:
 
 def clear_tui_message_injector(manager=None) -> None:
     """Drop this process's host. A different owner is left in place."""
-    from hermes_cli.plugins import clear_published_tui_message_host, get_plugin_manager
+    from plugin_runtime.lifecycle import clear_published_tui_message_host, get_plugin_manager
 
     if manager is None:
         clear_published_tui_message_host(_TUI_INJECT_OWNER)

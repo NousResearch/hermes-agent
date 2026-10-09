@@ -504,7 +504,8 @@ class SessionManager:
         from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools, enabled_mcp_server_names
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
@@ -519,7 +520,7 @@ class SessionManager:
             # The same per-platform resolver as the gateway/cron/api_server: platform_toolsets.acp wins, else
             # hermes-acp; its MCP half (every enabled server, a listed-name allowlist, or none for ``no_mcp``)
             # comes back as bare server names, which ACP keys as ``mcp-<server>`` like its session servers.
-            resolved = _get_platform_tools(config, "acp")
+            resolved = get_platform_tools(config, "acp", xai_credentials_present=has_xai_tool_credentials)
             mcp_servers = resolved & enabled_mcp_server_names(config)
             enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
         kwargs = {

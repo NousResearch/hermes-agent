@@ -62,7 +62,7 @@ def _registry_entry(platform):
     if platform is None:
         return None
     with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
 
         return platform_registry.get(platform.value)
     return None

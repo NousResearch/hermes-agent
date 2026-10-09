@@ -3957,7 +3957,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         # discovery; this process starts with the builtin registry alone, so hydrating without it
         # silently dropped every plugin-sourced credential (#121929). Runs under the home override
         # so a multiplexed worker loads the OWNING profile's plugins, not the launch profile's.
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
 
         discover_plugins()
         hydrate_profile_secret_sources(profile_home)

@@ -1,0 +1,58 @@
+{
+  "source": "C:\\!bin\\workspace\\hermes-phase7-commands-tools",
+  "python": "3.14.7 (main, Sep  1 2026, 14:17:30) [MSC v.1944 64 bit (AMD64)]",
+  "wheel": "hermes_agent-0.0.0-py3-none-any.whl",
+  "wheel_sha256": "99c5c65966c849a9adceb473ecaa6336a849925aa60de2259acaa996ac589d6c",
+  "archive_entries": 2192,
+  "required_owners": [
+    "commands/__init__.py",
+    "commands/execution.py",
+    "tools/platform_policy.py",
+    "tools/toolset_scope.py",
+    "tools/toolset_selection.py",
+    "tools/registry.py",
+    "toolsets.py",
+    "model_tools.py",
+    "gateway/command_platforms.py",
+    "hermes_cli/config_toolsets.py"
+  ],
+  "retired_paths_absent": [
+    "hermes_cli/slash_exec.py",
+    "hermes_cli/toolset_scope.py",
+    "hermes_cli/commands_platforms.py"
+  ],
+  "installed_imports": {
+    "installed_modules": [
+      "commands",
+      "commands.execution",
+      "tools.platform_policy",
+      "tools.toolset_scope",
+      "tools.toolset_selection",
+      "tools.registry",
+      "toolsets",
+      "model_tools",
+      "gateway.command_platforms",
+      "gateway.session_commands",
+      "tui_gateway.command_discovery",
+      "acp_adapter.commands",
+      "agent.skill_commands",
+      "hermes_cli.config_toolsets"
+    ],
+    "commands": 102,
+    "executor_keys": [
+      "bundles",
+      "egress",
+      "gateway_commands",
+      "gateway_help",
+      "profile",
+      "version"
+    ]
+  },
+  "console_entrypoint": true,
+  "cli_help": true,
+  "tools_help": true,
+  "auth_help": true,
+  "fresh_venv": true,
+  "dependencies": "reused PM-built Python 3.14 test dependency set via path-only .pth; editable .pth files not processed",
+  "full_nix_distribution": false
+}

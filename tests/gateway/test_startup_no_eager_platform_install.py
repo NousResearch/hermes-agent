@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-from gateway.platform_registry import PlatformEntry, platform_registry
+from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def isolated_registry():
         # ``_apply_env_overrides`` calls ``discover_plugins()`` (idempotent),
         # which would re-register the real bundled platforms and clobber the
         # fakes below.  Neutralize it so the test controls the registry.
-        with patch("hermes_cli.plugins.discover_plugins", lambda *a, **k: None):
+        with patch("plugin_runtime.lifecycle.discover_plugins", lambda *a, **k: None):
             yield platform_registry
     finally:
         platform_registry._entries.clear()

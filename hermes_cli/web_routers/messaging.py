@@ -971,7 +971,7 @@ def _platform_authz_env_names(platform_id: str) -> tuple[str, str]:
     allow_all = allowed.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS")
     if not allowed:
         with contextlib.suppress(Exception):
-            from gateway.platform_registry import platform_registry
+            from plugin_runtime.platform_registry import platform_registry
 
             entry = platform_registry.get(platform_id)
             if entry is not None:

@@ -19,7 +19,7 @@ CASES = json.loads(
 
 def _readers():
     from hermes_cli.mcp_catalog import server_enabled
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from tools.platform_policy import enabled_mcp_server_names
     from tools.mcp_tool_common import mcp_server_enabled
     from tui_gateway.mcp_rpc_helpers import summarize_server
     from tui_gateway.methods_profiles import _mcp_entry_enabled

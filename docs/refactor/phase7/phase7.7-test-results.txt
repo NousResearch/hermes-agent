@@ -1,0 +1,166 @@
+
+final-phase7-tests.txt
+▶ not activated — using HERMES_PYTHON: C:/!bin/workspace/phase6-validation/testenv-full/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 41 test files (~363 tests) under ['tests\\plugin_runtime', 'tests\\commands', 'tests\\hermes_cli\\test_commands.py', 'tests\\hermes_cli\\test_cli_tools_command.py', 'tests\\tools\\test_platform_policy.py', 'tests\\tools\\test_model_tools.py', 'tests\\hermes_cli\\test_config.py', 'tests\\scripts\\test_check_phase7_boundaries.py']; running with -j 12
+[  0.6% |     2/~363 | ✓2 | ✗0] ✓ tests\commands\test_desktop_slash_registry.py (2✓, 6.8s)
+[  1.1% |     4/~363 | ✓4 | ✗0] ✓ tests\commands\test_busy_policy_invariants.py (2✓, 6.8s)
+[  2.8% |    10/~363 | ✓10 | ✗ 0] ✓ tests\plugin_runtime\test_config_bridge.py (6✓, 7.0s)
+[  4.7% |    17/~363 | ✓17 | ✗ 0] ✓ tests\commands\test_registry.py (7✓, 7.1s)
+[  5.8% |    21/~363 | ✓21 | ✗ 0] ✓ tests\plugin_runtime\test_phase410_upward_boundary.py (4✓, 7.1s)
+[  7.2% |    26/~363 | ✓26 | ✗ 0] ✓ tests\commands\test_availability.py (5✓, 7.2s)
+[  9.4% |    34/~363 | ✓39 | ✗ 0] ✓ tests\plugin_runtime\test_compat.py (13✓, 7.4s)
+[ 12.7% |    46/~363 | ✓59 | ✗ 0] ✓ tests\commands\test_execution.py (20✓, 7.6s)
+[ 13.5% |    49/~363 | ✓62 | ✗ 0] ✓ tests\hermes_cli\test_cli_tools_command.py (3✓, 11.6s)
+[ 14.6% |    53/~363 | ✓70 | ✗ 0] ✓ tests\plugin_runtime\test_phase44_loading_deadline.py (8✓, 6.8s)
+[ 16.3% |    59/~363 | ✓76 | ✗ 0] ✓ tests\plugin_runtime\test_phase45_dispatch_contracts.py (6✓, 6.7s)
+[ 17.4% |    63/~363 | ✓80 | ✗ 0] ✓ tests\plugin_runtime\test_phase43_registration_ownership.py (4✓, 7.1s)
+[ 18.5% |    67/~363 | ✓84 | ✗ 0] ✓ tests\plugin_runtime\test_phase45_dispatch_state.py (4✓, 6.5s)
+[ 22.6% |    82/~363 | ✓99 | ✗ 0] ✓ tests\plugin_runtime\test_phase44_loading_ownership.py (15✓, 7.3s)
+[ 24.2% |    88/~363 | ✓105 | ✗  0] ✓ tests\plugin_runtime\test_phase45_dispatch_rewire.py (6✓, 7.3s)
+[ 25.3% |    92/~363 | ✓115 | ✗  0] ✓ tests\plugin_runtime\test_phase45_dispatch_timeout.py (10✓, 6.5s)
+[ 26.4% |    96/~363 | ✓119 | ✗  0] ✓ tests\plugin_runtime\test_phase45_event_dispatch.py (4✓, 6.5s)
+[ 27.5% |   100/~363 | ✓123 | ✗  0] ✓ tests\plugin_runtime\test_phase463_manager_ownership.py (4✓, 6.4s)
+[ 29.5% |   107/~363 | ✓130 | ✗  0] ✓ tests\plugin_runtime\test_phase45_hook_execution.py (7✓, 6.7s)
+[ 31.1% |   113/~363 | ✓136 | ✗  0] ✓ tests\plugin_runtime\test_phase45_middleware_prompt_execution.py (6✓, 6.6s)
+[ 33.9% |   123/~363 | ✓146 | ✗  0] ✓ tests\plugin_runtime\test_phase42_discovery_ownership.py (10✓, 14.0s)
+[ 35.3% |   128/~363 | ✓151 | ✗  0] ✓ tests\plugin_runtime\test_phase464_manager_lifecycle.py (5✓, 6.6s)
+[ 36.6% |   133/~363 | ✓156 | ✗  0] ✓ tests\plugin_runtime\test_phase465_runtime_api.py (5✓, 6.5s)
+[ 38.0% |   138/~363 | ✓161 | ✗  0] ✓ tests\plugin_runtime\test_phase466_host_policy.py (5✓, 6.1s)
+[ 63.4% |   230/~363 | ✓334 | ✗  0] ✓ tests\hermes_cli\test_config.py (173✓, 26.4s)
+[ 64.2% |   233/~363 | ✓337 | ✗  0] ✓ tests\plugin_runtime\test_phase473_manager_activation_loop.py (3✓, 6.2s)
+[ 65.6% |   238/~363 | ✓342 | ✗  0] ✓ tests\plugin_runtime\test_phase475_tui_host_seam.py (5✓, 6.3s)
+[ 66.4% |   241/~363 | ✓345 | ✗  0] ✓ tests\plugin_runtime\test_phase474_gateway_startup_runtime.py (3✓, 6.4s)
+[ 67.8% |   246/~363 | ✓350 | ✗  0] ✓ tests\plugin_runtime\test_phase476_activation_consumers.py (5✓, 6.4s)
+[ 69.4% |   252/~363 | ✓356 | ✗  0] ✓ tests\plugin_runtime\test_phase472_activation_live_ownership.py (6✓, 6.9s)
+[ 70.2% |   255/~363 | ✓359 | ✗  0] ✓ tests\plugin_runtime\test_phase47_activation_ownership.py (3✓, 6.2s)
+[ 71.6% |   260/~363 | ✓364 | ✗  0] ✓ tests\plugin_runtime\test_phase477_activation_boundary_gate.py (5✓, 9.0s)
+[ 83.7% |   304/~363 | ✓408 | ✗  0] ✓ tests\hermes_cli\test_commands.py (44✓, 30.6s)
+[ 85.1% |   309/~363 | ✓413 | ✗  0] ✓ tests\plugin_runtime\test_phase410_ownership_boundary.py (5✓, 31.3s)
+[ 86.0% |   312/~363 | ✓416 | ✗  0] ✓ tests\plugin_runtime\test_phase49_facade_cleanup.py (3✓, 5.3s)
+[ 87.6% |   318/~363 | ✓422 | ✗  0] ✓ tests\plugin_runtime\test_phase41_ownership.py (6✓, 25.7s)
+[ 88.7% |   322/~363 | ✓426 | ✗  0] ✓ tests\plugin_runtime\test_phase49_first_party_rewire.py (4✓, 7.2s)
+[ 90.4% |   328/~363 | ✓508 | ✗  0] ✓ tests\tools\test_platform_policy.py (82✓, 12.0s)
+[ 92.3% |   335/~363 | ✓515 | ✗  0] ✓ tests\plugin_runtime\test_phase48_compat_ownership.py (7✓, 18.2s)
+[ 98.6% |   358/~363 | ✓538 | ✗  0] ✓ tests\tools\test_model_tools.py (23✓, 18.1s)
+[100.0% |   363/~363 | ✓582 | ✗  0] ✓ tests\scripts\test_check_phase7_boundaries.py (44✓, 65.8s)
+
+=== Summary: 41 files, 582 tests passed, 0 failed (100% complete) in 93.2s (12 workers) ===
+  Durations cached to test_durations.json (41 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   41
+  Total subprocess CPU-wall: 464.2s  (runner wall: 93.2s, parallelism: 12x)
+  P50: 6.95s  P90: 25.67s  P95: 30.57s  P99: 65.81s  Max: 65.81s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     65.81s  tests\scripts\test_check_phase7_boundaries.py
+     31.34s  tests\plugin_runtime\test_phase410_ownership_boundary.py
+     30.57s  tests\hermes_cli\test_commands.py
+     26.41s  tests\hermes_cli\test_config.py
+     25.67s  tests\plugin_runtime\test_phase41_ownership.py
+     18.19s  tests\plugin_runtime\test_phase48_compat_ownership.py
+     18.07s  tests\tools\test_model_tools.py
+     13.96s  tests\plugin_runtime\test_phase42_discovery_ownership.py
+     12.03s  tests\tools\test_platform_policy.py
+     11.57s  tests\hermes_cli\test_cli_tools_command.py
+
+
+final-integration-tests.txt
+▶ not activated — using HERMES_PYTHON: C:/!bin/workspace/phase6-validation/testenv-full/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 41 test files (~243 tests) under ['tests\\auth', 'tests\\providers', 'tests\\commands', 'tests\\tools\\test_platform_policy.py', 'tests\\gateway\\test_slash_access.py', 'tests\\gateway\\test_slash_access_dispatch.py', 'tests\\gateway\\test_approval_boundary.py', 'tests\\hermes_cli\\test_actual_provider.py', 'tests\\hermes_cli\\test_external_process_auth_status.py', 'tests\\hermes_cli\\test_runtime_provider.py']; running with -j 12
+[  0.8% |     2/~243 | ✓2 | ✗0] ✓ tests\commands\test_busy_policy_invariants.py (2✓, 7.5s)
+[  1.6% |     4/~243 | ✓4 | ✗0] ✓ tests\commands\test_desktop_slash_registry.py (2✓, 7.5s)
+[  2.5% |     6/~243 | ✓9 | ✗0] ✓ tests\auth\test_provider_status.py (5✓, 7.7s)
+[  5.3% |    13/~243 | ✓16 | ✗ 0] ✓ tests\commands\test_registry.py (7✓, 7.8s)
+[  7.4% |    18/~243 | ✓21 | ✗ 0] ✓ tests\commands\test_availability.py (5✓, 8.1s)
+[  9.1% |    22/~243 | ✓25 | ✗ 0] ✓ tests\auth\test_runtime_consumers.py (4✓, 8.3s)
+[  9.9% |    24/~243 | ✓31 | ✗ 0] ✓ tests\auth\test_oauth_ownership.py (6✓, 8.3s)
+[ 12.3% |    30/~243 | ✓37 | ✗ 0] ✓ tests\auth\test_sources.py (6✓, 8.4s)
+[ 17.3% |    42/~243 | ✓57 | ✗ 0] ✓ tests\commands\test_execution.py (20✓, 8.5s)
+[ 20.2% |    49/~243 | ✓69 | ✗ 0] ✓ tests\auth\test_pool_environment.py (12✓, 9.0s)
+[ 25.5% |    62/~243 | ✓97 | ✗ 0] ✓ tests\auth\test_credentials.py (28✓, 9.1s)
+[ 28.4% |    69/~243 | ✓108 | ✗  0] ✓ tests\gateway\test_slash_access.py (11✓, 8.7s)
+[ 29.2% |    71/~243 | ✓110 | ✗  0] ✓ tests\providers\test_e2e_wiring.py (2✓, 7.8s)
+[ 32.1% |    78/~243 | ✓117 | ✗  0] ✓ tests\gateway\test_approval_boundary.py (7✓, 9.1s)
+[ 35.4% |    86/~243 | ✓125 | ✗  0] ✓ tests\providers\test_configured_provider.py (8✓, 8.2s)
+[ 37.9% |    92/~243 | ✓131 | ✗  0] ✓ tests\providers\test_entry_point_discovery.py (6✓, 9.2s)
+[ 38.3% |    93/~243 | ✓132 | ✗  0] ✓ tests\providers\test_auth_registry_import_order.py (1✓, 10.4s)
+[ 39.5% |    96/~243 | ✓135 | ✗  0] ✓ tests\providers\test_auth_registry_mid_discovery.py (3✓, 10.3s)
+[ 46.1% |   112/~243 | ✓151 | ✗  0] ✓ tests\hermes_cli\test_external_process_auth_status.py (16✓, 10.9s)
+[ 47.7% |   116/~243 | ✓155 | ✗  0] ✓ tests\providers\test_meta_ai_profile.py (4✓, 6.4s)
+[ 48.6% |   118/~243 | ✓157 | ✗  0] ✓ tests\providers\test_installed_plugin_discovery.py (2✓, 6.6s)
+[ 49.4% |   120/~243 | ✓159 | ✗  0] ✓ tests\providers\test_named_custom_reasoning.py (2✓, 6.4s)
+[ 52.7% |   128/~243 | ✓167 | ✗  0] ✓ tests\providers\test_fetch_models_base_url.py (8✓, 14.4s)
+[ 53.9% |   131/~243 | ✓177 | ✗  0] ✓ tests\providers\test_opencode.py (10✓, 6.7s)
+[ 54.7% |   133/~243 | ✓179 | ✗  0] ✓ tests\providers\test_profile_home_layers.py (2✓, 6.4s)
+[ 56.0% |   136/~243 | ✓182 | ✗  0] ✓ tests\providers\test_plugin_discovery.py (3✓, 6.6s)
+[ 58.4% |   142/~243 | ✓188 | ✗  0] ✓ tests\providers\test_profile_wiring.py (6✓, 6.8s)
+[ 62.1% |   151/~243 | ✓197 | ✗  0] ✓ tests\gateway\test_slash_access_dispatch.py (9✓, 19.6s)
+[ 71.6% |   174/~243 | ✓218 | ✗  0] ✓ tests\hermes_cli\test_actual_provider.py (21✓ 2s, 21.3s)
+[ 73.3% |   178/~243 | ✓222 | ✗  0] ✓ tests\providers\test_provider_declaration_contract.py (4✓, 6.4s)
+[ 77.4% |   188/~243 | ✓232 | ✗  0] ✓ tests\providers\test_provider_profiles.py (10✓, 6.6s)
+[ 78.6% |   191/~243 | ✓235 | ✗  0] ✓ tests\providers\test_provider_identity_ownership_boundary.py (3✓, 7.3s)
+[ 79.8% |   194/~243 | ✓238 | ✗  0] ✓ tests\providers\test_provider_registry.py (3✓, 6.2s)
+[ 81.1% |   197/~243 | ✓241 | ✗  0] ✓ tests\providers\test_route_identity.py (3✓, 6.2s)
+[ 85.6% |   208/~243 | ✓252 | ✗  0] ✓ tests\providers\test_routing.py (11✓, 6.4s)
+[ 89.3% |   217/~243 | ✓261 | ✗  0] ✓ tests\providers\test_transport_parity.py (9✓, 6.0s)
+[ 91.8% |   223/~243 | ✓267 | ✗  0] ✓ tests\providers\test_provider_auth_projection.py (6✓, 11.1s)
+[ 94.2% |   229/~243 | ✓349 | ✗  0] ✓ tests\tools\test_platform_policy.py (82✓, 13.0s)
+[ 95.9% |   233/~243 | ✓353 | ✗  0] ✓ tests\providers\test_oauth_pkce_plugin.py (4✓, 27.1s)
+[ 97.5% |   237/~243 | ✓357 | ✗  0] ✓ tests\auth\test_boundary.py (4✓, 46.7s)
+[100.0% |   243/~243 | ✓363 | ✗  0] ✓ tests\providers\test_provider_registry_authority_boundary.py (6✓, 30.0s)
+
+=== Summary: 41 files, 363 tests passed, 0 failed, 2 skipped (100% complete) in 55.6s (12 workers) ===
+
+  note: platforms('macos') tests (in 1 file) were SKIPPED on this host (win32); they run on the macOS Python-tests lane.
+  Durations cached to test_durations.json (41 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   41
+  Total subprocess CPU-wall: 439.0s  (runner wall: 55.6s, parallelism: 12x)
+  P50: 8.21s  P90: 19.63s  P95: 27.09s  P99: 46.74s  Max: 46.74s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     46.74s  tests\auth\test_boundary.py
+     30.02s  tests\providers\test_provider_registry_authority_boundary.py
+     27.09s  tests\providers\test_oauth_pkce_plugin.py
+     21.28s  tests\hermes_cli\test_actual_provider.py
+     19.63s  tests\gateway\test_slash_access_dispatch.py
+     14.42s  tests\providers\test_fetch_models_base_url.py
+     13.00s  tests\tools\test_platform_policy.py
+     11.14s  tests\providers\test_provider_auth_projection.py
+     10.93s  tests\hermes_cli\test_external_process_auth_status.py
+     10.37s  tests\providers\test_auth_registry_import_order.py
+
+
+final-runtime-tests.txt
+▶ not activated — using HERMES_PYTHON: C:/!bin/workspace/phase6-validation/testenv-full/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 3 test files (~91 tests) under ['tests\\hermes_cli\\test_runtime_provider_resolution.py', 'tests\\hermes_cli\\test_runtime_provider_late_binding.py', 'tests\\auth\\test_runtime_consumers.py']; running with -j 4
+[  4.4% |     4/~91 | ✓4 | ✗0] ✓ tests\auth\test_runtime_consumers.py (4✓, 4.4s)
+[  6.6% |     6/~91 | ✓6 | ✗0] ✓ tests\hermes_cli\test_runtime_provider_late_binding.py (2✓, 4.4s)
+[100.0% |    91/~91 | ✓108 | ✗  0] ✓ tests\hermes_cli\test_runtime_provider_resolution.py (102✓, 9.6s)
+
+=== Summary: 3 files, 108 tests passed, 0 failed (100% complete) in 10.0s (4 workers) ===
+  Durations cached to test_durations.json (3 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   3
+  Total subprocess CPU-wall: 18.4s  (runner wall: 10.0s, parallelism: 4x)
+  P50: 4.43s  P90: 9.57s  P95: 9.57s  P99: 9.57s  Max: 9.57s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      9.57s  tests\hermes_cli\test_runtime_provider_resolution.py
+      4.43s  tests\hermes_cli\test_runtime_provider_late_binding.py
+      4.38s  tests\auth\test_runtime_consumers.py

@@ -564,7 +564,7 @@ def _plugin_aux_tasks() -> list[dict[str, Any]]:
     fail-soft: the built-in slots must keep working without plugins.
     """
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from plugin_runtime.api import get_plugin_auxiliary_tasks
         return [dict(entry) for entry in get_plugin_auxiliary_tasks()
                 if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
     except Exception:  # health: allow BLE001 -- plugin discovery must never break the built-in slots
@@ -652,9 +652,10 @@ def _apply_nous_gateway_defaults(cfg: dict) -> list:
     key or explicit backend are skipped. Failures never block saving the assignment."""
     try:
         from hermes_cli.nous_subscription import apply_nous_managed_defaults
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
-        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+        enabled = get_platform_tools(cfg, "cli", include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
         return sorted(apply_nous_managed_defaults(cfg, enabled_toolsets=enabled, force_fresh=True))
     except Exception:
         _log.debug("apply_nous_managed_defaults skipped", exc_info=True)

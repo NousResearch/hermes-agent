@@ -4,7 +4,9 @@
 Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
+import plugin_runtime.lifecycle as plugin_lifecycle
 
+from plugin_runtime.manager import PluginManager
 import os
 from pathlib import Path
 
@@ -155,7 +157,7 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
     )
 
     # Force a fresh plugin manager so the new config is picked up.
-    plugins_mod._plugin_manager = plugins_mod.PluginManager()
+    plugin_lifecycle._plugin_manager = PluginManager()
     plugins_mod.discover_plugins()
 
     out = _run_handle_function_call(

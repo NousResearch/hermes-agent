@@ -92,8 +92,10 @@ def test_toolsets_route_survives_default_executor_starvation(monkeypatch):
         "_get_effective_configurable_toolsets",
         lambda: [("test", "Test", "Test toolset")],
     )
-    monkeypatch.setattr(tools_config, "_toolset_configuration_platform", lambda _name: "cli")
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_args, **_kwargs: [])
+    from hermes_cli import config_toolsets
+    monkeypatch.setattr(config_toolsets, "toolset_configuration_platform", lambda _name: "cli")
+    from tools import platform_policy
+    monkeypatch.setattr(platform_policy, "get_platform_tools", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda _cfg: {})
     monkeypatch.setattr(tools_config, "_toolset_has_keys", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(tools_config, "gui_toolset_label", lambda label: label)

@@ -33,12 +33,12 @@ VERDICT_PORTABLE = "portable"
 HERMES_PACKAGES: frozenset = frozenset({
     "agent", "tools", "hermes_cli", "gateway", "cron", "providers", "plugins", "tui_gateway",
     "acp_adapter", "run_agent", "cli", "model_tools", "toolsets", "hermes_state", "hermes_constants",
-    "hermes_logging", "hermes_time", "utils", "registration_lifecycle", "hermes_platform",
+    "hermes_logging", "hermes_time", "utils", "hermes_platform",
 })
 # ``<module>.<callable>`` that mutate a Hermes-process registry when called from plugin code.
 _DIRECT_REGISTRY_CALLS: frozenset = frozenset({
     ("tools.registry", "register"), ("tools.registry", "deregister"),
-    ("gateway.platform_registry", "register"), ("providers", "register_provider"),
+    ("plugin_runtime.platform_registry", "register"), ("providers", "register_provider"),
 })
 _MANIFEST_KIND_REASONS: dict[str, str] = {
     "platform": "kind 'platform': gateway platform adapters run in the Hermes process",

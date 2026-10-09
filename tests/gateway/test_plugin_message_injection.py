@@ -16,7 +16,9 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from plugin_runtime.manifest import PluginManifest
+from plugin_runtime.manager import PluginManager
+from plugin_runtime.context import PluginContext
 
 
 def _entry(*, origin=True) -> SessionEntry:

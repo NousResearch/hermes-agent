@@ -487,7 +487,7 @@ def _migrate_to_34(results: dict[str, Any], quiet: bool) -> None:
 def _migrate_to_38(results: dict[str, Any], quiet: bool) -> None:
     # 37 → 38: the bundled observability/nemo_relay plugin was removed (Relay lifecycle moved
     # into the agent core); drop it from plugins.enabled.
-    from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
+    from plugin_runtime.relay_policy import legacy_relay_plugin_keys
 
     config = read_raw_config()
     plugins = config.get("plugins")
@@ -565,7 +565,7 @@ def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
     # resolver subtracts that list last, so the append would have no effect).
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
-    from hermes_cli.toolset_scope import toolset_allowed_for_platform
+    from tools.toolset_scope import toolset_allowed_for_platform
 
     config = read_raw_config()
     saved = config.get("platform_toolsets")

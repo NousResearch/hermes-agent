@@ -53,9 +53,9 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
     assert catalog["warning"] == NOTE
     assert "/tidy-notes" in catalog["skills"] and "/handoff" not in catalog["skills"]
 
-    from hermes_cli.slash_exec import CommandContext, _exec_commands
+    from gateway.slash_commands import _execute
 
-    gateway_commands = _exec_commands(CommandContext(args="", options={"page_size": 500})).text
+    gateway_commands = _execute("commands", args="", options={"page_size": 500}).text
     assert f"⚠ {NOTE}" in gateway_commands and "`/tidy-notes`" in gateway_commands
 
 

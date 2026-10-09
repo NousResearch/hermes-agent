@@ -157,7 +157,7 @@ def _registry_adapter_secret_env() -> frozenset:
     Tier 2 only: ``required_env`` is an unchecked setup list, so a plugin naming OPENAI_API_KEY
     must not strip it from credentialed children. No blanket fallback: a registry error surfaces
     instead of an empty (fail-open) set."""
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
     from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
     return frozenset(n.upper() for n in platform_registry.required_env_names()
                      if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
@@ -327,7 +327,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     union under the registry lock)."""
     names = set(_static_gate_env_prefixes())
     try:
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
     except Exception:
         pass

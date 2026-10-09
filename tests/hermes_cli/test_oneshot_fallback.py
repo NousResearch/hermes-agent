@@ -95,7 +95,7 @@ def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypa
     monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
-    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+    monkeypatch.setattr("tools.platform_policy.get_platform_tools", lambda _cfg, _p, **_policy_inputs: [])
     monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
     monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
 

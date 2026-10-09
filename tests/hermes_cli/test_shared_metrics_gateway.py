@@ -28,7 +28,7 @@ def marks(monkeypatch):
 def _install_platform_plugin(home, monkeypatch, *, dir_name, platform, catalog_name=None):
     """A user plugin under $HERMES_HOME/plugins registering ``platform``; ``catalog_name`` writes the
     installer-owned record a plugin-catalog install leaves (a URL install writes none)."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 
     plugin_dir = home / "plugins" / dir_name
     plugin_dir.mkdir(parents=True)

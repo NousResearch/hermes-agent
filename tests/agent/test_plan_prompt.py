@@ -17,7 +17,7 @@ class TestBuildPlanPrompt:
 
 class TestPlanRegistryWiring:
     def test_plan_is_registered_and_resolves(self):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
 
         cmd = resolve_command("plan")
         assert cmd is not None

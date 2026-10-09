@@ -1099,7 +1099,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
@@ -1922,7 +1922,7 @@ def _select_context_engine(_agent_cfg):
 
     if _selected_engine is None:
         try:
-            from hermes_cli.plugins import get_plugin_context_engine
+            from plugin_runtime.api import get_plugin_context_engine
             _candidate = get_plugin_context_engine()
         except Exception:
             _candidate = None

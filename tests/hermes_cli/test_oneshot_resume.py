@@ -211,7 +211,7 @@ class TestRunAgentResumeRuntime:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **_kw: {"api_key": "resolved", "base_url": None, "provider": "custom:stored",
                           "requested_provider": "custom:stored", "api_mode": "chat", "credential_pool": None})
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+        monkeypatch.setattr("tools.platform_policy.get_platform_tools", lambda _cfg, _p, **_policy_inputs: [])
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
         monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
 
@@ -252,7 +252,7 @@ class TestRunAgentResumeRuntime:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **_kw: {"api_key": "resolved", "base_url": None, "provider": "openrouter",
                           "requested_provider": "openrouter", "api_mode": "chat", "credential_pool": None})
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+        monkeypatch.setattr("tools.platform_policy.get_platform_tools", lambda _cfg, _p, **_policy_inputs: [])
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
         monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
 

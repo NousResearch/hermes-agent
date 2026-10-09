@@ -881,7 +881,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     if platform_value != "telegram":
         return text
 
-    from hermes_cli.commands_platforms import _sanitize_telegram_name
+    from gateway.command_platforms import _sanitize_telegram_name
 
     def _replace(match: re.Match[str]) -> str:
         sanitized = _sanitize_telegram_name(match.group(1))
@@ -970,9 +970,10 @@ def _warm_turn_machinery_sync() -> int:
     enabled_toolsets = None
     try:
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
-        enabled_toolsets = sorted(_get_platform_tools(load_config_readonly(), "cli"))
+        enabled_toolsets = sorted(get_platform_tools(load_config_readonly(), "cli", xai_credentials_present=has_xai_tool_credentials))
     except Exception:
         logger.debug("platform toolset resolution failed; warming the full tool surface", exc_info=True)
     tool_defs = model_tools.get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True)
@@ -2052,7 +2053,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
     """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
     _aux_bridged_keys = {"vision", "approval"}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from plugin_runtime.api import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
             _aux_bridged_keys.add(_entry["key"])
     except Exception:

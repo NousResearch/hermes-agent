@@ -169,7 +169,7 @@ def _catalog_platform_owner(home: str, platform: str) -> str | None:
     try:
         import inspect
 
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.platform_registry import platform_registry
         from hermes_cli.plugins_provenance import read_sidecar_rows
 
         entry = platform_registry.get(platform)
@@ -219,7 +219,7 @@ def slash_command_metric_name(raw: object) -> str:
 
         if resolve_skill_command_key(name):
             return "skill"
-        from hermes_cli.plugins import get_plugin_command_handler
+        from plugin_runtime.api import get_plugin_command_handler
 
         if get_plugin_command_handler(name) is not None:
             return "plugin"

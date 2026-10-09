@@ -352,7 +352,7 @@ def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env
 
 
 def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, monkeypatch):
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     home_a, home_b = child_env / "hermes", child_env / "profile-b"
     home_a.mkdir(exist_ok=True)
@@ -385,7 +385,7 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
 def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_it(
         child_env, monkeypatch, declared_by):
     from agent import secret_scope as ss
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from tools.code_execution_env import _scrub_child_env
     from tools.env_passthrough import register_env_passthrough
     name, names = "ACME_CHAT_SIGNING_SECRET", ["ACME_CHAT_SIGNING_SECRET", "MY_APP_KEY"]

@@ -131,7 +131,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
 def test_engine_collector_forwards_register_command_to_plugin_manager():
     """A plugin context engine can register a slash command via ``ctx.register_command``."""
     from plugins.context_engine import _EngineCollector
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.lifecycle import get_plugin_manager
 
     handler = lambda raw_args: f"echo: {raw_args}"
 

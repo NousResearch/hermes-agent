@@ -431,7 +431,9 @@ plugins:
 class TestPluginContextIntegration:
 
     def test_ctx_llm_uses_manifest_key_for_policy(self):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         manifest = PluginManifest(
             name="bare-name", source="test", key="image_gen/openai"
@@ -494,7 +496,9 @@ class TestHookMode:
     the real ``invoke_hook`` machinery, and check the call landed."""
 
     def test_complete_works_from_post_tool_call_hook(self):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_cli.plugins import PluginManifest
+        from plugin_runtime.manager import PluginManager
+        from plugin_runtime.context import PluginContext
 
         manifest = PluginManifest(name="hook-plugin", source="test", key="hook-plugin")
         manager = PluginManager()

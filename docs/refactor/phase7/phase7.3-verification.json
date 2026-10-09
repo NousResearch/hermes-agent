@@ -1,0 +1,88 @@
+{
+  "phase": "7.3",
+  "date": "2026-10-01",
+  "baseline": "a50d2b74a5e3430c5519fc7ab26f537824003ee8",
+  "branch": "refactor/phase7-commands-tools",
+  "exit_gate": "passed",
+  "platform": "win32",
+  "python": "3.11.15",
+  "test_runner": "scripts/run_tests.sh -j 4",
+  "batches": [
+    {
+      "job": "job_MznoHUcD_CR7YgHAxMktlXaK",
+      "passed": 118,
+      "failed": 0,
+      "skipped": 2,
+      "files": 16
+    },
+    {
+      "job": "job_1j7hcJ8EmmXd4-2JelkK--As",
+      "passed": 171,
+      "failed": 4,
+      "skipped": 4,
+      "files": 10
+    }
+  ],
+  "distinct": {
+    "passed": 289,
+    "failed": 4,
+    "new_regressions": 0,
+    "skipped": 6,
+    "files": 26
+  },
+  "baseline_failure_replay": {
+    "job": "job_OwtUXin_emHdTmaIlaSB6qFG",
+    "commit": "a50d2b74a5e3430c5519fc7ab26f537824003ee8",
+    "selected": 4,
+    "failed": 4,
+    "deselected": 103,
+    "tests": [
+      "TestCreateProfile.test_seeds_placeholder_env_file",
+      "TestBackfillProfileEnvs.test_copies_default_env_into_envless_profiles",
+      "TestWrapperScript.test_creates_sh_on_posix",
+      "TestFindAliasForProfile.test_list_profiles_surfaces_custom_alias"
+    ],
+    "file": "tests/hermes_cli/test_profiles.py",
+    "reason": "Windows POSIX mode and suffix-free wrapper expectations",
+    "temporary_worktree_removed": true
+  },
+  "execution_parity": {
+    "cases": 180,
+    "surfaces": [
+      "cli",
+      "gateway",
+      "tui",
+      "acp"
+    ],
+    "result": "identical",
+    "keys": 6,
+    "data_contracts": "unchanged",
+    "cli_import_guard": "all six executors passed"
+  },
+  "baseline_replay": {
+    "commands": 102,
+    "tool_selection_cases": 2100,
+    "result": "identical"
+  },
+  "compatibility": {
+    "protected_entries": 2084,
+    "violations": 0
+  },
+  "retired_execution_import_audit": {
+    "candidate_tracked_files": 7,
+    "violations": 0
+  },
+  "packaging": {
+    "build_py_module_selection": "commands.execution included",
+    "installed_artifact_check": "deferred to 7.7",
+    "initial_probe_setup_error": "script_name was missing; corrected probe passed"
+  },
+  "remaining": [
+    "7.4 tool capability policy",
+    "7.5 remaining consumer migration",
+    "7.6 complete ownership enforcement",
+    "7.7 installed startup and adjacent-phase integration",
+    "Windows baseline profile and session-policy test portability"
+  ],
+  "combined_integration_verified": false
+}

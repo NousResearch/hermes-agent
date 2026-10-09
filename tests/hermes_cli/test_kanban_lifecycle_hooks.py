@@ -14,7 +14,8 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
+from hermes_cli.plugins import get_plugin_manager
+from plugin_runtime.dispatch import VALID_HOOKS
 
 
 @pytest.fixture

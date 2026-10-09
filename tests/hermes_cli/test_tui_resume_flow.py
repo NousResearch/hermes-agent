@@ -135,7 +135,8 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}},
+            has_xai_tool_credentials=lambda: False),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -161,8 +162,8 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.tools_config",
-        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
+        "tools.platform_policy",
+        mod("tools.platform_policy", get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
     text, result = _run_agent("recall this")

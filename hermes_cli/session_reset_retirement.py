@@ -35,7 +35,7 @@ def retired_reset_policy(config: Any) -> Optional[tuple[str, str]]:
 
 def reset_plugin_enabled() -> bool:
     """Whether the restoring plugin is installed and enabled in this process's plugin set."""
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
     discover_plugins()
     return any(p["name"] == PLUGIN_NAME and p["enabled"] for p in get_plugin_manager().list_plugins())
 

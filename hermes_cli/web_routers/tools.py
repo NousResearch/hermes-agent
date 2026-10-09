@@ -229,10 +229,10 @@ def _no_models(name: str) -> dict:
 
 @router.get("/api/tools/toolsets")
 async def get_toolsets(profile: Optional[str] = None):
-    from hermes_cli.tools_config import (
-        _CONFIG_ONLY_TOOLSETS, _get_effective_configurable_toolsets, _get_platform_tools,
-        _toolset_configuration_platform, _toolset_has_keys, get_nous_subscription_features,
-        gui_toolset_label)
+    from hermes_cli.config_toolsets import CONFIG_ONLY_TOOLSETS, toolset_configuration_platform
+    from hermes_cli.tools_config import _get_effective_configurable_toolsets, _toolset_has_keys, get_nous_subscription_features, gui_toolset_label
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools
     from hermes_cli.platforms import platform_label
     from toolsets import resolve_toolset
     from utils import is_truthy_value
@@ -242,9 +242,9 @@ async def get_toolsets(profile: Optional[str] = None):
             config = load_config()
             toolset_rows = _get_effective_configurable_toolsets()
             target_platforms = {
-                _toolset_configuration_platform(name) for name, _, _ in toolset_rows}
+                toolset_configuration_platform(name) for name, _, _ in toolset_rows}
             enabled_by_platform = {
-                platform: _get_platform_tools(config, platform, include_default_mcp_servers=False)
+                platform: get_platform_tools(config, platform, include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
                 for platform in target_platforms}
             features = get_nous_subscription_features(config)
             # Credential presence resolves through the profile's secret scope: outside this block
@@ -259,8 +259,8 @@ async def get_toolsets(profile: Optional[str] = None):
             tools = sorted(set(resolve_toolset(name)))
         except Exception:
             tools = []
-        target_platform = _toolset_configuration_platform(name)
-        if name in _CONFIG_ONLY_TOOLSETS:
+        target_platform = toolset_configuration_platform(name)
+        if name in CONFIG_ONLY_TOOLSETS:
             # Config-only capabilities (stt) have no per-platform toolset —
             # their switch is their own config section (e.g. stt.enabled).
             section = config.get(name)
@@ -281,31 +281,31 @@ async def get_toolsets(profile: Optional[str] = None):
 async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] = None):
     """Enable/disable a configurable toolset for its configuration platform
     (``platform_toolsets.cli`` for most; platform-restricted toolsets target
-    their own platform) via the same ``_save_platform_tools`` the CLI uses."""
-    from hermes_cli.tools_config import (
-        _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
-        _toolset_configuration_platform)
+    their own platform) via the same ``save_platform_tools`` the CLI uses."""
+    from hermes_cli.config_toolsets import CONFIG_ONLY_TOOLSETS, save_platform_tools, toolset_configuration_platform
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools
 
     _require_known_toolset(name)
-    target_platform = _toolset_configuration_platform(name)
+    target_platform = toolset_configuration_platform(name)
     scope_profile = body.profile or profile
 
     def _run():
         with config_write_scope(scope_profile):
             config = load_config()
-            if name in _CONFIG_ONLY_TOOLSETS:
+            if name in CONFIG_ONLY_TOOLSETS:
                 # Config-only capabilities (stt) toggle their own section's
                 # ``enabled`` flag — there is no platform_toolsets entry.
                 _dict_section(config, name)["enabled"] = bool(body.enabled)
                 save_config(config)
                 return
             enabled = set(
-                _get_platform_tools(config, target_platform, include_default_mcp_servers=False))
+                get_platform_tools(config, target_platform, include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials))
             if body.enabled:
                 enabled.add(name)
             else:
                 enabled.discard(name)
-            _save_platform_tools(config, target_platform, enabled)
+            save_platform_tools(config, target_platform, enabled)
 
     await asyncio.to_thread(_run)
 
@@ -314,7 +314,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     # install `hermes tools` runs — otherwise the toggle "saves" but the tool
     # never appears.  Best-effort: a spawn failure never fails the toggle.
     post_setup_started: Optional[str] = None
-    if body.enabled and name not in _CONFIG_ONLY_TOOLSETS:
+    if body.enabled and name not in CONFIG_ONLY_TOOLSETS:
         def _pending_install_key() -> Optional[str]:
             from hermes_cli.tools_config import (
                 TOOL_CATEGORIES, _post_setup_already_installed, _visible_providers)

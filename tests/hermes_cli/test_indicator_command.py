@@ -121,7 +121,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
 class TestIndicatorRegistry(unittest.TestCase):
 
     def test_indicator_subcommands_match_handler(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
+        from commands import COMMAND_REGISTRY
         from hermes_constants import INDICATOR_STYLES
 
         indicator = next(c for c in COMMAND_REGISTRY if c.name == "indicator")

@@ -54,7 +54,7 @@ def _load_document(path: Path) -> Any:
 
 def check_language_packs(report, manifest: dict, plugin_dir: Path) -> None:
     """Locale-pack admission checks; a no-op (single passing line) when nothing is declared."""
-    from hermes_cli.plugins_manifest import parse_provides_locales
+    from plugin_runtime.manifest import parse_provides_locales
 
     raw = manifest.get("provides_locales")
     declared, _meta = parse_provides_locales(raw, str(manifest.get("name") or plugin_dir.name))

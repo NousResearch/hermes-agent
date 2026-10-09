@@ -11,7 +11,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.display_config import resolve_display_setting
-from gateway.platform_registry import PlatformEntry, platform_registry
+from plugin_runtime.platform_registry import PlatformEntry, platform_registry
 from gateway.session import SessionSource
 
 

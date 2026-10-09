@@ -268,7 +268,7 @@ def _buzz_source(user_id):
 
 
 def _patch_buzz_registry(monkeypatch, allowed_users_env="BUZZ_ALLOWED_USERS"):
-    from gateway.platform_registry import platform_registry
+    from plugin_runtime.platform_registry import platform_registry
 
     real_get = platform_registry.get
 

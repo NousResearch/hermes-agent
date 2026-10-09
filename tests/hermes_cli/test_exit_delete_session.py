@@ -71,7 +71,7 @@ class TestExitDeleteFlag:
 class TestCommandRegistry:
 
     def test_exit_alias_resolves_to_quit_with_hint(self):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
         cmd = resolve_command("exit")
         assert cmd is not None
         assert cmd.name == "quit"

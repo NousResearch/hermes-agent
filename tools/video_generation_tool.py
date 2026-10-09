@@ -91,9 +91,9 @@ def _read_configured_video_model() -> Optional[str]:
 def _discovered_registry():
     """Import the provider registry after (idempotent) plugin discovery so user-installed plugins are visible."""
     from agent import video_gen_registry
-    from hermes_cli.plugins import _ensure_plugins_discovered
-    _ensure_plugins_discovered()
-    return video_gen_registry, _ensure_plugins_discovered
+    from plugin_runtime.lifecycle import ensure_plugins_discovered
+    ensure_plugins_discovered()
+    return video_gen_registry, ensure_plugins_discovered
 
 
 def check_video_generation_requirements() -> bool:

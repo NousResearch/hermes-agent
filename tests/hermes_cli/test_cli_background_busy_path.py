@@ -75,7 +75,7 @@ class TestBackgroundBusyPolicyContract:
     """The registry already declares the intent this detector implements."""
 
     def test_bg_and_btw_declare_dispatch_while_busy(self):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
 
         for name in ("bg", "btw"):
             cmd = resolve_command(name)
@@ -84,6 +84,6 @@ class TestBackgroundBusyPolicyContract:
             assert cmd.busy_policy == "dispatch"
 
     def test_background_name_is_retired(self):
-        from hermes_cli.commands import resolve_command
+        from commands import resolve_command
 
         assert resolve_command("background") is None

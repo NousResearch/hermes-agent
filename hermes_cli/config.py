@@ -2927,6 +2927,24 @@ def get_env_value(key: str) -> Optional[str]:
     return load_env().get(key) if val is None else val
 
 
+def has_xai_tool_credentials() -> bool:
+    """Cheap offline xAI credential check used by platform toolset policy."""
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens
+
+        _read_xai_oauth_tokens()
+        return True
+    except Exception:
+        pass
+    if str(get_env_value("XAI_API_KEY") or "").strip():
+        return True
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:  # pragma: no cover - in-repo module
+        get_secret = os.environ.get
+    return bool(str(get_secret("XAI_API_KEY") or "").strip())
+
+
 def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     """Resolve a Hermes-managed credential preferring ``~/.hermes/.env`` over ``os.environ``, so a
     deliberate .env edit beats a stale value inherited from the parent shell.

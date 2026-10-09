@@ -44,6 +44,8 @@ class TestBlankSlateMinimalToolsets:
         backend; mock the requirement check so the toolset logic is exercised
         independent of the test host's provider credentials.
         """
+        from hermes_cli.config import has_xai_tool_credentials
+
         import model_tools
         from tools.registry import registry as _tool_registry
         _entry = _tool_registry.get_entry("vision_analyze")
@@ -56,11 +58,11 @@ class TestBlankSlateMinimalToolsets:
         _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
         monkeypatch.setattr("tools.tool_search.load_config", lambda: _legacy)
         monkeypatch.setattr("tools.tool_search.load_config_readonly", lambda: _legacy)
-        from hermes_cli.tools_config import _get_platform_tools
+        from tools.platform_policy import get_platform_tools
         cfg = {}
         _blank_slate_minimal_toolsets(cfg)
         _blank_slate_minimize_config(cfg)
-        enabled = sorted(_get_platform_tools(cfg, "cli"))
+        enabled = sorted(get_platform_tools(cfg, "cli", xai_credentials_present=has_xai_tool_credentials))
         disabled = cfg.get("agent", {}).get("disabled_toolsets") or []
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=enabled,

@@ -50,11 +50,12 @@ def _profile_has_kanban_toolset() -> bool:
             return False
         # Offer-time skill discovery has no platform selection. A saved opt-in
         # makes the playbook relevant; actual schemas still use the scope above.
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import has_xai_tool_credentials
+        from tools.platform_policy import get_platform_tools
 
         platforms = config.get("platform_toolsets") or {}
         return any(
-            "kanban" in _get_platform_tools(config, platform, include_default_mcp_servers=False)
+            "kanban" in get_platform_tools(config, platform, include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials)
             for platform, names in platforms.items() if isinstance(names, list)
         )
     except Exception:

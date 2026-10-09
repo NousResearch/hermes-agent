@@ -166,7 +166,7 @@ def test_platform_restricted_toolset_warns_when_other_platform_is_valid():
 
 
 def test_null_plugin_platform_uses_synthetic_default():
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugin_runtime.platform_registry import PlatformEntry, platform_registry
     from toolsets import resolve_toolset
 
     platform = "toolset_validation_plugin"

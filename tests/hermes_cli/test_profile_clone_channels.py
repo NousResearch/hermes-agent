@@ -248,7 +248,7 @@ def test_left_core_platform_keeps_channel_ownership_while_its_plugin_is_absent(h
 
 _SHARED_PLUGIN_MANIFEST = "name: sharedplat\nkind: platform\nversion: 1.0.0\nrequires_env:\n  - name: SHP_TOKEN\n    password: true\n"
 _SHARED_PLUGIN_INIT = (
-    "from gateway.platform_registry import PlatformEntry\n"
+    "from plugin_runtime.platform_registry import PlatformEntry\n"
     "def register(ctx):\n"
     "    ctx.register_platform(name='sharedplat', label='Shared', adapter_factory=lambda cfg: None,\n"
     "                          check_fn=lambda: True, required_env=['SHP_TOKEN'], shared_env_prefixes=('SHP_',))\n"

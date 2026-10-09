@@ -349,7 +349,7 @@ def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
     """Picker rows for plugin-registered terminal backends (fail-soft)."""
     rows: list[dict[str, str]] = []
     try:
-        from hermes_cli.plugins import discover_plugins
+        from plugin_runtime.lifecycle import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
     except Exception:
         pass

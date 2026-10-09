@@ -1,0 +1,142 @@
+{
+  "phase": "7.6",
+  "foundation": "de4680cbe81b6995bb60dabdcce66f6fd9ac20cb",
+  "branch": "refactor/phase7-commands-tools",
+  "platform": "Windows",
+  "python": "3.11.15",
+  "verified_local_date": "2026-10-01",
+  "timezone": "America/Los_Angeles",
+  "full_file_totals": {
+    "files": 17,
+    "passed": 458,
+    "failed": 2,
+    "skipped": 6
+  },
+  "ownership_and_targeted_totals": {
+    "files": 16,
+    "passed": 287,
+    "failed": 0,
+    "skipped": 6
+  },
+  "files": {
+    "tests/commands/test_busy_policy_invariants.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_desktop_slash_registry.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_availability.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_execution.py": {
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/commands/test_registry.py": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_slash_access.py": {
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_config_migration_nested_guards.py": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/gateway/test_slash_access_dispatch.py": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_mcp_tools_config.py": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_config_toolsets.py": {
+      "passed": 39,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tools/test_kanban_toolset_opt_in.py": {
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/hermes_cli/test_tools_config.py": {
+      "passed": 45,
+      "failed": 0,
+      "skipped": 6
+    },
+    "tests/hermes_cli/test_config.py": {
+      "passed": 171,
+      "failed": 2,
+      "skipped": 0
+    },
+    "tests/tools/test_platform_policy.py": {
+      "passed": 82,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_profiles_configure.py": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/tui_gateway/test_profiles_toolset_pin.py": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tests/scripts/test_check_phase7_boundaries.py": {
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "unchanged_source_failures": {
+    "file": "tests/hermes_cli/test_config.py",
+    "tests": [
+      "TestEnvWriteDenylist::test_non_exec_near_misses_still_writable[git_config_parameters]",
+      "TestEnvWriteDenylist::test_non_exec_near_misses_still_writable[ld_preload]"
+    ],
+    "reason": "POSIX lowercase-environment fixture assumes case sensitivity; Windows writer normalizes and denies these execution-affecting names.",
+    "implementation_and_test_byte_identical_to_foundation": true,
+    "separate_baseline_checkout_run": false
+  },
+  "boundary_audit": {
+    "passed": true,
+    "python_files": 7989,
+    "contract_tests": 44,
+    "ci_blocking": true
+  },
+  "compat_protected_entries": 2084,
+  "phase7_compat_entries": 36,
+  "config_writer_audit_files": 1902,
+  "baseline": {
+    "commands": 102,
+    "selection_cases": 2100,
+    "approved_explicit_empty_corrections": 104,
+    "frozen_evidence_changed": false
+  },
+  "inventory": {
+    "references": 251,
+    "compatibility_entries": 36
+  },
+  "public_cli_help": true,
+  "git_diff_check": true,
+  "adjacent_worktrees_clean": true,
+  "adjacent_phases_integrated": false,
+  "installed_distribution_verified": false
+}

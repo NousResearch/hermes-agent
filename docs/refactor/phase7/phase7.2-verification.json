@@ -1,0 +1,56 @@
+{
+  "phase": "7.2",
+  "date": "2026-10-01",
+  "baseline": "269fb0a2d9b20ebffbe73dbd0be6f2e633398f3b",
+  "branch": "refactor/phase7-commands-tools",
+  "exit_gate": "passed",
+  "platform": "win32",
+  "python": "3.11.15",
+  "test_runner": "scripts/run_tests.sh -j 4",
+  "batches": [
+    {
+      "job": "job_luxEpoSS5MKPsrufTJXEvo8D",
+      "passed": 85,
+      "failed": 0,
+      "skipped": 1,
+      "files": 11
+    },
+    {
+      "job": "job_b3xgxrOST2fHwtsQVpj7-SdD",
+      "passed": 251,
+      "failed": 0,
+      "skipped": 0,
+      "files": 23
+    }
+  ],
+  "distinct": {
+    "passed": 276,
+    "failed": 0,
+    "skipped": 1,
+    "files": 29
+  },
+  "baseline_replay": {
+    "commands": 102,
+    "tool_selection_cases": 2100,
+    "result": "identical"
+  },
+  "compatibility": {
+    "protected_entries": 2084,
+    "tracked_and_new_files": 8025,
+    "violations": 0,
+    "retained_command_entries": 26
+  },
+  "legacy_command_import_audit": {
+    "referencing_tracked_files": 31,
+    "violations": 0
+  },
+  "packaging": "commands included in setuptools discovery; installed artifact verification deferred to 7.7",
+  "remaining": [
+    "7.3 shared execution",
+    "7.4 tool capability policy",
+    "7.5 remaining consumer migration",
+    "7.6 completed boundary checks",
+    "7.7 installed and adjacent-phase integration",
+    "7.1 Windows session-policy fixture portability failure remains unchanged"
+  ]
+}

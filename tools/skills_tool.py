@@ -256,7 +256,7 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
         _skills_dir().mkdir(parents=True, exist_ok=True)
         all_skills = _find_all_skills()
         try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
             discover_plugins()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
@@ -285,7 +285,7 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
     ``category:skill`` in config/gateway prompts, so the on-disk ``category/skill`` form returns."""
     from agent.skill_utils import is_valid_namespace, parse_qualified_name
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from plugin_runtime.lifecycle import discover_plugins, get_plugin_manager
     namespace, bare = parse_qualified_name(name)
     if not is_valid_namespace(namespace):
         return _fail(f"Invalid namespace '{namespace}' in '{name}'. Namespaces must match [a-zA-Z0-9_-]+."), None

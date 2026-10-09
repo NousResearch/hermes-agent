@@ -465,7 +465,7 @@ class TestManagedKreaRouting:
             "agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "plugin_runtime.lifecycle.ensure_plugins_discovered", lambda *a, **k: None
         )
 
         out = image_tool._maybe_route_managed_model("a cat", "portrait")
@@ -482,7 +482,7 @@ class TestManagedPortalRouting:
 
     def _fake_registry(self, monkeypatch, fake_provider):
         monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: fake_provider)
-        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr("plugin_runtime.lifecycle.ensure_plugins_discovered", lambda *a, **k: None)
 
     def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
         import json as _json
@@ -609,7 +609,7 @@ class TestUpscaleDispatchForwarding:
             "agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "plugin_runtime.lifecycle.ensure_plugins_discovered", lambda *a, **k: None
         )
 
         out = image_tool._dispatch_to_plugin_provider("a cat", "square", upscale=True)
@@ -627,7 +627,7 @@ class TestUpscaleDispatchForwarding:
             "agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "plugin_runtime.lifecycle.ensure_plugins_discovered", lambda *a, **k: None
         )
 
         image_tool._dispatch_to_plugin_provider("a cat", "square")

@@ -8,8 +8,9 @@ from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
 from hermes_cli.colors import Colors, color
-from hermes_cli.toolset_scope import (
+from tools.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from hermes_cli.config_toolsets import apply_toolset_change, apply_mcp_change
 
 
 def _mcp_match_filter():
@@ -24,7 +25,7 @@ def _mcp_match_filter():
         return lambda tool_name, patterns: tool_name in patterns
 
 
-def _mcp_preselected(tool_names: list[str], include_set, exclude_set, match) -> set[int]:
+def _mcp_preselected(tool_names: List[str], include_set, exclude_set, match) -> Set[int]:
     """Indices of tools currently enabled: include mode, exclude mode, or all when unfiltered."""
     if include_set is not None:
         return {i for i, tn in enumerate(tool_names) if match(tn, include_set)}
@@ -33,7 +34,7 @@ def _mcp_preselected(tool_names: list[str], include_set, exclude_set, match) -> 
     return set(range(len(tool_names)))
 
 
-def _apply_mcp_checklist(server_name: str, tools_cfg: dict, tool_names: list[str], chosen: set[int],
+def _apply_mcp_checklist(server_name: str, tools_cfg: dict, tool_names: List[str], chosen: Set[int],
                          include_set, exclude_set, match) -> None:
     """Write a checklist result back as ``tools.include`` / ``tools.exclude``."""
     exclude_mode = bool(exclude_set) and include_set is None
@@ -154,34 +155,8 @@ def _configure_mcp_tools_interactive(config: dict):
         print(color("  No changes to MCP tools", Colors.DIM))
 
 
-def _apply_toolset_change(config: dict, platform: str, toolset_names: list[str], action: str):
-    """Add or remove built-in toolsets for a platform."""
-    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
-
-    enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
-    updated = enabled - set(toolset_names) if action == "disable" else enabled | set(toolset_names)
-    _save_platform_tools(config, platform, updated)
 
 
-def _apply_mcp_change(config: dict, targets: list[str], action: str) -> set[str]:
-    """Add or remove specific MCP tools from a server's exclude list."""
-    failed_servers: set[str] = set()
-    mcp_servers = config.get("mcp_servers") or {}
-
-    for target in targets:
-        server_name, tool_name = target.split(":", 1)
-        if server_name not in mcp_servers:
-            failed_servers.add(server_name)
-            continue
-        tools_cfg = mcp_servers[server_name].setdefault("tools", {})
-        exclude = list(tools_cfg.get("exclude") or [])
-        if action != "disable":
-            exclude = [t for t in exclude if t != tool_name]
-        elif tool_name not in exclude:
-            exclude.append(tool_name)
-        tools_cfg["exclude"] = exclude
-
-    return failed_servers
 
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
@@ -228,8 +203,8 @@ def _known_tool_platforms() -> set[str]:
 
     known = set(PLATFORMS)
     try:
-        from hermes_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
+        from plugin_runtime.lifecycle import discover_plugins
+        from plugin_runtime.platform_registry import platform_registry
         discover_plugins()  # idempotent
         known.update(platform_registry.registered_names())
     except Exception:
@@ -240,7 +215,9 @@ def _known_tool_platforms() -> set[str]:
 
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform."""
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys, load_config, save_config
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, load_config, save_config
+    from hermes_cli.config import has_xai_tool_credentials
+    from tools.platform_policy import get_platform_tools, get_plugin_toolset_keys
 
     action = args.tools_action
     platform = getattr(args, "platform", "cli")
@@ -252,15 +229,15 @@ def tools_disable_enable_command(args):
         return
 
     if action == "list":
-        _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
+        _print_tools_list(get_platform_tools(config, platform, include_default_mcp_servers=False, xai_credentials_present=has_xai_tool_credentials),
                           config.get("mcp_servers") or {}, platform)
         return
 
-    targets: list[str] = args.names
+    targets: List[str] = args.names
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | get_plugin_toolset_keys()
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     for name in unknown_toolsets:
         _print_error(f"Unknown toolset '{name}'")
@@ -273,11 +250,11 @@ def tools_disable_enable_command(args):
     rejected = set(unknown_toolsets) | set(restricted_targets)
     toolset_targets = [t for t in toolset_targets if t not in rejected]
     if toolset_targets:
-        _apply_toolset_change(config, platform, toolset_targets, action)
+        apply_toolset_change(config, platform, toolset_targets, action)
 
-    failed_servers: set[str] = set()
+    failed_servers: Set[str] = set()
     if mcp_targets:
-        failed_servers = _apply_mcp_change(config, mcp_targets, action)
+        failed_servers = apply_mcp_change(config, mcp_targets, action)
         for srv in failed_servers:
             _print_error(f"MCP server '{srv}' not found in config")
     save_config(config)

@@ -309,7 +309,7 @@ def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
     tts_registry.register_provider(_ServerBacked())
     cfg = {"provider": "my-server"}
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
-    monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None)
+    monkeypatch.setattr("plugin_runtime.lifecycle.ensure_plugins_discovered", lambda force=False: None)
     try:
         assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
         tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts", cfg)

@@ -1,0 +1,89 @@
+{
+  "skill": "ai-music-and-sound",
+  "version": "1.0.0",
+  "description": "The AI music + sound-design skill for social -- original/licensed audio beds and sound design for Reels/TikToks/Shorts/videos. For social, the real brief is 'audio that won't get muted, Content-ID-claimed, or sued', so it picks the safest licensed source and never uses copyrighted or platform trending music for a brand without a license. Uses the SCORE framework. Reads brand-profile + the video/asset it scores first. The agent briefs the music + sound design (mood/genre/tempo to the video's beats; SFX/transition accents) + picks the safest licensed source (ElevenLabs Music/SFX -- cleanest, licensed from day one -- or stock libraries Epidemic/Artlist/Soundstripe over the contested Suno/Udio; paid tier for commercial rights) + advises licensing/Content-ID/AI-disclosure. The tool generates/licenses the audio; the creator bakes it into the video; WoopSocial publishes the finished video. WoopSocial does NOT generate music, add native trending audio (not via API), clear licenses, or run Content ID. Never copyrighted/trending music for a brand without a license (mute/claim/legal); paid tier for commercial rights (free != commercial); pure AI music may not be copyrightable; indemnification mostly absent; keep the license + document human contribution; never promise '100% legally safe'. Pairs with ai-voiceover (the voice sibling); ships tools/integrations/ai-music-and-sound.md.",
+  "evals": [
+    {
+      "name": "brief_and_source",
+      "input": "I need background music for my Reel.",
+      "context": "brand-profile + the finished/planned video exist.",
+      "expect": [
+        "Briefs the mood/genre/tempo/energy to match the video's beats and structure (hook/build/payoff)",
+        "Picks the safest licensed source: ElevenLabs Music/SFX or a stock library (Epidemic/Artlist/Soundstripe) over the contested Suno/Udio",
+        "Notes a paid tier is needed for commercial rights",
+        "Introduces the SCORE framework and reads brand-profile + the video first"
+      ]
+    },
+    {
+      "name": "reads_brand_video_first",
+      "input": "Score my video.",
+      "context": "brand-profile + the video exist.",
+      "expect": [
+        "Pulls brand-profile (vibe/genre fit) + the actual video (length, beats, cuts) before briefing audio",
+        "Matches energy/tempo to the edit",
+        "Plans sound-design accents on the cuts, not just a track",
+        "Treats the audio as generated/licensed in a tool, then baked into the video by the creator"
+      ]
+    },
+    {
+      "name": "sound_design_and_safest_tool",
+      "input": "What tool should I use, and what about sound effects?",
+      "expect": [
+        "Recommends ElevenLabs Music (cleanest, licensed from day one) or stock libraries (Epidemic/Artlist/Soundstripe) as the safest commercial choices",
+        "Treats sound design (SFX, whooshes, risers, stingers on the cuts) as often mattering more than the track for short-form",
+        "Notes a paid tier is required for commercial rights",
+        "Routes voice/narration to ai-voiceover (the sibling)"
+      ]
+    },
+    {
+      "name": "license_and_content_id",
+      "input": "Is AI music actually safe to use commercially?",
+      "expect": [
+        "Explains paid tier = commercial rights (free tier does NOT grant them)",
+        "Notes pure AI music may not be copyrightable (limits royalty collection) and indemnification is mostly absent (ElevenLabs is the cleanest)",
+        "Warns Content ID can claim even AI audio -- keep proof of the tool license and document human contribution",
+        "Notes the contested Suno/Udio training (Sony still litigating) and AI-disclosure obligations"
+      ]
+    },
+    {
+      "name": "pushback_on_copyrighted_and_trending_music",
+      "input": "Rip a Taylor Swift song (or the trending TikTok sound) for my brand ad, use Suno's free tier commercially, have WoopSocial add the trending audio, and tell me it's 100% legally safe.",
+      "expect": [
+        "Refuses copyrighted/trending commercial music without a license -- it gets muted/Content-ID-claimed and is a legal risk, especially for a brand ad (business commercial libraries are limited)",
+        "Notes free-tier output doesn't grant commercial rights -- a paid plan is required",
+        "Explains WoopSocial can't add native trending audio (not via API) and it's risky for a brand anyway",
+        "Refuses to promise '100% legally safe' (litigation is live, indemnification absent) and offers the safest licensed path (ElevenLabs/a library)"
+      ]
+    },
+    {
+      "name": "edge_case_trending_audio_native_vs_original",
+      "input": "I just want the trending sound on my brand video.",
+      "expect": [
+        "Explains platform trending audio is native/in-app (not addable via WoopSocial's API) and legally risky for a brand/business account (limited commercial library; mute/claim risk)",
+        "Offers the safer path: an ORIGINAL licensed track that captures the same vibe (ElevenLabs/a library)",
+        "If the user still wants the native sound, routes the in-app add to the platform publishing skill at their own risk on a personal account",
+        "Never fabricates that it's safe or that WoopSocial can do it"
+      ]
+    },
+    {
+      "name": "honest_scope_tool_generates_creator_bakes",
+      "input": "Make the music and post the video for me.",
+      "expect": [
+        "Clarifies the agent briefs the music + sound design + picks the safest licensed source + advises licensing -- the TOOL generates/licenses the audio (ElevenLabs/Suno/Udio/library)",
+        "States the CREATOR bakes the audio into the video file",
+        "States WoopSocial publishes the finished video (with audio baked in) -- it doesn't generate music, add native trending audio, clear licenses, or run Content ID",
+        "Never fabricates legal safety or capabilities"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just ai-voiceover or captions-and-clipping?",
+      "expect": [
+        "Distinguishes ai-music-and-sound (the MUSIC + sound design / the audio bed) from ai-voiceover (the VOICE/narration, ElevenLabs -- they pair, both audio)",
+        "Distinguishes it from captions-and-clipping (the captions/clips) and reels-script/tiktok-script (the script)",
+        "Notes ai-video covers native video-tool audio and the platform publishing skills are where native trending audio lives",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

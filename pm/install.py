@@ -650,10 +650,11 @@ def _still_declared(package, recorded: list[str], *, plugin_dirs=None) -> list[s
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
-    from pm.workspace import enabled_member_dirs
+    from pm.workspace import enabled_member_dirs, member_sources
 
     declared = {_extra_key(extra) for extra in declared_extras(root)}
-    for member in enabled_member_dirs() if plugin_dirs is None else plugin_dirs:
+    members = enabled_member_dirs() if plugin_dirs is None else plugin_dirs
+    for member in member_sources(members).values():
         if (member / "pyproject.toml").is_file():
             declared |= {_extra_key(extra) for extra in declared_extras(member)}
     return [extra for extra in recorded if _extra_key(extra) in declared]

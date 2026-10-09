@@ -281,7 +281,7 @@ def test_an_exception_before_the_apply_names_its_exit_through_the_command_bounda
     assert contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, run)
 
 
-def test_a_timed_out_target_read_skips_the_preflight_instead_of_failing_the_update(monkeypatch):
+def test_a_timed_out_target_read_skips_the_preflight_instead_of_failing_the_update(monkeypatch, capsys):
     """Invariant: the startup-syntax preflight reads the target from git's object store; a read that
     times out (a blobless install lazily fetches each blob) is an unread file, never an exception
     that ends the update as ``subprocess_failed``. The post-move syntax check stays the backstop."""
@@ -296,6 +296,7 @@ def test_a_timed_out_target_read_skips_the_preflight_instead_of_failing_the_upda
 
     monkeypatch.setattr(update_cmd_commit, "run_git", slow)
     assert update_cmd_commit.target_syntax_error(["git"], Path("."), "a" * 40, ["cli.py", "run_agent.py"]) is None
+    assert "Syntax preflight skipped (slow object fetch)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("consent", ["on", "off"])

@@ -139,10 +139,9 @@ def test_cli_fallback_prefers_embedded_daemon_over_sandbox(monkeypatch):
 
     class _FakeDaemon:
         socket_path = "/tmp/cua-daemon.sock"
-        def proxy_invocation(self):
-            return ("cua-driver-proxy", [])
-        def child_env(self):
-            return {"PATH": "/usr/bin"}
+        def call_invocation(self, name, call_args):
+            return (["cua-driver-proxy", "call", name, json.dumps(call_args), "--socket", self.socket_path],
+                    {"PATH": "/usr/bin"}, None)
 
     captured = {}
 

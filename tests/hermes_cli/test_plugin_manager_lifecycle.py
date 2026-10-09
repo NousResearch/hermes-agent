@@ -379,3 +379,134 @@ def test_reservation_owner_can_create_manager_when_none_is_cached(tmp_path):
         plugins._reset_plugin_managers_for_tests()
     finally:
         reset_hermes_home_override(token)
+
+
+def test_delayed_background_discovery_cannot_load_a_reserved_manager(
+    profile_env, monkeypatch
+):
+    from agent import memory_provider
+    from hermes_cli.plugins_discovery import start_background_plugin_discovery
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+
+    plugins._reset_plugin_managers_for_tests()
+    home = (profile_env / "profiles" / "delayed-discovery").resolve()
+    home.mkdir(parents=True)
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+        discovery_calls = []
+        persisted = []
+        manager._discover_and_load_inner = lambda: discovery_calls.append("load")
+        manager._refresh_secret_sources_after_discovery = lambda: None
+        monkeypatch.setattr(
+            plugins, "_persist_plugin_toolset_keys", lambda **_kwargs: persisted.append("persist")
+        )
+
+        class DeferredThread:
+            def __init__(self, target):
+                self.target = target
+                self.alive = False
+
+            def start(self):
+                self.alive = True
+
+            def is_alive(self):
+                return self.alive
+
+            def run(self):
+                self.alive = False
+                self.target()
+
+        deferred_threads = []
+
+        def defer(target, **_kwargs):
+            thread = DeferredThread(target)
+            deferred_threads.append(thread)
+            return thread
+
+        monkeypatch.setattr(memory_provider, "spawn_context_thread", defer)
+        monkeypatch.setattr(plugins, "_background_discovery_thread", None)
+        start_background_plugin_discovery()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert len(deferred_threads) == 1
+    with reserve_plugin_manager_for_home(home) as (had_manager, teardown_error):
+        assert had_manager
+        assert teardown_error is None
+
+    deferred_threads[0].run()
+
+    assert discovery_calls == []
+    assert persisted == []
+    assert home not in plugins._plugin_managers_by_home
+    plugins._reset_plugin_managers_for_tests()
+
+
+def test_background_persistence_finishes_before_same_home_reservation_yields(
+    profile_env, monkeypatch
+):
+    import threading
+
+    from hermes_cli.plugins_discovery import start_background_plugin_discovery
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+
+    plugins._reset_plugin_managers_for_tests()
+    home = (profile_env / "profiles" / "persist-race").resolve()
+    home.mkdir(parents=True)
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+        manager._discover_and_load_inner = lambda: None
+        manager._refresh_secret_sources_after_discovery = lambda: None
+
+        persistence_started = threading.Event()
+        release_persistence = threading.Event()
+        persisted_manager = []
+        original_persist = plugins._persist_plugin_toolset_keys
+
+        def delayed_persist(*, manager=None, home=None):
+            persisted_manager.append((manager, home))
+            persistence_started.set()
+            assert release_persistence.wait(timeout=5.0)
+            if manager is None and home is None:
+                return original_persist()
+            return original_persist(manager=manager, home=home)
+
+        monkeypatch.setattr(plugins, "_persist_plugin_toolset_keys", delayed_persist)
+        monkeypatch.setattr(plugins, "_background_discovery_thread", None)
+        start_background_plugin_discovery()
+    finally:
+        reset_hermes_home_override(token)
+
+    background = plugins._background_discovery_thread
+    assert background is not None
+    assert persistence_started.wait(timeout=5.0)
+
+    reservation_yielded = threading.Event()
+    reservation_errors = []
+
+    def reserve_home():
+        scoped = set_hermes_home_override(home)
+        try:
+            with reserve_plugin_manager_for_home(home):
+                reservation_yielded.set()
+        except Exception as exc:
+            reservation_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+
+    reservation = threading.Thread(target=reserve_home)
+    reservation.start()
+    yielded_during_persistence = reservation_yielded.wait(timeout=2.0)
+    release_persistence.set()
+    background.join(timeout=5.0)
+    reservation.join(timeout=5.0)
+
+    assert not background.is_alive()
+    assert not reservation.is_alive()
+    assert not reservation_errors
+    assert not yielded_during_persistence
+    assert persisted_manager == [(manager, manager.home_path)]
+    assert home not in plugins._plugin_managers_by_home
+    plugins._reset_plugin_managers_for_tests()

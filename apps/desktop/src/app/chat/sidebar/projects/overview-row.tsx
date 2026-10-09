@@ -9,7 +9,8 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
-import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import { $projectScope } from '@/store/project-scope'
+import { $projectTree, enterProject, fetchProjectSessions, projectProfile } from '@/store/projects'
 import type { SessionDotState } from '@/store/session-dot-state'
 
 import { sessionDotClassName, sessionDotLabel } from '../../session-status-dot'
@@ -32,6 +33,7 @@ import {
   latestProjectSessions,
   PROJECT_PREVIEW_COUNT,
   PROJECT_SESSION_PAGE,
+  projectBackTarget,
   useRevealedRows,
   useWorkspaceNodeOpen
 } from './model'
@@ -63,12 +65,22 @@ export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProject
   )
 }
 
-export function ProjectBackRow({ label, onClick }: { label: string; onClick: () => void }) {
+/**
+ * The entered view's back row. Stepping back walks OUT one level at a time: a project that nests
+ * under another was entered from it, so the arrow lands on that parent — and only a top-level
+ * project (or a parent the tree no longer carries) falls through to `onExit`, the caller's own move
+ * back to the overview.
+ */
+export function ProjectBackRow({ label, onExit }: { label: string; onExit: () => void }) {
+  const projects = useStore($projectTree)
+  const scope = useStore($projectScope)
+  const parent = projectBackTarget(projects, scope)
+
   return (
     <SidebarRowShell>
       <SidebarRowBody
         className="group/back w-full text-(--ui-text-tertiary) opacity-40 hover:text-foreground"
-        onClick={onClick}
+        onClick={() => (parent ? enterProject(parent) : onExit())}
       >
         <SidebarRowLead>
           <SidebarRowLeadGlyph>

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   nestProjectsByParent,
   orderProjectsByIds,
+  projectBackTarget,
   projectDescendantIds,
   projectSubtreeSessionIds,
   sortProjectsForOverview,
@@ -210,5 +211,29 @@ describe('visibleProjectRows', () => {
 
   it('leaves a project whose parent is not in the list standing on its own', () => {
     expect(visibleProjectRows([child('orphan', 'gone')], open('dev')).map(p => p.id)).toEqual(['orphan'])
+  })
+})
+
+describe('projectBackTarget', () => {
+  const child = (id: string, parentId: string): SidebarProjectTree => ({ ...makeProject(id, 0), parentId })
+
+  it('steps back into the parent, so a drill-down walks out one level at a time', () => {
+    const projects = [makeProject('dev', 0), child('align', 'dev'), child('leaf', 'align')]
+
+    expect(projectBackTarget(projects, 'leaf')).toBe('align')
+    expect(projectBackTarget(projects, 'align')).toBe('dev')
+  })
+
+  it('sends a top-level project straight to the overview', () => {
+    const projects = [makeProject('dev', 0), child('align', 'dev')]
+
+    expect(projectBackTarget(projects, 'dev')).toBeNull()
+    // An explicit top level (`parentId: ''`) is top level too — nothing to step back into.
+    expect(projectBackTarget([{ ...makeProject('top', 0), parentId: '' }], 'top')).toBeNull()
+  })
+
+  it('falls to the overview when the parent is no longer in the tree', () => {
+    // A filtered-out or deleted parent is not a level the sidebar can render.
+    expect(projectBackTarget([child('orphan', 'gone')], 'orphan')).toBeNull()
   })
 })

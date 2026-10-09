@@ -243,6 +243,22 @@ export function projectDescendantIds(
 }
 
 /**
+ * Where the entered view's back row goes: one level up — the parent of the project you are inside —
+ * or `null` for the overview when it is a top-level one. The mirror of entering a nested row, so a
+ * drill-down walks back out a step at a time.
+ */
+export function projectBackTarget(
+  projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[],
+  id: string
+): null | string {
+  const parentId = projects.find(project => project.id === id)?.parentId
+
+  // A parent id that names no present project is no level to step back into (the same tolerance
+  // `nestProjectsByParent` has for a filtered-out parent): the overview is the answer.
+  return parentId && projects.some(project => project.id === parentId) ? parentId : null
+}
+
+/**
  * Every session a project stands for: its own rows plus the rows of every project nested under it,
  * transitively. This is what a collapsed row folds its status up from — ownership is deepest-wins, so
  * a subproject's sessions belong to the subproject and are absent from its ancestors' `sessionIds`.

@@ -1971,7 +1971,7 @@ export function ChatSidebar({
                 open={agentsOpen}
                 pinned={false}
                 projectBackRow={
-                  inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined
+                  inProject ? <ProjectBackRow label={s.projects.back} onExit={exitProjectScope} /> : undefined
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}

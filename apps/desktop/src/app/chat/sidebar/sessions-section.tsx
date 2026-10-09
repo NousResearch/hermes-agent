@@ -45,6 +45,7 @@ import {
   type SidebarWorkspaceTree,
   visibleProjectRows
 } from './projects'
+import { NestedProjectRows } from './projects/nested-project-rows'
 import { createProjectNestResolver } from './projects/project-drag'
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
@@ -515,12 +516,17 @@ export function SidebarSessionsSection({
   if (showProjectsSkeleton) {
     inner = <SidebarSessionSkeletons />
   } else if (projectContent) {
-    // Entered a project: the back row is always present, then either the
-    // (overlay-aware) content or a clean empty state — never a bare spinner or a
-    // blank pane while lanes hydrate.
+    // Entered a project: the back row, then the projects nested under it (one row each, entering one
+    // drills a level further down), then the content or a clean empty state while lanes hydrate.
     inner = (
       <>
         {projectBackRow}
+        <NestedProjectRows
+          onEnter={onEnterProject}
+          onNewSession={onNewSessionInWorkspace}
+          onNewSessionSplit={onNewSessionSplit}
+          projects={projectOverview}
+        />
         {hasProjectContent ? (
           <EnteredProjectContent
             liveSessions={liveSessions}

@@ -21,7 +21,7 @@ import {
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import {
-  isTimeoutError,
+  isStalledDialError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
   SOURCE_SWITCH_DIAL_TIMEOUT_MS,
   withTimeout
@@ -905,16 +905,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 // (requestGatewayForAgent, openGatewayForAgent, ensureGatewayForAgent,
 // ensureActiveGatewayOpen) re-arms it with a fresh budget.
 const SECONDARY_STALLED_DIAL_BUDGET = 3
-
-function isStalledDialError(error: unknown): boolean {
-  if (isTimeoutError(error)) {
-    return true
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('timed out while waiting for a free slot')
-}
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error

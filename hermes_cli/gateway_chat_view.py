@@ -10,6 +10,22 @@ from hermes_cli.gateway_client import GatewayClientError
 logger = logging.getLogger(__name__)
 
 
+_PREVIEW_CHARS = 80
+
+
+def _pending_preview(text):
+    """One terminal-safe line of a pending admission's prompt: escape sequences removed, every
+    other non-printable (C0/C1, bidi and zero-width format chars, newlines) folded to a space,
+    capped at ``_PREVIEW_CHARS``. Empty when the row carries no text."""
+    from tools.ansi_strip import strip_ansi
+    if not isinstance(text, str):
+        return ""
+    line = " ".join("".join(ch if ch.isprintable() else " " for ch in strip_ansi(text)).split())
+    if len(line) > _PREVIEW_CHARS:
+        line = line[:_PREVIEW_CHARS - 1] + "…"
+    return f": {line}" if line else ""
+
+
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
     "session.info",
@@ -59,11 +75,13 @@ class GatewayChatView:
                   "without replaying it; queued work may then continue.", file=sys.stderr)
         for row in self.pending:
             admission = row["admission_id"]
+            # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
+            preview = _pending_preview(row.get("text"))
             if row["status"] == "unknown":
-                print(f"Unknown admission: {admission}\n/discard {admission}", file=sys.stderr)
+                print(f"Unknown admission: {admission}{preview}\n/discard {admission}", file=sys.stderr)
             elif row["status"] == "queued":
                 context = "waiting behind unknown work" if unknown else "waiting to run"
-                print(f"Queued admission: {admission} ({context})", file=sys.stderr)
+                print(f"Queued admission: {admission} ({context}){preview}", file=sys.stderr)
 
     def show_prompt(self, prompt):
         print(f"\n{prompt.get('description') or prompt.get('question') or 'Approval required'}", file=sys.stderr)

@@ -54,7 +54,7 @@ def _bind_lark_sdk_globals_when_installed():
     their own ``skipUnless`` guards.
     """
     try:
-        import lark_oapi  # noqa: F401
+        import lark_oapi
     except ImportError:
         yield
         return

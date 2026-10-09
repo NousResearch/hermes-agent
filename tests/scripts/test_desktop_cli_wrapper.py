@@ -31,7 +31,7 @@ def _load(env=None):
 
     text = render_wrapper("stubmod.entry:main", "../repo", "../venv/Lib/site-packages")
     namespace: dict = {"__name__": "launcher_wrapper_under_test"}
-    exec(compile(text, str(_WRAPPER), "exec"), namespace)  # noqa: S102 - test fixture
+    exec(compile(text, str(_WRAPPER), "exec"), namespace)
     return namespace
 
 

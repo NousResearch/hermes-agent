@@ -11,7 +11,7 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
-from tools.mcp_tool_common import _sanitize_error, _core
+from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -154,6 +154,26 @@ def _contains_only_cancellation(exc: BaseException) -> bool:
     return isinstance(exc, asyncio.CancelledError)
 
 
+def _auth_error_detail(exc: BaseException) -> str:
+    """`` <guidance>`` when *exc* (or its group root) is the SDK's ``OAuthRegistrationError``, else ``""``. The DCR
+    guard in ``HermesMCPOAuthProvider`` raises one naming the next step (pre-register an OAuth client), and the
+    generic needs-reauth text alone would hide it from the model (#78190)."""
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return ""
+    root = _unwrap_exception_group(exc)
+    text = str(root).strip() if isinstance(root, OAuthRegistrationError) else ""
+    return f" {_sanitize_error(text)}" if text else ""
+
+
+def _mcp_call_failed_message(exc: BaseException) -> str:
+    """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
+    "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""
+    root = _unwrap_exception_group(exc)
+    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}")
+
+
 def _classify_mcp_failure(exc: BaseException) -> str:
     """``'permanent'`` (``run()`` parks instead of burning the retry ladder: auth 401/403,
     NonMcpEndpointError, InvalidMcpUrlError, missing stdio command, native addon built for another
@@ -232,7 +252,6 @@ def _resolve_identity_header(server_name: str, config: dict):
 
     def _ignore(detail: str, *args):
         logger.warning("MCP server '%s': identity_header " + detail + " — ignoring", server_name, *args)
-        return None
     if not isinstance(raw, dict):
         return _ignore("must be a mapping with 'name' and 'value'/'value_from' keys (got %s)", type(raw).__name__)
     name = raw.get("name")
@@ -386,7 +405,7 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 _EXC_TRAVERSAL_MAX_NODES = 10_000
 
 
-def _exc_children(exc: BaseException) -> List[BaseException]:
+def _exc_children(exc: BaseException) -> list[BaseException]:
     """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
     group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
     skipped."""
@@ -394,7 +413,7 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
     return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
 
 
-def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+def _iter_exception_nodes(exc: BaseException) -> list[BaseException]:
     """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
     can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
     raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
@@ -402,7 +421,7 @@ def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
     blow-ups."""
     stack = [exc]
     seen: set[int] = set()
-    ordered: List[BaseException] = []
+    ordered: list[BaseException] = []
     while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
         current = stack.pop()
         if id(current) in seen:
@@ -427,8 +446,8 @@ def _format_connect_error(exc: BaseException) -> str:
                     return match.group(1)
         return None
 
-    def _flatten_messages() -> List[str]:
-        messages: List[str] = []
+    def _flatten_messages() -> list[str]:
+        messages: list[str] = []
         for current in nodes:
             # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
             text = "" if getattr(current, "exceptions", None) else str(current).strip()

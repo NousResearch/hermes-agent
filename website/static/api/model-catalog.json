@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-28T19:38:29Z",
+  "updated_at": "2026-10-07T20:50:08Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -49,6 +49,10 @@
           "description": ""
         },
         {
+          "id": "anthropic/claude-haiku-5.5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-haiku-4.5",
           "description": ""
         },
@@ -75,6 +79,14 @@
         {
           "id": "openai/gpt-6-astra-pro-flex",
           "description": "0.5x price, flex tier"
+        },
+        {
+          "id": "openai/gpt-6.1-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
         },
         {
           "id": "openai/gpt-6-sol",
@@ -226,6 +238,14 @@
           "description": ""
         },
         {
+          "id": "upstage/solar-pro4",
+          "description": ""
+        },
+        {
+          "id": "upstage/solar-mini4",
+          "description": ""
+        },
+        {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
@@ -262,11 +282,19 @@
           "description": "free"
         },
         {
+          "id": "inclusionai/ling-3.0-flash:free",
+          "description": "free"
+        },
+        {
           "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         },
         {
           "id": "stealth/union-alpha",
+          "description": "free, stealth model"
+        },
+        {
+          "id": "stealth/space-bunny-alpha",
           "description": "free, stealth model"
         }
       ]
@@ -299,6 +327,9 @@
           "id": "anthropic/claude-sonnet-5"
         },
         {
+          "id": "anthropic/claude-haiku-5.5"
+        },
+        {
           "id": "anthropic/claude-haiku-4.5"
         },
         {
@@ -318,6 +349,12 @@
         },
         {
           "id": "openai/gpt-6-astra-pro-flex"
+        },
+        {
+          "id": "openai/gpt-6.1-sol"
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro"
         },
         {
           "id": "openai/gpt-6-sol"
@@ -418,6 +455,15 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "upstage/solar-pro4"
+        },
+        {
+          "id": "upstage/solar-mini4"
+        },
+        {
+          "id": "stealth/space-bunny-alpha"
         }
       ]
     }

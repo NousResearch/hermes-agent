@@ -81,7 +81,11 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        # A bare pick resolves against the live provider at turn start; guard on that same provider
+        # here, or a provider-keyed price check passes now and drops the queued pick later.
+        agent = session.get("agent")
+        guard_provider = pending_provider or (getattr(agent, "provider", "") or "").strip()
+        pending_warning = _pending_switch_selection_warning(pending_model, guard_provider, agent)
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -164,7 +168,7 @@ def _set_model(rid, params, key, value, session):
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",
-               "auto": "auto", "cold": "cold"}
+               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast"}
 
 
 def _set_fast(rid, params, key, value, session):
@@ -176,13 +180,14 @@ def _set_fast(rid, params, key, value, session):
         current_tier = session["create_service_tier_override"] or None  # pre-build pin beats global
     else:
         current_tier = _load_service_tier()
+    from agent.fast_mode import STATIC_TIERS, service_tier_word
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
-    nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
+        return _kv(rid, key, service_tier_word(current_tier))
+    nv = _FAST_WORDS.get(raw, ("normal" if current_tier in STATIC_TIERS else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
-    if nv == "fast":
+    if nv in ("fast", "ultrafast"):
         from hermes_cli.models import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
@@ -192,9 +197,10 @@ def _set_fast(rid, params, key, value, session):
         if not target_model:
             return _err(rid, 4002, "fast mode is not available without a selected model")
         overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
-                                                base_url=getattr(agent, "base_url", None))
+                                                base_url=getattr(agent, "base_url", None),
+                                                tier="ultrafast" if nv == "ultrafast" else None)
         if overrides is None:
-            return _err(rid, 4002, "fast mode is not available for this model")
+            return _err(rid, 4002, f"{nv} mode is not available for this model")
     if session is not None:
         # Session-scoped like `reasoning` (global = `--global` / Settings → Model): writing config.yaml
         # here flipped fast mode for every surface. The create override survives rebuilds; "" pins normal.
@@ -270,7 +276,6 @@ def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
-    from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
@@ -280,9 +285,15 @@ def _set_yolo(rid, params, key, value, session):
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        skey = session["session_key"]
-        enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
-        (enable_session_yolo if enable else disable_session_yolo)(skey)
+        from tools.approval_yolo import toggle_session_yolo
+        # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
+
+        def persist(on):
+            with _session_db(session) as db:
+                if db is not None:
+                    db.set_session_yolo(row_id, on)
+        enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

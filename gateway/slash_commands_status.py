@@ -288,12 +288,9 @@ class GatewayStatusCommandsMixin:
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
         try:
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
+            from hermes_cli.anon_auth import free_tier_route
 
-            free_tier_active = await self._run_in_executor_with_context(
-                lambda: resolve_provider("auto") == "nous" and guest_carries_inference()
-            )
+            free_tier_active = await self._run_in_executor_with_context(free_tier_route)
             if free_tier_active:
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
@@ -373,7 +370,7 @@ class GatewayStatusCommandsMixin:
         # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
-            filled = int(round(pct / 100 * 24))
+            filled = round(pct / 100 * 24)
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),

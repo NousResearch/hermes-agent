@@ -138,6 +138,11 @@ def _emit_reasoning_delta(sid: str, text: str) -> None:
     _emit("reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})})
 
 
+def _setup_choose_request(sid: str, payload: dict) -> dict | None:
+    from tui_gateway import server_requests
+    return server_requests.send("setup_choose", sid, dict(payload), timeout=_clarify_timeout_seconds())
+
+
 def _agent_cbs(sid: str) -> dict:
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
@@ -162,19 +167,21 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
-        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
-            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        # The probe ladder lives in server.py (_preview_action_request) so an
+        # absent renderer fails fast instead of burning 45s per action (#94272).
+        "drive_preview_callback": lambda payload: _preview_action_request(sid, dict(payload)),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
-        "tour_callback": lambda payload: _tour_request(sid, payload)}
+        "tour_callback": lambda payload: _tour_request(sid, payload),
+        "setup_choose_callback": lambda payload: _setup_choose_request(sid, payload)}
 
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
@@ -544,6 +551,15 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
+        # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
+        # reversion from the per-turn sync.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
+        for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("create_service_tier_override", "service_tier_override")):
+            if kwarg not in kwargs and session.get(pin) is not None:
+                kwargs[kwarg] = session[pin]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:
@@ -556,14 +572,26 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
     with _sessions_lock:
-        session.update(agent=agent, config_model_seen=config_model_seen)
-        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
-        if owned and _transfer_db_to_agent(agent, session_db):
-            if old_agent is not None:
-                old_agent._owns_session_db = False
-        elif opened:
+        # session.close claimed this record (``_pop_session_by_id``) while _make_agent ran: its teardown
+        # already closed the agent it saw, so one installed now is never closed (#49852).
+        closed_midbuild = bool(session.get("_closing"))
+        if not closed_midbuild:
+            session.update(agent=agent, config_model_seen=config_model_seen)
+            owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+            if owned and _transfer_db_to_agent(agent, session_db):
+                if old_agent is not None:
+                    old_agent._owns_session_db = False
+            elif opened:
+                with contextlib.suppress(Exception):
+                    session_db.close()
+    if closed_midbuild:
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            if hasattr(agent, "close"):
+                agent.close()
+        if opened:
             with contextlib.suppress(Exception):
                 session_db.close()
+        raise RuntimeError("session was closed while its agent was being rebuilt")
     return agent
 
 

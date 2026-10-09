@@ -1288,6 +1288,35 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
   })
 
+  // #121613: a completed reply that settled onto a non-stream id (an interim
+  // id the completion settled onto, or an appended `assistant-<ts>` bubble)
+  // is invisible to the stream-id rule, but when the refreshed page has not
+  // committed it the local row is the only copy and must survive.
+  it('keeps a settled non-stream reply the authoritative history has not committed', () => {
+    const reply = msg('assistant-99', 'assistant', 'the completed reply', { pending: false, interim: false })
+    const previous = [msg('1-user', 'user', 'question'), reply]
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-99'
+    ])
+  })
+
+  it('does not re-append a settled non-stream reply the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocal = msg('assistant-99', 'assistant', 'answer', { pending: false, interim: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocal])).toBe(next)
+  })
+
+  it('does not resurrect a superseded interim bubble the refresh rewrote', () => {
+    const next = [msg('1-user', 'user', 'question'), msg('2-assistant', 'assistant', 'rewritten final')]
+    const interim = msg('assistant-interim-1', 'assistant', 'old interim', { pending: false, interim: true })
+
+    expect(preserveLocalPendingTurnMessages(next, [msg('1-user', 'user', 'question'), interim])).toBe(next)
+  })
+
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
     const toolRound = {
       id: 'row-1-assistant',
@@ -2121,6 +2150,127 @@ describe('overlayConcurrentMessageChanges', () => {
       ['3-user', 'prompt b'],
       ['assistant-stream-1-2', 'A2 finished']
     ])
+  })
+
+  // The same race on a tool turn: history folds the narration, the tool and
+  // the reply into one bubble under the narration's row, so its text never
+  // equals the settled live reply. The reply's stored row still matches.
+  it('keeps one reply for a tool turn that completes while the switch-back hydrate is in flight', () => {
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-3', 'assistant', 'A2 ', { pending: true })
+    ]
+
+    const settled = msg('assistant-stream-1-3', 'assistant', 'A2 finished while away', {
+      pending: false,
+      rowId: 6,
+      parts: [{ type: 'text', text: 'A2 finished while away', sourceRowId: 6 }]
+    })
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      parts: [
+        { type: 'text', text: 'A2i checking', sourceRowId: 4 },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished while away', sourceRowId: 6 }
+      ]
+    } as Partial<ChatMessage>)
+
+    const overlaid = overlayConcurrentMessageChanges(
+      [msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded],
+      baseline,
+      [baseline[0], settled]
+    )
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant'])
+
+    // A completion without a row receipt still matches the folded bubble's answer.
+    const unbound = { ...settled, rowId: undefined, parts: [{ type: 'text' as const, text: 'A2 finished while away' }] }
+
+    expect(
+      overlayConcurrentMessageChanges([msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded], baseline, [
+        baseline[0],
+        unbound
+      ]).map(message => message.id)
+    ).toEqual(['3-user', '4-assistant'])
+  })
+
+  // Same race, the order the e2e hit: the store already swapped its live rows
+  // for the committed bubble, but the page was composed from the older
+  // baseline and still carries the pending live row, frozen on its first chunk.
+  it('keeps a live row retired while the switch-back hydrate was in flight retired', () => {
+    const live = msg('assistant-stream-1-3', 'assistant', 'A2 ', {
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 ' }
+      ]
+    } as Partial<ChatMessage>)
+
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-2', 'assistant', 'A2i checking', { interim: true }),
+      live
+    ]
+
+    const committed = [msg('3-user', 'user', 'prompt b', { rowId: 3 }), msg('4-assistant', 'assistant', 'A2 finished')]
+
+    expect(overlayConcurrentMessageChanges([...committed, live], baseline, committed).map(m => m.id)).toEqual([
+      '3-user',
+      '4-assistant'
+    ])
+
+    // Or the store still holds that row, now settled onto the reply's stored
+    // row, while the page carries its older streaming copy under the same id.
+    const settled = msg('assistant-stream-1-3', 'assistant', 'A2 finished', {
+      pending: false,
+      rowId: 6,
+      parts: [{ type: 'text', text: 'A2 finished', sourceRowId: 6 }]
+    })
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      parts: [
+        { type: 'text', text: 'A2i checking', sourceRowId: 4 },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished', sourceRowId: 6 }
+      ]
+    } as Partial<ChatMessage>)
+
+    expect(
+      overlayConcurrentMessageChanges([committed[0], folded, live], baseline, [baseline[0], baseline[1], settled]).map(
+        m => m.id
+      )
+    ).toEqual(['3-user', '4-assistant'])
+  })
+
+  it('does not project a stale snapshot over a committed tool turn', () => {
+    const snapshot = {
+      session_id: 'runtime-b',
+      turn_started_at: 100,
+      inflight: { user: 'prompt b', assistant: 'A2i checking\n\nA2 ', streaming: true }
+    }
+
+    const folded = msg('4-assistant', 'assistant', '', {
+      rowId: 4,
+      timestamp: 105,
+      parts: [
+        { type: 'text', text: 'A2i checking' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}', result: 'ok' },
+        { type: 'text', text: 'A2 finished while away' }
+      ]
+    } as Partial<ChatMessage>)
+
+    const persisted = [msg('3-user', 'user', 'prompt b', { rowId: 3 }), folded]
+
+    expect(appendLiveSessionProjection(persisted, snapshot).map(m => m.id)).toEqual(['3-user', '4-assistant'])
+
+    // A mid-turn commit ends on its tool: the turn is still running and projects.
+    const partial = { ...folded, parts: folded.parts.slice(0, 2) }
+
+    expect(appendLiveSessionProjection([persisted[0], partial], snapshot).map(m => m.id)).toContain(
+      'assistant-stream-runtime-b'
+    )
   })
 
   // The same prompt sent again (from another client, so the cache lacks its

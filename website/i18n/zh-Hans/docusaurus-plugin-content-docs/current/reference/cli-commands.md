@@ -348,10 +348,9 @@ hermes auth remove openrouter 2                          # 按索引删除
 hermes auth reset openrouter                             # 清除冷却时间
 hermes auth status anthropic                             # 显示某 provider 的认证状态
 hermes auth logout anthropic                             # 登出并清除已存储的认证状态
-hermes auth spotify                                      # 通过 PKCE 将 Hermes 与 Spotify 认证
 ```
 
-子命令：`add`、`list`、`remove`、`reset`、`status`、`logout`、`spotify`。不带子命令调用时，启动交互式管理向导。
+子命令：`add`、`list`、`remove`、`reset`、`status`、`logout`。Spotify 登录已移至插件目录 `spotify` 插件的 `hermes spotify login`。不带子命令调用时，启动交互式管理向导。
 
 ## `hermes status`
 
@@ -519,7 +518,7 @@ hermes dump [--show-keys]
 | **Features** | 已启用的 toolset、MCP 服务器数量、memory provider |
 | **Services** | Gateway 状态、已配置的消息平台 |
 | **Workload** | Cron 任务数量、已安装 skill 数量 |
-| **Config overrides** | 与默认值不同的所有 config 值 |
+| **Config overrides** | 与默认值不同的所有 config 值。其中的凭据会被脱敏：`fallback_providers` 条目的 `api_key`，以及其 `base_url` 中的凭据（userinfo、`key`/token 查询参数、签名 URL 的签名）。 |
 
 ### 示例输出
 
@@ -584,7 +583,7 @@ hermes debug share [options]
 | `--expire <days>` | 粘贴过期天数（默认：7）。 |
 | `--local` | 在本地打印报告而非上传。 |
 
-报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥。
+报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥；这也涵盖系统 dump（包括 `fallback_providers` 条目及其 URL 中的凭据）和 gateway 的 `/debug` 报告。
 
 依次尝试的粘贴服务：paste.rs、dpaste.com。
 

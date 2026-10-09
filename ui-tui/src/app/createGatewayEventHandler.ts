@@ -23,19 +23,21 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
+import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { createBillingVerificationPresenter, createFreeTierChallengePresenter } from './gatewayBrowserLinks.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
-import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { reportStartupLatency } from './startupLatency.js'
+import { markNextSubmitVoice } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -50,6 +52,7 @@ import {
   stderrLooksLikeProblem,
   stderrProblemActivity
 } from './userMessages.js'
+import { handleVoiceCapture } from './voicePartialStore.js'
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -464,6 +467,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // an abandoned-prompt record, so the tool.complete and message.complete
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
+  const showChallenge = createFreeTierChallengePresenter(sys, openExternalUrl)
+  const showBillingVerification = createBillingVerificationPresenter(sys, openExternalUrl)
 
   // When a clarify prompt is dismissed without an answer (the backend request
   // timed out and returned no answer), the live ClarifyPrompt overlay is
@@ -471,8 +476,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // and options vanish from the screen while the agent's follow-up still refers
   // to them.  The reliable signal is the clarify tool's own tool.complete (and,
   // as a backstop, message.complete): at those points the overlay is provably
-  // still set on a timeout, but already cleared by answerClarify() on a real
-  // answer (so this no-ops there).  Flush the question + options into the
+  // still set on a timeout, but already cleared by answerClarifyQuestion() on a
+  // real answer (so this no-ops there).  Flush the question into the
   // transcript as a persistent system line, then clear the overlay.
   const flushAbandonedClarify = () => {
     const { clarify } = getOverlayState()
@@ -484,9 +489,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     persistedAbandonedClarify.add(clarify.requestId)
     appendMessage({
       role: 'system',
-      text: clarify.questions?.length
-        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
-        : formatAbandonedClarify(clarify.question, clarify.choices, t('gatewayMsg.clarify.timedOut'))
+      text: formatAbandonedClarify(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
     })
     patchOverlayState({ clarify: null })
   }
@@ -800,6 +803,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    if (handleVoiceCapture(ev, ctx.voice)) {
+      return
+    }
+
     switch (ev.type) {
       case 'connection.request':
         if (ev.payload) {
@@ -827,6 +834,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (ev.payload) {
           applySkin(ev.payload)
         }
+
+        return
+
+      case 'free_tier.challenge':
+        showChallenge(ev.payload)
 
         return
       case 'session.info': {
@@ -994,36 +1006,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.clearNotice(ev.payload?.key)
 
         return
-      case 'billing.step_up.verification': {
-        // The billing step-up device flow runs in the headless gateway, so it
-        // can't open a browser or print the URL where the user sees it. Surface
-        // the link here (clickable/copyable in the transcript) and best-effort
-        // open it via the TUI process's own opener. This event arrives while the
-        // billing.step_up RPC is still polling (and may even outlive the RPC's
-        // 120s timeout), so the link — not the RPC result — is the source of truth.
-        if (!ev.payload) {
-          return
-        }
 
-        const url = ev.payload.verification_url
-        const code = ev.payload.user_code
-
-        if (!url) {
-          return
-        }
-
-        sys(t('gatewayMsg.billing.openLinkRemoteSpending'))
-        sys(url)
-
-        if (code) {
-          sys(t('gatewayMsg.billing.enterCode', code))
-        }
-
-        void openExternalUrl(url)
+      case 'billing.step_up.verification':
+        showBillingVerification(ev.payload)
 
         return
-      }
-
       case 'gateway.stderr': {
         // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
         // Only failure-looking lines earn an activity row, and a traceback's
@@ -1054,25 +1041,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (message) {
           sys(message)
-        }
-
-        return
-      }
-
-      case 'voice.status': {
-        // Continuous VAD loop reports its internal state so the status bar
-        // can show listening / transcribing / idle without polling.
-        const state = String(ev.payload?.state ?? '')
-
-        if (state === 'listening') {
-          setVoiceRecording(true)
-          setVoiceProcessing(false)
-        } else if (state === 'transcribing') {
-          setVoiceRecording(false)
-          setVoiceProcessing(true)
-        } else {
-          setVoiceRecording(false)
-          setVoiceProcessing(false)
         }
 
         return
@@ -1122,6 +1090,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           // is committed before submit reads it; invalid config also falls
           // back to this established direct-submit behavior.
           setInput('')
+          markNextSubmitVoice(text)
           setTimeout(() => submitRef.current(text), 0)
         })
 
@@ -1292,8 +1261,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete': {
         // The clarify tool finishing with its overlay still live means it was
         // abandoned (backend _block timed out, empty answer). A real answer
-        // clears the overlay in answerClarify() before this fires, so this
-        // no-ops there. Persist the question + options so they don't vanish.
+        // clears the overlay in answerClarifyQuestion() before this fires, so
+        // this no-ops there.
         if (!ev.payload) {
           return
         }
@@ -1355,7 +1324,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const next = { ...prev }
           let changed = false
 
-          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultUnlock'] as const) {
+          for (const key of ['approval', 'clarify', ...SENSITIVE_PROMPTS] as const) {
             if (prev[key]?.requestId === id) {
               next[key] = null
               changed = true

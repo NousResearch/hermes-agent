@@ -31,7 +31,6 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
 
     def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         calls.append(("deliver", job["id"]))
-        return None
 
     def fake_mark(jid, ok, err=None, delivery_error=None, **_kw):
         calls.append(("mark", jid, ok))
@@ -215,7 +214,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
     # Deterministic threshold: default 3, independent of the host config.
-    monkeypatch.setattr(s, "load_config", lambda: {})
+    monkeypatch.setattr(s, "load_config", dict)
 
 
 def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
@@ -392,7 +391,6 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     def fake_deliver(*args, **kwargs):
         scope_during_delivery["scope"] = ss.current_secret_scope()
         scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
-        return None
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")

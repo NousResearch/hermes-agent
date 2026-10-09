@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from tools.arg_coercion import coerce_tool_args
 
-def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
+
+def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
     """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
     return {
         "task_id": effective_task_id or "",
@@ -95,10 +97,10 @@ class InlineToolContext:
 InlineToolExecutor = Callable[[Any, dict, InlineToolContext], Any]
 
 # ``(kwarg, args_key)`` → ``args.get(key)``; ``(kwarg, args_key, default)`` → ``args.get(key, default)``.
-_ArgSpec = Tuple[Any, ...]
+_ArgSpec = tuple[Any, ...]
 
 
-def _call_tool(module: str, func: str, args: dict, arg_specs: Tuple[_ArgSpec, ...], **fixed: Any) -> Any:
+def _call_tool(module: str, func: str, args: dict, arg_specs: tuple[_ArgSpec, ...], **fixed: Any) -> Any:
     """Import ``module.func`` lazily and call it with args mapped per ``arg_specs`` plus ``fixed``."""
     fn = getattr(import_module(module), func)
     return fn(**{spec[0]: args.get(*spec[1:]) for spec in arg_specs}, **fixed)
@@ -232,7 +234,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
-INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+_RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
@@ -246,9 +248,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
-        "tools.clarify_tool", "clarify_tool",
-        ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),
-        ("questions", "questions"),
+        "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
     "read_terminal": _callback_tool(
@@ -272,11 +272,31 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.tour_tool", "tour_tool", "tour_callback",
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
+        ("preset", "preset"),
+    ),
+    # The session id keys the card facts its /initiate-setup turn recorded.
+    "setup_choose": _tool(
+        "tools.setup_choose_tool", "setup_choose_tool",
+        ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
+        ("multi_select", "multi_select"),
+        callback=lambda agent, ctx: getattr(agent, "setup_choose_callback", None),
+        session_id=lambda agent, ctx: getattr(agent, "session_id", None),
     ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+}
+
+
+def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
+    def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        return executor(agent, coerce_tool_args(name, args), ctx)
+    return _exec
+
+
+INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
+    name: _coerced(name, executor) for name, executor in _RAW_INLINE_TOOL_EXECUTORS.items()
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

@@ -507,12 +507,6 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Legacy 5-tuple ``(model_input, explicit_provider, is_global, force_refresh, is_session)``."""
-    p = parse_model_flags_detailed(raw_args)
-    return (p.model_input, p.explicit_provider, p.is_global, p.force_refresh, p.is_session)
-
-
 def resolve_persist_behavior(
     is_global: bool, is_session: bool, is_once: bool = False, explicit_provider: str = "") -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.
@@ -520,17 +514,14 @@ def resolve_persist_behavior(
     Order: ``--once`` / ``--session`` -> False; ``--global`` -> True; no default configured yet
     (neither ``model.default`` nor ``model.provider`` — a fresh install's first pick) -> True, so
     the pick does not evaporate into whatever ``*_API_KEY`` is lying around on the next launch;
-    ``--provider`` without a persist flag -> False (exploratory); else
-    ``model.persist_switch_by_default`` (default False). A flat-string ``model`` IS a configured
+    ``model.persist_switch_by_default`` -> True (the user's explicit opt-in to persistence);
+    ``--provider`` without a persist flag -> False (exploratory). A flat-string ``model`` IS a configured
     default; an unreadable config -> False.
 
     1. ``--once`` explicitly opts out → ``False`` (next turn only). 2. ``--session`` explicitly opts out →
     ``False`` (this session only). 3. 4. Applies to every surface (CLI, gateway, Desktop picker) so no
-    client has to hardcode ``--global``. 5. Provider switches are typically exploratory — the user is trying
-    a different backend for this conversation, not reconfiguring the default. 6. Otherwise defer to
-    ``model.persist_switch_by_default`` in ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
-    affects only the current session). Users who want the old persist-by-default behavior can set the key to
-    ``true``; a one-off ``--global`` always persists. See #86414.
+    client has to hardcode ``--global``. 5. ``model.persist_switch_by_default: true`` also covers provider picks (a pick between two providers sharing one ``base_url`` is tenant selection on the same backend, not exploration;
+    session-scoping it silently serves the next chat with the other twin's key). 6. Without that opt-in, provider switches stay exploratory — the user is trying a different backend for this conversation, not reconfiguring the default. The key defaults to ``False`` (a plain ``/model <name>`` affects only the current session); users who want the old persist-by-default behavior can set it to ``true``; a one-off ``--global`` always persists, and ``--session`` / ``--once`` always opt out. See #86414.
     """
     if is_once or is_session:
         return False
@@ -544,9 +535,11 @@ def resolve_persist_behavior(
     if isinstance(model_cfg, dict):
         if not (model_cfg.get("default") or model_cfg.get("provider")):
             return True
+        if bool(model_cfg.get("persist_switch_by_default", False)):
+            return True
         if explicit_provider:
             return False
-        return bool(model_cfg.get("persist_switch_by_default", False))
+        return False
     return not model_cfg
 
 
@@ -842,7 +835,7 @@ def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: 
 
 
 def get_authenticated_provider_slugs(
-    current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
+    current_provider: str = "", user_providers: dict | None = None, custom_providers: list | None = None
 ) -> list[str]:
     """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
     stale catalogs warm in the background, never in this call)."""
@@ -1632,7 +1625,10 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        # A settings-only ``providers.<slug>`` block (no endpoint of its own) is not a
+        # user-defined endpoint: only a block declaring a base_url takes the custom
+        # validation branch (#120020; mirrors ``_lap_lmstudio_row``'s endpoint test).
+        if pdef is not None and pdef.source == "user-config" and (pdef.base_url or ""):
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(
@@ -1744,7 +1740,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
     current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
-    user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
+    user_providers: dict | None = None, custom_providers: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each

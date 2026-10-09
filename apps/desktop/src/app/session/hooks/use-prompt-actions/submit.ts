@@ -45,6 +45,7 @@ import { routeTargetFromToken, sessionContextDrift } from '../session-context-dr
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
+import { attachmentContextRef } from './attachment-context'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import {
   acquireSubmitInFlight,
@@ -222,7 +223,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
 
         const contextRefs = present
-          .map(a => a.refText)
+          .map(a => attachmentContextRef(a, visibleText))
           .filter(Boolean)
           .join('\n')
 

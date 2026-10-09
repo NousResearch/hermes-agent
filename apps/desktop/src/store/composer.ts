@@ -62,6 +62,8 @@ export interface ComposerAttachment {
   occurrenceId?: string
   kind: 'file' | 'folder' | 'image' | 'terminal' | 'url'
   label: string
+  /** Original wire filename used by positional references, even if staging renames an image. */
+  referenceName?: string
   detail?: string
   refText?: string
   /** Legacy/on-demand full source. New local image chips omit this and read
@@ -115,6 +117,7 @@ export const takeVoiceConversationStart = (current: number): boolean => {
 export interface ComposerAttachmentScope {
   $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
   add(attachment: ComposerAttachment): void
+  onAdd(listener: (attachment: ComposerAttachment) => void): () => void
   clear(options?: ClearAttachmentsOptions): void
   remove(id: string): ComposerAttachment | null
   removeOccurrences(attachments: readonly ComposerAttachment[]): void
@@ -132,12 +135,29 @@ function attachmentOccurrenceIndex(attachments: ComposerAttachment[], expected: 
 }
 
 export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
+  const addListeners = new Set<(attachment: ComposerAttachment) => void>()
+
   return {
     $attachments,
+    onAdd(listener) {
+      addListeners.add(listener)
+
+      return () => {
+        addListeners.delete(listener)
+      }
+    },
     add(attachment) {
       const previous = $attachments.get()
       const next = upsertAttachment(previous, attachment)
       $attachments.set(next)
+
+      // Restoring a draft uses the atom directly; only a new explicit attach
+      // inserts a positional reference into the owning editor.
+      if (next.length > previous.length) {
+        for (const listener of addListeners) {
+          listener(attachment)
+        }
+      }
 
       if (next.length > previous.length && attachment.kind !== 'url') {
         triggerHaptic('selection')

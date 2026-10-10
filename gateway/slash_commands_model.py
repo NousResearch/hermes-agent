@@ -715,6 +715,19 @@ class GatewayModelCommandsMixin:
         self._set_reasoning_override(session_key, parsed)
         return t("gateway.reasoning.set_session", effort=value)
 
+    def _picker_callback_scope(self, source):
+        """Factory for a deferred picker callback's scope: the routed profile resolved NOW, at
+        command time, re-entered when the tap fires. The tap is dispatched later by the adapter's
+        callback handler with no profile scope bound, so a bare config write there resolves the
+        LAUNCH profile (gateway/AGENTS.md: deferred callbacks capture the home at command time)."""
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(source)
+        if profile_home is None:
+            return contextlib.nullcontext
+        from gateway.run import _profile_runtime_scope
+        return lambda: _profile_runtime_scope(profile_home)
+
     async def _try_send_choice_picker(
         self, event: MessageEvent, session_key: str, title: str, choices: list, on_choice_selected,
     ) -> bool:
@@ -781,8 +794,11 @@ class GatewayModelCommandsMixin:
         has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
+        callback_scope = self._picker_callback_scope(event.source)
+
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            with callback_scope():
+                return self._apply_reasoning_selection(session_key, platform_key, value)
 
         picker_sent = await self._try_send_choice_picker(
             event,
@@ -849,8 +865,11 @@ class GatewayModelCommandsMixin:
         mode = service_tier_word(self._service_tier)
         status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
 
+        callback_scope = self._picker_callback_scope(event.source)
+
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
-            return self._apply_fast_selection(session_key, value, persist=persist_global)
+            with callback_scope():
+                return self._apply_fast_selection(session_key, value, persist=persist_global)
 
         picker_sent = await self._try_send_choice_picker(
             event,

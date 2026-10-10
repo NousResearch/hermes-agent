@@ -193,3 +193,32 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1
+
+
+def test_stage_runtime_installs_frozen_not_locked(tmp_path, monkeypatch):
+    """Regression for #123943: PM runtime staging must install the committed lock with
+    ``--frozen``, never ``--locked``. With a pip mirror configured, ``--locked``'s freshness
+    check rejects the byte-identical lockfile purely because the resolved registry URL differs,
+    aborting ``hermes update`` / ``hermes pm repair`` before any install work runs."""
+    from pm import runtime_stage
+
+    recorded: dict = {}
+
+    def fake_sync(self, source, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr("pm.environment.PythonEnvironment.create", lambda self: None)
+    monkeypatch.setattr("pm.environment.PythonEnvironment.sync", fake_sync)
+    monkeypatch.setattr(
+        runtime_stage.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "", ""),
+    )
+
+    result = runtime_stage.stage_runtime(
+        tmp_path / "uv", tmp_path / "python", tmp_path / "runtime", cache=tmp_path / "cache",
+    )
+
+    # The staging sync must not opt into the freshness check; the sync default (--frozen) applies.
+    assert recorded.get("locked") in (None, False)
+    assert recorded.get("no_install_project") is True
+    assert result is not None

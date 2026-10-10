@@ -310,6 +310,7 @@ function partitionSidebarNav(
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
+  pluginsLoading: boolean,
 ): Array<{
   key: string;
   path: string;
@@ -340,6 +341,11 @@ function buildRoutes(
         path,
         element: <PluginPage name={om.name} />,
       });
+    } else if (path === "/" && pluginsLoading) {
+      // Don't redirect home until plugin manifests load — a plugin may
+      // override "/" (custom home). Redirecting now would pre-empt the
+      // override, exactly as UnknownRouteFallback guards the catch-all.
+      routes.push({ key: "builtin:/:loading", path, element: <></> });
     } else {
       routes.push({ key: `builtin:${path}`, path, element: <Component /> });
     }
@@ -473,8 +479,8 @@ export default function App() {
     [builtinNav, manifests],
   );
   const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
+    () => buildRoutes(builtinRoutes, manifests, pluginsLoading),
+    [builtinRoutes, manifests, pluginsLoading],
   );
   const pluginTabMeta = useMemo(
     () =>

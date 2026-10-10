@@ -6,6 +6,8 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+import asyncio
+import contextvars
 import functools
 import importlib
 import inspect
@@ -14,13 +16,76 @@ import logging
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
+
+
+class _HostContextLease:
+    """A binding cannot be inherited by a different task or thread."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        self.active = True
+        self.thread_id = threading.get_ident()
+        try:
+            self.task = asyncio.current_task()
+        except RuntimeError:
+            self.task = None
+
+
+_host_source: contextvars.ContextVar[Optional[_HostContextLease]] = contextvars.ContextVar(
+    "hermes_host_context_source", default=None)
+_handler_context: contextvars.ContextVar[Optional[_HostContextLease]] = contextvars.ContextVar(
+    "hermes_handler_host_context", default=None)
+
+
+def _lease_value(lease: Optional[_HostContextLease]) -> Optional[Any]:
+    if lease is None or not lease.active or lease.thread_id != threading.get_ident():
+        return None
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return lease.value if task is lease.task else None
+
+
+def get_current_host_context() -> Optional[Any]:
+    """Return provenance only while its handler runs in this execution."""
+    return _lease_value(_handler_context.get())
+
+
+def _bound_host_context() -> Optional[Any]:
+    """Read host supplied provenance before entering a handler."""
+    return _lease_value(_host_source.get())
+
+
+@contextmanager
+def bind_host_context(context: Any):
+    """Supply provenance for a tool invocation from host code."""
+    lease = _HostContextLease(context)
+    token = _host_source.set(lease)
+    try:
+        yield
+    finally:
+        lease.active = False
+        _host_source.reset(token)
+
+
+@contextmanager
+def _bind_handler_context(context: Any):
+    lease = _HostContextLease(context)
+    token = _handler_context.set(lease)
+    try:
+        yield
+    finally:
+        lease.active = False
+        _handler_context.reset(token)
 
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
@@ -897,16 +962,44 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        if "host_context" in kwargs or "trusted_invocation" in kwargs:
+            raise ValueError("host context keywords are reserved for host bindings")
+        host_context = _bound_host_context()
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
+            if host_context is not None:
+                try:
+                    parameters = inspect.signature(entry.handler).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                keyword_kinds = {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+                if ("host_context" in parameters
+                        and parameters["host_context"].kind in keyword_kinds) or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+                ):
+                    kwargs["host_context"] = host_context
+                elif ("trusted_invocation" in parameters
+                      and parameters["trusted_invocation"].kind in keyword_kinds):
+                    kwargs["trusted_invocation"] = host_context
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
+
+                async def invoke_async():
+                    # _run_async creates a task, sometimes on a worker thread. Bind in
+                    # that task, where the handler body actually executes.
+                    with _bind_handler_context(host_context):
+                        return await entry.handler(args, **kwargs)
+
+                result = _run_async(invoke_async())
             else:
-                result = entry.handler(args, **kwargs)
+                with _bind_handler_context(host_context):
+                    result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.

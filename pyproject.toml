@@ -452,12 +452,19 @@ termux-all = [
   "hermes-agent[web]",
   "hermes-agent[pty]",
 ]
+# dingtalk-stream and lark-oapi open their event WebSocket with a bare
+# `websockets.connect(uri)`, so websockets picks the proxy from
+# urllib.request.getproxies(). A macOS system proxy (Clash, Surge, ...) that
+# lists a SOCKS entry wins that selection, and websockets can only dial it
+# with python-socks installed; without it every reconnect raises
+# "python-socks is required to use a SOCKS proxy" (#135646).
 dingtalk = [
   "dingtalk-stream==0.24.3",
   "alibabacloud-dingtalk==2.2.42",
+  "python-socks==2.8.2",
   "qrcode==7.4.2",
 ]
-feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.6.8", "python-socks==2.8.2", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs). Declared here so PM environments and independent

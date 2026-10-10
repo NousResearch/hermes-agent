@@ -15,6 +15,7 @@ from tests.agent.test_memory_observation import (
     StructuredMemoryProvider,
     _adversarial_malformed_payload,
     _disable_hook,
+    _enable_external_prefetch_spill,
     _observation,
     _stub_direct_prefetch,
 )
@@ -246,6 +247,7 @@ def test_structured_prefetch_context_subclass_is_normalized_before_spill(
 
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
+    _enable_external_prefetch_spill(home)
     context = LyingString("x" * 10_100)
     manager = MemoryManager()
     manager.add_provider(

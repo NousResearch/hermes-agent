@@ -2653,6 +2653,52 @@ def test_run_codex_stream_retries_prestream_apiconnectionerror(monkeypatch):
     assert response.id == "resp_prestream_retry_1"
 
 
+def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
+    monkeypatch, caplog
+):
+    """Regression test for issue #103673 (observability half).
+
+    When the pre-stream retry is exhausted, the turn still raises, but the
+    single WARNING must carry the byte count, the stream-open state, the
+    exception chain, and the attempt count -- without prompt content.
+    """
+    import logging
+
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
+    body = b'{"model":"gpt-5-codex"}'
+    request = httpx.Request(
+        "POST", "https://chatgpt.com/backend-api/codex/responses", content=body
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        _raise_prestream_transport_error(request)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    failures = [
+        record
+        for record in caplog.records
+        if "Codex Responses request failed" in record.message
+    ]
+    assert len(failures) == 1
+    message = failures[0].message
+    assert f"serialized_request_body_bytes={len(body)}" in message
+    assert "stream_opened=false" in message
+    assert "APIConnectionError <- ReadError <- ReadError" in message
+    assert "attempt=2/2" in message
+
+
 def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_attempts_size(monkeypatch):
     """#97548: when the pre-stream connect retries are spent the user gets ONE line naming the
     endpoint host, the attempt count and the serialized request size (agent.log was the only place
@@ -2661,6 +2707,7 @@ def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_a
     from openai import APIConnectionError
 
     agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
     body = b'{"model":"gpt-5-codex","input":"' + b"x" * (829 * 1024) + b'"}'
     request = httpx.Request("POST", "https://api.example.com/backend-api/codex/responses", content=body)
     agent.client = SimpleNamespace(responses=SimpleNamespace(

@@ -43,7 +43,7 @@ from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
-from utils import base_url_host_matches, is_truthy_value
+from utils import base_url_host_matches, env_int, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
@@ -1375,6 +1375,37 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     inject_memory_provider_tools(agent)
 
 
+# Sentinel for "key absent from the RAW user file" (distinct from an explicit null value).
+_MISSING = object()
+
+
+def _coerce_max_stream_retries(raw: Any) -> int:
+    """Clamp a ``max_stream_retries`` candidate; garbage falls back to the shared default (2)."""
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 2
+
+
+def _raw_file_max_stream_retries() -> Any:
+    """``agent.max_stream_retries`` from the RAW user file (no defaults merged).
+
+    Returns ``_MISSING`` when the key is absent or the file is unreadable. Uses the readonly
+    raw accessor (no per-call deepcopy) so presence checks stay cheap on the hot path.
+    """
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+        raw = read_raw_config_readonly()
+    except Exception:
+        return _MISSING
+    if not isinstance(raw, dict):
+        return _MISSING
+    section = raw.get("agent", {})
+    if not isinstance(section, dict):
+        return _MISSING
+    return section.get("max_stream_retries", _MISSING)
+
+
 def _apply_agent_section(agent, _agent_cfg):
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1443,6 +1474,18 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+
+    # Mid-stream reconnect attempts on a transient stream failure, shared by the chat-completions
+    # and Codex Responses streaming paths. 0 = no reconnect after the first attempt. Resolution
+    # order: agent.max_stream_retries in the user file wins (even 0); when the key is ABSENT from
+    # the raw file, HERMES_STREAM_RETRIES is honoured so existing setups keep working; otherwise
+    # the shared default (2). Presence is read from the RAW file: the merged config always carries
+    # the DEFAULT_CONFIG value, so a merged-dict check would never see the env var. Before this,
+    # the chat path read the env var and the Responses path was hardcoded to 1.
+    _stream_retries_raw = _raw_file_max_stream_retries()
+    if _stream_retries_raw is _MISSING:
+        _stream_retries_raw = env_int("HERMES_STREAM_RETRIES", 2)
+    agent._max_stream_retries = _coerce_max_stream_retries(_stream_retries_raw)
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:

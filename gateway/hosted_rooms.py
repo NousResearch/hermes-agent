@@ -663,7 +663,7 @@ def _claim_values(claims: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str,
 
 
 def _room_grant_scope_key(claims: Mapping[str, Any]) -> str:
-    """Return a stable non-secret key for one room/home/target/profile scope."""
+    """Return a stable non-secret key for one room-member grant lineage."""
     fields = _claim_values(claims, (
         "room_id", "home_install_id", "authority_gateway_id", "authority_epoch", "member_id", "target_install_id",
         "target_profile"))
@@ -674,14 +674,13 @@ def _room_grant_scope_key(claims: Mapping[str, Any]) -> str:
 
 def revoke_room_grant_scope(
     db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
-    """Revoke every grant issued at or before now for one exact room scope."""
+    """Permanently revoke grants issued at or before now for one exact room scope."""
     scope_key = _room_grant_scope_key(claims)
     timestamp = _now(now)
     expiry = float(expires_at)
     if expiry <= timestamp:
         return
     with _transaction(db_path, immediate=True) as conn:
-        conn.execute("DELETE FROM hosted_room_revoked_grants WHERE expires_at<=?", (timestamp,))
         conn.execute("""INSERT INTO hosted_room_revoked_grants(
                    scope_key, expires_at, revoked_before
                ) VALUES (?, ?, ?)
@@ -774,13 +773,13 @@ def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], no
 
 
 def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
-    """Return whether a grant predates its exact scope's revocation fence."""
-    timestamp = _now(now)
+    """Return whether a grant predates its exact scope's durable revocation fence."""
+    del now  # retained for caller compatibility; durable fences deliberately ignore wall time
     scope_key = _room_grant_scope_key(claims)
     issued_at = float(claims.get("issued_at") or 0)
     row = _read_one(
         db_path, """SELECT revoked_before FROM hosted_room_revoked_grants
-            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp))
+            WHERE scope_key=?""", (scope_key,))
     return row is not None and issued_at <= float(row["revoked_before"])
 
 

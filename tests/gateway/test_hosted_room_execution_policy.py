@@ -133,6 +133,7 @@ def test_grant_and_recipient_dispatch_bind_the_exact_policy_digest():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        capability_digest=dispatch.capability_digest,
         execution_policy_digest=policy["policy_digest"],
         issued_at=100,
         ttl_seconds=60,

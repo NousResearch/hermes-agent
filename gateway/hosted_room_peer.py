@@ -353,6 +353,28 @@ _DISPATCH_FIELDS: dict[str, Callable[..., Any]] = dict(
     cancellation_scope_id=_identifier, capability_digest=_digest, execution_policy_digest=_digest, trace_id=_identifier)
 
 
+ROOM_MEMBER_IDENTITY_FIELDS = (
+    "member_id", "target_install_id", "target_profile", "capability_digest")
+
+
+@dataclass(frozen=True)
+class RoomMemberIdentity:
+    """Immutable recipient identity shared by the roster, route, dispatch and signed grant."""
+    member_id: str
+    target_install_id: str
+    target_profile: str
+    capability_digest: str
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "RoomMemberIdentity":
+        return cls(**{
+            field: _DISPATCH_FIELDS[field](value.get(field), field=field)
+            for field in ROOM_MEMBER_IDENTITY_FIELDS})
+
+    def as_mapping(self) -> dict[str, str]:
+        return {field: getattr(self, field) for field in ROOM_MEMBER_IDENTITY_FIELDS}
+
+
 @dataclass(frozen=True)
 class HostedMemberDispatch:
     """Recipient-validated identity for one remote room member attempt."""
@@ -374,6 +396,10 @@ class HostedMemberDispatch:
     execution_policy_digest: str
     trace_id: str
 
+    @property
+    def member_identity(self) -> RoomMemberIdentity:
+        return RoomMemberIdentity.from_mapping(self.as_mapping())
+
     def as_mapping(self) -> dict[str, Any]:
         """Return the canonical wire mapping used for fingerprinting."""
         return asdict(self)
@@ -393,9 +419,8 @@ class HostedMemberDispatch:
 
 
 # Grant scope fields in issue-time validation order; each uses the matching dispatch checker (grant_id: identifier).
-_GRANT_SCOPE = (
-    "grant_id", "room_id", "home_install_id", "authority_gateway_id", "authority_epoch", "member_id",
-    "target_install_id", "target_profile")
+_GRANT_CONTEXT_FIELDS = ("room_id", "home_install_id", "authority_gateway_id", "authority_epoch")
+_GRANT_SCOPE = ("grant_id", *_GRANT_CONTEXT_FIELDS, *ROOM_MEMBER_IDENTITY_FIELDS)
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
@@ -407,6 +432,7 @@ MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 def issue_room_grant(
     secret: bytes, *, grant_id: str, room_id: str, home_install_id: str, authority_gateway_id: str,
     authority_epoch: int, member_id: str, target_install_id: str, target_profile: str,
+    capability_digest: str,
     execution_policy_digest: str | None = None, permissions: Iterable[str] = ("approve", "dispatch", "status", "stop"),
     issued_at: float | None = None, ttl_seconds: float = 3600, status_ttl_seconds: float | None = None,
     status_expires_at: float | None = None) -> str:
@@ -449,7 +475,11 @@ def verify_room_grant(
     payload = decode_room_grant(secret, token, permission=permission, now=now)
     if payload["version"] != dispatch.protocol_version:
         raise HostedRoomGrantError("room grant protocol does not match dispatch")
-    if any(payload.get(f) != getattr(dispatch, f) for f in (*_GRANT_SCOPE[1:], "execution_policy_digest")):
+    if (
+        any(payload.get(field) != getattr(dispatch, field) for field in _GRANT_CONTEXT_FIELDS)
+        or RoomMemberIdentity.from_mapping(payload) != dispatch.member_identity
+        or payload.get("execution_policy_digest") != dispatch.execution_policy_digest
+    ):
         raise HostedRoomGrantError("room grant scope does not match dispatch")
     return payload
 

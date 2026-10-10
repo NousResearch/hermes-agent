@@ -221,6 +221,7 @@ def test_room_grant_is_scoped_to_exact_room_home_target_and_profile():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        capability_digest=dispatch.capability_digest,
         execution_policy_digest=dispatch.execution_policy_digest,
         issued_at=100,
         ttl_seconds=60,
@@ -234,6 +235,10 @@ def test_room_grant_is_scoped_to_exact_room_home_target_and_profile():
     with pytest.raises(HostedRoomGrantError, match="scope"):
         verify_room_grant(
             SECRET, token, _dispatch(member_id="member-other"), now=120
+        )
+    with pytest.raises(HostedRoomGrantError, match="scope"):
+        verify_room_grant(
+            SECRET, token, _dispatch(capability_digest="b" * 64), now=120
         )
     with pytest.raises(HostedRoomGrantError, match="scope"):
         verify_room_grant(
@@ -253,6 +258,7 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
         member_id=dispatch.member_id,
         target_install_id=dispatch.target_install_id,
         target_profile=dispatch.target_profile,
+        capability_digest=dispatch.capability_digest,
         execution_policy_digest=dispatch.execution_policy_digest,
         permissions=("status",),
         issued_at=100,

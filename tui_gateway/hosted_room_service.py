@@ -184,6 +184,12 @@ class HostedRoomService:
         bind_store = _hook(client, "bind_receipt_store")
         if bind_store is not None:
             bind_store(self.db_path)
+        try:
+            self._require_roster_route_identity(room_id, member_id, route)
+        except hosted_rooms.RoomNotFoundError:
+            # A caller may stage a route before room creation; dispatch cannot use it until the
+            # immutable roster identity exists and passes the unconditional check below.
+            pass
         if catalog is not None:
             if not route.execution_policy_digest:
                 route = replace(
@@ -208,6 +214,29 @@ class HostedRoomService:
             self.peer_routes[key], self._peer_route_status[key] = route, "ready"
             if client is not None:
                 self.peer_clients[key] = client
+
+    def _require_roster_route_identity(
+        self, room_id: str, member_id: str, route: PeerMemberRoute
+    ) -> None:
+        """Require a route to name the immutable peer identity stored in the room roster."""
+        from gateway.hosted_room_peer import RoomMemberIdentity
+
+        member = next((
+            value for value in self._room(room_id).get("members") or []
+            if isinstance(value, Mapping)
+            and str(value.get("member_id") or "") == member_id
+        ), None)
+        target = member.get("target") if isinstance(member, Mapping) else None
+        if not isinstance(target, Mapping) or target.get("kind") != "peer":
+            raise ValueError("peer route does not match an immutable roster identity")
+        expected = RoomMemberIdentity.from_mapping({
+            "member_id": member_id,
+            "target_install_id": target.get("installation_id"),
+            "target_profile": target.get("profile"),
+            "capability_digest": target.get("capability_digest"),
+        })
+        if route.member_identity != expected or route.member_id != member_id:
+            raise ValueError("peer route does not match its immutable roster identity")
 
     def revoke_room_routes(self, room_id: str) -> int:
         """Revoke and forget every scoped peer route for one room; an unreachable target
@@ -239,6 +268,7 @@ class HostedRoomService:
             if self._member_is_peer(binding.room_id, member_id):
                 raise RuntimeError("peer room route is unavailable")
             return self.rpc
+        self._require_roster_route_identity(binding.room_id, member_id, route)
         client = self.peer_clients.get(key)
         if client is None:
             raise RuntimeError("peer room client is unavailable")

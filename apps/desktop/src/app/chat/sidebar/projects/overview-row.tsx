@@ -121,6 +121,7 @@ export function ProjectOverviewRow({
 }: ProjectOverviewRowProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const projectLabel = project.isNoProject ? s.projects.home : project.label
   const isActive = project.id === activeProjectId
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
@@ -192,13 +193,13 @@ export function ProjectOverviewRow({
       // link's own name carries the auto cue — screen readers get it too.
       aria-label={
         project.isAuto
-          ? `${s.projects.enter(project.label)} (${s.projects.autoDiscovered})`
-          : s.projects.enter(project.label)
+          ? `${s.projects.enter(projectLabel)} (${s.projects.autoDiscovered})`
+          : s.projects.enter(projectLabel)
       }
       labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
       onClick={() => onEnter?.(project.id)}
     >
-      {project.label}
+      {projectLabel}
     </SidebarRowLink>
   )
 
@@ -211,9 +212,9 @@ export function ProjectOverviewRow({
               folder" chat. New session sits outermost: it's the one you reach
               for. */}
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
-          {onNewSession && (
+          {onNewSession && (!project.isNoProject || project.isHome) && (
             <WorkspaceAddButton
-              label={s.newSessionIn(project.label)}
+              label={s.newSessionIn(projectLabel)}
               onClick={() => onNewSession(newSessionPath)}
               onPointerDown={
                 onNewSessionSplit
@@ -231,7 +232,7 @@ export function ProjectOverviewRow({
                           })
                         },
                         event,
-                        { cwd: newSessionPath, label: s.newSessionIn(project.label) }
+                        { cwd: newSessionPath, label: s.newSessionIn(projectLabel) }
                       )
                     }
                   : undefined
@@ -266,7 +267,7 @@ export function ProjectOverviewRow({
       ref={rowRef}
       toggle={
         preview.length > 0
-          ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
+          ? { ariaLabel: s.projects.toggle(projectLabel, !open), onToggle: toggleOpen, open }
           : undefined
       }
       totals={{ costUsd: project.totalCostUsd ?? 0, tokens: project.totalTokens ?? 0 }}

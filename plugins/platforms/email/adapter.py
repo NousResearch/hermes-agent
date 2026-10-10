@@ -62,13 +62,11 @@ _COMMENT_RE = re.compile(r"\([^()]*\)")
 # Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
 # a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
 _MAX_FROM_LEN = 2048
-# Only these headers are needed to reject a sender. Request one byte past the
-# limit so a truncated preflight fails closed without downloading the MIME body.
+# Preserve all wire header boundaries: HEADER.FIELDS hides intervening fields
+# and could turn separate Authentication-Results into an apparently trusted block.
+# Request one byte past the limit so oversized headers fail closed before the body.
 _MAX_PREAUTH_HEADER_BYTES = 64 * 1024
-_PREAUTH_FETCH = (
-    f"(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS {' '.join(h.upper() for h in _AUTOMATED_HEADERS)})]"
-    f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
-)
+_PREAUTH_FETCH = f"(BODY.PEEK[HEADER]<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
@@ -366,24 +364,36 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
-    pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
+    FIRST instance anchors trust and must match the required, already-normalised *authserv_id* exactly.
+    Fastmail may precede its verdict with auxiliary-only fields: only physically adjacent fields with the same
+    messagingengine.com pin may be consulted, stopping at the first SPF/DKIM/DMARC verdict. A matching id and
+    adjacency do not prove provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
-    if not (headers := msg.get_all("Authentication-Results")):
+    # raw_items retains intervening fields, unlike get_all("Authentication-Results").
+    fields = iter(msg.raw_items())
+    first = next((value for name, value in fields if name.lower() == "authentication-results"), None)
+    if first is None:
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
-    # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
-    # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
-    if (clauses := _ar_clauses(trusted)) is None:
-        return False, "unbalanced quote or comment in Authentication-Results"
-    if not authserv_id:  # without a pin the topmost header may be one the sender wrote
-        return False, _MISSING_AUTHSERV_REASON
-    if clauses[0].strip().lower() != authserv_id:
-        return False, _UNTRUSTED_AUTHSERV_REASON
+    trusted = " ".join(str(first).split())
+    split_fastmail = authserv_id == "messagingengine.com" or authserv_id.endswith(".messagingengine.com")
+    while True:
+        # Keep current clause-aware parsing and exact-pin policy for every candidate.
+        if (clauses := _ar_clauses(trusted)) is None:
+            return False, "unbalanced quote or comment in Authentication-Results"
+        if not authserv_id:
+            return False, _MISSING_AUTHSERV_REASON
+        if clauses[0].strip().lower() != authserv_id:
+            return False, _UNTRUSTED_AUTHSERV_REASON
+        if not split_fastmail or any(_AUTH_METHOD_RE.match(clause) for clause in clauses):
+            break  # a failed authentication verdict must never fall through to a lower pass
+        name, value = next(fields, ("", ""))
+        if name.lower() != "authentication-results":
+            return False, "no authentication verdict in trusted Fastmail header block"
+        trusted = " ".join(str(value).split())
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}

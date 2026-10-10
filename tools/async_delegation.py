@@ -73,7 +73,7 @@ _last_orphan_sweep: dict[str, float] = {}
 # the normal finalize path, and only force-finalized (terminal ``stalled`` event) if
 # it never returns. Thresholds mirror delegate_tool's sync heartbeat monitor.
 _STALE_CHECK_INTERVAL = 30.0
-_STALE_IDLE_SECONDS = 450.0
+_STALE_IDLE_SECONDS = float(__import__('os').environ.get('HERMES_ASYNC_DELEGATION_IDLE_STALE_SECONDS', 450.0))
 _STALE_IN_TOOL_SECONDS = 1200.0
 _STALL_GRACE_SECONDS = 120.0
 

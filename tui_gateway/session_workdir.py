@@ -6,6 +6,7 @@ install time (method_ctx.bind_module), so they reference server.py globals bare.
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import Any
 
 from tui_gateway import git_probe
@@ -133,8 +134,10 @@ def _is_remote_cwd_shape(raw: str) -> bool:
     """An ssh working directory the remote shell can resolve: ``~``, ``~/…`` or absolute (a relative one would be
     stored and git-probed relative to the gateway's own cwd)."""
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
+    from posixpath import isabs as remote_isabs
 
-    return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
+    # SSH paths belong to the remote POSIX shell, not the Windows gateway host.
+    return _is_ssh_remote_tilde_cwd("ssh", raw) or remote_isabs(raw)
 
 
 def _is_container_path(raw: str) -> bool:

@@ -38,6 +38,7 @@ from tools.approval_floors import (
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
+from tools.approval_unattended_floor import DESTRUCTIVE_DESCRIPTIONS, unattended_approve_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -651,6 +652,24 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     return None
 
 
+def _unattended_approve_refusal(command: str, ctx: _Unattended) -> dict | None:
+    """Approve-mode floor for an unattended context: the few commands auto-approve must still
+    refuse (see ``tools.approval_unattended_floor``). None = auto-approve as configured."""
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    destructive = is_dangerous and description in DESTRUCTIVE_DESCRIPTIONS
+    reason = unattended_approve_refusal(
+        command, dangerous_description=description if is_dangerous else None,
+        tirith_result=_tirith_scan(command) if destructive else None)
+    if reason is None:
+        return None
+    logger.warning("Unattended approve-mode refusal (%s): %s (command: %s)", ctx.cfg_key, reason, command[:200])
+    return _blocked(
+        f"BLOCKED: {reason}. approvals.{ctx.cfg_key}: approve does not auto-approve this class of command "
+        f"because {ctx.clause}. Do NOT retry it in another spelling. Write the command out literally, "
+        "keep deletes inside the workspace, or ask a human to run it.",
+        pattern_key=pattern_key or "unattended_approve_refusal", description=reason)
+
+
 # --- Human-decision engine shared by the three gates ----------------------------------------------------------------
 # Every flagged action reaches a human the same way — selected plugin transport → gateway round-trip → pending
 # fallback → CLI prompt → persist — so the consent contract (silence is not consent, deny is a hard halt, a smart-DENY
@@ -1153,10 +1172,15 @@ def check_all_command_guards(command: str, env_type: str,
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
-        for ctx in _unattended_contexts():
+        contexts = _unattended_contexts()
+        for ctx in contexts:
             result = _unattended_deny(command, ctx)
             if result is not None:
                 return result
+        if contexts:
+            refused = _unattended_approve_refusal(command, contexts[0])
+            if refused is not None:
+                return refused
         return _approved()
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)

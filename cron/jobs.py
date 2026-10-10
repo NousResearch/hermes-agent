@@ -3435,19 +3435,136 @@ def _canonical_skill_ref(raw: Any) -> str:
 def referenced_skill_names() -> set[str]:
     """Skill names referenced by ANY cron job, deliberately including paused/disabled ones (resuming
     must still find them); the curator protects these from inactivity archival. Canonicalized as the
-    scheduler does, so absolute paths are protected too. A corrupt store yields an empty set."""
+    scheduler does, so absolute paths are protected too. Script jobs reference skills through their
+    script file — those files are scanned for ``skills/``-shaped path references that name real
+    directories under the skills root, which is the only visibility a ``skills: []`` script job
+    gives (#136030). A corrupt store yields an empty set; an unresolvable/missing/unreadable
+    script contributes nothing — never a crash."""
     try:
         jobs = load_jobs()
     except Exception:
         logger.debug("referenced_skill_names: failed to load cron jobs", exc_info=True)
         return set()
-    return {
-        cleaned
-        for job in jobs
-        if isinstance(job, dict)
-        for name in _normalize_skill_list(job.get("skill"), job.get("skills"))
-        if (cleaned := _canonical_skill_ref(name))
-    }
+    names: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
+            cleaned = _canonical_skill_ref(name)
+            if cleaned:
+                names.add(cleaned)
+        script = job.get("script")
+        if script:
+            try:
+                names |= _script_referenced_skill_names(script)
+            except Exception:
+                logger.debug(
+                    "referenced_skill_names: script scan failed for job %r",
+                    job.get("id"), exc_info=True)
+    return names
+
+
+# Script-file scan leg (#136030): a no_agent script job can hard-code
+# ``skills/<category>/<name>`` paths in its script body. The job references the
+# skill through that file even though its declared ``skills`` list is empty, and
+# script jobs never build a prompt (so scheduler_prompt's ``bump_use`` never
+# fires for them) — without this scan the skill's usage line stays flat, the
+# curator archives it, and the production script's next run breaks on the
+# moved directory. Read the script the scheduler would run, pick out
+# ``skills/``-shaped path references, and keep the segments that name real
+# directories under the skills root. Best-effort throughout: an unresolvable,
+# missing, unreadable, or oversized script contributes nothing and is logged
+# at debug — never a raise (same fail-open contract as the store read above).
+_SCRIPT_SCAN_MAX_BYTES = 1_000_000
+# Narrow domain: only a path-shaped ``skills/...`` token counts, with ``skills``
+# as a complete path segment (absolute paths like ``.../.hermes/skills/media/x``
+# qualify; ``vendor.skills/x`` does not). Requires at least one segment after
+# ``skills/``; the real-directory intersection below is the second guard.
+_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[A-Za-z0-9._-][\w./-]*")
+
+
+def _script_referenced_skill_names(script: str) -> set[str]:
+    """Skill names referenced by ``skills/...`` paths inside one job script.
+    ``script`` is the job's raw ``script`` field, resolved exactly as the
+    scheduler resolves it for execution: relative names anchor at
+    ``<HERMES_HOME>/scripts/`` (never the process cwd), and a path that escapes
+    the scripts dir is skipped — the scheduler would refuse to run it anyway
+    (cron.scheduler_script._resolve_script_path). Returns an empty set when
+    the script cannot be resolved or read."""
+    raw = str(script or "").strip()
+    if not raw or "\x00" in raw:
+        return set()
+    try:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = get_hermes_home() / "scripts" / path
+        path = path.resolve()
+        path.relative_to((get_hermes_home() / "scripts").resolve())
+    except (ValueError, RuntimeError, OSError):
+        # Unexpandable ``~``, unresolvable home, or a traversal/escape —
+        # the scheduler would refuse this script; contribute nothing.
+        logger.debug(
+            "referenced_skill_names: skipping script outside scripts dir: %r",
+            raw, exc_info=True)
+        return set()
+    if not path.is_file():
+        return set()
+    try:
+        if path.stat().st_size > _SCRIPT_SCAN_MAX_BYTES:
+            logger.debug(
+                "referenced_skill_names: script too large to scan (%d bytes): %s",
+                path.stat().st_size, path)
+            return set()
+        text = path.read_text(errors="replace")
+    except OSError:
+        logger.debug(
+            "referenced_skill_names: script unreadable: %s", path, exc_info=True)
+        return set()
+    except Exception:
+        logger.debug(
+            "referenced_skill_names: script scan failed: %s", path, exc_info=True)
+        return set()
+    skills_root = get_hermes_home() / "skills"
+    names: set[str] = set()
+    try:
+        for line in text.splitlines():
+            if "skills/" not in line:
+                continue
+            for token in line.split():
+                if "://" in token:
+                    # URL coincidence: a ``skills/`` segment inside a URL
+                    # token is not a local skill reference (narrow domain).
+                    continue
+                names |= _skill_names_in_token(token, skills_root)
+    except Exception:
+        logger.debug(
+            "referenced_skill_names: skill-path matching failed for %s",
+            path, exc_info=True)
+    return names
+
+
+def _skill_names_in_token(token: str, skills_root: Path) -> set[str]:
+    """Segment-wise intersection of one ``skills/``-shaped token with the real
+    skills tree: the last path segment naming an existing directory under the
+    skills root is the skill name (handles nested categories, e.g.
+    ``skills/media/movie-fetcher``)."""
+    names: set[str] = set()
+    for match in _SKILL_PATH_RE.finditer(token):
+        segments = [
+            seg for seg in match.group(0).split("/")[1:]
+            if seg not in ("", ".", "..")
+        ]
+        if not segments:
+            continue
+        probe = skills_root.joinpath(*segments)
+        while True:
+            if probe.is_dir() and probe != skills_root:
+                names.add(probe.name)
+                break
+            if probe == skills_root or not probe.is_relative_to(skills_root):
+                break
+            probe = probe.parent
+    return names
 
 
 def rewrite_skill_refs(

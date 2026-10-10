@@ -2144,6 +2144,21 @@ telemetry:
 
 
 # =============================================================================
+# Usage Budgets (Command Center → Usage, and the status-bar usage chip)
+# =============================================================================
+# Optional monthly limit per provider, in tokens OR dollars (not both). Tokens
+# are the dependable unit: providers without a price list never report a cost,
+# so a dollar budget counts only the sessions Hermes could price. Nothing is
+# enforced; the desktop shows how much is used and when the month's pace runs out.
+# usage:
+#   budgets:
+#     openrouter:
+#       monthly_usd: 20
+#     xiaomi:
+#       monthly_tokens: 50000000
+
+
+# =============================================================================
 # Login Policy (credentials themselves live in auth.json / .env)
 # =============================================================================
 auth:

@@ -340,7 +340,10 @@ def _setup_tui_worktree() -> dict:
 
             _threading.Thread(
                 target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        wt_info = _setup_worktree()
+        from hermes_cli.config import get_hermes_home
+        # The session's frozen cwd keeps this checkout; name the store from creation so a
+        # launcher killed with its terminal still leaves the tree to its sessions.
+        wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
     except Exception as exc:
         print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
     if not wt_info:

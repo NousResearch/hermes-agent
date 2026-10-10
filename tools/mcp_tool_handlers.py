@@ -509,11 +509,24 @@ def _content_dual_emits_structured(result, structured) -> bool:
     order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
     copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
     richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
-    ``structuredContent`` (#115430)."""
+    ``structuredContent`` (#115430).
+
+    Also covers the FastMCP ``wrap_result`` string form: the server wraps a *string* result as
+    ``structuredContent == {"result": <that same string>}`` (e.g. Hindsight's
+    ``get_mental_model``). The parsed-JSON comparison misses it (model object vs ``{"result": …}``
+    wrapper), so a verbatim string check runs first — exact ``{"result": text}`` equality only,
+    never a heuristic.
+    """
     for block in (result.content or []):
         text = getattr(block, "text", None)
         if not text:
             continue
+        if (
+            isinstance(structured, dict)
+            and set(structured.keys()) == {"result"}
+            and structured.get("result") == text
+        ):
+            return True
         try:
             if json.loads(text) == structured:
                 return True

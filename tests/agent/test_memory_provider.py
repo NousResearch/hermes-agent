@@ -1221,6 +1221,7 @@ class TestTrivialPromptClassifier:
         "ja", "Danke :)", "oui", "merci", "d'accord", "d\u2019accord",  # German / French
         "好的", "谢谢!", "是", "はい", "ありがとう",    # Chinese / Japanese
         "ครับ", "ค่ะ", "โอเค", "ขอบคุณ",           # Thai
+        "谢谢！", "好的。", "はい。", "ありがとう！", "¡gracias!", "¿sí?",  # full-width / inverted marks
     ])
     def test_multilingual_acknowledgements_are_trivial(self, text):
         from agent.memory_provider import is_trivial_prompt

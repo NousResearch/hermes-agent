@@ -884,6 +884,7 @@ export interface DesktopUpdateStatus {
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
   targetSha?: string
+  targetRequiredBackendContract?: number | null
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
   fetchedAt?: number

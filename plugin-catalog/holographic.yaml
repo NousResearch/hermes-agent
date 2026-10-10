@@ -1,14 +1,14 @@
 name: holographic
 title: Holographic
 repo: https://github.com/itpartypattaya/hermes-plugin-holographic
-sha: eb4367810ab87535c37d6b820adbaa47874f4b03
-version: "0.6.0"
+sha: 46b6f9084bd6ebd13262fb2360f3314c352f4be8
+version: "0.6.1"
 description: "Local fact-store memory provider: SQLite with FTS5 keyword search (word forms in English, Russian, Spanish, French, Portuguese, Indonesian, German, Hindi, Arabic and Bengali; Chinese, Japanese, Korean and Thai by character n-grams; synonyms and other roots through keywords the agent gives when it stores a fact), trust scores, entities with aliases and HRR (holographic reduced representation) recall, with no API key, network or model calls. The provider that shipped in-tree as plugins/memory/holographic, with the same provider name, config (plugins.hermes-memory-store) and memory_store.db, so `hermes update` moves existing users onto it; the schema change is additive and older versions keep working on the file. Taken over from Nous Research's handoff copy (NousResearch/hermes-plugin-holographic) and maintained by itpartypattaya; since 0.1.1 it fixes probe/reason/related/contradict, non-atomic writes and the never-written retrieval_count, gates recall by relevance without repeats, flags duplicates and conflicts when a fact is added, and honours the provider contract (read-only subagent/cron contexts, hermes_home, mirror metadata, backup_paths). Disclosure — local only: reads and writes one SQLite file per profile ($HERMES_HOME/memory_store.db unless db_path says otherwise), or with scope: user one file per user under holographic-users/ next to it; no network calls, subprocesses, credentials or telemetry; with auto_extract on (off by default) user sentences that state a preference or decision are stored."
 maintainer: itpartypattaya
 tier: community
 category: memory
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/itpartypattaya/hermes-plugin-holographic/blob/eb4367810ab87535c37d6b820adbaa47874f4b03/README.md
+docs_url: https://github.com/itpartypattaya/hermes-plugin-holographic/blob/46b6f9084bd6ebd13262fb2360f3314c352f4be8/README.md
 known_issues:
 - "Word forms are matched by stems, not a dictionary: an irregular form can miss (ponies / pony). A synonym is found only if the fact's keywords name it (no embeddings); facts stored without keywords (older ones, auto_extract) need `enrich`."
 - "Arabic, Indic scripts, Indonesian and German are matched by scanning the facts' text: the first such search after start analyses every fact (about 1 s at 5,000 facts, 4-6 s at 20,000); stores without such facts never scan."

@@ -684,6 +684,21 @@ def _banner_skill_lines(skills_by_category: dict[str, list[str]], skills_enabled
     return lines
 
 
+def _skills_toolset_enabled(enabled_toolsets: set[str]) -> bool:
+    """True when the session can reach the skills catalog (``skill_view`` / ``skills_list``).
+
+    Sessions are seeded with composite names (``hermes-cli``, ``coding``, ``hermes-telegram``)
+    whose resolved tools carry the skill tools without the literal ``skills`` entry, so the gate
+    is decided on the resolved tool names, not on the toolset name (#136201). An empty list is
+    an older caller and keeps the catalog visible.
+    """
+    if not enabled_toolsets:
+        return True
+    from toolsets import resolve_toolset
+    skill_tools = set(resolve_toolset("skills"))
+    return any(skill_tools.intersection(resolve_toolset(name)) for name in enabled_toolsets)
+
+
 def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
     session_id: str | None = None, get_toolset_for_tool=None, context_length: int | None = None, provider: str | None = None,
@@ -724,10 +739,10 @@ def build_welcome_banner(
         right_lines += ["", f"[bold {accent}]MCP Servers[/]"]
         right_lines.extend(_mcp_server_line(srv, dim=dim, text=text) for srv in mcp_status)
     right_lines += ["", f"[bold {accent}]Available Skills[/]"]
-    # The skills catalog is only reachable when the `skills` toolset is enabled (skill_view /
-    # skill_manage). When disabled (Blank Slate) the agent cannot load any skill, so advertising
-    # the on-disk catalog would be misleading — reflect the real state.
-    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    # The skills catalog is only reachable when a skill tool is in the session's tool surface.
+    # When none is (Blank Slate) the agent cannot load any skill, so advertising the on-disk
+    # catalog would be misleading — reflect the real state.
+    _skills_enabled = _skills_toolset_enabled(_enabled_ts)
     if not _skills_enabled:
         skills_by_category = {}
     elif skills_by_category is None:

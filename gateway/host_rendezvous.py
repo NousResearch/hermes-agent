@@ -71,6 +71,13 @@ ROLE_SERVE = "serve"
 ROLE_DESKTOP_SERVE = "desktop-serve"
 _ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
 
+# Paths whose foreign-owner warning has already been logged by this process, with the culprit
+# (file uid, parent uid) last warned about: _record_is_own runs on every read_record() poll, and
+# an unfixable ownership chain (state root created by root before the privilege drop) would
+# otherwise flood the log with the same line. Keying on the culprit — not the path alone —
+# re-arms the warning when the failing side or uid changes on an already-warned path.
+_FOREIGN_OWNER_WARNED: dict[Path, tuple[int, int]] = {}
+
 # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
 # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.
 # The PATH is part of the key because the lock dir is env-derived (HERMES_GATEWAY_LOCK_DIR):
@@ -193,8 +200,15 @@ def _record_is_own(path: Path) -> bool:
         return False
     uid = os.getuid()  # windows-footgun: ok — unreachable on Windows (early return above)
     if info.st_uid != uid or parent.st_uid != uid:
-        logger.warning(
-            "ignoring host record %s: owned by uid %s (expected %s)", path, info.st_uid, uid)
+        # read_record() runs on every rendezvous poll, so the warning is deduped per
+        # (path, culprit) — a foreign-owned state root fires it thousands of times a
+        # day otherwise, while a changed culprit on the same path warns again.
+        culprit = (info.st_uid, parent.st_uid)
+        if _FOREIGN_OWNER_WARNED.get(path) != culprit:
+            _FOREIGN_OWNER_WARNED[path] = culprit
+            logger.warning(
+                "ignoring host record %s: file uid %s, parent dir %s uid %s (expected %s)",
+                path, info.st_uid, path.parent, parent.st_uid, uid)
         return False
     return True
 

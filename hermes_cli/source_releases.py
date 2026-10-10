@@ -95,7 +95,11 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
 
 
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
-    """HEAD's sha when it equals or descends from ``commit``, else None."""
+    """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
+
+    An unchosen default must never move a checkout backward on a guess, so an
+    unknown relation (shallow history, GitHub unreachable) keeps HEAD.
+    """
     from hermes_cli.source_check import _github_compare, source_git_env
 
     def run(*args):
@@ -107,11 +111,13 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     if not _SHA.fullmatch(head):
         return None
     ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry in (0, 1):
-        return head if ancestry == 0 else None
-    # A shallow checkout may lack the release commit; GitHub knows the relation.
+    if ancestry == 0:
+        return head
+    # A shallow boundary makes exit 1 a guess; full history makes it proof.
+    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
+        return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
-    return head if status in ("ahead", "identical") else None
+    return None if status in ("behind", "diverged") else head
 
 
 def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:

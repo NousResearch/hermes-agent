@@ -98,7 +98,7 @@ def _model_flow_custom(config):
     it appears in the provider menu on subsequent runs."""
     from hermes_cli.main_provider_setup import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import custom_endpoint_key_env, get_env_value, save_env_value
+    from hermes_cli.config import custom_endpoint_key_env, drop_credentials_of_other_route, get_env_value, save_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -175,8 +175,10 @@ def _model_flow_custom(config):
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
+        prior = dict(model)
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        drop_credentials_of_other_route(model, prior)
         # A previous endpoint's key_env pointer would outrank the credential written below.
         model.pop("key_env", None)
         model.pop("api_key_env", None)
@@ -324,7 +326,7 @@ def _model_flow_named_custom(config, provider_info):
     saved model is pre-selected and is the fallback when probing fails."""
     from hermes_cli.main_provider_setup import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import drop_credentials_of_other_route, load_config, save_config
     from hermes_cli.model_switch import _entry_models_discovered, _models_config_is_allowlist
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -389,6 +391,7 @@ def _model_flow_named_custom(config, provider_info):
     # Activate and save the model to the custom_providers entry
     _save_model_choice(model_name)
     cfg, model = _load_config_model_section()
+    prior = dict(model)
     # The endpoint being activated owns the credential: drop the previous endpoint's pointer
     # (key_env outranks the provider entry's own key at resolution time).
     model.pop("key_env", None)
@@ -402,6 +405,8 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = _custom_provider_base_url_config_value(provider_info, base_url)
         if config_api_key:
             model["api_key"] = config_api_key
+        else:
+            drop_credentials_of_other_route(model, prior)
     # Apply api_mode from custom_providers entry, or clear stale value
     if api_mode:
         model["api_mode"] = api_mode

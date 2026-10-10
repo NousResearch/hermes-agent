@@ -2259,3 +2259,62 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+class TestLangfuseServiceIdentity:
+    """The existing bundled Langfuse plugin remains opt-in and profile-aware."""
+
+    def test_legacy_profile_without_service_name_warns_once(self, tmp_path, monkeypatch, caplog):
+        plugin = importlib.import_module("plugins.observability.langfuse")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: {}" + chr(10), encoding="utf-8")
+        monkeypatch.setattr(plugin, "get_config_path", lambda: config_path)
+        monkeypatch.setattr(plugin, "_DEFAULT_SERVICE_NAME_WARNED", False)
+        with caplog.at_level(logging.WARNING, logger=plugin.__name__):
+            assert plugin._require_service_name() == "hermes-agent"
+            assert plugin._require_service_name() == "hermes-agent"
+        assert caplog.text.count("compatibility identity") == 1
+
+    @pytest.mark.parametrize("invalid", ["", "unknown_service", "name,broken"])
+    def test_explicit_invalid_identity_disables_only_langfuse(
+        self, tmp_path, monkeypatch, invalid,
+    ):
+        plugin = importlib.import_module("plugins.observability.langfuse")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "observability:" + chr(10) + "  service_name: " + repr(invalid) + chr(10),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin, "get_config_path", lambda: config_path)
+        with pytest.raises(plugin.LangfuseServiceNameError):
+            plugin._require_service_name()
+
+    def test_otel_identity_is_set_before_client_construction(self, tmp_path, monkeypatch):
+        plugin = importlib.import_module("plugins.observability.langfuse")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "observability:" + chr(10) + "  service_name: profile-A" + chr(10),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugin, "get_config_path", lambda: config_path)
+        credentials = {
+            "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-test-123",
+            "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-test-123",
+        }
+        monkeypatch.setattr(plugin, "_secret", lambda key: credentials.get(key, ""))
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=test,service.name=old")
+        monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+        seen = {}
+
+        def fake_client(**kwargs):
+            import os
+            seen["service"] = os.environ.get("OTEL_SERVICE_NAME")
+            seen["resource"] = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+            seen["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr(plugin, "Langfuse", fake_client)
+        assert plugin._build_client() is not None
+        assert seen["service"] == "profile-A"
+        assert seen["resource"] == "service.name=profile-A,deployment.environment=test"
+        assert seen["kwargs"]["public_key"] == credentials["HERMES_LANGFUSE_PUBLIC_KEY"]

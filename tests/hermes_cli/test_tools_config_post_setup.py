@@ -165,3 +165,53 @@ def test_langfuse_setup_uses_plugin_admission_and_preserves_config_on_refusal(
         plugin_config = read_raw_config()["plugins"]
         assert set(plugin_config["enabled"]) == {"other", "observability/langfuse"}
         assert plugin_config["disabled"] == []
+
+
+def test_langfuse_wizard_persists_service_identity(monkeypatch):
+    """The supported setup flow saves config before enabling the plugin."""
+    from hermes_cli.tools_config_post_setup import _post_setup_langfuse
+    config = {"observability": {"service_name": "hermes-agent"}}
+    saved = []
+    enabled = []
+    monkeypatch.setattr("pm.sync_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config",
+        lambda value, **kwargs: saved.append((dict(value), kwargs)),
+    )
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        "hermes_cli.tools_config_post_setup.sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda question, default: "profile-A")
+    monkeypatch.setattr("hermes_cli.plugins_cmd.cmd_enable", lambda plugin: enabled.append(plugin))
+
+    _post_setup_langfuse()
+
+    assert config["observability"]["service_name"] == "profile-A"
+    assert saved[0][1]["preserve_keys"] == {("observability", "service_name")}
+    assert saved[0][1]["merge_existing"] is True
+    assert enabled == ["observability/langfuse"]
+
+
+def test_langfuse_noninteractive_setup_preserves_identity(monkeypatch):
+    """Dashboard setup must not read stdin or change an existing identity."""
+    from types import SimpleNamespace
+    from hermes_cli.tools_config_post_setup import _post_setup_langfuse
+    config = {"observability": {"service_name": "profile-B"}}
+    enabled = []
+    monkeypatch.setattr("pm.sync_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected prompt")))
+    monkeypatch.setattr(
+        "hermes_cli.tools_config_post_setup.sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: False)),
+    )
+    monkeypatch.setattr("hermes_cli.plugins_cmd.cmd_enable", lambda plugin: enabled.append(plugin))
+
+    _post_setup_langfuse()
+
+    assert config["observability"]["service_name"] == "profile-B"
+    assert enabled == ["observability/langfuse"]

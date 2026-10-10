@@ -294,6 +294,12 @@ DEFAULT_CONFIG = {
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
 
+    # Langfuse service identity: compatible default for credential-only homes.
+    # The setup wizard writes an explicit value for new installations.
+    "observability": {
+        "service_name": "hermes-agent",
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

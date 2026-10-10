@@ -20,7 +20,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from hermes_constants import get_config_path
+
 logger = logging.getLogger(__name__)
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - PyYAML is a core dependency
+    yaml = None
 
 try:
     from langfuse import Langfuse, propagate_attributes
@@ -73,6 +80,12 @@ _LANGFUSE_KEY_PREFIXES: dict[str, str] = {
     "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
     "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
 }
+_DEFAULT_SERVICE_NAME = "hermes-agent"
+_DEFAULT_SERVICE_NAME_WARNED = False
+
+
+class LangfuseServiceNameError(RuntimeError):
+    """An explicitly configured OpenTelemetry service identity is invalid."""
 
 # (langfuse usage key, CanonicalUsage attribute / summary-dict key, PricingEntry attribute)
 _USAGE_FIELDS = (
@@ -195,6 +208,74 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     return f"{env_name}={preview} (expected {expected!r} prefix)"
 
 
+
+def _compatibility_service_name() -> str:
+    """Retain existing installations while exposing the shared legacy identity."""
+    global _DEFAULT_SERVICE_NAME_WARNED
+    if not _DEFAULT_SERVICE_NAME_WARNED:
+        logger.warning(
+            "Langfuse plugin: observability.service_name is unset; using "
+            "compatibility identity %r. Configure a distinct service name "
+            "when multiple Hermes agents share one Langfuse project.",
+            _DEFAULT_SERVICE_NAME,
+        )
+        _DEFAULT_SERVICE_NAME_WARNED = True
+    return _DEFAULT_SERVICE_NAME
+
+
+def _configured_service_name() -> str:
+    """Read raw profile config so defaults do not hide missing settings."""
+    path = get_config_path()
+    if yaml is None:
+        raise LangfuseServiceNameError("PyYAML is unavailable; cannot read service identity")
+    if not path.is_file():
+        return _compatibility_service_name()
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            content = yaml.safe_load(stream) or {}
+    except Exception as exc:
+        raise LangfuseServiceNameError(
+            f"Cannot read Langfuse service identity from {path}: {exc}"
+        ) from exc
+    if not isinstance(content, dict):
+        return _compatibility_service_name()
+    value = content.get("observability")
+    if not isinstance(value, dict) or "service_name" not in value:
+        return _compatibility_service_name()
+    return str(value["service_name"] or "").strip()
+
+
+def _require_service_name() -> str:
+    service_name = _configured_service_name()
+    if (
+        not service_name or service_name.lower() == "unknown_service"
+        or any(c in service_name for c in (",", "=", chr(10), chr(13)))
+    ):
+        raise LangfuseServiceNameError(
+            "Langfuse observability.service_name must be a nonempty service "
+            "name other than unknown_service, without commas or equals signs"
+        )
+    return service_name
+
+
+def _langfuse_credentials_configured() -> bool:
+    """Honor the active profile's secret scope; never read another home's keys."""
+    public_key = _secret("HERMES_LANGFUSE_PUBLIC_KEY") or _secret("LANGFUSE_PUBLIC_KEY")
+    secret_key = _secret("HERMES_LANGFUSE_SECRET_KEY") or _secret("LANGFUSE_SECRET_KEY")
+    return bool(public_key and secret_key)
+
+
+def _ensure_otel_service_name(service_name: str) -> None:
+    """Apply service identity just before SDK creation under the client lock."""
+    os.environ["OTEL_SERVICE_NAME"] = service_name
+    parts = [
+        value.strip() for value in _env("OTEL_RESOURCE_ATTRIBUTES").split(",")
+        if value.strip() and value.split("=", 1)[0].strip() != "service.name"
+    ]
+    parts.insert(0, f"service.name={service_name}")
+    os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(parts)
+
+
 def _settled_client() -> Any:
     """The active profile's settled client slot value (client, ``_INIT_FAILED`` or ``None`` = never
     built). Never initializes."""
@@ -281,6 +362,14 @@ def _build_client() -> Optional[Langfuse]:
             kwargs["sample_rate"] = float(sample_rate)
         except ValueError:
             logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
+
+    try:
+        # _build_client runs beneath _LANGFUSE_CLIENT_LOCK, avoiding
+        # cross-profile races during client initialization.
+        _ensure_otel_service_name(_require_service_name())
+    except LangfuseServiceNameError as exc:
+        logger.warning("Langfuse plugin disabled: %s", exc)
+        return None
 
     try:
         return Langfuse(**kwargs)
@@ -1030,6 +1119,17 @@ def on_subagent_stop(*, parent_turn_id: str = "", child_session_id: Any = None, 
 
 
 def register(ctx) -> None:
+    # A bad identity disables only Langfuse at plugin load. The agent's
+    # generic hook-isolation contract is not changed.
+    try:
+        has_credentials = _langfuse_credentials_configured()
+    except Exception:
+        # Some plugin-management operations run without an active secret scope.
+        # Runtime construction will validate under the actual profile scope.
+        has_credentials = False
+    if has_credentials:
+        _require_service_name()
+
     # Both hook-name variants so the plugin works across Hermes versions:
     # *_api_request fire per API call (preferred); *_llm_call once per turn.
     hooks = (

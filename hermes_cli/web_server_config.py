@@ -216,6 +216,8 @@ _CATEGORY_MERGE: dict[str, str] = {
     "computer_use": "agent",
     "telemetry": "security",
     "plugins": "agent",
+    # One observability setting should not create an orphan dashboard tab.
+    "observability": "agent",
     "doctor": "general",
     # `runtime.nofile_soft_limit` (#78873) is the only schema-surfaced runtime field — fold it into the
     # agent tab rather than spawning a one-field orphan category.

@@ -154,7 +154,13 @@ hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
 The wizard collects your keys, prepares the declared `langfuse` extra through PM
 when needed, and enables `observability/langfuse`. Restart Hermes and the next
 turn ships a trace. If preparation fails, retry through `hermes tools`; do not
-install the SDK into the selected environment with pip.
+install the SDK into the selected environment with pip. The wizard also saves
+`observability.service_name` in the active profile's `config.yaml`. Use a unique
+name when multiple agents send data to the same Langfuse project. Existing
+credential-only setups keep working with a one-time warning and the compatibility
+name `hermes-agent`; an explicitly empty value or `unknown_service` disables
+only Langfuse. The identity is written to `OTEL_SERVICE_NAME` and the
+`service.name` OpenTelemetry resource attribute before SDK initialization.
 
 **Setup (manual):**
 

@@ -169,6 +169,32 @@ def _post_setup_langfuse() -> None:
         _print_warning(f"    langfuse SDK install failed: {exc}")
         _info_lines("Retry with: hermes tools")
         return
+
+    # Persist a non-secret identity through the supported setup flow before
+    # enabling the plugin, rather than making credential-only homes fail.
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    observability = config.get("observability")
+    if not isinstance(observability, dict):
+        observability = {}
+        config["observability"] = observability
+    default_name = str(observability.get("service_name") or "hermes-agent").strip()
+    if sys.stdin is not None and sys.stdin.isatty():
+        from hermes_cli.setup import prompt as setup_prompt
+        service_name = (
+            setup_prompt("    Langfuse OpenTelemetry service name", default_name) or ""
+        ).strip()
+    else:
+        # Dashboard / command-driven post-setup has no interactive stdin.
+        # Preserve a configured identity (or the compatibility default).
+        service_name = default_name
+    if not service_name or service_name.lower() == "unknown_service" or any(c in service_name for c in (",", "=", chr(10), chr(13))):
+        _print_warning("    Invalid service name; Langfuse will not be enabled.")
+        return
+    observability["service_name"] = service_name
+    save_config(config, preserve_keys={("observability", "service_name")}, merge_existing=True)
+    _print_success(f"    OpenTelemetry service name: {service_name}")
+
     try:
         from hermes_cli.plugins_cmd import cmd_enable
         cmd_enable("observability/langfuse")

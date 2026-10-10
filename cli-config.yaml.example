@@ -43,6 +43,16 @@ runtime:
   nofile_soft_limit: 4096
 
 # =============================================================================
+# Observability
+# =============================================================================
+# Non-secret OpenTelemetry identity for bundled opt-in observability plugins.
+# Legacy credential-only Langfuse installations warn and fall back to this
+# value. Set a distinct name per agent when they share a Langfuse project.
+# Explicit empty or "unknown_service" rejects Langfuse initialization.
+observability:
+  service_name: "hermes-agent"
+
+# =============================================================================
 # Attachments
 # =============================================================================
 # Where the TUI/Desktop gateway stages session file attachments (file uploads and

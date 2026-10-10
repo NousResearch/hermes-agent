@@ -1,5 +1,10 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
+import {
+  $composerSpellcheck,
+  $composerSpellcheckLanguage
+} from '@/app/chat/composer/composer-editor'
 import {
   type ClipboardEvent,
   type FC,
@@ -94,6 +99,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
+  // Opt-in spellcheck (#48375), shared with the main composer's store.
+  const spellcheck = useStore($composerSpellcheck)
+  const spellcheckLanguage = useStore($composerSpellcheckLanguage)
   const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
@@ -904,7 +912,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
-              spellCheck={false}
+              // Opt-in spellcheck (#48375); autoCorrect/autoCapitalize stay off.
+              lang={spellcheckLanguage || undefined}
+              spellCheck={spellcheck}
               suppressContentEditableWarning
             />
             <ComposerDirectiveActions editorRef={editorRef} />

@@ -19470,8 +19470,19 @@ function configureSpellChecker() {
     }
 
     const available = defaultSession.availableSpellCheckerLanguages || []
+    // An explicit desktop.editor.language (#48375) is bridged via the launcher
+    // and wins over the system locale, so right-click suggestions come back in
+    // the configured language. It must be a dictionary Chromium actually has,
+    // else fall through to the system-locale ladder below.
+    const configured = (process.env.HERMES_DESKTOP_SPELLCHECK_LANGUAGE || '').trim()
     const locale = (app.getLocale && app.getLocale()) || 'en-US'
-    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
+    const candidates = [
+      ...(configured ? [configured, configured.split('-')[0]] : []),
+      locale,
+      locale.split('-')[0],
+      'en-US',
+      'en',
+    ]
     const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
 
     defaultSession.setSpellCheckerLanguages([chosen])

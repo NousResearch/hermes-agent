@@ -28,7 +28,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code)
+    _extract_status_code, _looks_like_overload_probe_error)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
@@ -3649,8 +3649,12 @@ class _StreamingCall(StreamingWaitMonitor):
         builds a fresh _StreamingCall, so an instance flag would re-probe every attempt)
         surfaces it: on success the response is delivered for this turn WITHOUT latching
         non-streaming (a transient gateway 500 must not permanently disable streaming);
-        on a probe 4xx that error REPLACES the opaque 5xx; any other probe failure keeps
-        the original error. The successful delivery is bracketed by its own stream
+        on a probe 4xx that error REPLACES the opaque 5xx — UNLESS the 4xx is an
+        overload-window artifact (an overloaded engine can answer the probe 401/403 with
+        auth-flavoured wording while the credential is healthy; replacing the 5xx with it
+        would poison credential_pool for the 401 TTL, #136025), in which case the original
+        error stands; any other probe failure keeps the original error. The successful
+        delivery is bracketed by its own stream
         start/end pair (the failed attempt already emitted a terminal end), and a response
         that cannot be replayed propagates ``e``. The probe runs on this worker thread while
         the stream monitor still polls, so its stale check is suspended for the probe's
@@ -3684,6 +3688,14 @@ class _StreamingCall(StreamingWaitMonitor):
         except Exception as probe_err:
             probe_status = _extract_status_code(probe_err)
             if probe_status is not None and probe_status < 500:
+                if _looks_like_overload_probe_error(probe_err):
+                    # The probe hit the SAME overload window that killed the stream and was
+                    # answered an auth-flavoured artifact (overloaded engines 401/403 with
+                    # "Incorrect API key provided" while the healthy key keeps serving).
+                    # Replacing the 5xx with it would poison credential_pool for the 401
+                    # TTL — keep the original 5xx: backoff/retry, never rotation (#136025).
+                    logger.info("Unmask probe 4xx is an overload-window artifact; keeping the original server error: %s", probe_err)
+                    return False
                 # The provider's REAL validation error beats the opaque 5xx.
                 logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
                 self.result["error"] = probe_err

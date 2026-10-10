@@ -171,6 +171,19 @@ _OVERLOADED_PATTERNS = (
     "at capacity", "over capacity",
 )
 
+# Overload wording that marks a probe's 4xx as a 5xx-window ARTIFACT rather than a
+# real validation verdict (#136025): an overloaded engine can answer the unmask probe
+# 401/403 while the healthy key keeps serving. Chinese providers (stepfun et al.)
+# answer in Chinese, so the Chinese wording is load-bearing here. Deliberately the
+# same narrow style as _OVERLOADED_PATTERNS — a generic "busy" or "limit" would
+# swallow real auth failures.
+_OVERLOADED_PROBE_PATTERNS = (
+    "overloaded", "server overload", "over capacity", "at capacity", "capacity",
+    "temporarily unavailable", "try again later", "try again in", "please retry",
+    "service is busy", "server is busy", "engine is busy",
+    "过载", "超载", "繁忙", "稍后重试", "稍后再试", "负载",
+)
+
 # Usage-limit patterns that need disambiguation (billing OR rate_limit), and
 # the signals that mark such a limit as transient (periodic quota, not billing).
 _USAGE_LIMIT_PATTERNS = ("usage limit", "quota", "limit exceeded", "key limit exceeded")
@@ -1528,6 +1541,60 @@ def _extract_status_code(error: Exception) -> Optional[int]:
 def _extract_error_body(error: Exception) -> dict:
     """Structured error body from an SDK exception or its cause chain."""
     return _from_cause_chain(error, _body_of, {})
+
+
+# Structured ``error.type``/``code`` declarations that mean the credential itself
+# failed authentication. A declaration always beats wording: providers MAY embed
+# overload sentences anywhere in a 401 body (#136025), so text is only consulted
+# when the body carries NO auth declaration.
+_AUTH_DECLARED_TYPES = (
+    "invalid_api_key", "invalid api key", "authentication_error", "authentication failed",
+    "unauthorized", "invalid_token", "token_expired", "permission_denied",
+)
+
+
+def _body_error_type_candidates(body: Any) -> tuple:
+    """Every structured ``type``/string ``code`` declaration in a body, lowercased.
+
+    Reads ``error.type``/``error.code`` plus top-level ``type``/``code`` (litellm/
+    relay shapes). NUMERIC codes are skipped — Gemini puts the HTTP status in
+    ``error.code`` as a number, which is a status, not a type declaration.
+    """
+    if not isinstance(body, dict):
+        return ()
+    err_obj = _error_obj(body)
+    return tuple(
+        candidate.strip().lower()
+        for candidate in (err_obj.get("type"), err_obj.get("code"), body.get("type"), body.get("code"))
+        if isinstance(candidate, str) and candidate.strip()
+    )
+
+
+def _body_error_type(body: Any) -> str:
+    """First structured ``type``/string ``code`` declaration, lowercased ('' if none)."""
+    return next(iter(_body_error_type_candidates(body)), "")
+
+
+def _looks_like_overload_probe_error(error: Exception) -> bool:
+    """True when a probe's 4xx answer is an overload-window ARTIFACT, not a verdict.
+
+    The streaming-5xx unmask probe runs while the provider is overloaded; some
+    engines answer that probe ``401/403`` with an auth-flavoured sentence while the
+    same credential keeps serving (#136025 — stepfun's artifact body LEADS with
+    "Incorrect API key provided", the overload admission trails). Replacing the
+    original 5xx with such an artifact poisons credential_pool's healthy key for the
+    401 TTL. Scope: 401/403 only, with a status; a structured auth ``error.type``/
+    ``code`` declaration ALWAYS wins over text (checking text first classified every
+    artifact as a real auth failure — the author's first attempt, 9/11).
+    """
+    status = _status_of(error)
+    if status not in (401, 403):
+        return False
+    body = _body_of(error)
+    if any(t in _AUTH_DECLARED_TYPES for t in _body_error_type_candidates(body)):
+        return False
+    msg = _build_error_msg(error, body)
+    return any(pattern in msg for pattern in _OVERLOADED_PROBE_PATTERNS)
 
 
 def _code_from_payload(payload: Any, top_keys: Sequence[str], peek_message: bool) -> str:

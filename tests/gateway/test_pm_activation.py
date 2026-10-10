@@ -28,3 +28,22 @@ def test_gateway_main_survives_pm_failure(monkeypatch, tmp_path):
     started.assert_awaited_once()
     assert exited == [0]
     assert failed == ["activate"]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_scopes_lazy_install_prompts(monkeypatch):
+    from pm import extras
+    import gateway.run as gateway
+
+    seen = []
+
+    async def runtime(**kwargs):
+        seen.append(extras.interactive_install_prompts_suppressed())
+        return True
+
+    monkeypatch.setattr(gateway, "_start_gateway_runtime", runtime)
+
+    assert extras.interactive_install_prompts_suppressed() is False
+    assert await gateway.start_gateway() is True
+    assert seen == [True]
+    assert extras.interactive_install_prompts_suppressed() is False

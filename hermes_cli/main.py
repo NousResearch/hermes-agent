@@ -2708,6 +2708,14 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
 
 
 def cmd_dashboard(args):
+    """Run dashboard/serve without allowing lazy dependencies to read daemon stdin."""
+    from pm.extras import suppress_interactive_install_prompts
+
+    with suppress_interactive_install_prompts():
+        return _cmd_dashboard_runtime(args)
+
+
+def _cmd_dashboard_runtime(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
     _dashboard_lifecycle_flags(args, _token_file)

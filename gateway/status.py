@@ -26,7 +26,13 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_constants import (
+    GATEWAY_LOCKS_DIRNAME,
+    _get_platform_default_hermes_home,
+    get_gateway_lock_dir,
+    get_hermes_home,
+    get_process_hermes_home,
+)
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
 
@@ -37,7 +43,7 @@ else:
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
-_LOCKS_DIRNAME = "gateway-locks"
+_LOCKS_DIRNAME = GATEWAY_LOCKS_DIRNAME
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
@@ -325,14 +331,7 @@ def _get_lock_dir() -> Path:
     and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
     ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
     """
-    override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
-    if override:
-        return Path(override)
-    # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
-    # lock dir CWD-relative, so two serves started from different directories shared no singleton.
-    state_home_env = os.getenv("XDG_STATE_HOME") or ""
-    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
-    return state_home / "hermes" / _LOCKS_DIRNAME
+    return get_gateway_lock_dir()
 
 
 def _utc_now_iso() -> str:

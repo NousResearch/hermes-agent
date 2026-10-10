@@ -112,6 +112,51 @@ def test_doctor_raises_an_issue_when_nothing_owns_the_gateway_role(served_host, 
     assert any("gateway start" in i for i in issues), "the outage state produced no remediation"
 
 
+def test_doctor_child_home_finds_the_parent_host_gateway(tmp_path, capsys, monkeypatch):
+    """A container tool child has a profile HOME, but must share its parent's host rendezvous.
+
+    The official image launches the gateway with ``HOME=/opt/data`` while terminal children use
+    ``HOME=/opt/data/home``. Both processes are the same OS user and HERMES_HOME, so doctor must
+    read the record published before the child HOME rewrite instead of diagnosing an outage.
+    """
+    from gateway import host_rendezvous as hr
+    from hermes_cli import doctor_platform
+    from tools.environments.local import build_subprocess_env
+
+    data_home = tmp_path / "data"
+    (data_home / "home").mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setenv("HOME", str(data_home))
+    monkeypatch.setenv("HERMES_HOME", str(data_home))
+    monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    assert hr.publish_record(
+        hr.ROLE_GATEWAY, profiles=("default",), home=str(data_home)
+    ) is not None
+
+    child_env = build_subprocess_env()
+    assert child_env["HERMES_GATEWAY_LOCK_DIR"] == str(
+        data_home / ".local" / "state" / "hermes" / "gateway-locks"
+    )
+    monkeypatch.setenv("HOME", child_env["HOME"])
+    if lock_dir := child_env.get("HERMES_GATEWAY_LOCK_DIR"):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", lock_dir)
+
+    class _Mgr:
+        def is_running(self, name):
+            return name == "gateway-default"
+
+        def list_profile_gateways(self):
+            return ["default"]
+
+    issues: list[str] = []
+    doctor_platform._report_host_gateway_slot(_Mgr(), issues)
+
+    out = capsys.readouterr().out
+    assert f"Host gateway: the host gateway (PID {os.getpid()}) serving profiles default" in out
+    assert not issues
+
+
 @pytest.mark.parametrize("xdg", [False, True])
 def test_doctor_checks_host_unit_linger_under_a_served_profile(served_host, tmp_path, capsys, monkeypatch, xdg):
     from hermes_cli import doctor_platform

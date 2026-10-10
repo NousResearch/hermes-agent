@@ -16,6 +16,7 @@ from pathlib import Path
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
+GATEWAY_LOCKS_DIRNAME = "gateway-locks"
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
@@ -718,14 +719,32 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
+def get_gateway_lock_dir() -> Path:
+    """Resolve this process's per-OS-user gateway rendezvous directory."""
+    if override := os.getenv("HERMES_GATEWAY_LOCK_DIR"):
+        return Path(override)
+    # XDG requires an absolute state root. Ignoring a relative value prevents the host singleton
+    # from splitting when two processes start in different working directories.
+    state_home_env = os.getenv("XDG_STATE_HOME") or ""
+    state_home = (
+        Path(state_home_env)
+        if os.path.isabs(state_home_env)
+        else Path.home() / ".local" / "state"
+    )
+    return state_home / "hermes" / GATEWAY_LOCKS_DIRNAME
+
+
 def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
-    per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
+    per the home mode, the parent's host rendezvous retained across that rewrite, and the temp
+    vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
     home = get_subprocess_home(env)
     if home:
+        if not env.get("HERMES_GATEWAY_LOCK_DIR"):
+            env["HERMES_GATEWAY_LOCK_DIR"] = str(get_gateway_lock_dir())
         env["HOME"] = home
     apply_scratch_tmp_env(env)
 

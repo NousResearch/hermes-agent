@@ -1481,6 +1481,8 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   inline_text_attachments: true   # False caches text document contents without inlining them
+#   max_attachment_bytes: 33554432  # Per-document cap (32 MiB); 0 disables it
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

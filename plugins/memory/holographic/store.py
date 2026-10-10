@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from . import holographic as hrr
+from .cjk_tokenize import build_search_text
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS facts (
     content         TEXT NOT NULL UNIQUE,
     category        TEXT DEFAULT 'general',
     tags            TEXT DEFAULT '',
+    search_text     TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
     retrieval_count INTEGER DEFAULT 0,
     helpful_count   INTEGER DEFAULT 0,
@@ -41,23 +43,23 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(content, tags, search_text, content=facts, content_rowid=fact_id);
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+    INSERT INTO facts_fts(rowid, content, tags, search_text)
+        VALUES (new.fact_id, new.content, new.tags, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    INSERT INTO facts_fts(facts_fts, rowid, content, tags, search_text)
+        VALUES ('delete', old.fact_id, old.content, old.tags, old.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+    INSERT INTO facts_fts(facts_fts, rowid, content, tags, search_text)
+        VALUES ('delete', old.fact_id, old.content, old.tags, old.search_text);
+    INSERT INTO facts_fts(rowid, content, tags, search_text)
+        VALUES (new.fact_id, new.content, new.tags, new.search_text);
 END;
 
 CREATE TABLE IF NOT EXISTS memory_banks (
@@ -127,11 +129,37 @@ class MemoryStore:
         """Create schema, enable WAL via the shared fallback helper (NFS/SMB/FUSE degrade gracefully), add hrr_vector to pre-HRR DBs."""
         from hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
-        self._conn.executescript(_SCHEMA)
-        if "hrr_vector" not in {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}:
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
+        if columns and "hrr_vector" not in columns:  # pre-HRR DB: table exists, column missing
             from hermes_cli.sqlite_util import add_column_if_missing
             add_column_if_missing(self._conn, "facts", "hrr_vector", "hrr_vector BLOB")
+        self._conn.executescript(_SCHEMA)  # creates everything on a fresh DB; no-ops otherwise
+        # Pre-search_text DBs: the FTS table exists with (content, tags) only. Rebuild it
+        # with the extra column, backfill bigrams, and let triggers keep it current after.
+        fts_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts_fts)").fetchall()}
+        if fts_columns and "search_text" not in fts_columns:
+            self._migrate_search_text("search_text" in columns)
         self._conn.commit()
+
+    def _migrate_search_text(self, has_search_text_col: bool) -> None:
+        """Upgrade a pre-CJK DB: add facts.search_text if missing, backfill bigrams for every
+        existing fact, and recreate facts_fts with the search_text column (drop-and-recreate —
+        FTS5 cannot ALTER a virtual table). Idempotent; safe on an empty store."""
+        if not has_search_text_col:
+            from hermes_cli.sqlite_util import add_column_if_missing
+            add_column_if_missing(self._conn, "facts", "search_text", "search_text TEXT DEFAULT ''")
+        # Drop the old FTS table + its triggers BEFORE touching facts, or the legacy
+        # UPDATE/DELETE triggers fire with the old (content, tags) column list.
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ad")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_au")
+        self._conn.execute("DROP TABLE facts_fts")
+        for row in self._conn.execute("SELECT fact_id, content, tags FROM facts").fetchall():
+            self._conn.execute("UPDATE facts SET search_text = ? WHERE fact_id = ?",
+                               (build_search_text(row["content"], row["tags"]), row["fact_id"]))
+        # Re-run just the FTS table + trigger DDL from the shared schema, then repopulate.
+        self._conn.executescript(_SCHEMA)
+        self._conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
 
     def _one(self, sql: str, params=()):
         return self._conn.execute(sql, params).fetchone()
@@ -149,8 +177,8 @@ class MemoryStore:
             if not content:
                 raise ValueError("content must not be empty")
             try:
-                fact_id: int = self._write("INSERT INTO facts (content, category, tags, trust_score) VALUES (?, ?, ?, ?)",
-                                           (content, category, tags, self.default_trust)).lastrowid  # type: ignore[assignment]
+                fact_id: int = self._write("INSERT INTO facts (content, category, tags, search_text, trust_score) VALUES (?, ?, ?, ?, ?)",
+                                           (content, category, tags, build_search_text(content, tags), self.default_trust)).lastrowid  # type: ignore[assignment]
             except sqlite3.IntegrityError:
                 return int(self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))["fact_id"])
             self._link_entities(fact_id, content)
@@ -167,6 +195,7 @@ class MemoryStore:
                 return False
             changes = {col: val for col, val in {
                 "content": content.strip() if content is not None else None, "tags": tags, "category": category,
+                "search_text": build_search_text(content.strip(), tags) if content is not None or tags is not None else None,
                 "trust_score": _clamp_trust(row["trust_score"] + trust_delta) if trust_delta is not None else None,
             }.items() if val is not None}
             assignments = ", ".join(["updated_at = CURRENT_TIMESTAMP"] + [f"{col} = ?" for col in changes])
@@ -198,6 +227,16 @@ class MemoryStore:
                    f"created_at, updated_at FROM facts WHERE trust_score >= ? {category_clause}"
                    "ORDER BY trust_score DESC LIMIT ?")
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def record_retrieval(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count for the fact ids a retrieval actually surfaced (#78801:
+        the column existed but no read path ever incremented it). Read paths call this with
+        their final result ids; failures are non-fatal (counting must never break retrieval)."""
+        if not fact_ids:
+            return
+        with self._lock:
+            self._write(f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN "
+                        f"({','.join('?' * len(fact_ids))})", list(fact_ids))
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Adjust trust asymmetrically: helpful -> +0.05 and helpful_count += 1; unhelpful -> -0.10.

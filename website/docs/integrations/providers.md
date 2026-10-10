@@ -362,6 +362,19 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+#### Narrowing a built-in provider's model list
+
+A `providers.<built-in>.models` list is added to the front of whatever the provider's live catalog returns, which reorders the picker but never shortens it. On a vendor with a large catalog that leaves dozens of models you never pick. Add `discover_models: false` to pin the row to exactly the ids you declare:
+
+```yaml
+providers:
+  anthropic:
+    models: ["claude-opus-5-5", "claude-sonnet-5"]
+    discover_models: false   # without this, the full live catalog is appended
+```
+
+This is the same flag [named custom providers](#named-custom-providers) use to pin a catalog. Discovery stays on by default, and an empty `models` list is ignored rather than blanking the row. To hide a provider entirely instead, use `model_catalog.excluded_providers`.
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.

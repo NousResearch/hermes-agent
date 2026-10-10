@@ -167,7 +167,7 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, cwd_marker=None) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -178,6 +178,11 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
         raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+        if isinstance(cwd_marker, str) and cwd_marker:
+            from tools.environments.base_session_env import _split_cwd_marker
+            split = _split_cwd_marker(raw_spill, cwd_marker)
+            if split is not None:
+                raw_spill = split[1]
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
@@ -227,7 +232,12 @@ def finalize_foreground_result(
     returncode = result.get("returncode", 0)
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
+    output_before_cap = output
     output = _truncate_head_tail(output)
+    output_truncated = (
+        bool(result.get("output_truncated") or result.get("full_output_path"))
+        or output != output_before_cap
+    )
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump
     # commands get the KEY=value pass, source/config dumps skip it).
@@ -256,12 +266,21 @@ def finalize_foreground_result(
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
     result_dict = {"output": output, "exit_code": returncode, "error": None}
+    if output_truncated:
+        result_dict["output_truncated"] = True
+        result_dict["output_total_chars"] = result.get("output_total_chars", len(output_before_cap))
+        result_dict["truncation_note"] = (
+            "Output is a truncated display preview, not complete data. "
+            "Do not parse it as JSON. Use full_output_path when available, or "
+            "redirect command output to a file and process it in the terminal."
+        )
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"),
+                           command, getattr(env, "_cwd_marker", None)),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),

@@ -587,6 +587,11 @@ class PhotonAdapter(BasePlatformAdapter):
         self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)
         self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
         self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
+        # HTTP timeout for outbound /send, /send-richlink and /send-attachment. Default 90s sits
+        # above the cron live-delivery wait (future.result(timeout=60)): a send still in flight at
+        # 60s is then treated as delivered there, instead of failing here at 30s and being resent
+        # (duplicated) by the standalone fallback. An unusable value falls back to the default.
+        self._send_timeout = _resolve_send_timeout(extra)
         self._probe_enabled = self._probe_interval > 0
         # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
         # markdown path renders a fence as inline Unicode monospace, not a block.
@@ -1459,13 +1464,13 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
     async def _post_send(self, path: str, body: dict[str, Any], *, structured: bool = False,
-                         sent_text: Optional[str] = None) -> SendResult:
+                         sent_text: Optional[str] = None, timeout: float = 30.0) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
         a ``PhotonSidecarError``'s class/retryability so ``_send_with_retry`` can recognise
         permanent failures. ``sent_text`` is what a later threaded reply to this bubble quotes;
         every outbound path passes through here, so recording here covers them all."""
         try:
-            data = await self._sidecar_call(path, body)
+            data = await self._sidecar_call(path, body, timeout=timeout)
         except PhotonSidecarError as e:
             if structured:
                 return SendResult(success=False, error=str(e), retryable=e.retryable,
@@ -1484,7 +1489,7 @@ class PhotonAdapter(BasePlatformAdapter):
         rich_url = _richlink_candidate(text) if richlink else None
         if rich_url:
             rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url},
-                                                sent_text=sent_text)
+                                                sent_text=sent_text, timeout=self._send_timeout)
             if rich_result.success:
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
@@ -1499,7 +1504,8 @@ class PhotonAdapter(BasePlatformAdapter):
         body: dict[str, Any] = {"spaceId": space_id, "text": text}
         if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
-        return await self._post_send("/send", body, structured=True, sent_text=sent_text)
+        return await self._post_send("/send", body, structured=True, sent_text=sent_text,
+                                     timeout=self._send_timeout)
 
     async def _sidecar_send_poll(self, space_id: str, title: str, options: list) -> SendResult:
         """POST a native poll to ``/send-poll`` (degrades to a numbered list elsewhere)."""
@@ -1522,14 +1528,17 @@ class PhotonAdapter(BasePlatformAdapter):
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
         label = caption or _attachment_label(kind, name or os.path.basename(safe_path))
-        return await self._post_send("/send-attachment", body, structured=True, sent_text=label)
+        return await self._post_send("/send-attachment", body, structured=True, sent_text=label,
+                                     timeout=self._send_timeout)
 
-    async def _sidecar_call(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _sidecar_call(self, path: str, body: dict[str, Any],
+                            timeout: float = 30.0) -> dict[str, Any]:
         if self._http_client is None:
             raise RuntimeError("Photon adapter not connected")
         # Fresh client per call so this is safe from a worker thread with its own loop
         # (send_message_tool via _run_async); the inbound loop keeps using _http_client.
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        # Outbound sends pass ``send_timeout_seconds``; everything else keeps the 30s default.
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             resp = await client.post(self._sidecar_url(path), json=body, headers=self._sidecar_headers())
         if resp.status_code != 200:
             raise _sidecar_error_from_response(path, resp.status_code, resp.text)
@@ -1627,6 +1636,26 @@ def _standalone_token_from_record(port: int) -> tuple[Optional[str], int, str]:
         "or set PHOTON_SIDECAR_TOKEN in this process's environment." + stale_hint)
 
 
+_DEFAULT_SEND_TIMEOUT = 90.0
+
+
+def _resolve_send_timeout(extra: Optional[dict[str, Any]]) -> float:
+    """``send_timeout_seconds`` (env ``PHOTON_SEND_TIMEOUT_SECONDS``) for outbound sends.
+
+    Shared by the adapter and ``_standalone_send`` so a cron run without a live
+    gateway gets the same timeout. A missing, unparsable, non-positive or
+    infinite value falls back to 90s.
+    """
+    try:
+        value = float(_extra_or_secret(extra or {}, "send_timeout_seconds", "PHOTON_SEND_TIMEOUT_SECONDS", None))
+    except (TypeError, ValueError):
+        return _DEFAULT_SEND_TIMEOUT
+    if not value > 0 or value == float("inf"):
+        logger.debug("[photon] send_timeout_seconds=%r is not usable; using %ss", value, _DEFAULT_SEND_TIMEOUT)
+        return _DEFAULT_SEND_TIMEOUT
+    return value
+
+
 async def _standalone_send(
     pconfig: PlatformConfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None,
@@ -1646,7 +1675,8 @@ async def _standalone_send(
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        # Every call on this client is an outbound send, so it takes the send timeout.
+        async with httpx.AsyncClient(timeout=_resolve_send_timeout(pconfig.extra), trust_env=False) as client:
             async def _post(path: str, body: dict[str, Any]) -> tuple[Any, Optional[dict[str, Any]]]:
                 """(response, data-if-ok-else-None)."""
                 resp = await client.post(f"{base}{path}", json=body, headers=headers)

@@ -527,7 +527,8 @@ class PluginLoaderMixin:
             # whole process (and every other plugin's registry) down with it; KeyboardInterrupt still propagates.
             # PluginLoadTimeout lands here as well: the abandoned worker's later registrations are refused
             # by ``ctx``, and whatever it registered before hanging is disposed below.
-            owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
+            # Failure rolls back persistent registrations too; only routine unload preserves them.
+            owned = list(self._ownership_ledger.get(plugin_key, ()))
             self._dispose_registrations(owned)
             self._forget_registrations(owned)
             loaded.error = _load_error_text(exc)

@@ -1362,3 +1362,58 @@ def test_on_unload_exception_does_not_block_other_teardown():
     # Reverse acquisition order, exception isolated.
     assert order == ["last", "boom", "first"]
     assert "boom_probe" not in manager._ownership_ledger
+
+
+def test_failed_discovery_releases_persistent_provider(tmp_path, monkeypatch):
+    """An import/register failure must leave no callable provider from that plugin."""
+    from textwrap import dedent
+
+    from hermes_cli import plugins
+    from hermes_cli.dashboard_auth import get_provider
+    from hermes_cli.plugins import PluginManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    plugin_dir = tmp_path / "plugins" / "failed_auth"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: failed_auth\nversion: 0.1.0\ndescription: Failing registration probe\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(dedent('''\
+        from hermes_cli.dashboard_auth.base import DashboardAuthProvider
+
+        class Provider(DashboardAuthProvider):
+            name = "failed_auth_probe"
+            display_name = "Failed registration probe"
+            def start_login(self, *, redirect_uri):
+                raise RuntimeError("plugin initialization did not complete")
+            def complete_login(self, *, code, state, code_verifier, redirect_uri):
+                return None
+            def verify_session(self, *, access_token):
+                return None
+            def refresh_session(self, *, refresh_token):
+                return None
+            def revoke_session(self, *, refresh_token):
+                return None
+
+        def register(ctx):
+            ctx.register_dashboard_auth_provider(Provider())
+            ctx.register_hook("pre_tool_call", lambda **kwargs: {"source": "failed"})
+            raise RuntimeError("registration failed after provider creation")
+        '''), encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  enabled: [failed_auth]\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(plugins, "get_bundled_plugins_dir", lambda: tmp_path / "empty-bundled")
+    monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [])
+    manager = PluginManager()
+    try:
+        manager.discover_and_load()
+        loaded = manager._plugins["failed_auth"]
+        assert not loaded.enabled
+        assert "registration failed after provider creation" in loaded.error
+        assert get_provider("failed_auth_probe") is None
+        assert not manager._hooks.get("pre_tool_call")
+        assert not manager._ownership_ledger.get("failed_auth")
+    finally:
+        manager.unload("failed_auth")

@@ -104,3 +104,28 @@ def test_desktop_picker_payload_never_locks_the_free_tier_row(guest_home, monkey
     assert row["models"] == ["nous/welcome"]
     assert row.get("unavailable_models", []) == []
     assert not row.get("free_tier_pending") and not row.get("pricing_pending")
+
+
+def _explicit_nous_rows(monkeypatch):
+    from hermes_cli import inventory
+    monkeypatch.setattr(inventory, "_prewarm_pricing_async", lambda *a, **k: None)
+    payload = inventory.build_model_options_payload(inventory.load_picker_context(), explicit_only=True)
+    return _nous_rows(payload["providers"])
+
+
+def test_settings_pickers_keep_the_free_tier_row_the_mint_left_unselected(guest_home, monkeypatch):
+    """The mint writes no ``active_provider`` (#127486) and a fresh install has no ``model.provider``,
+    yet the free tier runs its chats: ``explicit_only`` pickers (desktop Settings, Cron, a new chat)
+    must still offer that row, the only one the install has."""
+    _save_auth_store({"providers": {"nous": dict(GUEST_STATE)}})
+    rows = _explicit_nous_rows(monkeypatch)
+    assert [r["models"] for r in rows] == [["nous/welcome"]]
+    assert rows[0]["free_tier_row"] is True
+
+
+def test_settings_pickers_drop_the_free_tier_row_when_the_users_key_runs_chats(guest_home, monkeypatch):
+    """The account stays for connectors, but the user's own key does inference: as before #127486, an
+    ``explicit_only`` picker shows the user's provider, not the free tier."""
+    _save_auth_store({"providers": {"nous": dict(GUEST_STATE)}})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    assert _explicit_nous_rows(monkeypatch) == []

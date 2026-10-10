@@ -1286,7 +1286,15 @@ Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) r
 | `notify+wake` | yes | yes | You also want the destination agent to take a real turn — read the board context and reply in its own voice. Chat-originated auto-subscribes use this. |
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
-For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
+Desktop/TUI consumers also honor the stored delivery mode. Newly auto-subscribed tasks explicitly use
+`notify+wake`. Existing `notify` subscriptions are now treated as passive: older Desktop/TUI versions
+woke the agent despite that stored mode. They are not migrated automatically. To keep receiving turns
+for an existing subscription, re-subscribe with `--delivery-mode notify+wake`. Delivery requires its owning
+Desktop/TUI session to remain live: a subscription alone does not keep a detached idle session resident.
+The TUI's pending wake buffer is in memory; it is not a crash-recoverable delivery queue and does not
+guarantee retry after a rejected turn submission.
+
+For messaging gateway subscriptions using `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
 
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 

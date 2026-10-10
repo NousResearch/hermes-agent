@@ -376,7 +376,7 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _kb_poll_board(_kb, slug: str, session_key: str, *, wakes: list | None = None) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved)."""
@@ -404,12 +404,17 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            from gateway.kanban_watchers_notifier import diagnostic_event
+            from gateway.kanban_watchers_notifier import diagnostic_event, _WAKE_KINDS
             from gateway.warning_notifications import DiagnosticText
             for ev in events:
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
-                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
+                    text = DiagnosticText(text) if diagnostic_event(ev) else text
+                    mode = sub.get("delivery_mode") or "notify"
+                    if mode != "wake":
+                        texts.append(text)
+                    if wakes is not None and mode in ("wake", "notify+wake") and ev.kind in _WAKE_KINDS:
+                        wakes.append(text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
@@ -418,10 +423,11 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
     return texts
 
 
-def _collect_kanban_notifications(session: dict) -> list:
+def _collect_kanban_notifications(session: dict, *, wakes: list | None = None) -> list:
     """Claim unseen terminal kanban events for this session's ``platform="tui"`` subscriptions (``kanban_create``
     auto-subscribes with ``chat_id=HERMES_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
-    delivery path). Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
+    delivery path). Atomic cursor claims prevent concurrent consumers claiming the same event range;
+    the optional wake batch remains process-local, not a durable delivery queue.
 
     See #59890.
     """
@@ -443,7 +449,7 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, wakes=wakes)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
@@ -454,17 +460,19 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
 def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
     """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
     cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
+    wakes: list = []
     try:
-        texts = _collect_kanban_notifications(session)
+        texts = _collect_kanban_notifications(session, wakes=wakes)
     except Exception as exc:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
+    # A passive ping and a requested turn are independent; buffer wakes even without a ping.
+    if wakes:
+        session.setdefault("_kanban_pending", []).extend(wakes)
     for text in texts:
         from gateway.warning_notifications import DiagnosticText, render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
-    if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:

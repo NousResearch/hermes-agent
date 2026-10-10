@@ -631,7 +631,7 @@ def _extra_key(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _still_declared(package, recorded: list[str]) -> list[str]:
+def _still_declared(package, recorded: list[str], *, plugin_dirs=None) -> list[str]:
     """The recorded extras this tree still declares.
 
     An extra the source removed (``hindsight``) would otherwise ride the ledger
@@ -639,13 +639,24 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     recorded extras are pruned; an explicitly requested unknown extra still fails.
     Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
     recorded spelling is what reaches uv.
+
+    A workspace member can declare extras of its own (a plugin's ``postgres``
+    driver extra): uv applies ``--extra`` across every member, so a recorded
+    extra stays declared while a member that declares it is enabled (#135347).
+    ``plugin_dirs=None`` discovers the members from config, like the venv stamp.
     """
     from pm.features import declared_extras
 
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
+    from pm.workspace import enabled_member_dirs, member_sources
+
     declared = {_extra_key(extra) for extra in declared_extras(root)}
+    members = enabled_member_dirs() if plugin_dirs is None else plugin_dirs
+    for member in member_sources(members).values():
+        if (member / "pyproject.toml").is_file():
+            declared |= {_extra_key(extra) for extra in declared_extras(member)}
     return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
@@ -666,8 +677,16 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
-    stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
+    inputs = _member_inputs(plugins)
+    enabled = sorted(
+        set(
+            _still_declared(
+                package, fact["extras"], plugin_dirs=inputs.get("plugin_dirs")
+            )
+        )
+        | set(extras or [])
+    )
+    stamp = package.expected_stamp(enabled, **inputs)
     return _runtime_state_matches(fact, stamp, project_root=root)
 
 
@@ -758,7 +777,16 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
+    enabled = sorted(
+        set(
+            _still_declared(
+                package,
+                fact.get("extras", shipped or []),
+                plugin_dirs=inputs.get("plugin_dirs"),
+            )
+        )
+        | set(extras or [])
+    )
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 

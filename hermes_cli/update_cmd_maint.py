@@ -980,7 +980,7 @@ def _migrate_relay_exporter_env() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version, completion_message=None, followups=None,
+    pre_update_version, completion_message=None, incomplete_message=None, followups=None,
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
@@ -989,7 +989,8 @@ def _run_post_update_maintenance(
     printed as ``⚠``, recorded as a receipt follow-up and appended to ``followups`` so the tail
     stays owed. Profile sync is best-effort per profile (``_sync_profiles_after_update`` prints
     that profile's error and carries on); only a sync that escapes the step is owed. An unsafe
-    runtime withholds success (and is reported) but is not tail work.
+    runtime withholds success (and is reported) but is not tail work. ``incomplete_message``
+    (an install) replaces the completion line while ``followups`` holds an owed step.
     """
     from hermes_cli.update_receipt import record_followup
 
@@ -1066,7 +1067,12 @@ def _run_post_update_maintenance(
     ))
 
     print()
-    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
+    message = completion_message or _update_complete_message(pre_update_version)
+    if incomplete_message and followups:
+        # An install has no commit point (C3 is the update's contract): with a step still owed it did
+        # not finish, and a ✓ line here was the last line of a failed bootstrap log (#135210).
+        message = f"{incomplete_message}; still owed: {', '.join(step for step, _ in followups)}"
+    update_complete = _print_verified_update_completion(message)
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):
@@ -1076,9 +1082,9 @@ def _run_post_update_maintenance(
 
     with _best_effort('Post-update notices failed: %s'):
         _print_post_update_notices_and_self_heals()
-    # A non-✓ completion message (parked local changes) withholds success on its own; only a
-    # ✓ message that still came back False is the SQLite verdict.
-    if not update_complete and (completion_message or "✓").startswith("✓"):
+    # A non-✓ completion message (parked local changes, an install's owed steps) withholds success on
+    # its own; only a ✓ message that still came back False is the SQLite verdict.
+    if not update_complete and message.startswith("✓"):
         record_followup("sqlite_runtime", "the selected Python links an unsafe SQLite runtime",
                         retry="run the installer again")
     return update_complete

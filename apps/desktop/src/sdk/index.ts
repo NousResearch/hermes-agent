@@ -46,7 +46,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
-import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
@@ -58,7 +58,6 @@ import {
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
-  retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -74,11 +73,8 @@ import {
   normalizeProfileKey,
   prewarmProfileBackend,
   refreshProfiles,
-  selectProfile,
-  setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
-import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import {
   $activeSessionId,
   $connection,
@@ -101,7 +97,6 @@ import {
   $focusedSessionState,
   $sessionStates,
   $sessionTiles,
-  dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
@@ -112,6 +107,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { $activeConnectionId, profileLifecycleHost } from './profile-lifecycle'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
@@ -348,21 +344,6 @@ if (typeof window !== 'undefined') {
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
 const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
-
-const $activeConnectionId = computed($connection, connection => {
-  if (!connection) {
-    return null
-  }
-
-  if (connection.connectionId) {
-    return connection.connectionId
-  }
-
-  // mode:'local' used to report null, which made Bot Mode fall back to the
-  // registry primary (often an SSH box) and treat Spark as the active source
-  // while this window was actually local.
-  return connection.mode === 'local' ? 'local' : null
-})
 
 /** Ordinary session opens fail fast when their gateway or socket is dead. */
 export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
@@ -788,108 +769,7 @@ export const host = {
     prewarmProfileBackend(name)
   },
 
-  /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
-   *  same door core surfaces use (DeleteProfileDialog). Electron intercepts
-   *  the DELETE, tears down that profile's pool/primary backend first, and
-   *  routes the follow-up request away from it, so a live (or hover-warmed)
-   *  backend can't hold the profile dir open or respawn mid-delete and
-   *  resurrect the directory (issue #52279). Plugins must prefer this over
-   *  `cli.exec ['profile','delete',…]`, which bypasses that interception
-   *  entirely. When the deleted profile was the live gateway's, the app is
-   *  re-homed to the default profile — same semantics as the core dialog.
-   *  Rejects with the backend's error when the delete fails. */
-  deleteProfile: async (profile: string | PluginProfileRoute): Promise<void> => {
-    const route =
-      typeof profile === 'string'
-        ? null
-        : {
-            ...profile,
-            connectionId: String(profile.connectionId || '').trim(),
-            profile: String(profile.profile || '').trim(),
-            targetProfile: String(profile.targetProfile || '').trim()
-          }
-
-    const name = typeof profile === 'string' ? profile.trim() : route?.profile || ''
-
-    if (route && (!route.connectionId || !route.profile || !route.targetProfile)) {
-      throw new Error('deleteProfile: route requires connectionId, profile, and targetProfile')
-    }
-
-    const targetProfile = route?.targetProfile || name
-    // A name-only call is ambient, not local: Bot Mode's active SSH roster
-    // rows deliberately use the ambient gateway door and therefore carry no
-    // explicit owner route. Preserve the active registry connection so the
-    // profile teardown and DELETE both land on the VPS instead of retiring the
-    // unrelated local pool and leaving the warmed remote backend to recreate
-    // the deleted profile.
-    const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
-
-    const ambientRemoteConnectionId =
-      ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
-
-    if (!name) {
-      throw new Error('deleteProfile: profile name required')
-    }
-
-    if (normalizeProfileKey(targetProfile) === 'default') {
-      throw new Error('The default profile cannot be deleted.')
-    }
-
-    // Capture before the delete; re-home after so our write is the last one
-    // (mirrors DeleteProfileDialog — a refreshActiveProfile racing the dying
-    // backend can't clobber the pill back to the deleted profile).
-    const wasActive = route
-      ? route.connectionId === ($activeConnectionId.get() || '') &&
-        normalizeProfileKey(route.profile) === normalizeProfileKey($activeGatewayProfile.get())
-      : normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
-
-    // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
-    // before Electron stops the profile backend so the socket closure cannot
-    // schedule a reconnect that resurrects the deleted profile.
-    if (route?.mode === 'local' || (!route && !ambientRemoteConnectionId)) {
-      retireLocalProfileGateways(targetProfile)
-    }
-
-    await deleteProfile(
-      targetProfile,
-      route
-        ? { connectionId: route.connectionId, profile: route.profile }
-        : ambientRemoteConnectionId
-          ? { connectionId: ambientRemoteConnectionId, profile: name }
-          : undefined
-    )
-
-    // The profile is gone. Drop its persisted tiles now — a leftover tile
-    // restores on relaunch and re-creates the deleted profile (hermes-agent#94235).
-    dropTilesForProfile(
-      route ? route.profile : name,
-      route
-        ? { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
-        : undefined
-    )
-
-    // The profile rail paints from the shared $profiles cache; without a
-    // refresh the deleted profile's badge survives and clicking it starts a
-    // doomed spawn-retry loop against Electron's deletion guard (#88769).
-    // Best-effort: the delete itself already succeeded.
-    await refreshProfiles().catch(() => undefined)
-
-    if (wasActive) {
-      selectProfile('default')
-      setActiveProfile('default')
-    }
-  },
-
-  /** Save a profile as a portable `.tar.gz` (config, skills, SOUL.md, cron,
-   *  avatar, Bot Mode metadata — credentials excluded) through the same native
-   *  save dialog + toasts as the core "Export profile…" menu. Resolves to the
-   *  archive path, or null when the user cancelled or the export failed. */
-  exportProfile: (profile: string): Promise<null | string> => runExportProfileFlow(profile),
-
-  /** Pick a profile archive and import it as a new profile, WITHOUT switching
-   *  the app into it. Resolves to the new profile name, or null when the user
-   *  cancelled or the import failed (already toasted). */
-  importProfile: (): Promise<null | string> => runImportProfileFlow({ select: false }),
+  ...profileLifecycleHost,
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 

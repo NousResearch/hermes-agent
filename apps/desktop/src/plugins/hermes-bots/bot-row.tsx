@@ -437,9 +437,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         >
           {b.bot.duplicate}
         </ContextMenuItem>
-        {canExportBot(bot) && (
-          <ContextMenuItem onSelect={() => void exportBot(bot)}>{b.bot.exportMenu}</ContextMenuItem>
-        )}
+        <ContextMenuItem disabled={!canExportBot(bot)} onSelect={() => void exportBot(bot)}>
+          {b.bot.exportMenu}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {

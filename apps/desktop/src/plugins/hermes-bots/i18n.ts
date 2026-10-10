@@ -32,6 +32,7 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { bind, type Bound } from './i18n-bind'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
@@ -2220,32 +2221,6 @@ const zhHant: BotsMessages = {
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
 export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
-
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
-type Bound<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => string
-    ? (...args: A) => string
-    : T[K] extends object
-      ? Bound<T[K]>
-      : string
-}
-
-function bind<T extends object>(t: PluginTranslate, template: T, prefix = ''): Bound<T> {
-  const out = {} as Record<string, unknown>
-
-  for (const [key, value] of Object.entries(template)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
-        ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
-  }
-
-  return out as Bound<T>
-}
 
 export type BotsText = Bound<BotsMessages>
 

@@ -556,6 +556,56 @@ def geometry() -> str:
     return str(cfg.get("geometry") or "1440x900")
 
 
+def restore_geometry(profile_home: Optional[str] = None) -> bool:
+    """Put the screen back at ``bot_desktop.geometry`` once a human hands control back.
+
+    The lease holder may resize the screen (Xvnc runs ``-AcceptSetDesktopSize``; noVNC does it with
+    ``resizeSession``, e.g. a phone viewer), and Xvnc keeps that size after hand-back: the agent would
+    go on capturing and clicking a phone-sized desktop. ``profile_home`` is the HERMES_HOME of the
+    profile whose screen is meant (``None``: the current one). No-op when the screen is down or
+    already at size; never raises (called from ``lease.release``).
+    """
+    import re
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(profile_home) if profile_home else None
+    try:
+        env = published_env()
+        size = re.fullmatch(r"\s*(\d+)x(\d+)\s*", geometry())
+        if not env.get("DISPLAY") or not size:
+            return False
+        width, height = int(size[1]), int(size[2])
+        full_env = {**os.environ, **env}
+
+        def xrandr(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["xrandr", *args], env=full_env, capture_output=True, text=True, timeout=5)
+
+        query = xrandr("-q")
+        current = re.search(r"current (\d+) x (\d+)", query.stdout or "")
+        if query.returncode != 0 or not current:
+            return False
+        if (int(current[1]), int(current[2])) == (width, height):
+            return True
+        if xrandr("-s", f"{width}x{height}").returncode == 0:
+            return True
+        # After a SetDesktopSize, Xvnc lists the client's size instead of the configured one: add it
+        # back. Xvnc accepts any timings; these are plausible 60 Hz ones. An existing mode is fine.
+        output = re.search(r"^(\S+) connected", query.stdout, re.M)
+        output_name = output[1] if output else "VNC-0"
+        mode = f"hermes-{width}x{height}"
+        htotal, vtotal = width + 160, height + 30
+        xrandr("--newmode", mode, f"{htotal * vtotal * 60 / 1e6:.2f}",
+               str(width), str(width + 48), str(width + 80), str(htotal),
+               str(height), str(height + 3), str(height + 9), str(vtotal), "-hsync", "+vsync")
+        xrandr("--addmode", output_name, mode)
+        return xrandr("--output", output_name, "--mode", mode).returncode == 0
+    except Exception as exc:  # never let a cosmetic restore break a hand-back
+        logger.info("Bot Desktop: could not restore the screen size: %s", exc)
+        return False
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def status(profile: Optional[str] = None) -> DesktopStatus:
     from tools.bot_desktop import browser as _bd_browser
     from tools.bot_desktop import resources

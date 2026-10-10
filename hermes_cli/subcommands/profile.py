@@ -73,6 +73,13 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "--all", dest="all_missing", action="store_true",
         help="With --auto, run on every profile missing a description")
 
+    profile_configure = profile_subparsers.add_parser(
+        "configure", help="Update a profile persona atomically")
+    profile_configure.add_argument("profile_name", help="Profile to configure (or 'default')")
+    profile_configure.add_argument(
+        "--soul-file", required=True, metavar="PATH",
+        help="Read SOUL.md content from PATH and replace the profile persona atomically")
+
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 

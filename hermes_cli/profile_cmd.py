@@ -370,6 +370,29 @@ def _profile_describe(args):
     sys.exit(0 if (ok_count > 0 if all_flag else ok_count == 1) else 1)
 
 
+def _profile_configure(args):
+    """Replace a profile's persona through an explicit CLI authorization surface."""
+    from utils import atomic_write_text
+
+    name = args.profile_name
+    try:
+        target = _describe_target_dir(name)
+    except Exception as exc:
+        _die(f"Error: {exc}")
+    if not target.is_dir():
+        _die(f"Error: profile '{name}' does not exist")
+    source = Path(args.soul_file).expanduser()
+    try:
+        content = source.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        _die(f"Error: cannot read persona file '{source}': {exc}")
+    try:
+        atomic_write_text(target / "SOUL.md", content, preserve_mode=True, create_mode=0o644)
+    except OSError as exc:
+        _die(f"Error: cannot write persona for '{name}': {exc}")
+    print(f"Persona updated for '{name}'.")
+
+
 def _profile_show(args):
     name = args.profile_name
     from hermes_cli.profiles import (
@@ -611,6 +634,7 @@ PROFILE_ACTIONS = {
     'create': _profile_create,
     'delete': _profile_delete,
     'describe': _profile_describe,
+    'configure': _profile_configure,
     'show': _profile_show,
     'alias': _profile_alias,
     'rename': _profile_rename,

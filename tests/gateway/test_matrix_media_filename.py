@@ -12,7 +12,9 @@ import pytest
 from plugins.platforms.matrix.adapter import (
     _looks_like_matrix_image_filename,
     _looks_like_matrix_media_filename,
+    MatrixAdapter,
 )
+from gateway.platforms.base import MessageType
 
 
 class TestLooksLikeMatrixMediaFilename:
@@ -92,3 +94,17 @@ class TestLooksLikeMatrixMediaFilename:
     def test_mimetypes_video_detected(self):
         """mimetypes.guess_type catches video types."""
         assert _looks_like_matrix_media_filename("clip.avi") is True
+
+
+def test_voice_filename_without_msc3245_is_classified_as_voice():
+    kind, _, is_voice = MatrixAdapter._classify_inbound_media(
+        "m.audio", "audio/ogg", {"filename": "voice_message.ogg"})
+    assert kind == MessageType.VOICE
+    assert is_voice is True
+
+
+def test_ordinary_audio_filename_remains_audio_attachment():
+    kind, _, is_voice = MatrixAdapter._classify_inbound_media(
+        "m.audio", "audio/mpeg", {"filename": "music.mp3"})
+    assert kind == MessageType.AUDIO
+    assert is_voice is False

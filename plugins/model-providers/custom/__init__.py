@@ -10,6 +10,18 @@ from providers.base import ProviderProfile
 from utils import base_url_host_matches
 
 
+def _model_rejects_reasoning_effort(model: str | None) -> bool:
+    """True when a model's API rejects the top-level ``reasoning_effort`` parameter.
+
+    ``ministral-*`` models on api.mistral.ai do not support adjustable reasoning and
+    return HTTP 400 ``reasoning_effort is not enabled for this model`` for any value,
+    including ``"none"`` (#119249). Hermes routes Mistral API through the ``custom``
+    profile, so the reasoning ladder must stay off for those models or every request
+    fails with a non-retryable client error.
+    """
+    return str(model or "").strip().lower().startswith("ministral-")
+
+
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     """True only for explicit Ollama signatures (port 11434 or an ``ollama`` host label).
     ``think`` is Ollama-native; strict hosts (Mistral, Groq) 422 on it, and
@@ -40,7 +52,12 @@ class CustomProfile(ProviderProfile):
         unchanged (#114249). A custom endpoint's vocabulary is undiscoverable, so
         the widest OpenAI-compat set is the honest ceiling; ``ultra`` still clamps
         to ``max`` via the shared ``clamp_effort`` policy.
+
+        Models whose API rejects ``reasoning_effort`` entirely (``ministral-*``)
+        declare an empty set so both transports omit the field instead of 400ing.
         """
+        if _model_rejects_reasoning_effort(model):
+            return ()
         return OPENAI_COMPAT_WIRE_EFFORTS
 
     def default_reasoning_config(self, model: str | None = None) -> dict | None:
@@ -49,8 +66,11 @@ class CustomProfile(ProviderProfile):
         Leaving the field off lets the endpoint's own default apply, and for a hosted reasoning
         model that default can be its ceiling: kimi-k3 behind an OpenAI-compatible relay defaults
         to ``max`` — 3x the reasoning tokens and ~3x the latency of medium. The agent skips this
-        default for models the catalog marks non-reasoning (``agent.reasoning_params``).
+        default for models the catalog marks non-reasoning (``agent.reasoning_params``), and for
+        models whose API rejects ``reasoning_effort`` entirely (``ministral-*``).
         """
+        if _model_rejects_reasoning_effort(model):
+            return None
         return {"enabled": True, "effort": "medium"}
 
     def build_api_kwargs_extras(
@@ -60,6 +80,10 @@ class CustomProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
+        # Models that reject the parameter entirely (``ministral-*``) never get a
+        # reasoning_effort — even ``"none"`` 400s on api.mistral.ai (#119249).
+        if _model_rejects_reasoning_effort(ctx.get("model")):
+            return extra_body, top_level
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
+    fit_to_free_memory, launch_args, plan_launch, runtime_overhead_bytes, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, PhysicsRefusal, as_loaded, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -89,7 +89,8 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
         draft = profile_from_gguf(read_gguf_header(path))
         draft_need = footprint_bytes(
             draft, window, flash_attention=False,
-            overhead_bytes=RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(draft.n_vocab, mtp_capable=False))
+            overhead_bytes=runtime_overhead_bytes(budget)
+            + ub_logits_bytes(draft.n_vocab, mtp_capable=False))
     except (ValueError, OSError) as exc:
         logger.warning("draft omitted %s: %s", path.name, exc)
         return False
@@ -120,7 +121,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
 
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
+    fixed_overhead = runtime_overhead_bytes(budget) + companions.nbytes
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -185,7 +186,7 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
+                       fixed_overhead=runtime_overhead_bytes(budget) + companions.nbytes,
                        requested_window=window)
     return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
@@ -206,7 +207,7 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     entry = entry_for_model(model_id)
     companions = _companions(entry)
     plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
+                       fixed_overhead=runtime_overhead_bytes(budget) + companions.nbytes,
                        requested_window=load_window_overrides().get(model_id))
     if isinstance(plan.decision, PhysicsRefusal):
         return None

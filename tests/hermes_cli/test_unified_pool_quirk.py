@@ -167,6 +167,23 @@ def test_budget_discrete_unchanged_when_probe_unavailable(monkeypatch):
     assert b.ram_available_bytes == UMA_RAM
 
 
+def test_budget_flags_the_cuda_backend_only_where_the_engine_has_a_context(monkeypatch):
+    """cuda=True marks the budgets whose engine carries a per-process CUDA context — the 1.5 GiB
+    RUNTIME_OVERHEAD_BYTES is calibrated there; the RAM-budgeted Metal/CPU fallback carries no
+    such context and must not be priced as if it did (#136164)."""
+    _uma_machine(monkeypatch, view=(UMA_POOL, True))
+    assert hw.probe_budget(planning=True).cuda is True    # unified-memory NVIDIA
+    _uma_machine(monkeypatch, view=(UMA_POOL, False))
+    assert hw.probe_budget(planning=True).cuda is True    # discrete NVIDIA via smi
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 16 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
+    monkeypatch.setattr(hw, "_accelerator_device", lambda **_: None)
+    monkeypatch.setattr(gpu_adapters, "windows_gpu_adapters", tuple)
+    assert hw.probe_budget(planning=True).cuda is False   # Metal/CPU/integrated fallback
+
+
 def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     """Engine-fallback view (no INTEGRATED verdict) + no smi numbers: the
     disagreement gate has nothing to compare against, so the quirk stays

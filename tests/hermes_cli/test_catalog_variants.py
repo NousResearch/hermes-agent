@@ -144,7 +144,7 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
 
     from hermes_cli.local_runtime import bootstrap, catalog, presets
     from hermes_cli.local_runtime.context_policy import (
-        RUNTIME_OVERHEAD_BYTES, posture_profile, ub_logits_bytes)
+        posture_profile, runtime_overhead_bytes, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import ctx_bytes
     from hermes_cli.web_routers.local_models import _catalog_row
 
@@ -175,7 +175,7 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
                 assert row["start_window"] == preset.window
                 assert row["spilled"] == preset.spilled
                 mtp = entry.mtp_capable
-                overhead = (RUNTIME_OVERHEAD_BYTES + entry.companion_bytes
+                overhead = (runtime_overhead_bytes(machine) + entry.companion_bytes
                             + ub_logits_bytes(profile.n_vocab, mtp_capable=mtp,
                                               mtp_prefill=preset.keys.get("ubatch-size") == "2048" and mtp))
                 posture = posture_profile(profile, mtp_capable=mtp,

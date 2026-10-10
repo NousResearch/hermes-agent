@@ -933,7 +933,130 @@ def test_normalize_codex_response_keeps_legitimate_cmd_json_answer(text):
     assert assistant_message.codex_message_items
 
 
-def test_normalize_codex_response_failed_includes_code_in_error():
+# ---------------------------------------------------------------------------
+# Tool-call echo riding the commentary channel next to the real structured
+# call (#125458): gpt-6-luna on the Codex backend sometimes emits its pending
+# call as plain commentary text — the clean args JSON followed by
+# ``to=functions.<name>`` and arbitrary junk tokens in the control-token
+# slots. The structured ``function_call`` also arrives, the tool executes
+# fine, but the echo persists as ``messages.reasoning`` and messaging
+# platforms show it as the live-turn preview.
+# ---------------------------------------------------------------------------
+
+
+def _echo_leak_response(*, commentary_texts, final_text=None, with_call=True):
+    output = [
+        SimpleNamespace(
+            type="message", role="assistant", status="completed", id=f"msg_{i + 1}", phase="commentary",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )
+        for i, text in enumerate(commentary_texts)
+    ]
+    if final_text is not None:
+        output.append(SimpleNamespace(
+            type="message", role="assistant", status="completed", id="msg_final", phase="final",
+            content=[SimpleNamespace(type="output_text", text=final_text)],
+        ))
+    if with_call:
+        output.append(SimpleNamespace(
+            type="function_call", id="fc_1", call_id="call_1", name="execute_code", status="completed",
+            arguments='{"code": "import subprocess"}',
+        ))
+    return SimpleNamespace(
+        status="completed", incomplete_details=None, output_text=final_text or "", output=output,
+    )
+
+
+def test_commentary_tool_call_echo_is_dropped_beside_the_real_call():
+    """The echo must not reach the reasoning channel or the replay items; the structured call carries the turn."""
+    response = _echo_leak_response(commentary_texts=[
+        '{"code":"import subprocess\\nr=subprocess.run([])"}to=functions.execute_code 大发游戏官网 code',
+    ])
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "execute_code"
+    assert assistant_message.reasoning is None
+    assert assistant_message.codex_message_items is None
+
+
+def test_commentary_tool_call_echo_keeps_neighbouring_clean_narration():
+    """Only the echoing part is dropped; clean commentary narration around it stays in reasoning."""
+    response = _echo_leak_response(commentary_texts=[
+        "Checking the failing test first.",
+        '{"code":"import subprocess"}to=functions.execute_code.execution_code 恒一',
+        "The results are back.",
+    ])
+    assistant_message, _ = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert assistant_message.reasoning == "Checking the failing test first.\n\nThe results are back."
+    assert assistant_message.codex_message_items is not None
+    assert len(assistant_message.codex_message_items) == 2
+
+
+def test_commentary_tool_call_echo_without_call_stays_incomplete():
+    """No structured call → the turn is still a failed tool call: incomplete so the continuation re-elicits one."""
+    response = _echo_leak_response(commentary_texts=[], with_call=False)
+    response.output.insert(0, SimpleNamespace(
+        type="message", role="assistant", status="completed", id="msg_leak", phase="commentary",
+        content=[SimpleNamespace(type="output_text", text='Running the tests now.\n{"cmd": "pytest -q"}')],
+    ))
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.reasoning is None
+
+
+def test_final_answer_tool_call_echo_is_dropped_beside_the_real_call():
+    """The echo in a final-answer message must not be posted as the reply nor replayed; the real call answers."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the log tail."],
+        final_text='{"code":"import subprocess"}to=functions.execute_code code',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == ""
+    assert assistant_message.reasoning == "Fetching the log tail."
+    assert assistant_message.codex_message_items is not None
+    assert all(
+        "to=functions" not in part["text"]
+        for item in assistant_message.codex_message_items for part in item["content"]
+    )
+
+
+def test_final_answer_prose_naming_a_tool_survives_beside_the_real_call():
+    """Prose that merely names a tool has no serialized args JSON closing before ``to=``: the answer
+    must be posted, not dropped by the echo heuristic (#125458 review)."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text="Install the package with pip. Reference: to=functions.execute_code for details.",
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert "Install the package with pip." in assistant_message.content
+    assert "Reference: to=functions.execute_code" in assistant_message.content
+    assert assistant_message.codex_message_items is not None
+
+
+def test_token_leading_serialized_shape_stays_posted_beside_the_real_call():
+    """The strict predicate keys on the args JSON closing *before* ``to=functions.*``; when the args
+    ride after the token the part is posted, not dropped (#125458 review: that shape has never been
+    observed in a leak, and dropping on a bare token ahead of JSON would re-open the prose loss)."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text='Setup done. to=functions.execute_code {"path": "a.py"}',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert "Setup done." in assistant_message.content
+    assert 'to=functions.execute_code {"path": "a.py"}' in assistant_message.content
+
+
+def test_failed_response_surfaces_error_code():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string
     that was indistinguishable from a generic stream truncation."""

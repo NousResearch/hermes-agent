@@ -1,0 +1,237 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-notes
+description: Create, search, read, update, and organize Apple Notes on macOS.
+source: https://github.com/sweetrb/apple-notes-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
+#
+# How this pin was validated (catalog policy: "version validated on macOS").
+# On macOS, `npx -y apple-notes-mcp@2.9.32`:
+#   - completes an MCP `initialize` handshake reporting serverInfo.version
+#     2.9.32 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 83 tools, every one carrying a description;
+#   - resolves all 20 `tools.default_enabled` entries below against that
+#     list, so no allow-listed name went stale across the bump.
+# Tools added since the previous pin are deliberately left OUT of
+# default_enabled — widening the default surface is the maintainers' call.
+# Re-run all three checks before moving this pin.
+#
+# Earlier pins, both ahead of the >=2-week age policy: 2.8.2 (fast-uri
+# security fix: 4 high-severity GHSAs reachable via ajv's JSON-schema
+# validation on every tool call) and 2.8.3 (on a British/Australian/Irish Mac
+# `doctor` and `health-check` reported `permissions: ok` on a genuine TCC
+# refusal; found by extension from sweetrb/apple-mail-mcp#218).
+#
+# 2.8.11 is re-pinned on the same footing: it fixes two defects in
+# default_enabled tools, reported against a real 359-note library as
+# sweetrb/apple-notes-mcp#162:
+#   - `export-notes-json` sent the whole library as ONE JSON-RPC message,
+#     carried twice (95 MB for that library). MCP stdio clients close the
+#     connection on any message over 10 MB, so the caller saw only
+#     `Connection closed` although the server had finished normally.
+#   - `list-notes` spent two Apple Events on every returned note, so large
+#     libraries hit `AppleEvent timed out` (359 notes: 3.3 s -> 0.23 s).
+#     `list-shared-notes` got the same fix (4.2 s -> 0.9 s, same result).
+# ⚠️ One behaviour change in a default_enabled tool: `export-notes-json` now
+# returns PAGES — the first 50 notes by default, with optional `offset`,
+# `limit` (max 500) and `modifiedSince`, and a `page` object (`nextOffset`,
+# `hasMore`). A caller that expects the whole library must follow
+# `page.nextOffset` while `hasMore` is true.
+#
+# 2.8.13 (2026-09-16) is re-pinned on the same footing — a defect in a
+# default_enabled tool, sweetrb/apple-notes-mcp#166: `get-note-content`'s
+# rich-text reconciliation (and full-body `update-note`) rejected any note
+# whose body had a straight double quote glued to a letter, e.g.
+# `say "hello" now`. AppleScript emits that quote as `&quot` with no trailing
+# semicolon and the entity decoder required one, so the AppleScript HTML and
+# the database rich text desynced and the read fell back to a generic
+# "Rich Notes metadata could not be read or matched" warning. The legacy HTML5
+# named references (`amp`/`lt`/`gt`/`quot`/`nbsp`) now decode with or without
+# the semicolon, matching browser text-content behaviour. No tool surface
+# change: still 51 tools, all 20 default_enabled entries resolve.
+#
+# 2.8.49 (2026-09-23) is re-pinned on the same footing — defects in
+# default_enabled tools fixed since 2.8.13:
+#   - `search-notes` with `searchContent: true` timed out at 30 s on any broad
+#     term, even at the default limit of 50, because AppleScript's `whose body
+#     contains` scans every body before `limit` applies (#100). With Full Disk
+#     Access it now reads the Notes database read-only and answers in well
+#     under a second; without FDA it falls back to AppleScript as before, and
+#     the response's `source` field says which path answered.
+#   - `list-notes` returned notes in Recently Deleted as if they were live
+#     (#207). ⚠️ Behaviour change in a default_enabled tool: they are now
+#     EXCLUDED by default and counted in `excludedRecentlyDeleted`;
+#     `includeRecentlyDeleted: true` lists them marked `inRecentlyDeleted`.
+#     `export-notes-json` shares the listing and excludes them too.
+#   - `list-shared-notes` returned a note twice when Notes.app enumerated it
+#     twice (#183); `list-attachments` listed a new attachment twice (#197).
+#     Both now keep one row per id, first-seen order.
+#   - Any note containing subscript text failed to read (#188): the protobuf
+#     varint reader stopped at 35 bits, so `get-checklist-state` and every
+#     other body reader failed on Notes' sign-extended -1 baseline offset.
+#   - `doctor`'s Full Disk Access remediation said granting Claude.app was
+#     enough (#220). macOS checks the grant on the responsible process.
+#     Claude Desktop launches servers through a helper that disclaims
+#     responsibility, so there the Node binary itself is checked and a grant
+#     on Claude.app never reaches it; `doctor` now prints that binary's path
+#     and says to add it. Under a terminal, the terminal app stays
+#     responsible and its grant covers the server (see post_install).
+# Also carried, outside the default surface: the legacy HTML entity decoder
+# fix from 2.8.13 extended to post-write readback verification (#211; a
+# correct write of `&` inside a link was reported as a mismatch), and
+# fail-closed guards so `delete-note` / `batch-delete-notes` never
+# permanently delete a note already in Recently Deleted (#198, #214).
+# 15 tools added since 2.8.13, none removed: 66 tools, all 20
+# default_enabled entries resolve.
+#
+# 2.9.12 (2026-09-24) is re-pinned on the same footing — a defect in a
+# default_enabled tool: `get-note-content` on a note with a large embedded
+# image failed outright rather than returning the body (#237/#242). 2.9.10
+# first improved the failure's error message/cause/remedy, but the read
+# itself still failed; 2.9.12 fixes the actual cause — the AppleScript
+# output cap was 64 MB against a ~110 MB body from the embedded image — by
+# raising the accepted size to 512 MB, so the read now succeeds. Within
+# 2.9.1-2.9.12 the only other default-surface change is 2.9.10's (a clearer
+# error for that failure, and an optional `timeoutSeconds` on
+# `get-note-content`). 2.9.0 added the opt-in private native-helper foundation
+# (`native-helper-status`, `native-note-state`), and none of the many
+# #181-roadmap tools since is default-enabled.
+# 11 tools added since 2.8.49, none removed: 77 tools, all 20
+# default_enabled entries resolve.
+#
+# 2.9.30 (2026-09-25) is re-pinned on the same footing — a defect fix that
+# lands as a BEHAVIOUR CHANGE on the default surface, in the safer
+# direction (2.9.25). Error classification used to match the whole message,
+# and messages quote the note title, so a missing note titled "Meeting timed
+# out" came back as `timeout_indeterminate` with `indeterminate: true`, and
+# titles such as "Lost connection plan" or "Access denied log" read as a
+# dropped connection or a permission refusal. From 2.9.25 quoted text is
+# ignored and note-not-found sets `not_found` directly (#185). An
+# unresolvable Notes UUID or numeric key now carries `not_found` /
+# `full_disk_access_missing` instead of a bare schema validation error
+# (#190). Default-enabled tools affected: `get-note-content`,
+# `get-note-by-id`, `get-note-details`, `get-note-plaintext`,
+# `get-checklist-state`, `get-note-markdown`, `list-attachments`. A caller
+# keying off `code` / `indeterminate` on those gets different, more accurate,
+# answers after this bump.
+# Riding along, none clearing the carve-out on its own: 2.9.13/2.9.15-2.9.24/
+# 2.9.26/2.9.28 land only on write tools or tools outside default_enabled
+# (smart-folder destination guards, Markdown template library, `analyze-svg`
+# path/content hardening, attachment path traversal fixes); 2.9.14, 2.9.18
+# and 2.9.27 are additive JSON fields on default_enabled tools
+# (`search-notes` `matchedIn`/`includeWordCount`, `list-folders`
+# `smartFolder`, `list-attachments` `stale`/`fallbackStale`); 2.9.21-2.9.23
+# are documentation only; 2.9.29 (Background Operations bridge refusal
+# handling) touches only non-default-enabled write tools; 2.9.30 is a
+# test-only fix for a CI flake in 2.9.29, which itself never published.
+# 6 tools added since 2.9.12, none removed: 83 tools, all 20
+# default_enabled entries resolve.
+#
+# 2.9.31 (2026-09-26) is re-pinned on the same footing — a defect in
+# default_enabled tools: `contentHash` and other revision/identity fields
+# were returned only in `structuredContent`, which a client that shows the
+# model only a tool result's text — Claude Desktop among them — drops
+# entirely (sweetrb/apple-notes-mcp#264, @aaronaccessvr). That silently
+# broke every guarded write gated on `expectedContentHash` for such clients.
+# The default-enabled tool affected here is `get-note-content` (`contentHash`,
+# `writable`, `nativeTags`, `links` now also appear as a trailing
+# `structuredContent: {...}` text block); the guarded write tools this
+# unblocks (`update-note`, `append-to-note`, `delete-note`,
+# `add-native-tags`, `add-attachment`) are outside default_enabled.
+# No new tools since 2.9.30: still 83 tools, all 20 default_enabled entries
+# resolve.
+#
+# 2.9.32 (2026-09-29) is re-pinned on the security footing of 2.8.2 above:
+# 2.9.31 inlines `fast-uri` 3.1.6 into `build/index.js`, the only 3.x release
+# affected by GHSA-58mr-gqgx-xq4g (high; host confusion via an unclosed
+# bracket in the URI authority), reachable via ajv's JSON-schema validation
+# on every tool call regardless of default_enabled. 2.9.32 bundles 3.1.8; the
+# `build/index.js` diff from 2.9.31 is confined to the inlined `fast-uri`
+# module, and no other shipped file changed except package.json. (The
+# apple-mail pin carries the same fix via 2.19.20.) Same validation, run
+# against both 2.9.31 and 2.9.32: 83 tools, all described, all 20
+# default_enabled entries resolve.
+# Declined, newest first: 2.10.0-2.14.0 add tools and options outside
+# default_enabled (`query-notes` facets, HTML vector drawings, a permissions
+# CLI, a template editor CLI, paragraph anchors); 2.9.35 is an
+# `add-attachment` verification fix; 2.9.34 is dev-toolchain only; 2.9.33
+# moves the bundled MCP SDK 1.30.0 -> 1.30.1 (Dependabot). None fixes a
+# defect in a default_enabled tool.
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-notes-mcp@2.9.32"
+
+# Drives Apple Notes locally via AppleScript; no credentials.
+auth:
+  type: none
+
+# Read-only by default: listing, search, note reads in every format,
+# checklist state, stats, and diagnostics. Create / update / delete / move
+# (single and batch), folder mutation, and attachment-export tools stay
+# disabled unless the user enables them at install time — so a failed tool
+# probe or a non-TTY install still yields a safe, non-mutating surface.
+#
+# `export-notes-json` is enabled despite the name: it takes NO path argument
+# and writes NOTHING — it returns the library as JSON in the tool response,
+# and is declared read-only by the server. That is why it is treated
+# differently from apple-photos' `export`, which does take a destination and
+# write files, and is therefore disabled by default there. The distinction is
+# writes-to-disk, not the word "export".
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - get-sync-status
+    - list-accounts
+    - list-folders
+    - list-notes
+    - search-notes
+    - get-note-by-id
+    - get-note-content
+    - get-note-details
+    - get-note-markdown
+    - get-note-metadata
+    - get-note-plaintext
+    - get-notes-stats
+    - get-checklist-state
+    - get-default-location
+    - get-selected-notes
+    - list-attachments
+    - list-shared-notes
+    - export-notes-json
+
+post_install: |
+  Requires macOS — the server controls Apple Notes via AppleScript and will
+  prompt for Automation access to Notes on first use.
+
+  Full Disk Access is optional. A few read tools use it to read the Notes
+  database directly: checklist state, checklist marks in Markdown,
+  `get-note-metadata` (which needs it), sync status, and fast full-text
+  search. The rest degrade gracefully without it. To grant it, note that
+  macOS checks the *responsible* process, which depends on how Hermes was
+  started:
+    - From a terminal (the usual case): grant Terminal, iTerm, or whichever
+      terminal you run `hermes` in, then quit and reopen it.
+    - Some other way (a GUI wrapper, a launchd service): macOS can instead
+      check the `node` binary that `npx` runs. The server's `doctor` tool
+      prints its path (or run `realpath "$(command -v node)"` in the
+      environment that starts Hermes); add it under System Settings >
+      Privacy & Security > Full Disk Access > +. A version-managed Node
+      (nvm, fnm, Volta, asdf, mise) or Homebrew's ad-hoc-signed node loses
+      that grant on a Node upgrade.
+
+  It ships read-only by default; enable the create / update / delete / move
+  tools in the install-time checklist if you want write access.
+
+  Start a new Hermes session to load the Apple Notes tools.

@@ -1,0 +1,273 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-mail
+description: Read, search, send, reply, forward, and organize Apple Mail on macOS.
+source: https://github.com/sweetrb/apple-mail-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
+#
+# How this pin was validated (catalog policy: "version validated on macOS").
+# On macOS, `npx -y apple-mail-mcp@2.20.9`:
+#   - completes an MCP `initialize` handshake reporting serverInfo.version
+#     2.20.9 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 52 tools, every one carrying a description;
+#   - resolves all 18 `tools.default_enabled` entries below against that
+#     list, so no allow-listed name went stale across the bump.
+# Tools added since the previous pin are deliberately left OUT of
+# default_enabled — widening the default surface is the maintainers' call.
+# Re-run all three checks before moving this pin.
+#
+# Earlier pins, both ahead of the >=2-week age policy: 2.17.6 (2026-09-03,
+# fast-uri security fix: 4 high-severity GHSAs reachable via ajv's JSON-schema
+# validation on every tool call), 2.17.10 (2026-09-10: on a
+# British/Australian/Irish Mac, which says "Not authorised", `doctor` and
+# `health-check` reported `permissions: ok` on a genuine TCC refusal —
+# sweetrb/apple-mail-mcp#218), and 2.19.6 (2026-09-14, see the release notes
+# for that range if needed — superseded below).
+#
+# 2.19.14 is re-pinned on the same footing. Two more defects landed in
+# default_enabled tools since 2.19.6, both reported against a real
+# `j5pu@icloud.com` mailbox (sweetrb/apple-mail-mcp#246):
+#   - `list-messages`/`search-messages` could report a search-result total
+#     that exceeded the mailbox's own real message count (traced to a bug in
+#     the vendored `imapflow` dependency's `ESEARCH` response handling, which
+#     can fabricate a huge match count from a stale cached `exists` value),
+#     and page into ids that were never real, silently returning zero results
+#     past offset 0. The two tools now cross-check the search-derived total
+#     against a fresh `STATUS` call before trusting it, and fail loud instead
+#     of returning a fabricated total (2.19.11).
+#   - When that new guard trips, the resulting "IMAP list failed in every
+#     requested mailbox" error discarded the actual underlying IMAP failure
+#     reason before it reached the caller — exactly what happened to @j5pu
+#     immediately after upgrading, leaving them (and us) unable to diagnose
+#     why their INBOX started failing outright. `list-messages`/
+#     `search-messages` now include the real per-mailbox error text in both
+#     the all-failed exception and the partial-failure note (2.19.14).
+#     On 2.19.14 the reporter confirmed the INBOX failure no longer
+#     reproduces, and mail#246 was closed as completed (2026-09-23).
+# Two further releases in the range touch default_enabled tools, both as
+# additive capability, not defect fixes: 2.19.7 adds `dateSent` to the
+# AppleScript-backend rows of `list-messages` / `search-messages` (the IMAP
+# rows have had it since 2.19.2), and 2.19.9 gives `search-messages` an
+# optional IMAP-only `body` parameter; an unscoped body search lists
+# AppleScript-only accounts under `notSearchedMailboxes`. A caller that does
+# not pass `body` sees no change. 2.19.8, 2.19.10, 2.19.12 and 2.19.13 land
+# only on tools outside default_enabled: a send / create-draft
+# retry-duplication fix, the new `get-message-rfc822` tool, quoted-original
+# restoration on AppleScript-transport reply/forward, and a reply/forward
+# saved-draft window-close fix. None of these justifies a re-pin on its own
+# under this catalog's defect-only carve-out; they ride along because 2.19.11
+# and 2.19.14 do. 2.18.0 and 2.18.1 land only on send/mutation tools that are
+# disabled below.
+#
+# 2.19.16 is re-pinned on the same footing — a further defect in
+# default_enabled tools, again on sweetrb/apple-mail-mcp#246 (iCloud,
+# @j5pu, reopened after 2.19.14 shipped): iCloud leaves messages flagged
+# `\Deleted` but never expunged out of `EXISTS`/`STATUS`/`FETCH`, yet returns
+# them from a plain `UID SEARCH` for flag-only criteria (`ALL`, `SEEN`,
+# `UNSEEN`) — a 48-message INBOX returned 100,011 UIDs, 99,963 of them
+# `\Deleted`. The 2.19.11 STATUS cross-check correctly refused that inflated
+# total, so a filter-less `list-messages`/`search-messages` (and any search
+# filtered only by `isRead`/`unreadOnly`) failed on every call against such a
+# mailbox. Every enumerating IMAP search (`list-messages`, `search-messages`,
+# `get-thread`, `get-mail-stats`' recent counts) now carries `UNDELETED`
+# (2.19.16). 2.19.15, riding along, fixed a related but separate defect in
+# the same default-enabled tools: a mailbox name stored by Notes in NFD
+# Unicode form (e.g. an accented folder name) failed to resolve when a
+# caller's name was NFC-composed, so `list-messages`/`search-messages` on
+# such a mailbox returned `NO [NONEXISTENT]` even though `list-mailboxes`
+# showed it; names are now compared NFC-folded and case-insensitively.
+#
+# 2.19.18 is re-pinned on the same footing — two more defects in
+# default_enabled tools, both against real huge iCloud mailboxes
+# (sweetrb/apple-mail-mcp#256, @j5pu):
+#   - `list-messages`/`search-messages`/`get-thread` ran a whole-mailbox
+#     `UID SEARCH` before applying `limit`/`offset`, so any list against a
+#     793,614- or 255,104-message mailbox failed outright even with
+#     `limit: 1`. Above 10,000 messages (per `STATUS`), an unfiltered list
+#     now pages by sequence number from the top of the mailbox instead
+#     (2.19.17), and a failed `SEARCH`/dropped connection is now reported as
+#     an error instead of silently read as zero matches.
+#   - Even within that fix, a page could come back silently short:
+#     imapflow's token parser gives up past 25 levels of nested
+#     `BODYSTRUCTURE` (an ~11-deep forwarded-as-attachment message), drops
+#     the untagged `FETCH` it can't parse, and the command still completes
+#     `OK` — so the row fetch filtered out UIDs it never received, with no
+#     signal that anything was missing. 2.19.18 retries a missing UID
+#     (without `BODYSTRUCTURE`, then per-UID from raw headers), and anything
+#     still unreadable is named in a new `omittedMessages` field with
+#     `partial: true` rather than silently returned short.
+#
+# 2.19.19 is re-pinned on the same footing — a follow-up defect on the same
+# huge-iCloud-mailbox report (sweetrb/apple-mail-mcp#256, @j5pu): even after
+# 2.19.17/18, a deep unfiltered `offset` still cost more the deeper it went —
+# `list-messages({ limit: 1, offset: 350000 })` on a ~793k-message mailbox hit
+# the ~60s client timeout, because the large-mailbox path still read UID+FLAGS
+# for every skipped message, 50,000 at a time. It now computes the page's
+# sequence range directly (`N-offset-limit+1 .. N-offset` against the
+# mailbox's EXISTS) and fetches only that range plus a 32-message margin, so
+# offset 790,000 costs the same single small `FETCH` as offset 0. Reporter
+# re-tested and confirmed: offset 350,000 went from "no response within 60s"
+# to ~10s, offset 790,000 ~7s, and a full 1,589-page pagination of the
+# 793,614-message mailbox returned every message exactly once.
+#
+# 2.20.1 is re-pinned on the same footing — two defects in the
+# default-enabled attachment tools (sweetrb/apple-mail-mcp#270, @j5pu):
+#   - `list-attachments` reported each attachment's base64-encoded size, not
+#     its file size: over IMAP the size came straight from `BODYSTRUCTURE`,
+#     which counts a part in its transfer encoding, so a 29-byte file listed
+#     as 40 (25 as 36, 14 as 20). Sizes are now the decoded byte count
+#     `fetch-attachment` returns — a `Content-Disposition` `size=` wins when
+#     present, base64 parts are measured exactly from a short tail of each
+#     part in one batched `FETCH`, quoted-printable parts up to 64 KiB are
+#     counted exactly, and anything unmeasurable is an estimate flagged
+#     `sizeApproximate: true`. The AppleScript/MIME fallback sizing (which
+#     ignored `=` padding and used the encoded length for quoted-printable)
+#     is exact too.
+#   - `fetch-attachment` over IMAP checked its 25 MiB limit against that
+#     encoded size, so base64 attachments of roughly 19–25 MiB were refused
+#     before download despite being under the limit. The pre-check now uses
+#     the decoded size; the streaming cut-off is unchanged.
+# Riding along from the range since 2.19.19: 2.19.20 raises the bundled
+# `fast-uri` floor for GHSA-58mr-gqgx-xq4g (high; reachable via ajv's
+# JSON-schema validation, as with 2.17.6 above) and 2.19.22 the bundled
+# `ip-address` floor for GHSA-j6r3-76f7-8jcv / GHSA-h3mg-xc3c-68pw (medium).
+# 2.19.21 (`nodemailer` GHSA-6vj9-mwq6-2f5v, direct-SMTP send path) and
+# 2.20.0 (`attachments` on reply/forward, `inReplyTo`/`references` on
+# send-email/create-draft, Gmail AppleScript reply/forward id fix) land only
+# on send/mutation tools that are disabled below.
+# No new tools since 2.19.16: still 52 tools, all 18 default_enabled entries
+# resolve.
+#
+# 2.20.5 is re-pinned on the same footing — two more defects in
+# default_enabled tools, both on huge iCloud mailboxes (@j5pu):
+#   - By-id reads on a numeric id that missed (`get-message`, `get-thread`'s
+#     seed lookup, and the source reads behind `list-attachments` /
+#     `fetch-attachment`) fell back to an unbounded AppleScript
+#     `whose id is N` probe over every mailbox of every account: 21–53 s on
+#     255k/794k-message mailboxes, surfacing as a timeout (#270). 2.20.3 first
+#     cut these read-only lookups to a 15 s fail-fast timeout with a specific
+#     error; 2.20.4 (#278) fixes the cause. An explicit `account` + `mailbox`
+#     that misses now returns not-found immediately and never scans; the
+#     unscoped fallback skips mailboxes over
+#     `APPLE_MAIL_MAX_BYID_SCAN_MAILBOX` messages (default 50,000) and stops
+#     after a 9 s budget, and a miss names the mailboxes it skipped.
+#   - One slow IMAP `search-messages` held the server's serialized call queue
+#     until it finished: an unscoped body search over 32 iCloud mailboxes ran
+#     134–141 s, so a `list-accounts` sent 3 s later returned after 126 s, and
+#     `notifications/cancelled` changed nothing (#276). 2.20.5 (#279) honours
+#     cancellation and adds a per-call deadline,
+#     `APPLE_MAIL_MCP_SEARCH_DEADLINE_MS` (default 45 s, counted from arrival
+#     so queue time counts), returning matches so far with `partial: true`,
+#     `timedOutMailboxes` and `stoppedBy`. A slow search can still hold the
+#     queue for up to the deadline.
+# Riding along: 2.20.2 is a Dependabot bump (bundled MCP SDK 1.30.0 ->
+# 1.31.0, `nodemailer` 10.0.10 -> 10.0.13 on the disabled send path, lint
+# tooling); 2.20.4 also floors the dev-only `source-map-js` (#277,
+# GHSA-68fv-2mgg-jv7q), not in the shipped bundle. The by-id changes also
+# reach `get-message-headers` and reply/forward, which stay disabled below.
+# No new tools: still 52 tools, all 18 default_enabled entries resolve.
+#
+# 2.20.6 is re-pinned on the same footing — a follow-up defect in a
+# default_enabled tool, found by @j5pu re-testing 2.20.5's own fix (#270).
+# The unscoped by-id scan's size-guard probe (`count of messages of mb`,
+# used to skip mailboxes over `APPLE_MAIL_MAX_BYID_SCAN_MAILBOX`) is not
+# reliably cheap: ~5-7 s on real 255k/794k-message mailboxes. It runs on
+# every mailbox the scan visits, so two or three large ones in a row burned
+# the whole 9 s in-script budget before the per-mailbox size check — which
+# only fires between mailboxes — ever got to stop the walk, and `get-message`
+# / `get-thread` were SIGKILLed with no diagnostic instead of the intended
+# "skipped, size unknown" outcome. The probe is now wrapped in its own 3 s
+# timeout and treated as over-threshold on expiry. @j5pu's broader point —
+# that an abandoned AppleScript probe keeps Mail.app's single serial event
+# queue busy regardless of this cap, so the real fix needs to avoid asking
+# Mail.app for a size at all (IMAP STATUS, or a cached/remembered size) — is
+# **not** addressed by 2.20.6 and remains open upstream (#270). No new
+# tools: still 52 tools, all 18 default_enabled entries resolve.
+#
+# 2.20.7 is re-pinned on the same footing — the fix @j5pu's own re-test of
+# 2.20.6 called for. The 3s probe cap stopped the SERVER from waiting past
+# 3s, but Mail.app handles Apple events one at a time and kept running the
+# abandoned count to completion regardless, so every later probe — including
+# on small mailboxes — queued behind it; @j5pu measured a stalled probe
+# blocking subsequent calls well past the cap. The scan now remembers, for
+# the life of the process, every mailbox whose probe has timed out and skips
+# the `count of messages` call for it entirely on every later unscoped
+# by-id lookup, so it can no longer re-trigger the same stall. A mailbox
+# that returns a real count (confirmed large, not stalled) is still probed
+# fresh next time. No new tools: still 52 tools, all 18 default_enabled
+# entries resolve.
+#
+# 2.20.9 (via 2.20.8) is re-pinned on the same footing — both fix
+# @j5pu's re-test of 2.20.7, all on the default_enabled get-message /
+# get-thread by-id path. 2.20.8: a timed-out size probe now stops the scan
+# at once and is recorded before the 15 s by-id kill can lose it; the
+# learned list persists across restarts (7-day TTL); a scan that runs out
+# of budget names the mailboxes it never reached instead of reporting a
+# silently partial "not found"; and with Mail.app not running, by-id reads
+# say so (without launching it) instead of "not found". 2.20.9: on macOS
+# 27.2 that not-running check itself failed to compile (-2741) when Mail
+# was quit, so the plain "not found" still leaked; -2741 is now classified
+# as not-running too. No new tools: still 52 tools, all 18 default_enabled
+# entries resolve.
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-mail-mcp@2.20.9"
+
+# Drives Apple Mail locally via AppleScript; no credentials.
+auth:
+  type: none
+
+# Read-only by default: browse, search, message/thread reads, counts,
+# attachment listing/content, contacts, and diagnostics. Send / reply /
+# forward / draft / delete / move / flag / mark-as / mailbox- and
+# rule-mutation / template-mutation tools stay disabled unless the user
+# enables them at install time — so a failed tool probe or a non-TTY
+# install still yields a safe, non-mutating surface.
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - get-sync-status
+    - list-accounts
+    - list-mailboxes
+    - list-messages
+    - search-messages
+    - get-message
+    - get-thread
+    - get-unread-count
+    - get-mail-stats
+    - list-attachments
+    - fetch-attachment
+    - search-contacts
+    - resolve-message-id
+    - list-rules
+    - list-templates
+    - get-template
+
+post_install: |
+  Requires macOS — the server controls Apple Mail via AppleScript and will
+  prompt for Automation access to Mail on first use. Automation access to
+  Mail is the ONLY permission it needs: unlike apple-notes and apple-photos,
+  no tool here reads a protected location directly, so Full Disk Access is
+  not required. That includes the default-enabled `fetch-attachment` — Mail
+  itself writes the attachment out under Automation and the server reads it
+  back from a private temp directory it created, so the mail store is never
+  touched by this process.
+
+  It ships read-only by default (browse, search, read, diagnostics); the
+  send / reply / forward / delete / move tools act on your real mailbox and
+  stay disabled until you enable them in the install-time checklist or the
+  tool filter.
+
+  Start a new Hermes session to load the Apple Mail tools.

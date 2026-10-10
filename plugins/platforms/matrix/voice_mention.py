@@ -113,6 +113,19 @@ class ParkedVoices:
         entries.sort(key=lambda e: e[1])
         del entries[:-MAX_PARKED_PER_SENDER]
 
+    def discard(self, room_id: str, sender: str, event_id: str) -> bool:
+        """Forget a parked voice that its sender redacted, so no later mention claims it."""
+        key = (room_id, sender)
+        entries = self._parked.get(key, [])
+        kept = [e for e in entries if e[2][0] != event_id]
+        if len(kept) == len(entries):
+            return False
+        if kept:
+            self._parked[key] = kept
+        else:
+            del self._parked[key]
+        return True
+
     def claim(self, room_id: str, sender: str, before: int) -> Optional[ParkedVoice]:
         """Pop the sender's newest parked voice for this room that began before ``before``
         (``mark()`` taken when the bare mention arrived); older ones are dropped, later voices

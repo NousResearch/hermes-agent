@@ -1775,6 +1775,46 @@ def _standalone_send(
         return _failed(e)
 
 
+def _ledger_lost_cron_delivery(t: _TargetDelivery, content: str, err: str) -> None:
+    """Both send lanes failed: ledger the payload as a failed delivery obligation so the ledger's
+    reconnect / boot sweeps can redeliver it. Cron sends bypass ``send_final_ledgered`` (the live
+    turn's only hook), so without this a ``send_path_degraded`` cron delivery left the reconnect
+    sweep with no row to claim and the message was lost (I-011, local patch PENDING #38).
+
+    A reconnect-only live rejection is already queued by ``_queue_for_live_reconnect`` (#125363)
+    under the canonical cron session key — recording it again here would hand the post-reconnect
+    sweep two rows for one payload, so this lane takes only the errors that helper leaves unkept.
+
+    ``send_path_degraded`` is stored verbatim as the error: ``retry_not_before`` classifies exactly
+    that string as reconnect-only (due at once, no backoff). Best-effort — ledger failures must
+    never mask the delivery error the run status reports."""
+    try:
+        from gateway.delivery_ledger import (
+            compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed,
+            record_obligation)
+        if not ledger_enabled() or not content.strip():
+            return
+        if is_reconnect_only(t.live_error):
+            return
+        job = t.job
+        session_key = f"cron:{job.get('id', '')}:{job.get('execution_id', '')}"
+        obligation_id = compute_obligation_id(session_key, str(job.get("id", "")), content)
+        record_obligation(
+            obligation_id=obligation_id, session_key=session_key,
+            platform=t.platform_name, chat_id=t.chat_id, thread_id=t.thread_id,
+            content=content,
+            adapter_profile=getattr(t.runtime_adapter, "_owner_profile", None))
+        mark_failed(
+            obligation_id,
+            "send_path_degraded" if "send_path_degraded" in err else err[:500])
+        logger.info(
+            "Job '%s': both send lanes failed for %s — ledgered obligation %s "
+            "for redelivery after reconnect", job["id"], t.where, obligation_id)
+    except Exception:
+        logger.debug(
+            "Job '%s': delivery-ledger fallback record failed", t.job.get("id"), exc_info=True)
+
+
 def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: list, delivery_errors: list) -> None:
     """Hand a payload the live lane rejected as reconnect-only (``send_path_degraded``) and the
     standalone lane then failed to send to the delivery ledger, as a failed reconnect-only row
@@ -1821,6 +1861,7 @@ def _deliver_standalone(
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
     if err is not None:
+        _ledger_lost_cron_delivery(t, content, err)
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         # A satellite profile's worker has no platform token, so standalone cannot stand in for a

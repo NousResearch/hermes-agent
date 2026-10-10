@@ -204,3 +204,55 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+
+# ---------------------------------------------------------------------------
+# Tests: UNC network-share paths (Windows drag-and-drop)
+# ---------------------------------------------------------------------------
+
+class TestUncPaths:
+    r"""A drag from a Windows network share sends ``\\server\Share\file.xlsx``.
+
+    The path prefilter decides whether a string is a path at all. A real share
+    cannot exist on a CI runner, so the resolver seam is faked; what these
+    tests pin is that the share path reaches the resolver whole, instead of
+    being rejected outright or split at its first space.
+    """
+
+    UNC = r"\\fileserver\Public Share\Quarterly Report.xlsx"
+
+    @pytest.fixture()
+    def fake_resolver(self, monkeypatch):
+        import cli
+        from pathlib import Path
+
+        resolved = Path("/attached/Quarterly Report.xlsx")
+        asked: list[str] = []
+
+        def _fake(candidate):
+            asked.append(str(candidate))
+            return resolved if str(candidate) == TestUncPaths.UNC else None
+
+        monkeypatch.setattr(cli, "_resolve_attachment_path", _fake)
+        return asked, resolved
+
+    def test_unc_path_is_detected_as_file_drop(self, fake_resolver):
+        asked, resolved = fake_resolver
+
+        result = _detect_file_drop(TestUncPaths.UNC)
+
+        assert result is not None, "UNC share path was rejected before resolution"
+        assert result["path"] == resolved
+        assert result["is_image"] is False
+        assert result["remainder"] == ""
+        assert TestUncPaths.UNC in asked
+
+    def test_unc_path_with_trailing_text_keeps_path_whole(self, fake_resolver):
+        asked, resolved = fake_resolver
+
+        result = _detect_file_drop(TestUncPaths.UNC + " summarise this please")
+
+        assert result is not None
+        assert result["path"] == resolved, "share path was split at its first space"
+        assert result["remainder"] == "summarise this please"
+        assert TestUncPaths.UNC in asked
+

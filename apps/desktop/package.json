@@ -95,8 +95,8 @@
     "@icons-pack/react-simple-icons": "13.11.1",
     "@lezer/highlight": "1.2.3",
     "@nanostores/react": "1.1.0",
-    "@novnc/novnc": "1.7.0",
     "@nous-research/ui": "0.18.2",
+    "@novnc/novnc": "1.7.0",
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.2",
     "@tabler/icons-react": "3.44.0",
@@ -178,6 +178,7 @@
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "bippy": "0.5.43",
@@ -193,6 +194,7 @@
     "typescript": "6.0.3",
     "vite": "8.2.0",
     "vitest": "4.1.10",
-    "wait-on": "9.0.10"
+    "wait-on": "9.0.10",
+    "ws": "8.21.1"
   }
 }

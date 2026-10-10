@@ -552,14 +552,50 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     })
   })
 
+  it('treats a lost pointer witness as success when the click navigated to another URL', async () => {
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at link "Learn more"',
+              point: { x: 12, y: 8 },
+              success: true,
+              url: 'https://example.com/'
+            })
+          : JSON.stringify({
+              elements: [],
+              hit: null,
+              success: true,
+              title: 'Example Domains',
+              url: 'https://www.iana.org/help/example-domains'
+            })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
+
+    expect(await actOnActivePreview({ kind: 'click', ref: '@e1' })).toMatchObject({
+      acted: 'clicked link "Learn more"',
+      note: expect.stringContaining('navigated to a new document'),
+      success: true,
+      url: 'https://www.iana.org/help/example-domains'
+    })
+  })
+
   it('fails loudly when the pointer input never reaches the page', async () => {
     const tabId = openBrowserTab()
 
     cleanups.push(
       registerPreviewScriptRunner(tabId, async code =>
         code.includes('"kind":"locate"')
-          ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 12, y: 8 }, success: true })
-          : JSON.stringify({ elements: [], hit: null, success: true })
+          ? JSON.stringify({
+              acted: 'looking at button "Save"',
+              point: { x: 12, y: 8 },
+              success: true,
+              url: 'https://example.com/'
+            })
+          : JSON.stringify({ elements: [], hit: null, success: true, url: 'https://example.com/' })
       )
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
@@ -568,6 +604,52 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     // Everything else about this action travels on the script channel and would
     // report success whether or not a single event landed.
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('never reached the page')
+  })
+
+  it('keeps the click failure when the destination URL is unavailable', async () => {
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at button "Save"',
+              point: { x: 12, y: 8 },
+              success: true,
+              url: 'https://example.com/'
+            })
+          : JSON.stringify({ elements: [], hit: null, success: true })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('never reached the page')
+  })
+
+  it('keeps the click failure when the source URL is unavailable', async () => {
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 12, y: 8 }, success: true })
+          : JSON.stringify({
+              elements: [],
+              hit: null,
+              success: true,
+              url: 'https://www.iana.org/help/example-domains'
+            })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
     expect(result.success).toBe(false)
     expect(result.error).toContain('never reached the page')
   })

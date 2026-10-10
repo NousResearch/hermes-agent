@@ -97,6 +97,12 @@ describe('labelOf', () => {
     expect(naming().labelOf(el('<button></button>'))).toBe('')
   })
 
+  it('does not use a password value as its fallback label', () => {
+    const input = el('<input type="password" value="synthetic-secret" />')
+
+    expect(naming().labelOf(input)).toBe('')
+  })
+
   it('flattens the whitespace a formatted template leaves behind', () => {
     expect(naming().labelOf(el('<button>\n  Save\n  changes\n</button>'))).toBe('Save changes')
   })
@@ -119,6 +125,12 @@ describe('valueOf', () => {
     const input = el('<input value="shoes" />')
 
     expect(naming().valueOf(input)).toBe('shoes')
+  })
+
+  it('redacts password control values', () => {
+    const input = el('<input type="password" value="synthetic-secret" />')
+
+    expect(naming().valueOf(input)).toBe('[redacted]')
   })
 
   // The DOM hands back "on" for an unset checkbox value, so reading the value

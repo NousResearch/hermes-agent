@@ -129,6 +129,14 @@ describe('elements', () => {
     expect(again.delta?.added?.map(e => e.ref)).toEqual(['btn-edit-1'])
   })
 
+  it('redacts prefilled password values from the agent inventory', () => {
+    const holder = page('<input id="password" aria-label="Password" type="password" value="synthetic-secret" />')
+    const result = inventory(holder)
+
+    expect(result.elements).toMatchObject([{ label: 'Password', value: '[redacted]' }])
+    expect(JSON.stringify(result)).not.toContain('synthetic-secret')
+  })
+
   it('reports role, current value, and disabled state', () => {
     const holder = page(`
       <input id="email" aria-label="Email" type="email" value="a@b.co" />

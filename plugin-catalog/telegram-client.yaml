@@ -1,0 +1,18 @@
+name: telegram-client
+title: Telegram Client
+repo: https://github.com/guberm/hermes-telegram-desktop-plugin
+sha: 7c261d5d6e8cdc9bd46b8fa253158a376f1bb800
+subdir: plugins/telegram
+description: "Telegram client pane for Hermes Desktop: dialogs, message history with image previews and per-post image reload, forum topics, and reviewed send/reply/save/delete/mark-as-read actions via a dedicated Telethon user session (separate from the core gateway bot token). All history is sanitized before rendering. Disclosure — the profile dashboard backend reads dialogs and message history and downloads media for in-page previews (page byte-budgeted and cached in memory); TELEGRAM_API_ID/TELEGRAM_API_HASH come from the profile's Hermes secrets (agent.secret_scope.get_secret); login challenges remain in process memory; the dedicated session is stored under HERMES_HOME/telegram-plugin-auth/, and its artifacts (.session plus the SQLite -wal/-shm sidecars) are restricted to 0600; delete removes the selected message for everyone; mutations use prepare -> exact preview -> explicit confirm -> commit -> readback verification."
+maintainer: guberm
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/guberm/hermes-telegram-desktop-plugin
+version: "1.2.14"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

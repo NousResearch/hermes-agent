@@ -367,13 +367,12 @@ class GatewayModelCommandsMixin:
             return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
 
     def _channel_override_for(self, source):
-        """This chat's ``channel_overrides`` entry (model/provider), or None."""
-        from gateway.run import _get_channel_override
-        cfg = getattr(self, "config", None)
-        if not cfg or source is None:
+        """This chat's ``channel_overrides`` entry (model/provider), or None — resolved from the
+        profile whose bot received the source under multiplexing (#136198)."""
+        if source is None:
             return None
-        return _get_channel_override(
-            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+        return self._channel_override_for_source(
+            source, source.platform, str(source.chat_id) if source.chat_id else "",
             thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
             parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
         )

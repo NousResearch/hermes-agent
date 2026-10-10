@@ -256,3 +256,89 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+
+
+# ---------------------------------------------------------------------------
+# Per-board orchestrator override (#34977)
+# ---------------------------------------------------------------------------
+
+
+def test_board_orchestrator_overrides_global(kanban_home, monkeypatch):
+    """A board's own orchestrator outranks the global kanban.orchestrator_profile."""
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "gtm")
+    kb.write_board_metadata("gtm", orchestrator_profile="gtm_orchestrator")
+    with patch("hermes_cli.config.load_config_readonly",
+               return_value={"kanban": {"orchestrator_profile": "default_orchestrator"}}):
+        patches = _patch_list_profiles(["default_orchestrator", "gtm_orchestrator"])
+        for p in patches:
+            p.start()
+        try:
+            routing = decomp._load_routing()
+        finally:
+            for p in patches:
+                p.stop()
+    assert routing.orchestrator == "gtm_orchestrator"
+
+
+def test_board_without_override_uses_global(kanban_home):
+    """A board that has set nothing keeps the global value exactly."""
+    with patch("hermes_cli.config.load_config_readonly",
+               return_value={"kanban": {"orchestrator_profile": "global_orch"}}):
+        patches = _patch_list_profiles(["global_orch"])
+        for p in patches:
+            p.start()
+        try:
+            routing = decomp._load_routing()
+        finally:
+            for p in patches:
+                p.stop()
+    assert routing.orchestrator == "global_orch"
+
+
+def test_board_override_cleared_falls_back(kanban_home, monkeypatch):
+    """An explicitly cleared board override ('') falls back to the global."""
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    kb.write_board_metadata("beta", orchestrator_profile="")  # clear
+    with patch("hermes_cli.config.load_config_readonly",
+               return_value={"kanban": {"orchestrator_profile": "global_orch"}}):
+        patches = _patch_list_profiles(["global_orch"])
+        for p in patches:
+            p.start()
+        try:
+            routing = decomp._load_routing()
+        finally:
+            for p in patches:
+                p.stop()
+    assert routing.orchestrator == "global_orch"
+
+
+def test_board_override_unknown_profile_falls_back(kanban_home, monkeypatch):
+    """A board naming a nonexistent profile is ignored, not fatal."""
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    kb.write_board_metadata("beta", orchestrator_profile="ghost")
+    with patch("hermes_cli.config.load_config_readonly",
+               return_value={"kanban": {"orchestrator_profile": "global_orch"}}):
+        patches = _patch_list_profiles(["global_orch"])
+        for p in patches:
+            p.start()
+        try:
+            routing = decomp._load_routing()
+        finally:
+            for p in patches:
+                p.stop()
+    assert routing.orchestrator == "global_orch"
+
+
+def test_board_metadata_defaults_to_none():
+    """The synthesized board entry carries no orchestrator override."""
+    meta = kb.read_board_metadata("default")
+    assert meta.get("orchestrator_profile") is None
+
+
+def test_set_orchestrator_round_trips(kanban_home, monkeypatch):
+    """board.json write then read returns the same value; '' clears it."""
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
+    kb.write_board_metadata("alpha", orchestrator_profile="orch_a")
+    assert kb.read_board_metadata("alpha")["orchestrator_profile"] == "orch_a"
+    kb.write_board_metadata("alpha", orchestrator_profile="")
+    assert kb.read_board_metadata("alpha")["orchestrator_profile"] is None

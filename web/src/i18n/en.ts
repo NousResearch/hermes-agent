@@ -209,6 +209,7 @@ export const en: Translations = {
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    showAutomationSessions: "Show automation sessions",
     workspace: "workspace",
     workspaceDefault: "Default",
     workspaceRescan: "Rescan repositories",

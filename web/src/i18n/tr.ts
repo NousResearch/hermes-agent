@@ -167,6 +167,7 @@ export const tr: Translations = {
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    showAutomationSessions: "Otomasyon oturumlarını göster",
     workspace: "çalışma alanı",
     workspaceDefault: "Varsayılan",
     workspaceRescan: "Depoları yeniden tara",

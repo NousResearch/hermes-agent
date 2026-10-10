@@ -338,6 +338,25 @@ def normalize_finish_reason(raw: Any) -> Any:
     return _FINISH_REASON_ALIASES.get(lowered, lowered)
 
 
+INTERRUPTED_TOOL_TAIL_KEY = "_interrupted_tool_tail"
+
+
+def mark_interrupted_tool_tail(messages: list) -> bool:
+    """Mark a tool-result tail as ended by an explicit turn interruption.
+
+    The marker is durable internal metadata. API-copy sanitization consumes it
+    when a later user redirect needs a synthetic assistant closure; provider
+    transports strip the underscore-prefixed key from the wire payload.
+    """
+    if not messages:
+        return False
+    tail = messages[-1]
+    if not isinstance(tail, dict) or tail.get("role") != "tool":
+        return False
+    tail[INTERRUPTED_TOOL_TAIL_KEY] = True
+    return True
+
+
 def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized byte size of ``messages`` (HTTP 413 is a BYTE-size error the token
     estimator, pricing images flat, cannot score). Non-serializable values fall back to
@@ -459,15 +478,16 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
-    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
-    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "INTERRUPTED_TOOL_TAIL_KEY", "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings",
+    "_repair_tool_call_arguments", "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates",
+    "_sanitize_structure_non_ascii", "_sanitize_structure_surrogates", "_sanitize_surrogates",
+    "_sanitize_tools_non_ascii", "_strip_images_from_messages", "_strip_non_ascii",
+    "apply_reasoning_content_policy", "close_interrupted_tool_sequence", "coalesce_tool_call_id",
+    "coerce_tool_name", "deterministic_call_id", "mark_interrupted_tool_tail",
+    "matches_reasoning_echo_family", "needs_reasoning_echo", "normalize_provider_tool_call_ids",
+    "reapply_reasoning_echo", "reasoning_echo_family", "sanitize_outbound_kwargs",
+    "stale_thinking_reaches_wire", "strip_images_for_rejecting_model", "tool_call_id_variants",
+    "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 
 

@@ -46,6 +46,19 @@ def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
     assert thumbnail.thumbnail_data_url() is None
 
 
+def test_spawns_onto_a_running_screen_never_see_the_login_sessions_wayland(tmp_path, monkeypatch):
+    """A gateway launched from a Wayland login carries XDG_SESSION_TYPE=wayland; Chromium picks its backend from
+    that alone and then opens on the human's desktop (default wayland-0), not on the bot's screen."""
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":22", "XAUTHORITY": str(tmp_path / "Xauthority")})
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    from tools.bot_desktop import browser
+    monkeypatch.setattr(browser, "env_for_agent", lambda env: env)  # browser identity is not under test here
+    env = runtime.desktop_env({"XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"})
+    assert env["DISPLAY"] == ":22"
+    assert "WAYLAND_DISPLAY" not in env
+    assert env["XDG_SESSION_TYPE"] == "x11"
+
+
 def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     """launcher.pid names pid + create_time; a live pid born at another time is a stranger (recycled pid)
     and must read as not running, or stop() would killpg an unrelated session. Legacy single-number

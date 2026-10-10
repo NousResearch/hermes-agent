@@ -351,6 +351,9 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        # A login session's XDG_SESSION_TYPE=wayland alone still makes Chromium pick Wayland, which then dials the
+        # default wayland-0 socket: the bot's browser opens on the human's own desktop instead of this screen.
+        env["XDG_SESSION_TYPE"] = "x11"
         from tools.bot_desktop.browser import env_for_agent
         env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env

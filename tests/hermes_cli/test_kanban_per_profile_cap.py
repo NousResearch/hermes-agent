@@ -23,11 +23,22 @@ def isolated_kanban_home_with_profiles(monkeypatch):
         with open(os.path.join(test_home, "profiles", prof, "config.yaml"), "w") as fh:
             fh.write("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
+    affected = {
+        mod: sys.modules[mod]
+        for mod in list(sys.modules)
+        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants"
+    }
+    for mod in list(sys.modules):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
             del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db
+    try:
+        from hermes_cli import kanban_db
+        yield kanban_db
+    finally:
+        for mod in list(sys.modules):
+            if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
+                del sys.modules[mod]
+        sys.modules.update(affected)
 
 
 def _fake_spawn(*args, **kwargs):

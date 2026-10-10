@@ -37,6 +37,7 @@ import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usa
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import { setSessionYolo } from '@/lib/yolo-session'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
@@ -57,8 +58,10 @@ import {
   $sessionStartedAt,
   $tileSessionFocusStartedAt,
   $turnStartedAt,
+  $yoloActive,
   idsShareLineage,
-  sessionMatchesStoredId
+  sessionMatchesStoredId,
+  setYoloActive
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
@@ -195,6 +198,8 @@ export function useStatusbarItems({
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
   const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
+  const focusedYolo = useStoreSelector($focusedSessionState, state => Boolean(state?.yolo))
+  const primaryYolo = useStore($yoloActive)
 
   // Runtime slices carry the stored id they were bound for. During a primary
   // tab switch the runtime id can lag a frame behind the new selection — the
@@ -207,6 +212,10 @@ export function useStatusbarItems({
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : focusedBusy
+  // Per-session approval bypass, following the same focus as every other
+  // readout. A draft (no runtime yet) keeps the armed primary flag so a bare
+  // `/yolo` before the first message is visible immediately, not after send.
+  const yoloActive = primaryFocused ? primaryYolo : focusedYolo
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.
@@ -337,6 +346,28 @@ export function useStatusbarItems({
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
+  const toggleSessionYolo = useCallback(
+    async (enabled: boolean) => {
+      if (!activeSessionId) {
+        // No runtime yet: arm locally, the session-create path applies it on
+        // the first message — exactly what `/yolo` in a fresh draft does.
+        setYoloActive(enabled)
+
+        return
+      }
+
+      // Lands in the session's own slice (primary or a focused tile) through
+      // the registered slice writer; the primary atom only when it's on screen.
+      await setSessionYolo(requestGateway, activeSessionId, enabled)
+    },
+    [activeSessionId, requestGateway]
+  )
+
+  const sessionYolo = useMemo(
+    () => ({ active: yoloActive, onToggle: toggleSessionYolo }),
+    [toggleSessionYolo, yoloActive]
+  )
+
   // Dial the viewed profile directly: the ambient `requestGateway` is the
   // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
   // session's owner — a profile other than the one this menu shows.
@@ -345,7 +376,11 @@ export function useStatusbarItems({
     [activeGatewayProfile]
   )
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
+  const approvalModeItem = useApprovalModeStatusbarItem(
+    activeGatewayProfile,
+    requestApprovalModeGateway,
+    sessionYolo
+  )
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(

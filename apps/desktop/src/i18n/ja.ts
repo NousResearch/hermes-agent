@@ -3102,7 +3102,11 @@ export const jaOverrides = {
       smart: 'スマート',
       smartDescription: '必要な場合にのみ確認します',
       off: 'オフ',
-      offDescription: '承認プロンプトなしで実行します'
+      offDescription: '承認プロンプトなしで実行します',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `承認モード: ${mode} · このチャットで YOLO オン`,
+      sessionYoloRow: 'このチャットで YOLO',
+      sessionYoloDescription: 'このチャットでのみ承認プロンプトをスキップ'
     },
     statusbar: {
       unknown: '不明',

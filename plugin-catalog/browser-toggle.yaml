@@ -2,7 +2,7 @@
 name: browser-toggle
 repo: https://github.com/jcperdomoybarra/web-browser-button-plugin
 sha: b0b88856fa246296647e8697b80bf4bc2e723540
-description: "One titlebar button, next to HUD mode, that opens and hides the built-in browser: the same action as Ctrl+Shift+L. Label follows the active UI language. Front-end only: no agent calls, no network, no API keys."
+description: "One titlebar button, next to HUD mode, that opens and hides the built-in browser: the same action as Ctrl+Shift+L. Label follows the active UI language. Front-end only: no agent calls, no network, no API keys. Disclosure — works by pressing the browser shortcut (Ctrl/⌘+Shift+L); breaks if the user rebinds it."
 maintainer: jcperdomoybarra
 tier: community
 category: desktop

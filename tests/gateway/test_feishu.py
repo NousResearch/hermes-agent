@@ -1137,7 +1137,7 @@ class TestAdapterBehavior(unittest.TestCase):
             def __init__(self, *_a: object, **_k: object) -> None:
                 pass
 
-            async def __aenter__(self) -> _FakeAsyncClient:
+            async def __aenter__(self) -> "_FakeAsyncClient":
                 events.append("client_enter")
                 return self
 

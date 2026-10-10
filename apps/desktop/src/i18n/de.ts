@@ -3992,11 +3992,6 @@ export const deOverrides = {
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
-    localSetup: {
-      title: 'Das könnte auf Ihrem Computer laufen',
-      text: (model: string) => `${model} passt auf diesen Rechner. Kostenlos, und Chats bleiben auf Ihrem Computer.`,
-      action: 'Zeigen'
-    },
     queueEdit: 'Bearbeiten',
     queueExpand: 'Ausklappen',
     queueCollapse: 'Einklappen',

@@ -85,7 +85,6 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
-import { LocalSetupCard } from './local-setup-card'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -1483,7 +1482,6 @@ export function ChatBar({
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}
                   />
-                  <LocalSetupCard busy={busy} guidedChat={guidedChat} />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}

@@ -616,6 +616,40 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return _board_path(None, board, ("kanban", "logs"), "logs")
 
 
+def board_for_store_path(path: Any) -> Optional[str]:
+    """The slug of the board whose canonical store IS ``path``, else ``None``.
+
+    The single layout->board rule (``<root>/kanban.db`` = ``default``, else
+    ``<root>/kanban/boards/<slug>/<leaf>``), shared by :func:`board_for_connection`
+    and by anything that must ask "is this file a board store, and whose?".
+    """
+    if not path:
+        return None
+    try:
+        resolved = Path(path).resolve()
+        if resolved == (kanban_home() / "kanban.db").resolve():
+            return DEFAULT_BOARD
+        rel = resolved.relative_to(boards_root().resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.parts[0] if len(rel.parts) > 1 else None
+
+
+def board_for_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """The slug of the board ``conn`` is open against, or ``None`` when it cannot be told.
+
+    A filing must be bounded by the board its OWN connection belongs to: a caller holding
+    a ``--board`` override is not on ``get_current_board()``, and ``HERMES_KANBAN_DB`` can
+    pin a database no board claims (workers are spawned with exactly that). So the slug is
+    read off the open file's path, never off the ambient current board.
+    """
+    path = ""
+    for _seq, name, file in conn.execute("PRAGMA database_list"):
+        if name == "main" and file:
+            path = file
+    return board_for_store_path(path)
+
+
 # --- Data classes ---
 
 @dataclass
@@ -4416,6 +4450,9 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
+    board_dispatch_enabled,
+    board_is_archived_stub,
+    list_dispatch_boards,
     _dir_holds_board,
     board_metadata_path,
     create_board,

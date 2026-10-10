@@ -635,6 +635,13 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8-sig") as stream:
+                # The pipe carries UTF-8 bytes, but a Python peer that reads
+                # sys.stdin as text decodes with its LOCALE codec (cp936 on a
+                # GBK-locale Windows box), so non-ASCII arrived as mojibake.
+                # Pin the same UTF-8 contract hermes_bootstrap.py gives every
+                # entry point (setdefault: an explicit user opt-out wins).
+                env.setdefault("PYTHONUTF8", "1")
+                env.setdefault("PYTHONIOENCODING", "utf-8")
                 # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
                 return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:

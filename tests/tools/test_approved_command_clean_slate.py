@@ -35,6 +35,24 @@ from tools.interrupt import (
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # PM resolves its runtime store by probing <repo>.parent/manifest.json,
+    # which on a default-install checkout (repo inside the real Hermes home)
+    # is real-home state the test guard rightly refuses. Point PM at a
+    # throwaway runtime dir via the documented override instead.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
+    # terminal_tool's Windows PATH setup probes <get_hermes_home()>/bin,
+    # which resolves to the REAL home (not HERMES_HOME) and trips the same
+    # guard. Every probe in these tests must land in the fixture home.
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    # terminal_tool's subshell PATH setup probes the directory of
+    # shutil.which("hermes") (local.py:_resolve_hermes_bin_dir). That lookup
+    # walks the *process* PATH — not HERMES_HOME — and on this class of
+    # install the real hermes' bin lives inside the real Hermes home, so the
+    # existence check trips tests/home_io_guard.py. In the sandbox there is
+    # no hermes install on PATH by definition: return None without probing.
+    monkeypatch.setattr(
+        "tools.environments.local._resolve_hermes_bin_dir", lambda: None
+    )
     (tmp_path / "logs").mkdir(exist_ok=True)
     # Clean interrupt slate before and after every test so a stale tid left in
     # the module-global set can't leak across tests in the same worker.

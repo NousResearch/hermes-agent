@@ -192,6 +192,92 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
 
+class TestSpacedPaths:
+    """Unquoted spaced paths must still be detected as targets.
+
+    Real-world checkout paths contain spaces (``%LOCALAPPDATA%\\hermes`` sits
+    under ``C:\\Users\\First Last\\...``), and a command written as
+    ``git -C <spaced path> checkout main`` word-splits into two argv entries,
+    which used to make the target never match — fail-open precisely where the
+    guard matters most. The tokenizer now rejoins adjacent word runs when their
+    single-space join exists on disk, so these cases block again while
+    ``allow`` cases (a spaced path that is only MENTIONED, an existing
+    two-fragment path that is NOT the root) keep passing.
+    """
+
+    @pytest.fixture
+    def spaced_repo(self, tmp_path):
+        root = tmp_path / "pytest-of-SOKCHHORN PC" / "hermes-agent"
+        root.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        return root.resolve()
+
+    @pytest.fixture
+    def sibling(self, tmp_path):
+        root = tmp_path / "pytest-of-SOKCHHORN PC" / "sibling dir"
+        root.mkdir(parents=True)
+        return root
+
+    def test_rejoin_builds_spaced_path_from_two_fragments(self, spaced_repo):
+        from tools.self_repo_guard import _shell_words_at
+        words = _shell_words_at(
+            f"git -C {spaced_repo.as_posix()} checkout main", 0)
+        # The rejoin preserves the word's own separator style; _resolve
+        # normalizes downstream.
+        assert words[:3] == ["git", "-C", spaced_repo.as_posix()]
+
+    def test_rejoin_is_greedy_over_multiple_spaces(self, spaced_repo):
+        from tools.self_repo_guard import _shell_words_at
+        words = _shell_words_at(
+            f"git -C {spaced_repo.as_posix()} checkout main", 0)
+        assert " " in words[2] and words[2].endswith("hermes-agent")
+        assert "checkout" in words
+
+    def test_no_rejoin_without_separator_anchor(self, repo):
+        from tools.self_repo_guard import _shell_words_at
+        # Adjacent non-path words never merge (no stat-spam per command).
+        assert _shell_words_at("git checkout main", 0) == ["git", "checkout", "main"]
+
+    def test_dash_c_targeting_spaced_repo_from_outside(self, spaced_repo, tmp_path):
+        hit, msg = _detect(
+            f"git -C {spaced_repo.as_posix()} checkout pr-51020", tmp_path, spaced_repo)
+        assert hit is True and str(spaced_repo) in msg
+
+    def test_cd_into_spaced_repo_then_checkout(self, spaced_repo, tmp_path):
+        hit, _ = _detect(
+            f"cd {spaced_repo.as_posix()} && git checkout pr-51020", tmp_path, spaced_repo)
+        assert hit is True
+
+    def test_git_environment_targeting_spaced_repo(self, spaced_repo, tmp_path):
+        command = (f"GIT_DIR={(spaced_repo / '.git').as_posix()} "
+                   f"GIT_WORK_TREE={spaced_repo.as_posix()} git checkout main")
+        hit, _ = _detect(command, tmp_path, spaced_repo)
+        assert hit is True
+
+    def test_worktree_remove_of_spaced_repo(self, spaced_repo, tmp_path):
+        hit, _ = _detect(
+            f"git worktree remove {spaced_repo.as_posix()}", tmp_path, spaced_repo)
+        assert hit is True
+
+    def test_dash_c_worktree_remove_of_spaced_repo(self, spaced_repo, tmp_path):
+        hit, _ = _detect(
+            f"git -C {tmp_path.as_posix()} worktree remove {spaced_repo.as_posix()}",
+            tmp_path, spaced_repo)
+        assert hit is True
+
+    def test_sibling_spaced_dir_is_not_the_root(self, spaced_repo, sibling):
+        """A real spaced path that exists but is NOT the guarded root must
+        still be allowed: the rejoin finds it, the root comparison refuses."""
+        hit, _ = _detect(
+            f"git -C {sibling.as_posix()} checkout main", sibling.parent, spaced_repo)
+        assert hit is False
+
+    def test_mentioned_spaced_path_without_targeting_is_allowed(self, spaced_repo, tmp_path):
+        hit, _ = _detect(
+            f"echo {spaced_repo.as_posix()} && git checkout main", tmp_path, spaced_repo)
+        assert hit is False
+
+
 class TestAllowsSafeCommands:
     @pytest.mark.parametrize(
         "cmd",

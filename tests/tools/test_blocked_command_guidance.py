@@ -16,7 +16,10 @@ class TestParserLimitRecovery:
         assert "RECOVERY" in r["message"]
         assert "blocked-scripts" in r["message"]
         import re as _re
-        m = _re.search(r"saved to (\S+\.sh)", r["message"])
+        # The saved path can contain spaces (e.g. C:\Users\First Last\...) —
+        # match lazily up to the .sh suffix instead of \S+, which stops at the
+        # first space and truncates the path.
+        m = _re.search(r"saved to (.+?\.sh)", r["message"])
         assert m, r["message"]
         from pathlib import Path
         saved = Path(m.group(1))

@@ -204,6 +204,7 @@ export function ListRow({
 // The one boolean row: every on/off setting is a Switch in a ListRow (haptic
 // baked in). Never a two-option SegmentedControl — that is for choices.
 export function ToggleRow({
+  'aria-describedby': ariaDescribedBy,
   checked,
   below,
   'data-tour': dataTour,
@@ -215,6 +216,7 @@ export function ToggleRow({
   onChange,
   wide
 }: {
+  'aria-describedby'?: string
   checked: boolean
   below?: ReactNode
   'data-tour'?: string
@@ -230,6 +232,7 @@ export function ToggleRow({
     <ListRow
       action={
         <Switch
+          aria-describedby={ariaDescribedBy}
           aria-label={label}
           checked={checked}
           disabled={disabled}

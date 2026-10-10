@@ -327,10 +327,29 @@ function scheduleLabel(schedule: string | undefined): string {
 
 /** Absolute + relative rendering of a cron timestamp, or null when the job
  *  has never carried one (a job that has not run yet has no `last_run_at`). */
-function routineTimestamp(value: string | undefined): null | string {
+function routineTimestamp(value: string | undefined, locale?: string): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
-  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+  return Number.isFinite(ms) ? `${relativeTime(ms, Date.now(), locale)} · ${new Date(ms).toLocaleString(locale)}` : null
+}
+
+/** Humanize only the gateway's known repeat values; future formats pass through. */
+function routineRepeat(value: RoutineJob['repeat'], c: BotsText['cron']): null | string {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  if (value === 'forever') {
+    return c.repeatForever
+  }
+
+  if (value === 'once') {
+    return c.repeatTimes(1)
+  }
+
+  const times = /^([1-9]\d*) times$/.exec(value)
+
+  return times ? c.repeatTimes(times[1]) : value
 }
 
 /** The scheduler's `last_status` literals, spelled out for the inspector. The
@@ -369,9 +388,15 @@ export function routineLastResult(status: string | null | undefined, c = botsTex
  *  drops its row instead of rendering "undefined". */
 export function routineDetailRows(
   job: RoutineJob | null | undefined,
-  c = botsText().cron
+  c = botsText().cron,
+  locale?: string,
+  core: Pick<ReturnType<typeof useI18n>['t']['cron'], 'deliverLabel' | 'modelLabel'> = {
+    deliverLabel: translateNow('cron.deliverLabel'),
+    modelLabel: translateNow('cron.modelLabel')
+  }
 ): Array<{ label: string; value: string }> {
-  const paused = job?.enabled === false || job?.state === 'paused'
+  const completed = job?.state === 'completed'
+  const paused = completed || job?.enabled === false || job?.state === 'paused'
   const label = scheduleLabel(job?.schedule)
   const raw = String(job?.schedule || '').trim()
 
@@ -380,22 +405,22 @@ export function routineDetailRows(
   // that narrowing into the map, so the rows are typed as filtered.
   return (
     [
-      [c.status, paused ? c.paused : c.active],
+      [c.status, completed ? c.detailCompleted : paused ? c.paused : c.active],
       [c.schedule, label],
       // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
       // raw string when it says something the label dropped.
       [c.rawSchedule, raw && raw !== label ? raw : null],
-      [c.repeat, job?.repeat],
+      [c.repeat, routineRepeat(job?.repeat, c)],
       // A slot parked past the scheduler grace is labelled overdue, never
       // promised as a next run (#114309); the card below makes the same call.
       [
         job && nextRunOverdueMs(job) !== null ? c.overdueSince : c.nextRun,
-        paused ? null : routineTimestamp(job?.next_run_at)
+        paused ? null : routineTimestamp(job?.next_run_at, locale)
       ],
-      [c.lastRun, routineTimestamp(job?.last_run_at)],
+      [c.lastRun, routineTimestamp(job?.last_run_at, locale)],
       [c.lastResult, routineLastResult(job?.last_status, c)],
-      [translateNow('cron.deliverLabel'), job?.deliver],
-      [translateNow('cron.modelLabel'), job?.model],
+      [core.deliverLabel, job?.deliver === 'local' ? c.runHistoryOnly : job?.deliver],
+      [core.modelLabel, job?.model],
       [c.workdir, job?.workdir]
     ] as Array<[string, string]>
   )
@@ -410,7 +435,7 @@ export function routineDetailRows(
  *  "paused"; the scheduler's own reason and the last fire/delivery failures
  *  had no surface in Bot Mode at all. */
 export function routineDetailIssue(job: RoutineJob | null | undefined): null | string {
-  const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
+  const reasons = [job?.last_fire_error, job?.last_error, job?.last_delivery_error, job?.paused_reason]
   const first = reasons.find(value => typeof value === 'string' && value.trim())
 
   return first ? first.trim() : null
@@ -427,8 +452,8 @@ interface RoutineDetailDialogProps {
  *  row's own switch and delete. */
 export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
   const b = useBots()
-  const { t } = useI18n()
-  const rows = job ? routineDetailRows(job, b.cron) : []
+  const { locale, t } = useI18n()
+  const rows = job ? routineDetailRows(job, b.cron, locale, t.cron) : []
   const issue = job ? routineDetailIssue(job) : null
   const instruction = String(job?.prompt_preview || '').trim()
 
@@ -489,7 +514,7 @@ interface RoutineRowProps {
 
 export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   const b = useBots()
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.cron
   const profile = typeof owner === 'string' ? owner : owner?.name
   const [busy, setBusy] = useState(false)
@@ -497,7 +522,8 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   // toggle so the switch responds even before the refetch lands.
   const [pendingActive, setPendingActive] = useState<boolean | null>(null)
   const legacyUnsafe = isLegacyDelegatedRoutine(job)
-  const serverActive = !legacyUnsafe && job.enabled !== false && job.state !== 'paused'
+  const completed = job.state === 'completed'
+  const serverActive = !completed && !legacyUnsafe && job.enabled !== false && job.state !== 'paused'
   const active = pendingActive === null ? serverActive : pendingActive
 
   if (pendingActive !== null && pendingActive === serverActive) {
@@ -568,7 +594,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         </RowButton>
         <Switch
           checked={active}
-          disabled={busy || legacyUnsafe}
+          disabled={busy || legacyUnsafe || completed}
           onCheckedChange={value => act(value ? 'resume' : 'pause')}
         />
         <Tip label={t.common.delete}>
@@ -594,8 +620,10 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         </span>
         <span className="ml-auto shrink-0 whitespace-nowrap text-[0.65rem] text-(--ui-text-quaternary)">
           {active && job.next_run_at
-            ? `${nextRunOverdueMs(job) === null ? c.next : c.overdueSince} ${relativeTime(new Date(job.next_run_at).getTime())}`
-            : c.states.paused}
+            ? `${nextRunOverdueMs(job) === null ? c.next : c.overdueSince} ${relativeTime(new Date(job.next_run_at).getTime(), Date.now(), locale)}`
+            : completed
+              ? b.cron.detailCompleted
+              : c.states.paused}
         </span>
       </div>
       {legacyUnsafe ? (
@@ -644,8 +672,8 @@ function frequencies(c: BotsText['cron']): Array<{ id: ScheduleFreq; label: stri
 
 /** Weekday names come from core's cron section — it already ships them in
  *  every locale, keyed by the same cron day numbers. */
-function weekdays(): Array<{ id: string; label: string }> {
-  return ['1', '2', '3', '4', '5', '6', '0'].map(id => ({ id, label: translateNow(`cron.days.${id}`) }))
+function weekdays(days: ReturnType<typeof useI18n>['t']['cron']['days']): Array<{ id: string; label: string }> {
+  return ['1', '2', '3', '4', '5', '6', '0'].map(id => ({ id, label: days[id as keyof typeof days] }))
 }
 
 const TIMES = (() => {
@@ -700,7 +728,12 @@ function composeSchedule(state: ScheduleState): string {
   }
 }
 
-function scheduleSummary(state: ScheduleState, c: BotsText['cron'], tl: string): string {
+function scheduleSummary(
+  state: ScheduleState,
+  c: BotsText['cron'],
+  tl: string,
+  dayNames: ReturnType<typeof useI18n>['t']['cron']['days']
+): string {
   const unitWord = (u: string) => (u === 'm' ? c.unitMinutes : u === 'd' ? c.unitDays : c.unitHours)
 
   const cap =
@@ -721,7 +754,7 @@ function scheduleSummary(state: ScheduleState, c: BotsText['cron'], tl: string):
     case 'weekdays':
       return c.runsWeekdays(tl) + cap
     case 'weekly': {
-      const days = weekdays()
+      const days = weekdays(dayNames)
 
       return c.runsWeekly((days.find(w => w.id === state.weekday) || days[0]).label, tl) + cap
     }
@@ -745,7 +778,7 @@ function pickerSelect<T extends string>(
   return (
     <Select onValueChange={onChange} value={value}>
       <SelectTrigger className="h-8 rounded-md">
-        <SelectValue />
+        <SelectValue>{options.find(option => option.id === value)?.label}</SelectValue>
       </SelectTrigger>
       <SelectContent>
         {options.map(o => (
@@ -765,10 +798,30 @@ interface SchedulePickerProps {
 
 function SchedulePicker({ state, setState }: SchedulePickerProps) {
   const b = useBots()
-  const { locale } = useI18n()
-  const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
-  const times = TIMES.map(time => ({ ...time, label: clock.format(new Date(2000, 0, 1, time.h, time.m)) }))
-  const timeLabel = times.find(time => time.id === state.time)?.label ?? clock.format(new Date(2000, 0, 1, 9, 0))
+  const { locale, t } = useI18n()
+
+  const clock = new Intl.DateTimeFormat(locale, {
+    hour: 'numeric',
+    minute: '2-digit',
+    ...(locale === 'ko' ? { hour12: true } : {})
+  })
+
+  const clockLabel = (hour: number, minute: number) => {
+    const date = new Date(2000, 0, 1, hour, minute)
+
+    // ICU versions differ: some use English AM/PM even for Korean.
+    if (locale !== 'ko') {
+      return clock.format(date)
+    }
+
+    return clock
+      .formatToParts(date)
+      .map(part => (part.type === 'dayPeriod' ? (hour < 12 ? b.cron.am : b.cron.pm) : part.value))
+      .join('')
+  }
+
+  const times = TIMES.map(time => ({ ...time, label: clockLabel(time.h, time.m) }))
+  const timeLabel = times.find(time => time.id === state.time)?.label ?? clockLabel(9, 0)
 
   const upd = (patch: Partial<ScheduleState>) =>
     setState(prev => ({
@@ -842,7 +895,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
               upd({
                 weekday: v
               }),
-            weekdays()
+            weekdays(t.cron.days)
           )
         : null}
       {state.freq === 'monthly'
@@ -923,7 +976,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
           <span className="text-xs text-(--ui-text-tertiary)">{b.cron.runsHint}</span>
         </div>
       ) : null}
-      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state, b.cron, timeLabel)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
+      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state, b.cron, timeLabel, t.cron.days)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
     </div>
   )
 }

@@ -191,6 +191,8 @@ function buildManifest(
   }
 }
 
+// This end-to-end case starts Python repeatedly for all three channels. Windows
+// interpreter startup alone exceeds 30 s; keep the POSIX budget unchanged.
 it('carries each install channel from Python publication checks into the source handoff', async (): Promise<void> => {
   const temporary: string = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-channel-'))
   const origin: string = path.join(temporary, 'origin')
@@ -293,7 +295,12 @@ it('carries each install channel from Python publication checks into the source 
     })
     const address: AddressInfo = server.address() as AddressInfo
     // Redirect only network transport. Selection, config, tag validation and Git are real.
-    fs.cpSync(path.join(repository, 'hermes_cli'), path.join(root, 'hermes_cli'), { recursive: true })
+    // A filter uses Node's libuv copy path; native cpSync can crash on non-ASCII
+    // Windows paths before Node 24.15 (nodejs/node#61878). Copy every fixture file.
+    fs.cpSync(path.join(repository, 'hermes_cli'), path.join(root, 'hermes_cli'), {
+      recursive: true,
+      filter: (): boolean => true
+    })
     fs.writeFileSync(
       path.join(root, 'transport.py'),
       `import sys, os
@@ -490,4 +497,4 @@ urllib.request.build_opener = local_build
     })
     fs.rmSync(temporary, { recursive: true, force: true })
   }
-}, 30000)
+}, process.platform === 'win32' ? 120_000 : 30_000)

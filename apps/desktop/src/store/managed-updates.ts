@@ -15,6 +15,7 @@ export interface ManagedUpdateState {
    * owns this connection (the `managed-update-in-progress` envelope). */
   alreadyRunning: boolean
   connectionId: string
+  details: string[]
   finishedAt: number | null
   message: string | null
   receipt: DesktopManagedUpdateReceipt | null
@@ -58,6 +59,7 @@ function blankState(connectionId: string): ManagedUpdateState {
   return {
     alreadyRunning: false,
     connectionId,
+    details: [],
     finishedAt: null,
     message: null,
     receipt: null,
@@ -68,6 +70,11 @@ function blankState(connectionId: string): ManagedUpdateState {
 
 function terminalState(connectionId: string, result: DesktopManagedConnectionUpdateResult): ManagedUpdateState {
   const message = result.message || result.error || result.receipt?.stopReason || null
+
+  const details = [...new Set([result.error, result.receipt?.stopReason])].filter((detail): detail is string =>
+    Boolean(detail && detail !== message)
+  )
+
   const alreadyRunning = result.outcome === 'refused' && isManagedUpdateBusyMessage(message)
 
   const status: ManagedUpdateStatus = result.ok
@@ -81,6 +88,7 @@ function terminalState(connectionId: string, result: DesktopManagedConnectionUpd
   return {
     alreadyRunning,
     connectionId,
+    details,
     finishedAt: Date.now(),
     message,
     receipt: result.receipt ?? null,

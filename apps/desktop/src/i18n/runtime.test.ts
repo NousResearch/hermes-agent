@@ -37,13 +37,13 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBeTypeOf('string')
   })
 
-  it('falls back to English when the active locale cannot resolve a key', () => {
-    const boot = TRANSLATIONS.ja.boot as { ready?: string }
+  it.each(['ja', 'ko'] as const)('falls back to English when %s cannot resolve a key', locale => {
+    const boot = TRANSLATIONS[locale].boot as { ready?: string }
     const originalReady = boot.ready
 
     try {
       boot.ready = undefined
-      setRuntimeI18nLocale('ja')
+      setRuntimeI18nLocale(locale)
 
       expect(translateNow('boot.ready')).toBe(TRANSLATIONS.en.boot.ready)
     } finally {

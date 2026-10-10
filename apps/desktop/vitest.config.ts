@@ -39,7 +39,8 @@ const electronNative: TestProjectConfiguration = {
     // Tests here shell out to real interpreters (python3, pwsh) over a 40+
     // case corpus; pwsh alone takes several seconds to start on a loaded CI
     // runner, so vitest's 5s default timed the Windows marker judge out.
-    testTimeout: 30_000
+    // Windows cases can probe multiple processes through CIM.
+    testTimeout: process.platform === 'win32' ? 60_000 : 30_000
   }
 }
 

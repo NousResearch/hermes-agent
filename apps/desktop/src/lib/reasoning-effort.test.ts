@@ -17,6 +17,12 @@ describe('reasoning-effort', () => {
     expect(reasoningEffortLabel('')).toBe('')
     // Unknown values pass through rather than silently reading as a real level.
     expect(reasoningEffortLabel('bogus')).toBe('bogus')
+    expect(reasoningEffortLabel('constructor')).toBe('constructor')
+    const labels = { medium: '중간', none: '꺼짐', fast: '빠름' }
+    expect(reasoningEffortLabel('medium', undefined, labels)).toBe(labels.medium)
+    expect(reasoningEffortLabel('none', undefined, labels)).toBe(labels.none)
+    expect(reasoningEffortLabel('constructor', undefined, labels)).toBe('constructor')
+    expect(reasoningEffortLabel('fast', undefined, labels)).toBe('fast')
   })
 
   it('labels a route clamp from the gateway wire level only, never by inference', () => {

@@ -48,6 +48,7 @@ const { confirmMock, hostMock, invalidateMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
+  const { translateNow } = await import('@/i18n/runtime')
 
   return {
     atom,
@@ -68,6 +69,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     surfaceModelSwitchConfirm: confirmMock,
     Textarea: () => null,
     ToolsetConfigPanel: undefined,
+    translateNow,
     useQuery: vi.fn(() => ({ data: undefined, error: null, isLoading: false })),
     useValue: vi.fn()
   }

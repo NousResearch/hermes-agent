@@ -1,5 +1,8 @@
 import type { KnownBillingRefusalCode } from '@hermes/shared/billing'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { ko } from '@/i18n/ko'
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
 import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
@@ -78,4 +81,36 @@ describe('resolveRefusal', () => {
     expect(resolved).toMatchObject({ action: { type: 'none' }, message: 'Something changed upstream.' })
     expect(resolved.title).not.toHaveLength(0)
   })
+})
+
+afterEach(() => setRuntimeI18nLocale('en'))
+it('localizes Korean refusals without changing recovery actions, amounts or unknown server diagnostics', () => {
+  setRuntimeI18nLocale('ko')
+
+  for (const [kind, actionType] of Object.entries(expectedActions)) {
+    const resolved = resolveRefusal(
+      {
+        kind,
+        message: 'Original server diagnostic',
+        portalUrl: 'https://example.test/billing'
+      },
+      ko.settings.billing.errors
+    )
+
+    expect(resolved.action.type, kind).toBe(actionType)
+    expect(resolved.title, kind).toMatch(/[가-힣]/)
+  }
+
+  expect(
+    resolveRefusal(
+      { kind: 'monthly_cap_exceeded', message: '', payload: { remainingUsd: '4.50' } },
+      ko.settings.billing.errors
+    ).message
+  ).toContain('$4.50')
+  expect(
+    resolveRefusal({ kind: 'stripe_unavailable', message: '', retryAfter: 120 }, ko.settings.billing.errors).message
+  ).toContain('2분')
+  expect(resolveRefusal({ kind: 'new_code', message: 'Original server diagnostic' }).message).toBe(
+    'Original server diagnostic'
+  )
 })

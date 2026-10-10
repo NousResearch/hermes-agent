@@ -129,5 +129,6 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   deleteAction: 'Delete model',
   deleteConfirm: model => `Delete ${model} from disk?`,
   deleted: model => `${model} deleted.`,
-  deleteFailed: 'Delete failed'
+  deleteFailed: 'Delete failed',
+  updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`
 }

@@ -43,6 +43,7 @@ import {
   setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
+import { DIALOGS_AREA } from '@/contrib/dialogs'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -111,11 +112,14 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { type PluginProfileRoute, pluginRouteStillRegistered } from './profile-route'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -209,17 +213,6 @@ const $focusedSessionProfile = computed(
     owner?.profile || rememberedSessionProfile(sessions, focused, activeProfile)
 )
 
-export interface PluginProfileRoute {
-  connectionId: string
-  mode: 'local' | 'remote'
-  /** Electron's authoritative registry primary. Absent on older shells. */
-  primary?: true
-  /** Desktop profile used to select the connection route. */
-  profile: string
-  /** Backend Hermes profile served by that route. */
-  targetProfile: string
-}
-
 /** Window geometry + the app's responsive posture, one readonly rect. */
 export interface ViewportRect {
   width: number
@@ -311,31 +304,6 @@ async function requestPluginProfile<T>(
   throw new Error(
     `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
   )
-}
-
-/** Re-read Electron's current registry before retrying an exact-owner wake.
- *  A route that was removed or replaced while the first hydration wait ran is
- *  no longer authority to touch that backend, even when its labels still look
- *  identical. */
-async function pluginRouteStillRegistered(route: PluginProfileRoute): Promise<boolean> {
-  const getProfileRoutes = window.hermesDesktop?.getProfileRoutes
-
-  if (!getProfileRoutes) {
-    return false
-  }
-
-  try {
-    const routes = await getProfileRoutes($profiles.get().map(profile => profile.name))
-
-    return routes.some(
-      candidate =>
-        candidate.connectionId === route.connectionId &&
-        candidate.profile === route.profile &&
-        candidate.targetProfile === route.targetProfile
-    )
-  } catch {
-    return false
-  }
 }
 
 if (typeof window !== 'undefined') {
@@ -668,6 +636,8 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /** Stable dialog host, independent of pane visibility. Older hosts omit it. */
+  dialogArea: DIALOGS_AREA,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -1651,8 +1621,7 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
-export type * from './plugin-contract'
+export type { PluginProfileRoute } from './profile-route'
 
 // -- ui: the design language --------------------------------------------------
 

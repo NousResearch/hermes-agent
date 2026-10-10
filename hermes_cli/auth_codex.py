@@ -768,7 +768,8 @@ def _probe_codex_quota_restored(
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
         # Reserve the slot immediately so concurrent selectors don't stampede the endpoint.
-        _codex_quota_probe_cache[cache_key] = (now, None)
+        reservation = (now, None)
+        _codex_quota_probe_cache[cache_key] = reservation
     result: Optional[bool] = None
     try:
         # Account/residency headers from the JWT (required for some account shapes).
@@ -800,6 +801,10 @@ def _probe_codex_quota_restored(
         logger.debug("Codex quota probe failed", exc_info=True)
         result = None
     with _codex_quota_probe_lock:
+        current = _codex_quota_probe_cache.get(cache_key)
+        if current is not reservation:
+            # A newer 429 (or probe) replaced our slot during the network call.
+            return current[1] if current is not None else None
         _codex_quota_probe_cache[cache_key] = (now, result)
     return result
 

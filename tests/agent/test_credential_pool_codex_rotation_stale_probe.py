@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 
 import pytest
@@ -131,6 +132,48 @@ def test_next_turn_selection_does_not_bounce_back_to_exhausted_primary(tmp_path,
 
     # The 429 is newer, first-hand evidence; it supersedes the cached verdict for the
     # throttle window instead of re-admitting the primary on the next turn.
+    assert auth_mod._probe_codex_quota_restored(primary) is False
+    selected = pool.select(model="gpt-5.6-sol")
+    assert selected is not None and selected.id == "codex-2"
+
+
+def test_in_flight_probe_cannot_restore_account_after_newer_429(tmp_path, monkeypatch):
+    primary, secondary = _token("primary"), _token("secondary")
+    pool, _auth_path = _load(tmp_path, monkeypatch, [_entry(1, primary), _entry(2, secondary)])
+    started, release = threading.Event(), threading.Event()
+    results = []
+
+    class _UsageClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            started.set()
+            if not release.wait(5):
+                raise AssertionError("probe was not released")
+            return self
+
+        status_code = 200
+
+        def json(self):
+            return {"rate_limit": {"primary_window": {"used_percent": 0}}}
+
+    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **_kwargs: _UsageClient())
+    probe = threading.Thread(target=lambda: results.append(auth_codex._probe_codex_quota_restored(primary)))
+    probe.start()
+    try:
+        assert started.wait(5)
+        rotated = _mark_usage_limit(pool, "codex-1")
+        assert rotated is not None and rotated.id == "codex-2"
+    finally:
+        release.set()
+        probe.join(5)
+
+    assert not probe.is_alive()
+    assert results == [False]
     assert auth_mod._probe_codex_quota_restored(primary) is False
     selected = pool.select(model="gpt-5.6-sol")
     assert selected is not None and selected.id == "codex-2"

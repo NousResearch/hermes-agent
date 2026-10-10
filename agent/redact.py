@@ -767,6 +767,21 @@ def _redact_strict_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
+def redact_log_urls(text: str) -> str:
+    """Mask credential-named query params and URL userinfo in log-bound text.
+
+    A log file is a persistence boundary, not a live tool flow: magic-link /
+    OAuth-callback URLs only need their non-secret parts to survive on disk, so
+    the log path opts into the strict URL redactors that
+    ``redact_sensitive_text`` deliberately leaves off for live flows. Without
+    it, a remote MCP server configured as ``https://mcp.example.com/mcp?token=…``
+    lands its API key on every log line that mentions the URL (issue #133713).
+    """
+    if not text or "://" not in text:
+        return text
+    return _redact_strict_url_credentials(text)
+
+
 def redact_cdp_url(value: object) -> str:
     """Mask secrets in a CDP/browser endpoint URL before it is logged.
 
@@ -1357,4 +1372,4 @@ class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_sensitive_text(super().format(record))
+        return redact_log_urls(redact_sensitive_text(super().format(record)))

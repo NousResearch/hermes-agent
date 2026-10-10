@@ -1,4 +1,4 @@
-# Pattern syntax — meta-variables and how patterns parse
+# Pattern syntax: meta-variables and how patterns parse
 
 ast-grep is **not regex**. Patterns are written in the **same syntax as the target language** (TypeScript, Python, Go, etc.), and ast-grep matches them against the AST of every file. The wildcards are called **meta-variables**.
 
@@ -71,12 +71,12 @@ The pattern itself must parse with the target language's grammar. ast-grep treat
 
 | Bad pattern | Why it fails | Fix |
 |---|---|---|
-| `function $NAME` | Function declaration without body — not a valid AST node in JS/TS/Go/Rust. | `function $NAME($$$) { $$$ }` |
+| `function $NAME` | Function declaration without body, not a valid AST node in JS/TS/Go/Rust.| `function $NAME($$$) { $$$ }` |
 | `def $FN($$$):` | Trailing colon. ast-grep parses as a complete function definition; the colon makes it a statement. | `def $FN($$$)` |
-| `class Foo:` | Same — Python class without body. | `class Foo($$$)` |
+| `class Foo:` | Same, Python class without body.| `class Foo($$$)` |
 | `fn $NAME` | Rust fn without signature. | `fn $NAME($$$) -> $RET { $$$ }` |
-| `if x` | Incomplete `if` — most languages require the body. | `if x { $$$ }` (curly-brace languages) or `if x: $$$` (Python uses `pattern.context`/`selector` instead) |
-| `"key": "$VAL"` | JSON pattern — a key/value pair on its own isn't valid JSON. | Use `pattern: { context: '{"key": "$VAL"}', selector: pair }` |
+| `if x` | Incomplete `if`: most languages require the body.| `if x { $$$ }` (curly-brace languages) or `if x: $$$` (Python uses `pattern.context`/`selector` instead) |
+| `"key": "$VAL"` | JSON pattern, a key/value pair on its own isn't valid JSON.| Use `pattern: { context: '{"key": "$VAL"}', selector: pair }` |
 
 ### When a sub-expression isn't valid on its own
 
@@ -102,7 +102,7 @@ When CST nodes don't match exactly (extra whitespace, different unnamed punctuat
 | `smart` (default) | All except unnamed nodes in the **target** that aren't in the pattern |
 | `ast` | Only named AST nodes |
 | `relaxed` | Named AST nodes, ignoring comments |
-| `signature` | Only node kinds — text and unnamed nodes ignored |
+| `signature` | Only node kinds, text and unnamed nodes ignored|
 
 `smart` is almost always what you want. Reach for `signature` when you want to match "any function called `foo`" regardless of arguments.
 
@@ -141,7 +141,7 @@ ast-grep is for **code structure**: function shapes, call patterns, control flow
 
 ## See also
 
-- `references/pitfalls.md` — concrete regex anti-patterns and language-specific traps.
-- `references/recipes.md` — copy-paste-ready patterns for TS/JS/Py/Go/Rust.
-- `references/yaml-rules.md` — `kind`, `regex`, `inside`, `has`, `all`, `any`, `not`, `matches`.
+- `references/pitfalls.md`: concrete regex anti-patterns and language-specific traps.
+- `references/recipes.md`: copy-paste-ready patterns for TS/JS/Py/Go/Rust.
+- `references/yaml-rules.md`, `kind`, `regex`, `inside`, `has`, `all`, `any`, `not`, `matches`.
 - Official: <https://ast-grep.github.io/guide/pattern-syntax.html>

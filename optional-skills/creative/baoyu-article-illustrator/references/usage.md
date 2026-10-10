@@ -1,6 +1,6 @@
 # Usage
 
-This skill is triggered by natural language in Hermes — no slash command or CLI flags.
+This skill is triggered by natural language in Hermes, no slash command or CLI flags.
 
 ## Trigger Phrases
 
@@ -41,7 +41,7 @@ The user can specify any of the following directly in their request. If not spec
 > Illustrate journey.md using the storytelling preset
 
 **Tutorial with rich images**:
-> Generate illustrations for how-to-deploy.md — tutorial preset, rich density
+> Generate illustrations for how-to-deploy.md, tutorial preset, rich density
 
 **Opinion article**:
 > Illustrate opinion.md with the opinion-piece preset

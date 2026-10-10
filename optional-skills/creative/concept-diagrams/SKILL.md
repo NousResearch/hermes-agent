@@ -33,15 +33,15 @@ Generate production-quality SVG diagrams with a unified flat, minimal design sys
 - Hand-drawn whiteboard sketches (consider `excalidraw` if available)
 - Animated explainers or video output (consider an animation skill)
 
-If a more specialized skill is available for the subject, prefer that. If none fits, this skill can serve as a general-purpose SVG diagram fallback — the output will carry the clean educational aesthetic described below, which is a reasonable default for almost any subject.
+If a more specialized skill is available for the subject, prefer that. If none fits, this skill can serve as a general-purpose SVG diagram fallback, the output will carry the clean educational aesthetic described below, which is a reasonable default for almost any subject.
 
 ## Workflow
 
 1. Decide on the diagram type (see Diagram Types below).
 2. Lay out components using the Design System rules.
-3. Write the full HTML page using `templates/template.html` as the wrapper — paste your SVG where the template says `<!-- PASTE SVG HERE -->`.
+3. Write the full HTML page using `templates/template.html` as the wrapper, paste your SVG where the template says `<!-- PASTE SVG HERE -->`.
 4. Save as a standalone `.html` file (for example `~/my-diagram.html` or `./my-diagram.html`).
-5. User opens it directly in a browser — no server, no dependencies.
+5. User opens it directly in a browser, no server, no dependencies.
 
 Optional: if the user wants a browsable gallery of multiple diagrams, see "Local Preview Server" at the bottom.
 
@@ -61,7 +61,7 @@ The template embeds the full CSS design system (`c-*` color classes, text classe
 - **Flat**: no gradients, drop shadows, blur, glow, or neon effects.
 - **Minimal**: show the essential. No decorative icons inside boxes.
 - **Consistent**: same colors, spacing, typography, and stroke widths across every diagram.
-- **Dark-mode ready**: all colors auto-adapt via CSS classes — no per-mode SVG.
+- **Dark-mode ready**: all colors auto-adapt via CSS classes, no per-mode SVG.
 
 ### Color Palette
 
@@ -83,13 +83,13 @@ The template embeds the full CSS design system (`c-*` color classes, text classe
 
 Color encodes **meaning**, not sequence. Never cycle through colors like a rainbow.
 
-- Group nodes by **category** — all nodes of the same type share one color.
+- Group nodes by **category**: all nodes of the same type share one color.
 - Use `c-gray` for neutral/structural nodes (start, end, generic steps, users).
 - Use **2-3 colors per diagram**, not 6+.
 - Prefer `c-purple`, `c-teal`, `c-coral`, `c-pink` for general categories.
 - Reserve `c-blue`, `c-green`, `c-amber`, `c-red` for semantic meaning (info, success, warning, error).
 
-Light/dark stop mapping (handled by the template CSS — just use the class):
+Light/dark stop mapping (handled by the template CSS, just use the class):
 - Light mode: 50 fill + 600 stroke + 800 title / 600 subtitle
 - Dark mode:  800 fill + 200 stroke + 100 title / 200 subtitle
 
@@ -155,7 +155,7 @@ The template page provides:
 - Neutral: `.box`, `.arr`, `.leader`, `.node`
 - Color ramps: `.c-purple`, `.c-teal`, `.c-coral`, `.c-pink`, `.c-gray`, `.c-blue`, `.c-green`, `.c-amber`, `.c-red` (all with automatic light/dark mode)
 
-You do **not** need to redefine these — just apply them in your SVG. The template file contains the full CSS definitions.
+You do **not** need to redefine these, just apply them in your SVG. The template file contains the full CSS definitions.
 
 ---
 
@@ -219,16 +219,16 @@ Replace `{HEIGHT}` with the actual computed height (last element bottom + 40px).
 
 Choose the layout that fits the subject:
 
-1. **Flowchart** — CI/CD pipelines, request lifecycles, approval workflows, data processing. Single-direction flow (top-down or left-right). Max 4-5 nodes per row.
-2. **Structural / Containment** — Cloud infrastructure nesting, system architecture with layers. Large outer containers with inner regions. Dashed rects for logical groupings.
-3. **API / Endpoint Map** — REST routes, GraphQL schemas. Tree from root, branching to resource groups, each containing endpoint nodes.
-4. **Microservice Topology** — Service mesh, event-driven systems. Services as nodes, arrows for communication patterns, message queues between.
-5. **Data Flow** — ETL pipelines, streaming architectures. Left-to-right flow from sources through processing to sinks.
-6. **Physical / Structural** — Vehicles, buildings, hardware, anatomy. Use shapes that match the physical form — `<path>` for curved bodies, `<polygon>` for tapered shapes, `<ellipse>`/`<circle>` for cylindrical parts, nested `<rect>` for compartments. See `references/physical-shape-cookbook.md`.
-7. **Infrastructure / Systems Integration** — Smart cities, IoT networks, multi-domain systems. Hub-spoke layout with central platform connecting subsystems. Semantic line styles (`.data-line`, `.power-line`, `.water-pipe`, `.road`). See `references/infrastructure-patterns.md`.
-8. **UI / Dashboard Mockups** — Admin panels, monitoring dashboards. Screen frame with nested chart/gauge/indicator elements. See `references/dashboard-patterns.md`.
+1. **Flowchart**: CI/CD pipelines, request lifecycles, approval workflows, data processing. Single-direction flow (top-down or left-right). Max 4-5 nodes per row.
+2. **Structural / Containment**: Cloud infrastructure nesting, system architecture with layers. Large outer containers with inner regions. Dashed rects for logical groupings.
+3. **API / Endpoint Map**: REST routes, GraphQL schemas. Tree from root, branching to resource groups, each containing endpoint nodes.
+4. **Microservice Topology**: Service mesh, event-driven systems. Services as nodes, arrows for communication patterns, message queues between.
+5. **Data Flow**: ETL pipelines, streaming architectures. Left-to-right flow from sources through processing to sinks.
+6. **Physical / Structural**: Vehicles, buildings, hardware, anatomy. Use shapes that match the physical form, `<path>` for curved bodies, `<polygon>` for tapered shapes, `<ellipse>`/`<circle>` for cylindrical parts, nested `<rect>` for compartments. See `references/physical-shape-cookbook.md`.
+7. **Infrastructure / Systems Integration**: Smart cities, IoT networks, multi-domain systems. Hub-spoke layout with central platform connecting subsystems. Semantic line styles (`.data-line`, `.power-line`, `.water-pipe`, `.road`). See `references/infrastructure-patterns.md`.
+8. **UI / Dashboard Mockups**: Admin panels, monitoring dashboards. Screen frame with nested chart/gauge/indicator elements. See `references/dashboard-patterns.md`.
 
-For physical, infrastructure, and dashboard diagrams, load the matching reference file before generating — each one provides ready-made CSS classes and shape primitives.
+For physical, infrastructure, and dashboard diagrams, load the matching reference file before generating, each one provides ready-made CSS classes and shape primitives.
 
 ---
 
@@ -290,7 +290,7 @@ Only use this when the user explicitly wants a browsable gallery of multiple dia
 **Rules:**
 - Bind to `127.0.0.1` only. Never `0.0.0.0`. Exposing diagrams on all network interfaces is a security hazard on shared networks.
 - Pick a free port (do NOT hard-code one) and tell the user the chosen URL.
-- The server is optional and opt-in — prefer the standalone HTML file first.
+- The server is optional and opt-in, prefer the standalone HTML file first.
 
 Recommended pattern (lets the OS pick a free ephemeral port):
 
@@ -308,7 +308,7 @@ with socketserver.TCPServer(('127.0.0.1', 0), http.server.SimpleHTTPRequestHandl
 " &
 ```
 
-If the user insists on a fixed port, use `127.0.0.1:<port>` — still never `0.0.0.0`. Document how to stop the server (`kill %1` or `pkill -f "http.server"`).
+If the user insists on a fixed port, use `127.0.0.1:<port>`: still never `0.0.0.0`. Document how to stop the server (`kill %1` or `pkill -f "http.server"`).
 
 ---
 

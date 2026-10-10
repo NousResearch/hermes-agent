@@ -14,8 +14,8 @@ metadata:
 # Grill Me
 
 Stress-tests a plan through structured adversarial questioning before any
-code is written. Models the plan as a **design tree** — every decision
-branches into the decisions that hang off it — and interviews the user in
+code is written. Models the plan as a **design tree**: every decision
+branches into the decisions that hang off it, and interviews the user in
 rounds until every branch is resolved and nothing is silently assumed.
 
 Combines the phase discipline of the original with the frontier-rounds
@@ -38,7 +38,7 @@ None. The skill works on any plan or raw idea.
 ## Core Mechanic: Frontier Rounds
 
 Map the plan as a design tree. The **frontier** is every decision whose
-prerequisites are already settled — the questions you can ask NOW without
+prerequisites are already settled, the questions you can ask NOW without
 guessing at answers you haven't heard yet.
 
 Work in **rounds**: ask the whole current frontier in one message, numbered,
@@ -62,18 +62,18 @@ round.
 
 **Facts are your job; decisions are the user's.** When a frontier question
 needs a fact from the environment (codebase, filesystem, config, docs), find
-it yourself with `search_files` / `read_file` / `terminal` — or dispatch a
+it yourself with `search_files` / `read_file` / `terminal`, or dispatch a
 subagent via `delegate_task` for a heavy exploration. Never ask the user for
 anything you could look up. Don't block on an exploration: only the questions
 downstream of it wait; ask the rest of the frontier now.
 
 ## Question Coverage (work these branches into the tree)
 
-**Understanding** — the real goal and boundaries:
+**Understanding**: the real goal and boundaries:
 - What is the ACTUAL objective? What is explicitly IN and OUT of scope?
 - What are the constraints (time, tech, team, budget)? Who are the users?
 
-**Technical decisions** — for each architectural choice:
+**Technical decisions**: for each architectural choice:
 - "Why this approach and not X?" / "What happens if Y fails?"
 - "What's the worst case?" / "How would you roll back?"
 - Cross-reference the existing codebase; if the project already has a
@@ -100,7 +100,7 @@ Do not act on the plan until the user confirms shared understanding.
    asking the user.
 3. **Accepting "I don't know" as final.** Suggest options, explain
    trade-offs, make a recommendation.
-4. **Writing code during the interrogation.** Alignment only — code after the
+4. **Writing code during the interrogation.** Alignment only, code after the
    explicit green light.
 5. **Being too agreeable.** Your job is to find problems. If everything looks
    fine, look harder.

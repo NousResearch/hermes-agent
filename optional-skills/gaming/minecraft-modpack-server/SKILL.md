@@ -17,17 +17,17 @@ platforms: [linux, macos]
 
 ## Gather User Preferences First
 Before starting setup, ask the user for:
-- **Server name / MOTD** — what should it say in the server list?
-- **Seed** — specific seed or random?
-- **Difficulty** — peaceful / easy / normal / hard?
-- **Gamemode** — survival / creative / adventure?
-- **Online mode** — true (Mojang auth, legit accounts) or false (LAN/cracked friendly)?
-- **Player count** — how many players expected? (affects RAM & view distance tuning)
-- **RAM allocation** — or let agent decide based on mod count & available RAM?
-- **View distance / simulation distance** — or let agent pick based on player count & hardware?
-- **PvP** — on or off?
-- **Whitelist** — open server or whitelist only?
-- **Backups** — want automated backups? How often?
+- **Server name / MOTD**: what should it say in the server list?
+- **Seed**: specific seed or random?
+- **Difficulty**: peaceful / easy / normal / hard?
+- **Gamemode**: survival / creative / adventure?
+- **Online mode**: true (Mojang auth, legit accounts) or false (LAN/cracked friendly)?
+- **Player count**: how many players expected? (affects RAM & view distance tuning)
+- **RAM allocation**: or let agent decide based on mod count & available RAM?
+- **View distance / simulation distance**: or let agent pick based on player count & hardware?
+- **PvP**: on or off?
+- **Whitelist**: open server or whitelist only?
+- **Backups**: want automated backups? How often?
 
 Use sensible defaults if the user doesn't care, but always ask before generating the config.
 
@@ -174,12 +174,12 @@ Add hourly cron:
 ```
 
 ## Pitfalls
-- ALWAYS set `allow-flight=true` for modded — mods with jetpacks/flight will kick players otherwise
-- `max-tick-time=180000` or higher — modded servers often have long ticks during worldgen
-- First startup is SLOW (several minutes for big packs) — don't panic
+- ALWAYS set `allow-flight=true` for modded, mods with jetpacks/flight will kick players otherwise
+- `max-tick-time=180000` or higher, modded servers often have long ticks during worldgen
+- First startup is SLOW (several minutes for big packs), don't panic
 - "Can't keep up!" warnings on first launch are normal, settles after initial chunk gen
 - If online-mode=false, set enforce-secure-profile=false too or clients get rejected
-- The pack's startserver.sh often has an auto-restart loop — make a clean launch script without it
+- The pack's startserver.sh often has an auto-restart loop, make a clean launch script without it
 - Delete the world/ folder to regenerate with a new seed
 - Some packs have env vars to control behavior (e.g., ATM10 uses ATM10_JAVA, ATM10_RESTART, ATM10_INSTALL_ONLY)
 

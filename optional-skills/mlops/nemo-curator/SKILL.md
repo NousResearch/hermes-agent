@@ -59,7 +59,7 @@ uv pip install "nemo-curator[text-cpu]"
 > pipeline/stage architecture**. The old `DocumentDataset` + `nemo_curator.modules.*` /
 > `ScoreFilter` / `Modify` call-the-object-on-a-dataset API from 0.x is gone. In 1.x you
 > compose `ProcessingStage`s into a `Pipeline` and run it with an executor. The exact
-> stage/import surface differs per modality — treat the examples in this skill below as
+> stage/import surface differs per modality, treat the examples in this skill below as
 > **conceptual** (0.x-style) and follow the current
 > [quickstart](https://github.com/NVIDIA-NeMo/Curator/blob/main/tutorials/quickstart.py)
 > and [text guide](https://docs.nvidia.com/nemo/curator/latest/get-started/text) for the
@@ -394,7 +394,7 @@ cluster.close()
 
 - **GitHub**: https://github.com/NVIDIA-NeMo/Curator
 - **Docs**: https://docs.nvidia.com/nemo/curator/latest/
-- **Version**: 1.2.0 (1.x is a Ray-based pipeline rewrite — see the quickstart before copying 0.x snippets)
+- **Version**: 1.2.0 (1.x is a Ray-based pipeline rewrite, see the quickstart before copying 0.x snippets)
 - **License**: Apache 2.0
 
 

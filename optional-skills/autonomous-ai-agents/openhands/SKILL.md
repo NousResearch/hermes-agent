@@ -20,7 +20,7 @@ This skill is the headless-mode wrapper for batch / one-shot delegation. The int
 ## When to Use
 
 - User wants a coding task delegated to OpenHands specifically.
-- User wants a coding agent that can run on a non-Anthropic / non-OpenAI provider (DeepSeek, Qwen, Ollama, vLLM, Nous, etc.) — sibling skills `claude-code` and `codex` are tied to one vendor.
+- User wants a coding agent that can run on a non-Anthropic / non-OpenAI provider (DeepSeek, Qwen, Ollama, vLLM, Nous, etc.). Sibling skills `claude-code` and `codex` are tied to one vendor.
 - Multi-step file edits + shell commands inside a workspace.
 
 For Claude-native, prefer `claude-code`. For OpenAI-native, prefer `codex`. For Hermes-native subagents, use `delegate_task`.
@@ -86,7 +86,7 @@ terminal(
 
 ## Real Flag List
 
-Verified against `openhands --help` (CLI 1.16.0). Anything not in this table is not a flag — pass it via env var or settings file.
+Verified against `openhands --help` (CLI 1.16.0). Anything not in this table is not a flag: pass it via env var or settings file.
 
 | Flag | Effect |
 |------|--------|
@@ -99,23 +99,23 @@ Verified against `openhands --help` (CLI 1.16.0). Anything not in this table is 
 | `--override-with-envs` | Apply `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` env vars. Without this, OpenHands uses `~/.openhands/settings.json` and ignores the env. |
 | `--exit-without-confirmation` | Don't show the "are you sure" exit dialog. |
 | `--always-approve` / `--yolo` | Auto-approve every action (default in `--headless`). |
-| `--llm-approve` | LLM-based security gate (interactive only — does NOT work in headless). |
+| `--llm-approve` | LLM-based security gate (interactive only: does NOT work in headless). |
 | `--version` / `-v` | Print version and exit. |
 
 **There is no `--model`, `--max-iterations`, `--workspace`, `--sandbox`, `--sandbox-type` flag.** Model is `LLM_MODEL`. Workspace is the `workdir` you pass to the `terminal` tool. Sandbox / runtime is the `RUNTIME` and `SANDBOX_VOLUMES` env vars.
 
 ## JSON Event Schema
 
-With `--json --headless`, OpenHands emits JSONL — one JSON object per line, plus a handful of non-JSON status lines (`Initializing agent...`, `Agent is working`, `Agent finished`, the final summary box, `Goodbye!`, `Conversation ID:`, `Hint:`). Filter for lines starting with `{`.
+With `--json --headless`, OpenHands emits JSONL: one JSON object per line, plus a handful of non-JSON status lines (`Initializing agent...`, `Agent is working`, `Agent finished`, the final summary box, `Goodbye!`, `Conversation ID:`, `Hint:`). Filter for lines starting with `{`.
 
 Top-level `kind` field discriminates events:
 
-- `MessageEvent` — user / agent text turn. `source` is `user` or `agent`.
-- `ActionEvent` — agent picked a tool. Read `tool_name` (`file_editor`, `terminal`, `finish`) and `action.kind` (`FileEditorAction`, `TerminalAction`, `FinishAction`).
-- `ObservationEvent` — tool result. `observation.is_error` is the success flag. `source` is `environment`.
+- `MessageEvent`: user / agent text turn. `source` is `user` or `agent`.
+- `ActionEvent`: agent picked a tool. Read `tool_name` (`file_editor`, `terminal`, `finish`) and `action.kind` (`FileEditorAction`, `TerminalAction`, `FinishAction`).
+- `ObservationEvent`: tool result. `observation.is_error` is the success flag. `source` is `environment`.
 - `FinishAction` inside an `ActionEvent` carries the agent's final message in `action.message`.
 
-The cli prints all stderr from LiteLLM/Authlib first — see Pitfalls. Parse only stdout, line by line, ignoring lines that don't start with `{`.
+The cli prints all stderr from LiteLLM/Authlib first. See Pitfalls. Parse only stdout, line by line, ignoring lines that don't start with `{`.
 
 ## Pitfalls
 

@@ -12,29 +12,29 @@ Aristotle's *protai archai*. Decompose a problem to assumptions you trust, then 
 
 ## Don't use when
 
-- You don't know the domain well enough — first principles applied by an outsider produces confidently wrong answers
+- You don't know the domain well enough, first principles applied by an outsider produces confidently wrong answers
 - Transaction costs of replacement exceed the gains
-- Problem is irreducible (aesthetic, social, gestalt — decomposition destroys what makes it coherent)
-- You're trying to seem original — performance of first-principles thinking is slop
+- Problem is irreducible (aesthetic, social, gestalt, decomposition destroys what makes it coherent)
+- You're trying to seem original, performance of first-principles thinking is slop
 
 ## Procedure
 
 1. **State the problem precisely.**
 2. **List assumptions in the conventional solution.** What does the standard approach take for granted? List 5–10, including ones that "go without saying."
 3. **Categorize each:**
-   - **Physical** — law of nature; can't be relaxed.
-   - **Informational** — logical / mathematical / information-theoretic; can't be relaxed without contradiction.
-   - **Conventional** — could be different; matters for compatibility.
-   - **Historical** — was necessary at some point; may not be now.
-   - **Pedagogical** — simplification used for teaching; may not be how experts actually do it.
+   - **Physical**: law of nature; can't be relaxed.
+   - **Informational**: logical / mathematical / information-theoretic; can't be relaxed without contradiction.
+   - **Conventional**: could be different; matters for compatibility.
+   - **Historical**: was necessary at some point; may not be now.
+   - **Pedagogical**: simplification used for teaching; may not be how experts actually do it.
 4. **For each non-physical / non-informational assumption:** still load-bearing? Conventional and historical assumptions are where the gains live.
 5. **Rebuild.** Construct a candidate respecting only physical and informational constraints, plus your specific context.
-6. **Apply Chesterton's fence.** For each element you've removed, find the original reason it was added. If you can't find a reason, *don't conclude there isn't one* — assume you haven't looked hard enough.
+6. **Apply Chesterton's fence.** For each element you've removed, find the original reason it was added. If you can't find a reason, *don't conclude there isn't one*, assume you haven't looked hard enough.
 7. **Decide whether to switch.** Even when the rebuild is technically better, consider transaction cost, ecosystem compatibility, team familiarity.
 
 ## Worked example
 
-**Problem**: typical CRUD web app — login, dashboard, few CRUD entities. Conventional stack: React + Node/Express + PostgreSQL + REST API + managed platform. ~12,000 LOC, monthly hosting ~$100.
+**Problem**: typical CRUD web app, login, dashboard, few CRUD entities. Conventional stack: React + Node/Express + PostgreSQL + REST API + managed platform. ~12,000 LOC, monthly hosting ~$100.
 
 **Assumptions**:
 - React: conventional, was historical (SPA promise ~2014), pedagogical (taught everywhere).
@@ -53,7 +53,7 @@ Aristotle's *protai archai*. Decompose a problem to assumptions you trust, then 
 
 **Result**: ~1,500 LOC vs 12,000. ~$5/month vs $100. Tradeoffs: less impressive on resume, fewer contractors familiar with this style, no immediate path to 1M users.
 
-**Chesterton's fence**: the conventional choices are load-bearing for *some* applications. The rebuild is correct *only* for this app's constraints. A different app — high concurrency, multiple clients, large data — needs different choices.
+**Chesterton's fence**: the conventional choices are load-bearing for *some* applications. The rebuild is correct *only* for this app's constraints. A different app, high concurrency, multiple clients, large data, needs different choices.
 
 ## Anti-slop notes
 

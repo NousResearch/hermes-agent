@@ -25,7 +25,7 @@ scripts handle these transparently; document them here so anyone calling
 | Local path | Cloud path | Notes |
 |------------|-----------|-------|
 | `/system_stats` | `/api/system_stats` | Cloud version is **public** (no auth required) |
-| `/object_info` | `/api/object_info` | **Paid tier only** — free returns 403 |
+| `/object_info` | `/api/object_info` | **Paid tier only**: free returns 403|
 | `/queue` | `/api/queue` | Paid tier only |
 | `/userdata` | `/api/userdata` | Paid tier only |
 | `/prompt` (POST) | `/api/prompt` (POST) | Paid tier only |
@@ -39,9 +39,9 @@ scripts handle these transparently; document them here so anyone calling
 
 ### Cloud model-list response shape
 
-- **Local:** `["a.safetensors", "b.safetensors", …]` — flat list of strings.
-- **Cloud:** `[{"name": "a.safetensors", "pathIndex": 0}, …]` — list of objects.
-- **Cloud 404 with `code: "folder_not_found"`** — folder is empty or unknown,
+- **Local:** `["a.safetensors", "b.safetensors", …]`: flat list of strings.
+- **Cloud:** `[{"name": "a.safetensors", "pathIndex": 0}, …]`: list of objects.
+- **Cloud 404 with `code: "folder_not_found"`**: folder is empty or unknown,
   not an "endpoint missing" error. Distinguish by reading the body.
 
 The skill helper `_common.parse_model_list()` normalizes both.
@@ -150,7 +150,7 @@ wscat -c "ws://127.0.0.1:8188/ws?clientId=MY-UUID"
 wscat -c "wss://cloud.comfy.org/ws?clientId=MY-UUID&token=$COMFY_CLOUD_API_KEY"
 ```
 
-**Note:** on Cloud the `clientId` is currently ignored — all messages for a
+**Note:** on Cloud the `clientId` is currently ignored, all messages for a
 user are broadcast to every connection. Filter messages client-side by
 `data.prompt_id`.
 
@@ -174,9 +174,9 @@ user are broadcast to every connection. Filter messages client-side by
 
 | Type code | Meaning |
 |-----------|---------|
-| `0x00000001` | `PREVIEW_IMAGE` — `[type:4][image_type:4][data]` (image_type 1=JPEG, 2=PNG) |
-| `0x00000003` | `TEXT` — `[type:4][nid_len:4][nid][text]` (UTF-8) |
-| `0x00000004` | `PREVIEW_IMAGE_WITH_METADATA` — `[type:4][meta_len:4][json][image_data]` |
+| `0x00000001` | `PREVIEW_IMAGE`, `[type:4][image_type:4][data]` (image_type 1=JPEG, 2=PNG)|
+| `0x00000003` | `TEXT`, `[type:4][nid_len:4][nid][text]` (UTF-8)|
+| `0x00000004` | `PREVIEW_IMAGE_WITH_METADATA`, `[type:4][meta_len:4][json][image_data]`|
 
 `scripts/ws_monitor.py --previews <dir>` saves preview frames to disk.
 
@@ -295,7 +295,7 @@ curl -X POST "http://127.0.0.1:8188/manager/queue/install_model" \
 ```
 
 - `prompt`: workflow graph in API format
-- `client_id`: UUID — local server uses it to filter WebSocket events; cloud
+- `client_id`: UUID, local server uses it to filter WebSocket events; cloud
   ignores it.
 - `extra_data.api_key_comfy_org`: ONLY required when the workflow uses
   partner nodes (Flux Pro, Ideogram, etc.). Don't conflate with `X-API-Key`.

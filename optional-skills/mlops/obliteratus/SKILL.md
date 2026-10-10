@@ -18,7 +18,7 @@ metadata:
 
 9 CLI methods, 28 analysis modules, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations.
 
-Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
+Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques, including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more, to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
 **License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
 
@@ -118,26 +118,26 @@ obliteratus recommend <model_name> --insights  # global cross-architecture ranki
 | Stubborn refusals persist         | `aggressive`       | Whitened SVD + head surgery + jailbreak   |
 | Want reversible changes           | Use steering vectors (see Analysis section) |
 | Maximum quality, time no object   | `optimized`        | Bayesian search for best parameters      |
-| Experimental auto-detection       | `informed`         | Auto-detects alignment type — experimental, may not always outperform advanced |
+| Experimental auto-detection       | `informed`         | Auto-detects alignment type, experimental, may not always outperform advanced|
 
 ### 9 CLI Methods
-- **basic** — Single refusal direction via diff-in-means. Fast (~5-10 min for 8B).
-- **advanced** (DEFAULT, RECOMMENDED) — Multiple SVD directions, norm-preserving projection, 2 refinement passes. Medium speed (~10-20 min).
-- **aggressive** — Whitened SVD + jailbreak-contrastive + attention head surgery. Higher risk of coherence damage.
-- **spectral_cascade** — DCT frequency-domain decomposition. Research/novel approach.
-- **informed** — Runs analysis DURING abliteration to auto-configure. Experimental — slower and less predictable than advanced.
-- **surgical** — SAE features + neuron masking + head surgery + per-expert. Very slow (~1-2 hrs). Best for reasoning models.
-- **optimized** — Bayesian hyperparameter search (Optuna TPE). Longest runtime but finds optimal parameters.
-- **inverted** — Flips the refusal direction. Model becomes actively willing.
-- **nuclear** — Maximum force combo for stubborn MoE models. Expert-granular.
+- **basic**: Single refusal direction via diff-in-means. Fast (~5-10 min for 8B).
+- **advanced** (DEFAULT, RECOMMENDED), Multiple SVD directions, norm-preserving projection, 2 refinement passes. Medium speed (~10-20 min).
+- **aggressive**: Whitened SVD + jailbreak-contrastive + attention head surgery. Higher risk of coherence damage.
+- **spectral_cascade**: DCT frequency-domain decomposition. Research/novel approach.
+- **informed**: Runs analysis DURING abliteration to auto-configure. Experimental, slower and less predictable than advanced.
+- **surgical**: SAE features + neuron masking + head surgery + per-expert. Very slow (~1-2 hrs). Best for reasoning models.
+- **optimized**: Bayesian hyperparameter search (Optuna TPE). Longest runtime but finds optimal parameters.
+- **inverted**: Flips the refusal direction. Model becomes actively willing.
+- **nuclear**: Maximum force combo for stubborn MoE models. Expert-granular.
 
 ### Direction Extraction Methods (--direction-method flag)
-- **diff_means** (default) — Simple difference-in-means between refused/complied activations. Robust.
-- **svd** — Multi-direction SVD extraction. Better for complex alignment.
-- **leace** — LEACE (Linear Erasure via Closed-form Estimation). Optimal linear erasure.
+- **diff_means** (default), Simple difference-in-means between refused/complied activations. Robust.
+- **svd**: Multi-direction SVD extraction. Better for complex alignment.
+- **leace**: LEACE (Linear Erasure via Closed-form Estimation). Optimal linear erasure.
 
 ### 4 Python-API-Only Methods
-(NOT available via CLI — require Python import, which violates AGPL boundary. Mention to user only if they explicitly want to use OBLITERATUS as a library in their own AGPL project.)
+(NOT available via CLI, require Python import, which violates AGPL boundary. Mention to user only if they explicitly want to use OBLITERATUS as a library in their own AGPL project.)
 - failspy, gabliteration, heretic, rdo
 
 ## Step 5: Run Abliteration
@@ -286,10 +286,10 @@ from obliteratus.analysis.steering_vectors import SteeringVectorFactory, Steerin
 ## Ablation Strategies
 
 Beyond direction-based abliteration, OBLITERATUS includes structural ablation strategies:
-- **Embedding Ablation** — Target embedding layer components
-- **FFN Ablation** — Feed-forward network block removal
-- **Head Pruning** — Attention head pruning
-- **Layer Removal** — Full layer removal
+- **Embedding Ablation**: Target embedding layer components
+- **FFN Ablation**: Feed-forward network block removal
+- **Head Pruning**: Attention head pruning
+- **Layer Removal**: Full layer removal
 
 List all available: `obliteratus strategies`
 
@@ -304,39 +304,39 @@ OBLITERATUS includes built-in evaluation tools:
 
 ## Platform Support
 
-- **CUDA** — Full support (NVIDIA GPUs)
-- **Apple Silicon (MLX)** — Supported via MLX backend
-- **CPU** — Supported for tiny models (< 1B params)
+- **CUDA**: Full support (NVIDIA GPUs)
+- **Apple Silicon (MLX)**: Supported via MLX backend
+- **CPU**: Supported for tiny models (< 1B params)
 
 ## YAML Config Templates
 
 Load templates for reproducible runs via `skill_view`:
-- `templates/abliteration-config.yaml` — Standard single-model config
-- `templates/analysis-study.yaml` — Pre-abliteration analysis study
-- `templates/batch-abliteration.yaml` — Multi-model batch processing
+- `templates/abliteration-config.yaml`, Standard single-model config
+- `templates/analysis-study.yaml`, Pre-abliteration analysis study
+- `templates/batch-abliteration.yaml`, Multi-model batch processing
 
 ## Telemetry
 
 OBLITERATUS can optionally contribute anonymized run data to a global research dataset.
-Enable with `--contribute` flag. No personal data is collected — only model name, method, metrics.
+Enable with `--contribute` flag. No personal data is collected, only model name, method, metrics.
 
 ## Common Pitfalls
 
-1. **Don't use `informed` as default** — it's experimental and slower. Use `advanced` for reliable results.
-2. **Models under ~1B respond poorly to abliteration** — their refusal behaviors are shallow and fragmented, making clean direction extraction difficult. Expect partial results (20-40% remaining refusal). Models 3B+ have cleaner refusal directions and respond much better (often 0% refusal with `advanced`).
-3. **`aggressive` can make things worse** — on small models it can damage coherence and actually increase refusal rate. Only use it if `advanced` leaves > 10% refusals on a 3B+ model.
-4. **Always check perplexity** — if it spikes > 15%, the model is damaged. Reduce aggressiveness.
-5. **MoE models need special handling** — use `nuclear` method for Mixtral, DeepSeek-MoE, etc.
-6. **Quantized models can't be re-quantized** — abliterate the full-precision model, then quantize the output.
-7. **VRAM estimation is approximate** — 4-bit quant helps but peak usage can spike during extraction.
-8. **Reasoning models are sensitive** — use `surgical` for R1 distills to preserve chain-of-thought.
-9. **Check `obliteratus recommend`** — telemetry data may have better parameters than defaults.
-10. **AGPL license** — never `import obliteratus` in MIT/Apache projects. CLI invocation only.
-11. **Large models (70B+)** — always use `--large-model` flag for conservative defaults.
-12. **Spectral certification RED is common** — the spectral check often flags "incomplete" even when practical refusal rate is 0%. Check actual refusal rate rather than relying on spectral certification alone.
+1. **Don't use `informed` as default**: it's experimental and slower. Use `advanced` for reliable results.
+2. **Models under ~1B respond poorly to abliteration**: their refusal behaviors are shallow and fragmented, making clean direction extraction difficult. Expect partial results (20-40% remaining refusal). Models 3B+ have cleaner refusal directions and respond much better (often 0% refusal with `advanced`).
+3. **`aggressive` can make things worse**: on small models it can damage coherence and actually increase refusal rate. Only use it if `advanced` leaves > 10% refusals on a 3B+ model.
+4. **Always check perplexity**: if it spikes > 15%, the model is damaged. Reduce aggressiveness.
+5. **MoE models need special handling**: use `nuclear` method for Mixtral, DeepSeek-MoE, etc.
+6. **Quantized models can't be re-quantized**: abliterate the full-precision model, then quantize the output.
+7. **VRAM estimation is approximate**: 4-bit quant helps but peak usage can spike during extraction.
+8. **Reasoning models are sensitive**: use `surgical` for R1 distills to preserve chain-of-thought.
+9. **Check `obliteratus recommend`**: telemetry data may have better parameters than defaults.
+10. **AGPL license**: never `import obliteratus` in MIT/Apache projects. CLI invocation only.
+11. **Large models (70B+)**: always use `--large-model` flag for conservative defaults.
+12. **Spectral certification RED is common**: the spectral check often flags "incomplete" even when practical refusal rate is 0%. Check actual refusal rate rather than relying on spectral certification alone.
 
 ## Complementary Skills
 
-- **vllm** — Serve abliterated models with high throughput
-- **gguf** — Convert abliterated models to GGUF for llama.cpp
-- **huggingface-tokenizers** — Work with model tokenizers
+- **vllm**: Serve abliterated models with high throughput
+- **gguf**: Convert abliterated models to GGUF for llama.cpp
+- **huggingface-tokenizers**: Work with model tokenizers

@@ -1,10 +1,10 @@
 # Chance and Remix
 
 Four traditions of surrendering authorial control to procedure:
-- **Surrealist exquisite corpse** — Breton et al., 1925. Folded-paper collaborative writing/drawing.
-- **John Cage's chance operations** — *Music of Changes* (1951). Composed via *I Ching* coin tosses.
-- **Burroughs–Gysin cut-up** — *Minutes to Go* (1960). Cut existing text, rearrange.
-- **Situationist détournement** — Debord & Wolman, 1956. Re-edit existing media to subvert original meaning.
+- **Surrealist exquisite corpse**: Breton et al., 1925. Folded-paper collaborative writing/drawing.
+- **John Cage's chance operations**: *Music of Changes* (1951). Composed via *I Ching* coin tosses.
+- **Burroughs–Gysin cut-up**: *Minutes to Go* (1960). Cut existing text, rearrange.
+- **Situationist détournement**: Debord & Wolman, 1956. Re-edit existing media to subvert original meaning.
 
 ## When to use
 
@@ -38,20 +38,20 @@ Variants: drawings (head/torso/legs in three folds), single-author asynchronous 
 4. Notate / build / perform the result.
 5. **Use what comes out.** Overriding for taste defeats the operation.
 
-Variants: time-bracket scores (Cage's late practice — windows within which sounds occur). Algorithmic chance (script-driven). Generative systems (Eno's *Music for Airports*, *Reflection*).
+Variants: time-bracket scores (Cage's late practice, windows within which sounds occur). Algorithmic chance (script-driven). Generative systems (Eno's *Music for Airports*, *Reflection*).
 
 ## Cut-up technique
 
 Gysin, Beat Hotel Paris, 1959. Bowie used it for *Diamond Dogs*, *Heroes*, *Outside*. Thom Yorke for *Kid A*.
 
 **Procedure**:
-1. Take a page of existing text — your own draft, a newspaper, a manual, anything.
-2. Cut into fragments — by line, phrase, or word.
+1. Take a page of existing text, your own draft, a newspaper, a manual, anything.
+2. Cut into fragments, by line, phrase, or word.
 3. Shuffle.
 4. Reassemble. Don't force coherence; use the new juxtapositions.
 5. Use the strongest combinations as starting points.
 
-Variants: fold-in (Burroughs — fold one page over another). Voice cut-ups (tape splice). Algorithmic cut-up (script).
+Variants: fold-in (Burroughs, fold one page over another). Voice cut-ups (tape splice). Algorithmic cut-up (script).
 
 ## Détournement
 

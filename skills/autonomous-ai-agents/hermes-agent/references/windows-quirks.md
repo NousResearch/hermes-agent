@@ -2,13 +2,13 @@
 
 Hermes runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
 mintty, VS Code integrated terminal). Most of it just works, but a handful
-of differences between Win32 and POSIX have bitten us — document new ones
+of differences between Win32 and POSIX have bitten us: document new ones
 here as you hit them so the next person (or the next session) doesn't
 rediscover them from scratch.
 
 ### Input / Keybindings
 
-**Alt+Enter doesn't insert a newline** — Windows Terminal (and mintty) grab it
+**Alt+Enter doesn't insert a newline**: Windows Terminal (and mintty) grab it
 for fullscreen before prompt_toolkit sees it. Use **Ctrl+Enter** instead (the
 CLI binds it to newline on Windows; raw Ctrl+J does the same, harmlessly).
 To inspect how your terminal reports a keystroke, run
@@ -16,13 +16,13 @@ To inspect how your terminal reports a keystroke, run
 
 ### Config / Files
 
-**HTTP 400 "No models provided" on first run** — `config.yaml` was saved with
+**HTTP 400 "No models provided" on first run**: `config.yaml` was saved with
 a UTF-8 BOM (Notepad does this). Re-save as UTF-8 without BOM;
 `hermes config edit` writes correctly.
 
 ### `execute_code` / Sandbox
 
-**WinError 10106** from the sandbox child process — it can't create an
+**WinError 10106** from the sandbox child process: it can't create an
 `AF_INET` socket. Root cause is usually Hermes's env scrubber dropping
 `SYSTEMROOT`/`WINDIR`/`COMSPEC` (Python's `socket` needs `SYSTEMROOT` to find
 `mswsock.dll`), not a broken Winsock LSP. The `_WINDOWS_ESSENTIAL_ENV_VARS`
@@ -55,11 +55,11 @@ not supply pytest after the runner clears `PYTHONPATH`.
 
 ### Path / Filesystem
 
-**Line endings.** Git may warn `LF will be replaced by CRLF`. Cosmetic — the
+**Line endings.** Git may warn `LF will be replaced by CRLF`. Cosmetic: the
 repo's `.gitattributes` normalizes. Don't let editors auto-convert committed
 POSIX-newline files to CRLF.
 
 **Forward slashes work almost everywhere.** `C:/Users/...` is accepted by
 every Hermes tool and most Windows APIs. Prefer forward slashes in code
-and logs — avoids shell-escaping backslashes in bash.
+and logs: avoids shell-escaping backslashes in bash.
 

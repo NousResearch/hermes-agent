@@ -4,9 +4,9 @@ Production pipeline for interactive and generative visual art using [p5.js](http
 
 ## What it does
 
-Creates browser-based visual art from text prompts. The agent handles the full pipeline: creative concept, code generation, preview, export, and iterative refinement. Output is a single self-contained HTML file that runs in any browser — no build step, no server, no dependencies beyond a CDN script tag.
+Creates browser-based visual art from text prompts. The agent handles the full pipeline: creative concept, code generation, preview, export, and iterative refinement. Output is a single self-contained HTML file that runs in any browser, no build step, no server, no dependencies beyond a CDN script tag.
 
-The output is real interactive art. Not tutorial exercises. Generative systems, particle physics, noise fields, shader effects, kinetic typography — composed with intentional color palettes, layered composition, and visual hierarchy.
+The output is real interactive art. Not tutorial exercises. Generative systems, particle physics, noise fields, shader effects, kinetic typography: composed with intentional color palettes, layered composition, and visual hierarchy.
 
 ## Modes
 
@@ -25,8 +25,8 @@ The output is real interactive art. Not tutorial exercises. Generative systems, 
 | Format | Method |
 |--------|--------|
 | **HTML** | Self-contained file, opens in any browser |
-| **PNG** | `saveCanvas()` — press 's' to capture |
-| **GIF** | `saveGif()` — press 'g' to capture |
+| **PNG** | `saveCanvas()`: press 's' to capture |
+| **GIF** | `saveGif()`: press 'g' to capture |
 | **MP4** | Frame sequence + ffmpeg via `scripts/render.sh` |
 | **SVG** | p5.js-svg renderer for vector output |
 

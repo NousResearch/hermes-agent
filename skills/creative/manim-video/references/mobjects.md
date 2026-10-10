@@ -93,7 +93,7 @@ mob.to_corner(UL, buff=0.5)               # corner
 
 ## VGroup vs Group
 
-**VGroup** is for collections of shapes (VMobjects only — Circle, Square, Arrow, Line, MathTex):
+**VGroup** is for collections of shapes (VMobjects only. Circle, Square, Arrow, Line, MathTex):
 ```python
 shapes = VGroup(circle, square, arrow)
 shapes.arrange(DOWN, buff=0.5)
@@ -174,7 +174,7 @@ Directions: `UP, DOWN, LEFT, RIGHT, ORIGIN, UL, UR, DL, DR`
 Colors: `RED, BLUE, GREEN, YELLOW, WHITE, GRAY, ORANGE, PINK, PURPLE, TEAL, GOLD`
 Frame: `config.frame_width = 14.222, config.frame_height = 8.0`
 
-## SVGMobject — Import SVG Files
+## SVGMobject: Import SVG Files
 
 ```python
 logo = SVGMobject("path/to/logo.svg")
@@ -186,7 +186,7 @@ for part in logo.submobjects:
     self.play(part.animate.set_color(random_color()))
 ```
 
-## ImageMobject — Display Images
+## ImageMobject: Display Images
 
 ```python
 img = ImageMobject("screenshot.png")
@@ -196,7 +196,7 @@ self.play(FadeIn(img))
 
 Note: images cannot be animated with `.animate` (they're raster, not vector). Use `FadeIn`/`FadeOut` and `shift`/`scale` only.
 
-## Variable — Auto-Updating Display
+## Variable: Auto-Updating Display
 
 ```python
 var = Variable(0, Text("x"), num_decimal_places=2)
@@ -269,7 +269,7 @@ arr = LabeledArrow(Text("force", font_size=18), start=LEFT, end=RIGHT, color=RED
 line = LabeledLine(Text("d = 5m", font_size=18), start=LEFT * 2, end=RIGHT * 2)
 ```
 
-Auto-handles label positioning — cleaner than manual `Arrow` + `Text().next_to()`.
+Auto-handles label positioning: cleaner than manual `Arrow` + `Text().next_to()`.
 
 ## Text Color/Font/Style Per-Substring (t2c, t2f, t2s, t2w)
 
@@ -312,7 +312,7 @@ This is how 3Blue1Brown keeps text readable over complex backgrounds without usi
 
 ## Complex Function Transforms
 
-Apply complex functions to entire mobjects — transforms the plane:
+Apply complex functions to entire mobjects: transforms the plane:
 
 ```python
 c_grid = ComplexPlane()
@@ -330,4 +330,4 @@ self.play(grid.animate.apply_function(
 ), run_time=5)
 ```
 
-**Critical:** Call `prepare_for_nonlinear_transform()` before applying nonlinear functions — without it, the grid has too few sample points and the deformation looks jagged.
+**Critical:** Call `prepare_for_nonlinear_transform()` before applying nonlinear functions, without it, the grid has too few sample points and the deformation looks jagged.

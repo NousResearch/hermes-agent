@@ -1,4 +1,4 @@
-# OpenCorporates — Global Corporate Registry
+# OpenCorporates, Global Corporate Registry
 
 ## 1. Summary
 
@@ -52,7 +52,7 @@ Key fields emitted by `fetch_opencorporates.py`:
 - **ICIJ Offshore** ↔ `name` (international corporate structures)
 
 Join key: normalized company name. Some entries have `previous_names` arrays
-which are not currently exported by the fetch script — query OC directly
+which are not currently exported by the fetch script, query OC directly
 for that.
 
 ## 6. Data Quality
@@ -60,7 +60,7 @@ for that.
 - Company-name spellings vary across re-incorporations and renames
 - Officer records are spottier than company records (many jurisdictions
   don't require officer disclosure)
-- Beneficial-ownership data is generally NOT here — most jurisdictions
+- Beneficial-ownership data is generally NOT here, most jurisdictions
   don't require it. UK Companies House has PSC (people with significant
   control) but that's not universal.
 - Cross-jurisdictional links (parent / subsidiary) are based on registry
@@ -86,11 +86,11 @@ OPENCORPORATES_API_TOKEN=xxx python3 SKILL_DIR/scripts/fetch_opencorporates.py \
 
 Without a token the script falls back to scraping the HTML search page.
 The fallback is brittle and only fills in `name`, `jurisdiction_code`,
-`opencorporates_url` — set the token for serious work.
+`opencorporates_url`: set the token for serious work.
 
 ## 8. Legal & Licensing
 
-- OpenCorporates aggregates public records — the underlying facts are
+- OpenCorporates aggregates public records, the underlying facts are
   public domain
 - OpenCorporates own database is licensed CC-BY-SA-4.0; attribution required
 - API ToS prohibits redistributing the full dataset; per-record reference

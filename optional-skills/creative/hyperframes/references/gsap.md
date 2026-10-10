@@ -8,23 +8,23 @@ GSAP is the animation engine for all HyperFrames compositions. Load from CDN ins
 
 ## Core Tween Methods
 
-- **`gsap.to(targets, vars)`** — animate from current state to `vars`. Most common.
-- **`gsap.from(targets, vars)`** — animate from `vars` to current state (entrances).
-- **`gsap.fromTo(targets, fromVars, toVars)`** — explicit start and end.
-- **`gsap.set(targets, vars)`** — apply immediately (duration 0). Don't use on clip elements that enter later — use `tl.set(selector, vars, time)` inside the timeline instead.
+- **`gsap.to(targets, vars)`**: animate from current state to `vars`. Most common.
+- **`gsap.from(targets, vars)`**: animate from `vars` to current state (entrances).
+- **`gsap.fromTo(targets, fromVars, toVars)`**: explicit start and end.
+- **`gsap.set(targets, vars)`**: apply immediately (duration 0). Don't use on clip elements that enter later, use `tl.set(selector, vars, time)` inside the timeline instead.
 
 Always use **camelCase** property names (`backgroundColor`, `rotationX`, not `background-color`).
 
 ## Common vars
 
-- **`duration`** — seconds (default 0.5).
-- **`delay`** — seconds before start.
-- **`ease`** — `"power1.out"` (default), `"power3.inOut"`, `"back.out(1.7)"`, `"elastic.out(1, 0.3)"`, `"none"`, `"expo.out"`, `"circ.inOut"`.
-- **`stagger`** — number `0.1` or object: `{ amount: 0.3, from: "center" }`, `{ each: 0.1, from: "random" }`.
-- **`overwrite`** — `false` (default), `true`, or `"auto"`.
-- **`repeat`** — number (never `-1` in HyperFrames). **`yoyo`** — alternates direction with repeat.
-- **`onComplete`**, **`onStart`**, **`onUpdate`** — callbacks.
-- **`immediateRender`** — default `true` for `from()`/`fromTo()`. Set `false` on later tweens targeting the same property+element to avoid overwrite surprises.
+- **`duration`**: seconds (default 0.5).
+- **`delay`**: seconds before start.
+- **`ease`**: `"power1.out"` (default), `"power3.inOut"`, `"back.out(1.7)"`, `"elastic.out(1, 0.3)"`, `"none"`, `"expo.out"`, `"circ.inOut"`.
+- **`stagger`**: number `0.1` or object: `{ amount: 0.3, from: "center" }`, `{ each: 0.1, from: "random" }`.
+- **`overwrite`**: `false` (default), `true`, or `"auto"`.
+- **`repeat`**: number (never `-1` in HyperFrames). **`yoyo`**: alternates direction with repeat.
+- **`onComplete`**, **`onStart`**, **`onUpdate`**: callbacks.
+- **`immediateRender`**: default `true` for `from()`/`fromTo()`. Set `false` on later tweens targeting the same property+element to avoid overwrite surprises.
 
 ## Transforms
 
@@ -40,11 +40,11 @@ Prefer GSAP's transform aliases over raw CSS `transform`:
 | `skewX`, `skewY`            | skew                       |
 | `transformOrigin`           | transform-origin           |
 
-- **`autoAlpha`** — prefer over `opacity`. At 0, also sets `visibility: hidden`.
-- **CSS variables** — `"--hue": 180`.
-- **Directional rotation** — `"360_cw"`, `"-170_short"`, `"90_ccw"`.
-- **`clearProps`** — `"all"` or comma-separated; removes inline styles on complete.
-- **Relative values** — `"+=20"`, `"-=10"`, `"*=2"`.
+- **`autoAlpha`**: prefer over `opacity`. At 0, also sets `visibility: hidden`.
+- **CSS variables**: `"--hue": 180`.
+- **Directional rotation**: `"360_cw"`, `"-170_short"`, `"90_ccw"`.
+- **`clearProps`**: `"all"` or comma-separated; removes inline styles on complete.
+- **Relative values**: `"+=20"`, `"-=10"`, `"*=2"`.
 
 ## Function-based Values
 
@@ -63,7 +63,7 @@ Rule of thumb:
 - Entrances: `power3.out`, `expo.out`, `back.out(1.4)`
 - Exits: `power2.in`, `expo.in`
 - Scrubbed sections: `none` (linear)
-- Vary eases across entrance tweens within a scene — at least 3 different eases.
+- Vary eases across entrance tweens within a scene, at least 3 different eases.
 
 ## Defaults
 
@@ -95,7 +95,7 @@ Third argument to `.from()` / `.to()` / `.add()`:
 
 ### Nesting
 
-HyperFrames auto-nests sub-composition timelines. **Do not** manually `tl.add(subTl)` — the framework wires sub-timelines into the parent at the sub-composition's `data-start`.
+HyperFrames auto-nests sub-composition timelines. **Do not** manually `tl.add(subTl)`: the framework wires sub-timelines into the parent at the sub-composition's `data-start`.
 
 ### Playback
 
@@ -118,9 +118,9 @@ tl.from(".dot", { opacity: 0, stagger: { each: 0.05, from: "random" } });
 
 ## Performance
 
-- Animate transforms (`x`, `y`, `scale`, `rotation`, `opacity`) — cheap, GPU-accelerated.
-- Avoid animating `width`, `height`, `top`, `left`, `margin` — causes layout thrash.
-- Avoid box-shadow or filter animations on large elements — expensive.
+- Animate transforms (`x`, `y`, `scale`, `rotation`, `opacity`), cheap, GPU-accelerated.
+- Avoid animating `width`, `height`, `top`, `left`, `margin`: causes layout thrash.
+- Avoid box-shadow or filter animations on large elements, expensive.
 - `will-change` is rarely needed; GSAP handles promotion.
 
 ## gsap.matchMedia (rarely needed in HyperFrames)
@@ -129,8 +129,8 @@ Compositions have fixed dimensions (`data-width`/`data-height`), so responsive b
 
 ## Don't Do
 
-- `repeat: -1` anywhere — breaks the capture engine.
-- `Math.random()`, `Date.now()`, performance.now()` inside tween values — non-deterministic.
-- `async` / `setTimeout` / `Promise` around timeline construction — the capture engine reads `window.__timelines` synchronously.
-- Animate `visibility` or `display` directly — use `autoAlpha`.
-- `gsap.set()` on clip elements that enter later in the timeline — they don't exist in the DOM at page-load. Use `tl.set(sel, vars, time)` inside the timeline.
+- `repeat: -1` anywhere, breaks the capture engine.
+- `Math.random()`, `Date.now()`: performance.now()` inside tween values, non-deterministic.
+- `async` / `setTimeout` / `Promise` around timeline construction, the capture engine reads `window.__timelines` synchronously.
+- Animate `visibility` or `display` directly, use `autoAlpha`.
+- `gsap.set()` on clip elements that enter later in the timeline, they don't exist in the DOM at page-load. Use `tl.set(sel, vars, time)` inside the timeline.

@@ -1,17 +1,17 @@
-# USAspending — Federal Government Contracts and Grants
+# USAspending, Federal Government Contracts and Grants
 
 ## 1. Summary
 
 USAspending.gov is the official source of federal spending data. Coverage:
 contracts, grants, loans, direct payments, sub-awards. Required by the DATA Act
-of 2014 — all federal agencies must report to a single schema.
+of 2014, all federal agencies must report to a single schema.
 
 ## 2. Access Methods
 
 - **API v2:** `https://api.usaspending.gov/api/v2/` (no auth, no key)
 - **Bulk:** `https://files.usaspending.gov/` (CSV / Parquet by award type)
 - **Auth:** None
-- **Rate limit:** Not strictly enforced, but be polite — keep to <10 req/s
+- **Rate limit:** Not strictly enforced, but be polite, keep to <10 req/s
 
 ## 3. Data Schema
 
@@ -48,7 +48,7 @@ Key fields emitted by `fetch_usaspending.py` (prime awards):
 
 - **SEC EDGAR** ↔ `recipient_name` (public companies as contractors)
 - **Senate LD** ↔ `recipient_name` (lobbying clients winning contracts)
-- **OFAC SDN** ↔ `recipient_name` (sanctions screening of contractors — must be
+- **OFAC SDN** ↔ `recipient_name` (sanctions screening of contractors, must be
   filtered out by SAM.gov but verify)
 - **ICIJ Offshore** ↔ `recipient_name` (offshore-linked contractors)
 
@@ -56,12 +56,12 @@ Join key: normalized recipient name. UEI is canonical when present.
 
 ## 6. Data Quality
 
-- DUNS → UEI transition (April 2022) — old records have DUNS, new records have UEI
+- DUNS → UEI transition (April 2022), old records have DUNS, new records have UEI
 - Some sub-awards aren't reported (FFATA threshold is $30k)
-- Award amount changes over time (mod actions) — fetch script reports current total
-- `competition_extent` field is free-text in older records — `fetch_usaspending.py`
+- Award amount changes over time (mod actions), fetch script reports current total
+- `competition_extent` field is free-text in older records, `fetch_usaspending.py`
   normalizes to canonical values
-- Recipient name variations are extensive — "ACME LLC", "Acme L.L.C.", "ACME, INC"
+- Recipient name variations are extensive, "ACME LLC", "Acme L.L.C.", "ACME, INC"
   all appear. Use `entity_resolution.py`.
 
 ## 7. Acquisition Script

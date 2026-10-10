@@ -1,4 +1,4 @@
-# Kanban Setup — Project Bootstrap & Profile Configuration
+# Kanban Setup, Project Bootstrap & Profile Configuration
 
 Once the brief is locked and the team is designed, the next step is producing
 the actual `setup.sh` that creates the project workspace, configures Hermes
@@ -59,14 +59,14 @@ Example: `q3-product-teaser`, `ascii-mood-loop`, `interview-cut-2026-q1`.
 
 The setup script does six things in order:
 
-1. **Create workspace tree** — all directories above
-2. **Create profiles** — `hermes profile create <name> --clone`
-3. **Configure profiles** — patch each profile's
+1. **Create workspace tree**: all directories above
+2. **Create profiles**: `hermes profile create <name> --clone`
+3. **Configure profiles**: patch each profile's
    `~/.hermes/profiles/<name>/config.yaml` to set toolsets, always_load skills,
    and `cwd`
-4. **Write SOUL.md per profile** — the personality + role definition
+4. **Write SOUL.md per profile**: the personality + role definition
 5. **Copy any provided assets + write `brief.md`, `TEAM.md`, and `taste/`**
-6. **Fire the initial kanban task** — `hermes kanban create` assigned to the director
+6. **Fire the initial kanban task**: `hermes kanban create` assigned to the director
 
 See `assets/setup.sh.tmpl` for the skeleton.
 
@@ -77,7 +77,7 @@ hermes profile create director --clone 2>/dev/null || true
 ```
 
 The `--clone` flag clones from the active profile (preserving model, base
-config). The `|| true` makes the script idempotent — re-running won't error if
+config). The `|| true` makes the script idempotent, re-running won't error if
 the profile already exists.
 
 ### Profile config patching
@@ -85,12 +85,12 @@ the profile already exists.
 Each profile has a YAML config at `~/.hermes/profiles/<name>/config.yaml`. The
 setup script edits exactly two keys:
 
-1. `toolsets:` — replace the default with the role's required toolsets
-2. `skills.always_load:` — list the role's must-load skills (may be empty)
+1. `toolsets:`: replace the default with the role's required toolsets
+2. `skills.always_load:`: list the role's must-load skills (may be empty)
 
 **Do NOT** modify `approvals.mode` (controls user-confirmation of tool calls
-— a security setting that must stay as the user configured it). **Do NOT**
-modify `terminal.cwd` — the kanban dispatcher overrides cwd per-task via
+, a security setting that must stay as the user configured it). **Do NOT**
+modify `terminal.cwd`: the kanban dispatcher overrides cwd per-task via
 `--workspace dir:<path>`, so the profile's cwd is irrelevant to the kanban
 work and changing it could break the user's interactive use of the profile.
 
@@ -125,7 +125,7 @@ ruamel.yaml must be installed in the user's Python (it ships with Hermes).
 If absent: `pip install ruamel.yaml==0.18.17`.
 
 The setup script should also **validate** the patch by re-reading the file
-and comparing — see `assets/setup.sh.tmpl` for the validation pattern.
+and comparing, see `assets/setup.sh.tmpl` for the validation pattern.
 
 ### SOUL.md per profile
 
@@ -133,13 +133,13 @@ Each profile gets a `SOUL.md` at `~/.hermes/profiles/<name>/SOUL.md` that
 defines its role, voice, and rules. See `assets/soul.md.tmpl` for the
 template. Customize per role and per project.
 
-The director's SOUL.md should be the most opinionated — its voice flavors
+The director's SOUL.md should be the most opinionated, its voice flavors
 the entire production. **Critical content for the director's SOUL.md:**
 
 - **Anti-temptation rules:** "Do not execute the work yourself. For every
   concrete task, create a kanban task and assign it. Decompose, route, comment,
-  approve — that's the whole job." (The kanban orchestration guidance is
-  auto-injected into every kanban worker's system prompt — no skill to load.)
+  approve, that's the whole job." (The kanban orchestration guidance is
+  auto-injected into every kanban worker's system prompt, no skill to load.)
 - **Decomposition steps:** Read `brief.md`, `TEAM.md`, `taste/`. Use the team
   graph in `TEAM.md` to fan out tasks.
 - **The workspace_path rule** (see below).
@@ -171,7 +171,7 @@ EOF
 )"
 ```
 
-The `--workspace dir:<path>` flag is **critical** — it tells the kanban that
+The `--workspace dir:<path>` flag is **critical**: it tells the kanban that
 all child tasks share this workspace. Skipping or using `worktree` will
 isolate profiles and break artifact sharing.
 
@@ -276,8 +276,8 @@ firing a kanban that will hit credential errors mid-execution.
    frame counts; the editor should report assembly progress.
 
 6. **The `audio/` and `taste/` dirs are populated BEFORE firing the kanban.**
-   Don't ask the director's pipeline to source these — copy at setup time.
+   Don't ask the director's pipeline to source these, copy at setup time.
 
 7. **`brief.md` is read-only after setup.** If the brief changes during
-   execution, that's a significant pivot — re-fire the kanban rather than edit
+   execution, that's a significant pivot, re-fire the kanban rather than edit
    live.

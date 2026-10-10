@@ -13,8 +13,8 @@ metadata:
 
 # Blocked-Page Recovery
 
-When a page won't fetch — 403/429, Cloudflare "Just a moment...", a paywall,
-or a bot-detection interstitial — don't give up and don't loop on the same
+When a page won't fetch: 403/429, Cloudflare "Just a moment...", a paywall,
+or a bot-detection interstitial: don't give up and don't loop on the same
 URL. Third-party services often hold a **copy** of the page. Work down this
 ladder, cheapest first.
 
@@ -43,12 +43,12 @@ Every recovered copy carries a provenance you MUST preserve when citing:
 
 | Route | Provenance | How to cite |
 |-------|-----------|-------------|
-| Wayback / archive.today | `snapshot` | Cite WITH the snapshot date: "as archived 2026-08-06". Never present a snapshot as the live page — it may be stale. |
+| Wayback / archive.today | `snapshot` | Cite WITH the snapshot date: "as archived 2026-08-06". Never present a snapshot as the live page, it may be stale. |
 | Jina Reader | `live` | Server-side re-render of the live page; cite normally. |
 | Live fetch / browser | `live` | Cite normally. |
 
 If the user needs *current* data (prices, availability, breaking news), a
-snapshot is context, not an answer — say so explicitly and note its age.
+snapshot is context, not an answer: say so explicitly and note its age.
 
 ## Manual routes
 
@@ -66,7 +66,7 @@ For enumerating many snapshots (or recovering deleted pages), the CDX index:
 curl -sL "https://web.archive.org/cdx/search/cdx?url={URL}&output=json&limit=10"
 ```
 
-CDX intermittently returns 503 under load — if it does, fall back to the
+CDX intermittently returns 503 under load: if it does, fall back to the
 `available` API; don't retry-hammer it.
 
 Works for: any publicly crawled URL. Fails for: robots-blocked sites,
@@ -74,7 +74,7 @@ never-crawled URLs, JS-only SPAs (snapshots don't render).
 
 ### 2. archive.today (paywalls, deleted content)
 
-User-submitted archives — often has paywalled news articles Wayback lacks.
+User-submitted archives: often has paywalled news articles Wayback lacks.
 Rate-limits aggressively (429) and rotates domains, so iterate:
 
 ```bash
@@ -84,7 +84,7 @@ for d in archive.ph archive.md archive.li archive.is; do
 done
 ```
 
-**Validate the body, not the status code** — a 429 still ships several KB of
+**Validate the body, not the status code**: a 429 still ships several KB of
 rate-limit HTML that looks like a success to a size check alone.
 
 ### 3. Jina Reader (requires JINA_API_KEY)
@@ -111,7 +111,7 @@ look for:
   you did recover)
 - A sitemap (`/sitemap.xml`) revealing canonical URLs that may not be gated
 
-## Fake successes — routes that LIE
+## Fake successes: routes that LIE
 
 These return HTTP 200 with a plausible body that is NOT the page. The script
 rejects them automatically; reject them manually too:
@@ -133,5 +133,5 @@ titles ("Just a moment", "Redirecting", "Google Search", "Attention Required").
 
 Generic "web proxy" relays are man-in-the-middle by construction. Never send
 cookies or Authorization headers through one, and don't use them for anything
-the user will rely on — provenance is unverifiable. Prefer archives, which at
+the user will rely on: provenance is unverifiable. Prefer archives, which at
 least timestamp their copies.

@@ -12,7 +12,7 @@ Protocol error (HeadlessExperimental.beginFrame):
 
 **Cause:** Chromium 147+ removed the `HeadlessExperimental.beginFrame` CDP command. This affected sandbox environments (e.g., OpenClaw, some containerized agent hosts) that ship modern Chromium as the system browser. See [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294).
 
-**Fix (permanent — preferred):** upgrade.
+**Fix (permanent, preferred):** upgrade.
 
 ```bash
 npx hyperframes upgrade -y
@@ -22,7 +22,7 @@ npm install -g hyperframes@latest
 
 `hyperframes >= 0.4.2` auto-detects whether the resolved browser supports `beginFrame` (checks for `chrome-headless-shell` in the binary path) and falls back to screenshot capture mode when it doesn't. Commit [`4c72ba4`](https://github.com/heygen-com/hyperframes/commit/4c72ba4a36ec2bd6733f7b9cb2a9e63f9fb234b9) (March 2026) shipped this auto-detect.
 
-**Fix (escape hatch — if you can't upgrade):**
+**Fix (escape hatch, if you can't upgrade):**
 
 ```bash
 export PRODUCER_FORCE_SCREENSHOT=true
@@ -31,7 +31,7 @@ npx hyperframes render
 
 This forces screenshot mode regardless of the binary. Screenshot mode is slightly slower but visually identical.
 
-**Fix (prevent — recommended):** install `chrome-headless-shell` so the engine can use the fast BeginFrame path:
+**Fix (prevent, recommended):** install `chrome-headless-shell` so the engine can use the fast BeginFrame path:
 
 ```bash
 npx puppeteer browsers install chrome-headless-shell
@@ -79,7 +79,7 @@ HyperFrames requires Node.js >= 22. Check with `node --version`.
 Renders are memory- and disk-hungry. Minimums:
 
 - **RAM:** 4 GB free (8 GB recommended for 60fps / `--quality high`)
-- **Disk:** 2 GB free scratch space — frames are written to the system temp dir (`$TMPDIR`) during capture
+- **Disk:** 2 GB free scratch space, frames are written to the system temp dir (`$TMPDIR`) during capture
 
 Mitigations:
 - Lower quality: `--quality draft`.
@@ -89,10 +89,10 @@ Mitigations:
 
 ## Lint passes but the render is blank / black frames
 
-Check the browser console in `preview` — usually:
+Check the browser console in `preview`: usually:
 - A timeline was registered with the wrong key (`__timelines["typo"]` instead of `__timelines["root"]`).
 - The root composition was wrapped in `<template>` (only sub-compositions use `<template>`).
-- A script tag failed to load — check Network tab in preview.
+- A script tag failed to load, check Network tab in preview.
 
 Run `npx hyperframes lint --verbose` to see info-level findings.
 
@@ -103,9 +103,9 @@ Run `npx hyperframes lint --verbose` to see info-level findings.
   · .subtitle "secondary text" — 2.67:1 (need 4.5:1, t=5.3s)
 ```
 
-- **Dark backgrounds:** brighten the failing color until it clears 4.5:1 (normal text) or 3:1 (large text — 24px+ or 19px+ bold).
+- **Dark backgrounds:** brighten the failing color until it clears 4.5:1 (normal text) or 3:1 (large text, 24px+ or 19px+ bold).
 - **Light backgrounds:** darken it.
-- Stay within the palette family — don't invent a new color, adjust the existing one.
+- Stay within the palette family, don't invent a new color, adjust the existing one.
 - Skip the check temporarily with `--no-contrast` if iterating rapidly, but clear it before delivery.
 
 ## `Font family 'X' not supported by compiler`
@@ -117,10 +117,10 @@ The compiler embeds a curated set of web-safe + open-source fonts. If a font isn
 ## Video plays back muted or with no audio
 
 Check:
-- The `<video>` element has `muted playsinline` (required — browser autoplay policy).
+- The `<video>` element has `muted playsinline` (required, browser autoplay policy).
 - Audio is a **separate** `<audio>` element, not the video element.
 - Audio `data-volume` is set (defaults to 1).
-- The audio file is at the expected path — compositions load relative to their own directory.
+- The audio file is at the expected path, compositions load relative to their own directory.
 
 ## Docker render fails on Linux with rootless Docker
 
@@ -136,7 +136,7 @@ The headless browser needs namespace permissions for sandboxing.
 
 **Symptom:** load average climbs and stays high; `top` shows several `chrome-headless-shell --type=gpu-process` at ~300%+ CPU each, alive for hours/days, even when you're not rendering.
 
-**Cause:** `npx hyperframes preview` is a long-lived server that keeps Chrome render workers resident. On hosts with no real GPU (WSL, containers, most CI), each idle worker falls back to software WebGL (`swiftshader`) whose GPU process busy-spins a CPU core. A preview left open — or several started over time — stacks these up.
+**Cause:** `npx hyperframes preview` is a long-lived server that keeps Chrome render workers resident. On hosts with no real GPU (WSL, containers, most CI), each idle worker falls back to software WebGL (`swiftshader`) whose GPU process busy-spins a CPU core. A preview left open, or several started over time, stacks these up.
 
 **Diagnose:**
 

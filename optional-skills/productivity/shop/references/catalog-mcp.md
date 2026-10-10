@@ -14,7 +14,7 @@ User-Agent: shop-cli/0.1.0
 
 The `shop` CLI does this automatically: when the buyer is signed in (`shop auth status`), it mints a catalog token and authenticates every catalog call; otherwise it searches unauthenticated. Only do the steps below by hand when the CLI cannot be installed.
 
-Signing in is **not required** — unauthenticated calls (profile only, no `Authorization`) still work. When you have an `access_token` (see device authorization in [direct-api.md](direct-api.md)), exchange it for a catalog token and send that as `Authorization: Bearer` on the MCP calls below:
+Signing in is **not required**: unauthenticated calls (profile only, no `Authorization`) still work. When you have an `access_token` (see device authorization in [direct-api.md](direct-api.md)), exchange it for a catalog token and send that as `Authorization: Bearer` on the MCP calls below:
 
 ```text
 POST https://shop.app/oauth/token
@@ -108,10 +108,10 @@ Important fields:
   - **Supported names (exact, case-insensitive):** `Color`, `Size`, `Target gender`. These map to the index fields `predicted_attributes_primary_colors`, `predicted_attributes_sizes`, and `predicted_attributes_genders_keyword` respectively.
   - **Combine logic:** values *within* one entry are OR'd; *separate* entries are AND'd (e.g. White-or-Blue **and** size M **and** Female).
   - **Limits:** at most 25 attribute entries per request, at most 50 values per entry.
-  - **Unknown names** (e.g. `Material`) are not an error — they are silently dropped and reported back as an `info`/`not_found` entry in `result.messages[]`. The CLI surfaces these as a `_Not found: …_` line.
+  - **Unknown names** (e.g. `Material`) are not an error, they are silently dropped and reported back as an `info`/`not_found` entry in `result.messages[]`. The CLI surfaces these as a `_Not found: …_` line.
   - **Known data caveat:** filtering by a color (notably `White`) can still surface products whose first/featured variant is a different color, because a product matches if *any* of its variants matches and the catalog path does not yet re-order to the matched variant. Treat color results as best-effort; confirm the exact variant via `get_product` before checkout.
 - `catalog.view`: predefined output shape, e.g. `"compact"` for a trimmed payload or `"offer"` for comparison shopping. The CLI defaults to `compact`. Note that `compact` still includes `metadata` (top_features, tech_specs), `rating`, and variant `options`; `top_features` and `tech_specs` are returned as newline-delimited strings, not arrays.
-- `catalog.pagination.limit`: 1-50 (default 10). Keep it small — large pages burn tokens.
+- `catalog.pagination.limit`: 1-50 (default 10). Keep it small, large pages burn tokens.
 - `catalog.pagination.cursor`: opaque cursor for the next page. Take it from the previous response's `pagination.cursor` and re-send the **same** query/filters with it; the offset is encoded in the cursor.
 
 ### Pagination
@@ -227,10 +227,10 @@ Use `get_product` to inspect options, availability, selected variants, seller do
 
 ## Response Handling
 
-Read `result.structuredContent.products` from search and lookup responses. Read `result.structuredContent.product` from `get_product`. Search also returns `result.structuredContent.pagination` (`has_next_page`, `total_count`, `cursor`) — see *Pagination*.
+Read `result.structuredContent.products` from search and lookup responses. Read `result.structuredContent.product` from `get_product`. Search also returns `result.structuredContent.pagination` (`has_next_page`, `total_count`, `cursor`), see *Pagination*.
 
 Product variants can include `id`, `price`, `checkout_url`, `availability`, `options`, and `seller` (`name`, `id` = shop GID, `domain`, `url`). Use the variant ID and seller domain for checkout. A variant's `options` is an array of `{ name, label }` (e.g. `[{name:'Color',label:'Black'},{name:'Size',label:'6-12 months'}]`); build its display name by joining the labels (`Black / 6-12 months`). Note `variant.title` is frequently the product title, so prefer the option labels for naming. Products may include `metadata.top_features`, `metadata.tech_specs`, and `metadata.attributes` (ML-inferred), plus `rating`.
 
-When presenting links to the user, show the product-page URL and `variant.checkout_url` as returned and append the non-PII attribution params `utm_source=shop-personal-agent&utm_medium=shop-skill` (visible to the merchant), preserving any existing query params (e.g. `_gsid`). Never reconstruct a `checkout_url` from a template — use the URL the response provides verbatim.
+When presenting links to the user, show the product-page URL and `variant.checkout_url` as returned and append the non-PII attribution params `utm_source=shop-personal-agent&utm_medium=shop-skill` (visible to the merchant), preserving any existing query params (e.g. `_gsid`). Never reconstruct a `checkout_url` from a template, use the URL the response provides verbatim.
 
 The product-page link comes from `variant.url` (the catalog does not return a product-level `url` in practice; use the first variant's `url`). It is never `seller.url`, which is only the storefront root. The CLI's compact markdown only renders per-variant `checkout_url` lines for `get_product`; `search_catalog` and `lookup_catalog` omit them to keep result lists compact. Pull a variant's `checkout_url` from a `get_product` call (or `--format json`).

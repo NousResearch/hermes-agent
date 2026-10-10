@@ -32,7 +32,7 @@ Use Outlines when you need to:
 > create a model with `outlines.from_transformers(...)` (or `from_vllm`,
 > `from_llamacpp`, `from_openai`) and then **call the model directly** with an
 > output type: `model(prompt, output_type)`. JSON/Pydantic outputs are returned
-> as a **JSON string** — validate with `YourModel.model_validate_json(result)`.
+> as a **JSON string**: validate with `YourModel.model_validate_json(result)`.
 
 ## Installation
 

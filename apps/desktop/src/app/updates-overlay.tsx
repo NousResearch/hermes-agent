@@ -298,7 +298,7 @@ function IdleView({
   const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="flex min-h-0 flex-col gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 
@@ -306,36 +306,38 @@ function IdleView({
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3">
-        {groups.map((group, index) => (
-          <div key={group.id}>
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
-              {index === 0 && commits.length > 0 && (
-                <CopyButton
-                  appearance="icon"
-                  buttonSize="icon-xs"
-                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
-                  iconClassName="size-3"
-                  label={u.copyFullLog}
-                  side="left"
-                  text={handleCopyFullLog}
-                />
-              )}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="grid gap-3">
+          {groups.map((group, index) => (
+            <div key={group.id}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+                {index === 0 && commits.length > 0 && (
+                  <CopyButton
+                    appearance="icon"
+                    buttonSize="icon-xs"
+                    className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                    iconClassName="size-3"
+                    label={u.copyFullLog}
+                    side="left"
+                    text={handleCopyFullLog}
+                  />
+                )}
+              </div>
+              <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
+                {group.items.map(item => (
+                  <li className="flex items-start gap-2" key={item}>
+                    <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
+                    <span className="leading-snug">{item}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
-            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
-              {group.items.map(item => (
-                <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
-                  <span className="leading-snug">{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
-      <div className="grid gap-2">
+      <div className="grid shrink-0 gap-2 border-t border-border/60 pt-3">
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>

@@ -43,6 +43,31 @@ export const fmtMsgTimestamp = (createdAt: number | undefined): null | string =>
   return `[${hh}:${mm}]`
 }
 
+export const StreamingResponseBody = ({ cols, compact, expanded, onToggle, t, text }: StreamingResponseBodyProps) => {
+  const T = useT().chatBits.messageLine
+  const boundedText = boundedLiveRenderText(text)
+  const truncated = boundedText !== text
+  const visibleText = expanded ? text : boundedText
+
+  return (
+    <Box flexDirection="column">
+      {truncated && (
+        <Box onClick={onToggle}>
+          <Text color={t.color.accent}>{expanded ? '▾ ' : '▸ '}</Text>
+          <Text color={t.color.muted} dimColor>
+            {expanded ? T.collapseLiveResponse : T.showFullLiveResponse}
+          </Text>
+        </Box>
+      )}
+      {hasAnsi(text) ? (
+        <Ansi>{sanitizeAnsiForRender(visibleText)}</Ansi>
+      ) : (
+        <StreamingMd cols={cols} compact={compact} t={t} text={visibleText} />
+      )}
+    </Box>
+  )
+}
+
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
@@ -83,6 +108,7 @@ export const MessageLine = memo(function MessageLine({
   // Collapse toggle for long system messages
   const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
   const [systemOpen, setSystemOpen] = useState(false)
+  const [liveResponseOpen, setLiveResponseOpen] = useState(false)
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return (
@@ -196,7 +222,7 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    if (msg.role !== 'user' && hasAnsi(msg.text)) {
+    if (msg.role !== 'user' && !isStreaming && hasAnsi(msg.text)) {
       return <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>
     }
 
@@ -207,7 +233,14 @@ export const MessageLine = memo(function MessageLine({
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
-        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+        <StreamingResponseBody
+          cols={bodyWidth}
+          compact={compact}
+          expanded={liveResponseOpen}
+          onToggle={() => setLiveResponseOpen(open => !open)}
+          t={t}
+          text={msg.text}
+        />
       ) : (
         <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
       )
@@ -353,4 +386,13 @@ interface MessageLineProps {
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
   timestamps?: boolean
   tools?: ActiveTool[]
+}
+
+interface StreamingResponseBodyProps {
+  cols: number
+  compact?: boolean
+  expanded: boolean
+  onToggle: () => void
+  t: Theme
+  text: string
 }

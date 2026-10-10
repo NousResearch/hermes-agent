@@ -5,7 +5,7 @@ no real native compilation. The contracts assert HOW the retagged wheel must
 relate to the original (filename/WHEEL/RECORD agreement, valid RECORD hashes,
 native .so presence), not snapshots of any real package.
 
-Run: scripts/run_tests.sh tests/test_termux_retag_wheel.py
+Run: scripts/run_tests.sh tests/scripts/test_termux_retag_wheel.py
 """
 
 from __future__ import annotations

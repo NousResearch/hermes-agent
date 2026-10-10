@@ -3421,8 +3421,10 @@ def _run_one_job_body(
     except BaseException as e:
         from cron.scheduler_authority import CronExecutionUnknown
         if isinstance(e, CronExecutionUnknown):
+            from cron.executions import give_up_execution
             from cron.jobs import pause_job
             pause_job(job["id"], reason=str(e))
+            give_up_execution(execution_id, reason=str(e))
             logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
             return False
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.

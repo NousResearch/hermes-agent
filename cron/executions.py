@@ -562,6 +562,26 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
     return True
 
 
+def give_up_execution(execution_id: str, *, reason: str) -> bool:
+    """The firer itself gave up on its in-flight attempt (``CronExecutionUnknown``): record it
+    ``unknown`` now, owner-fenced to this process, instead of leaving it ``running`` until a
+    restart's dead-owner sweep. Receipt recovery never acts for a same-process running row, so
+    the owner's later terminal receipt can settle it only once it is marked given up."""
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET status='unknown', finished_at=?, error=?,
+                   handoff_pending=0, handoff_started_at=NULL
+               WHERE id=? AND status IN ('claimed','running') AND process_id=? AND pid=?""",
+            (now, reason, str(execution_id), _PROCESS_ID, os.getpid()))
+        if cur.rowcount != 1:
+            return False
+        record = _fetch(conn, str(execution_id))
+        _prune_unlocked(conn)
+    _emit_execution_state(record)
+    return True
+
+
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
 ) -> list[dict[str, Any]]:

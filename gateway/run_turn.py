@@ -4190,30 +4190,38 @@ class GatewayTurnMixin:
     async def _run_agent_notify_long_running(
         self, disp: GatewayRunner._RunAgentDisplay, turn_ctx: TurnContext, _executor_task_holder: list,
     ) -> None:
-        """Periodic "still working" heartbeat, edited in place where supported. Stops once this run
-        no longer owns the session slot or the executor finished. ``_executor_task_holder[0]`` is
-        bound just after this task is scheduled (reads as None until then).
+        """One-time progress acknowledgement, then the periodic "still working" heartbeat, edited in
+        place where supported. Stops once this run no longer owns the session slot or the executor
+        finished. ``_executor_task_holder[0]`` is bound just after this task is scheduled (reads as
+        None until then).
 
-        Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
-        long_running_notifications=off disables)."""
+        Two independent clocks (#125887), because one knob driving both made a short first receipt
+        buy ~20 send/edit attempts a minute:
+
+        * ``agent.gateway_notify_ack_interval`` -- seconds before the ONE-TIME acknowledgement.
+          Absent/0 = off, so the first status message still waits for the repeat interval and a
+          config written before the split behaves exactly as it always did.
+        * ``agent.gateway_notify_interval`` -- the REPEAT interval. Negative = "acknowledge once,
+          never repeat"; 0 keeps the pre-split meaning (both off); positive is unchanged.
+
+        Both sends go through ``_should_emit_long_running_notification``, so the ack inherits the
+        heartbeat's ownership/drain/restart guards for free rather than growing a second one.
+        """
         from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
+        _ACK_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_ACK_INTERVAL", 0)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
-        if _NOTIFY_INTERVAL <= 0 or _long_running_mode == "off":
+        _repeat_forever = _NOTIFY_INTERVAL > 0
+        if _long_running_mode == "off" or not (_repeat_forever or _ACK_INTERVAL > 0):
             return
         source, session_key, agent_holder = turn_ctx.source, turn_ctx.session_key, turn_ctx.agent_holder
         _status_thread_metadata = turn_ctx._status_thread_metadata
         _notify_adapter = self._delivery_adapter_for(source)
         if not _notify_adapter:
             return
-        _heartbeat_msg_id: Optional[str] = None
-        while True:
-            await asyncio.sleep(_NOTIFY_INTERVAL)
-            if not self._should_emit_long_running_notification(
-                session_key, agent_holder[0], _executor_task_holder[0]
-            ):
-                break
+
+        def _compose_status_text() -> str:
             _elapsed_mins = int((time.time() - _notify_start) // 60)
             # Terse heartbeat by default; the iteration counter is gated on busy_ack_detail.
             _status_detail = ""
@@ -4231,16 +4239,25 @@ class GatewayTurnMixin:
                         _parts.append(str(_action))
                     if _parts:
                         _status_detail = " — " + ", ".join(_parts)
-            _heartbeat_text = (
+            return (
                 disp._generic_status_phrase("status")
                 if _long_running_mode == "generic"
                 else t("gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail)
             )
+
+        # The one-time ack and the heartbeat share one bubble: the ack is what the heartbeat then
+        # edits, so a run that gets both spends 1 send + N edits, not N+1 sends.
+        _heartbeat_msg_id: Optional[str] = None
+
+        async def _emit_status() -> None:
+            """Send once, then edit in place. Returns quietly once this run stops owning the turn."""
+            nonlocal _heartbeat_msg_id
+            _status_text = _compose_status_text()
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:
                     try:
-                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
+                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _status_text)
                     except Exception as _ee:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
@@ -4250,9 +4267,9 @@ class GatewayTurnMixin:
                     if not self._should_emit_long_running_notification(
                         session_key, agent_holder[0], _executor_task_holder[0]
                     ):
-                        break
+                        return
                     _notify_res = await _notify_adapter.send(
-                        source.chat_id, _heartbeat_text,
+                        source.chat_id, _status_text,
                         metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
                     )
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
@@ -4261,6 +4278,35 @@ class GatewayTurnMixin:
                             turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
+
+        if _ACK_INTERVAL > 0:
+            await asyncio.sleep(_ACK_INTERVAL)
+            if self._should_emit_long_running_notification(
+                session_key, agent_holder[0], _executor_task_holder[0]
+            ) and not self._turn_already_showed_content(turn_ctx):
+                await _emit_status()
+            if not _repeat_forever:
+                return
+        while True:
+            await asyncio.sleep(_NOTIFY_INTERVAL)
+            if not self._should_emit_long_running_notification(
+                session_key, agent_holder[0], _executor_task_holder[0]
+            ):
+                break
+            await _emit_status()
+
+    @staticmethod
+    def _turn_already_showed_content(turn_ctx: TurnContext) -> bool:
+        """Whether this turn has already put substantive content in front of the user.
+
+        Gates the ONE-TIME acknowledgement only: a receipt dropped in beside a half-streamed answer
+        or a delivered commentary is noise, not feedback. The consumer owns exactly this
+        bookkeeping (``showed_user_content``), so this reads one public view rather than
+        re-deriving it from consumer internals. A turn with no consumer never streamed anything,
+        so it gets its receipt.
+        """
+        consumer = turn_ctx.stream_consumer_holder[0]
+        return bool(consumer is not None and getattr(consumer, "showed_user_content", False))
 
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],

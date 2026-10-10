@@ -12,13 +12,15 @@ def _schema(name: str) -> dict:
 
 
 def test_gateway_created_agent_executes_its_session_owned_tool() -> None:
+    from gateway.config import Platform
     from gateway.run_turn_runner import TurnRunner
+    from gateway.session import SessionSource
     from gateway.turn_context import TurnContext
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
     from run_agent import AIAgent
     from tools.registry import registry
 
-    session_key = "agent:main:test:dm:owner"
+    session_key = "agent:main:telegram:dm:owner"
     manager = PluginManager(scope_key=registry.current_scope_key())
     context = PluginContext(
         PluginManifest(name="gateway-session-tools", key="gateway-session-tools"), manager,
@@ -27,8 +29,8 @@ def test_gateway_created_agent_executes_its_session_owned_tool() -> None:
     tool_name = toolset.register_tool(
         "lookup", _schema("lookup"), lambda _args, **_kwargs: "owned-session-result",
     )
-    source = SimpleNamespace(
-        user_id="owner", user_id_alt=None, user_name="Owner", chat_id="owner",
+    source = SessionSource(
+        platform=Platform.TELEGRAM, user_id="owner", user_id_alt=None, user_name="Owner", chat_id="owner",
         chat_name=None, chat_type="dm", thread_id=None,
     )
     gateway_runner = SimpleNamespace(
@@ -49,7 +51,7 @@ def test_gateway_created_agent_executes_its_session_owned_tool() -> None:
                     "base_url": "https://api.openai.com/v1",
                 },
             },
-            "test", None, 1, None, {}, True,
+            "telegram", None, 1, None, {}, True,
         )
         assert agent._gateway_session_key == session_key
         assert agent._invoke_tool(tool_name, {}, "gateway-tool-task") == "owned-session-result"

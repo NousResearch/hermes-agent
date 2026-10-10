@@ -33,11 +33,11 @@ def _ignore_after_abandoned_load(method):
 
 def ignore_registrars_after_abandoned_load(cls: type) -> None:
     """Guard every mutating entry point plugins reach through ``ctx`` during register(): each
-    ``register_*``, ``subscribe`` and ``on_unload`` that ``cls`` defines or inherits from a mixin.
+    ``register_*``, ``subscribe``, ``on_unload`` and ``session_toolset`` that ``cls`` defines or inherits from a mixin.
     Applied by name over the MRO, so the guard cannot drift from the surface as registrars or
     mixins are added."""
     names = {name for klass in cls.__mro__ for name in vars(klass)
-             if name.startswith("register_") or name in {"subscribe", "on_unload"}}
+             if name.startswith("register_") or name in {"subscribe", "on_unload", "session_toolset"}}
     for name in sorted(names):
         if callable(method := getattr(cls, name)):
             setattr(cls, name, _ignore_after_abandoned_load(method))

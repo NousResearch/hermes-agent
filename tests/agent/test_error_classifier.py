@@ -252,10 +252,9 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
-    def test_404_retired_free_route_is_model_not_found(self):
-        # The provider retired the :free route — the slug is dead for every
-        # credential, so fall back instead of burning retries (#123180). Not
-        # billing: the account's tier/balance is not what rejected the call.
+    def test_404_retired_free_route_is_model_entitlement(self):
+        # The provider retired the :free route — the slug is unusable for this
+        # account and must take the non-retryable entitlement fallback path.
         e = MockAPIError(
             "Not Found",
             status_code=404,
@@ -268,7 +267,7 @@ class TestClassifyApiError:
             },
         )
         result = classify_api_error(e, provider="nous", model="meituan/longcat-2.0:free")
-        assert result.reason == FailoverReason.model_not_found
+        assert result.reason == FailoverReason.model_entitlement
         assert result.retryable is False
         assert result.should_fallback is True
 

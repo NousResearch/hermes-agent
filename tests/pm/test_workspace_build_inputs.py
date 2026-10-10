@@ -282,3 +282,21 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_locale_catalogs_travel_with_the_core_snapshot(tmp_path):
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["pm"]\n',
+        encoding="utf-8",
+    )
+    (core / "pm").mkdir()
+    (core / "locales").mkdir()
+    (core / "locales" / "en.yaml").write_text("hello: Hello\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "locales/en.yaml").read_text(encoding="utf-8") == "hello: Hello\n"

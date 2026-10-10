@@ -259,6 +259,7 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
     first page's SEP-2549 hints. Callers must hold the server's ``_rpc_lock``."""
     items: list = []
     cursor = None
+    seen_cursors: set[str] = set()
     for _ in range(_MCP_LIST_MAX_PAGES):
         if not cursor:
             result = await list_method()
@@ -296,6 +297,13 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
         # Cursor is an opaque string; anything else (incl. mocks) = last page.
         if not isinstance(cursor, str) or not cursor:
             break
+        # A cursor we already followed can only replay pages we have: without this a server that
+        # echoes its cursor costs the full page cap of RPCs (and duplicate items) on every connect.
+        if cursor in seen_cursors:
+            logger.warning("MCP server '%s': %s pagination repeated cursor %r; stopping at %d items",
+                           server_name, items_attr, cursor[:64], len(items))
+            break
+        seen_cursors.add(cursor)
     else:
         logger.warning("MCP server '%s': %s pagination exceeded %d pages; truncating at %d items",
                        server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items))

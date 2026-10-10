@@ -382,6 +382,31 @@ def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     return t(msg_key, value=str(value)[:limit]) if value else ""
 
 
+def _clip_words(ev: Any, key: str, msg_key: str, limit: int) -> str:
+    """``_clip`` that ends on a word boundary and marks the cut with an ellipsis.
+
+    A hard slice can stop mid-word ("...verify it and report it via kanban_co"),
+    which reads as a corrupted message rather than a truncated one. Whitespace
+    is collapsed first so a multi-line error stays on one line.
+    """
+    value = _payload(ev, key)
+    if not value:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) > limit:
+        cut = text[:limit]
+        # ``text[limit] == " "`` means the slice already ends on a whole word.
+        # Otherwise back off to the last space, but keep the hard cut when that
+        # space is near the start (one very long token such as a path or URL):
+        # dropping most of the budget to find a boundary would say less, not more.
+        if text[limit] != " ":
+            space = cut.rfind(" ")
+            if space > limit * 0.6:
+                cut = cut[:space]
+        text = cut.rstrip(" .,;:—-") + "…"
+    return t(msg_key, value=text)
+
+
 _NL = "\n{}"
 
 
@@ -456,7 +481,9 @@ def _fmt_gave_up(ev, n) -> tuple:
     failures = _payload(ev, "failures")
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
-    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    # Word-boundary clip: the error usually ends with the worker's last output,
+    # and a mid-word cut there reads as a corrupted message.
+    last = _clip_words(ev, "error", "gateway.kanban.ping.last_error", 160)
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 

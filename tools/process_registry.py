@@ -37,6 +37,8 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_evidence import record_verification_evidence
+from tools.process_registry_wsl import _WSL_CHAIN_NOTE, _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +607,11 @@ class ProcessSession:
     _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
     _reader_selectable: bool = field(default=False, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+    # Set the instant a kill is requested, before the signal is sent. The
+    # reader thread can observe the dead process and finish the session before
+    # kill_process() gets to stamp completion_reason, so this is the reliable
+    # "this did not end on its own" marker for completion consumers.
+    _kill_requested: bool = field(default=False, repr=False)
 
     def __post_init__(self):
         # A session built without an explicit owner is owned by its own task, so ownership checks compare
@@ -659,41 +666,6 @@ _CHECKPOINT_DEFAULTS = {
     for f in ProcessSession.__dataclass_fields__.values()
     if f.name in _CHECKPOINT_FIELDS
 }
-
-
-_WSL_LAUNCHER_NAMES = frozenset({"wsl", "wsl.exe"})
-
-_WSL_CHAIN_NOTE = (
-    "Spawned via a wsl[.exe] launcher: the recorded host PID is the short-lived "
-    "launcher, not the Linux-side workers. Inspect them with `wsl -e ps` / "
-    "`wsl --list --running` from the host."
-)
-
-
-def _is_wsl_launcher_command(command: str) -> bool:
-    """True when *command* routes through a ``wsl[.exe]`` launcher chain (#120546).
-
-    The host PID recorded for such a spawn belongs to the short-lived launcher;
-    grandchildren inside the VM outlive it, so the entry must say so instead of
-    letting host-side hunting fail silently.
-    """
-    if not isinstance(command, str) or not command.strip():
-        return False
-    candidates = []
-    try:
-        candidates.append((shlex.split(command, posix=True) or [""])[0])
-    except ValueError:
-        pass
-    # POSIX shlex eats Windows backslashes (``C:\...\wsl.exe``), so also try
-    # the naive first token where path separators survive.
-    words = command.strip().split()
-    if words:
-        candidates.append(words[0])
-    for first in candidates:
-        base = os.path.basename(first.replace("\\", "/")).strip("'\"").lower()
-        if base in _WSL_LAUNCHER_NAMES:
-            return True
-    return False
 
 
 class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
@@ -1635,6 +1607,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+        # Record evidence AFTER the notification is queued: delivery is
+        # user-facing and latency-sensitive, while evidence is advisory, and
+        # this does synchronous SQLite I/O on the reader thread. Waiters are
+        # released by _move_to_finished only after this returns.
+        if was_running:
+            record_verification_evidence(session)
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -2189,6 +2167,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 self._completion_consumed.add(session_id)
             return result
         try:
+            # Mark the kill intent BEFORE signalling. The reader thread wakes as
+            # soon as the process dies and calls _move_to_finished() itself; if it
+            # wins that race it sees the default completion_reason and publishes
+            # the kill as a clean "exited" with the shell's own status. Recording
+            # the intent up front makes the outcome deterministic for every
+            # completion consumer (notifications, and verification evidence, which
+            # must never bank a killed run as a real test result).
+            with session._lock:
+                session._kill_requested = True
             early = self._signal_kill(session, session_id, consume_output)
             if early is not None:
                 return early

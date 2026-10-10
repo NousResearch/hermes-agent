@@ -517,7 +517,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Replace text in an input, textarea, or contentEditable editor identified by its ref ID, or choose an option in a native dropdown (combobox) by its value or visible label. Clears existing content first and preserves paragraph breaks in rich editors. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -902,7 +902,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if blocked is not None:
         return blocked
     ref = _at_ref(ref)
-    result = _session._run_browser_command(effective_task_id, "fill", [ref, text])
+    from tools.browser_tool_typing import fill_text
+
+    result = fill_text(effective_task_id, ref, text)
     from agent.display import redact_browser_typed_text_for_display, redact_tool_args_for_display
     # Typed text goes through the secret-pattern redactor so API keys / tokens don't
     # leak into tool progress or chat history (the raw value already went to the browser).

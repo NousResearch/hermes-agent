@@ -332,6 +332,9 @@ def test_offline_retirement_uses_qualified_build_before_current_stable(
     update_cmd._cmd_update_impl(args, False)
     assert git(source.root, "rev-parse", "HEAD") == source.commits[1]
     assert saved(source)["channel"] == "stable"
+    # The adopted stable subscription follows the published GitHub release, not R2.
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, commit=source.commits[2], version="1.2.4"))
     status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
     assert status["targetSha"] == source.commits[2], status
     update_cmd._cmd_update_impl(args, False)

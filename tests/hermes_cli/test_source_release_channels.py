@@ -13,6 +13,9 @@ from hermes_cli import main, update_cmd
 from hermes_cli.source_releases import resolve_source_release
 from hermes_cli.update_channel import set_install_channel
 
+# The fixture serves release metadata over loopback; stable's real GitHub path is the subject.
+pytestmark = pytest.mark.real_release_channels
+
 
 def git(root, *args):
     return subprocess.run(
@@ -62,6 +65,9 @@ def releases(tmp_path, monkeypatch, request):
         responses[f"/repos/NousResearch/hermes-agent/commits/{tag}"] = {
             "sha": commits[1 if channel == "stable" else 2],
         }
+    responses["/repos/NousResearch/hermes-agent/releases/latest"] = {
+        "tag_name": tags["stable"], "draft": False, "prerelease": False,
+    }
     responses["/releases/stable/release-candidates.json"] = {
         "tag": tags["stable"], "commit": commits[1],
     }
@@ -253,23 +259,20 @@ def _track_official_origin(releases):
     git(releases.root, "config", f"url.{releases.origin.as_uri()}.insteadOf", official)
 
 
-def test_unpublished_stable_record_resolves_the_published_github_release(releases):
-    """Until R2 carries a stable record, stable is the latest published GitHub release."""
+def test_stable_is_the_latest_published_github_release_without_r2(releases):
+    """Publishing a GitHub release is the only promotion stable needs: no R2 record or pointer."""
     from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelNotFound
 
-    _track_official_origin(releases)
-    releases.responses["/repos/NousResearch/hermes-agent/releases/latest"] = {
-        "tag_name": releases.tags["stable"], "draft": False, "prerelease": False}
+    def no_r2(name, repository):
+        raise AssertionError("stable must not read an R2 channel record")
 
-    def unpublished(name, repository):
-        raise ChannelNotFound(f"Channel object not found: releases/channels/{name}.json")
-
-    source_releases._resolve_channel = unpublished
+    source_releases._resolve_channel = no_r2
+    # A pointer naming a different build must not outrank the published release.
+    releases.responses["/releases/stable/release-candidates.json"] = {
+        "tag": "v99.0.0", "commit": releases.commits[3]}
     target = source_releases.resolve_source_target("stable", ["git"], releases.root)
     assert (target.commit, target.version) == (releases.commits[1], "1.2.3")
-    with pytest.raises(ChannelNotFound):
-        source_releases.resolve_source_target("canary", ["git"], releases.root)
+    assert not any(path.startswith("/releases/") for path in releases.requests)
 
 
 @pytest.mark.parametrize("start,expected", [(0, 1), (3, 3)], ids=["behind-release", "newer-than-release"])

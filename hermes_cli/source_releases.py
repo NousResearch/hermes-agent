@@ -119,17 +119,11 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
 
     validate_name(channel)
     repository = repository or source_repository(git_cmd, cwd)
+    if channel == "stable":
+        return _resolve_stable(repository, git_cmd, cwd)
     try:
         resolved = _resolve_channel(channel, repository)
     except ChannelNotFound:
-        if channel == "stable":
-            # Until R2 publishes a stable record, stable is the latest published
-            # GitHub release (non-draft, non-prerelease, strict vX.Y.Z, origin
-            # tag verified). Never a branch tip or an arbitrary tag.
-            tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository)
-            if commit is None:
-                raise ValueError("No published stable release could be verified") from None
-            return SourceTarget(channel, channel, repository, commit=commit, version=str(tag).removeprefix("v"))
         if channel != "main":
             raise
         # main IS the source branch; its record can only add a retirement.
@@ -157,6 +151,17 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
         _refuse_retirement_downgrade(request, terminal, git_cmd, cwd)
     return SourceTarget(channel, destination, repository, commit=commit,
                         version=request["sourceVersion"], build_id=request["buildId"])
+
+
+def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
+    """Stable IS the repository's latest published GitHub release: the tag a release
+    publishes (non-draft, non-prerelease, strict vX.Y.Z), verified against origin.
+    No R2 record or pointer is consulted; publishing the release is the only promotion.
+    """
+    tag, commit = resolve_source_release("stable", git_cmd, cwd, repository=repository, pointer=False)
+    if commit is None:
+        raise ValueError("No published stable release could be verified")
+    return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"))
 
 
 def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) -> None:
@@ -289,12 +294,13 @@ def _release_pointer(channel: str) -> tuple[str | None, str | None]:
     return page.tags[0], None
 
 
-def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None) -> tuple[str | None, str | None]:
+def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                           pointer: bool = True) -> tuple[str | None, str | None]:
     """Read published stable/canary release metadata (not channel discovery).
 
-    Runtime check/apply go through ``resolve_source_target``; only an unpublished
-    R2 ``stable`` record falls back here.
-    Channel pointers outrank GitHub's release listing. A malformed pointer,
+    The source updater's ``stable`` reads it with ``pointer=False``: GitHub's latest
+    published release only. With ``pointer`` the R2 channel pointers outrank GitHub's
+    release listing. A malformed pointer,
     draft, or tag/commit mismatch is not permission to select a different build.
     ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and
     resolve the same tag through GitHub's commit endpoint.
@@ -305,7 +311,7 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
         repository = repository or source_repository(git_cmd, cwd)
         base = f"https://api.github.com/repos/{repository}"
         tag, pinned_sha = (_release_pointer(channel)
-                           if repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
+                           if pointer and repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
         if tag is None:
             release = _published_fallback(channel, base)
             tag = release["tag_name"]

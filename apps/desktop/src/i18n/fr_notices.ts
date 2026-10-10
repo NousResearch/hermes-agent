@@ -15,5 +15,9 @@ export const frNotices = {
       privacy: 'Politique de confidentialité',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      "Ce serveur n'a pas pu confirmer l'envoi précédent de ce message ; il a peut-être déjà été exécuté. Vérifiez la conversation avant de le renvoyer."
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

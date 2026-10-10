@@ -14,5 +14,9 @@ export const zhNotices = {
       privacy: '隐私政策',
       after: '约束。'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      '此服务器无法确认这条消息之前的发送，它可能已经运行过。再次发送前请先查看对话。'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

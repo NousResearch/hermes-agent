@@ -15,5 +15,9 @@ export const jaNotices = {
       privacy: 'プライバシーポリシー',
       after: 'が適用されます。'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

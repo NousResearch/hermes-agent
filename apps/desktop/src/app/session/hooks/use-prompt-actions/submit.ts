@@ -459,7 +459,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the words again afterwards is the user's informed new turn.
         if (retained?.legacyAttempted && retainedKey) {
           await removePreparedSubmission(retainedKey, retained.id).catch(error => console.warn('[prepared-submission-retire]', error))
-          notify({ kind: 'warning', title: copy.promptFailed, message: copy.legacySendUnconfirmed })
+          notify({ kind: 'warning', title: copy.promptFailed, message: translateNow('promptNotices.legacySendUnconfirmed') })
 
           return false
         }

@@ -71,6 +71,10 @@ export const zhHantBoot = {
       after: '約束。'
     }
   },
+  promptNotices: {
+    legacySendUnconfirmed:
+      '此伺服器無法確認這則訊息先前的傳送，它可能已經執行過。再次傳送前請先查看對話。'
+  },
 
   updates: {
     discontinuedTitle: '此版本的 Hermes 已停止支援',
@@ -338,5 +342,5 @@ export const zhHantBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'updates' | 'install' | 'onboarding'
 >

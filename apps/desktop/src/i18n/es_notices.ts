@@ -15,5 +15,9 @@ export const esNotices = {
       privacy: 'Política de privacidad',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'Este servidor no pudo confirmar el envío anterior de este mensaje, así que es posible que ya se haya ejecutado. Revisa la conversación antes de volver a enviarlo.'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

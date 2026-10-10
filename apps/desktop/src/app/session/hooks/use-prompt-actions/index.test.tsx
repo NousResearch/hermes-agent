@@ -277,7 +277,7 @@ describe('submit timeout admission fences', () => {
     // The restored draft keeps its identity; pressing Enter again after the notice sends it.
     expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(true)
     expect(submits).toHaveLength(4)
-    expect(shown).toContain(en.desktop.legacySendUnconfirmed)
+    expect(shown).toContain(en.promptNotices.legacySendUnconfirmed)
   })
 
   it('retries an identified timeout with the same admission identity after resume', async () => {

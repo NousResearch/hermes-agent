@@ -38,6 +38,19 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
     from gateway.run_turn_runner import TurnRunner
 
+# Platforms that bind their OWN exclusive inbound listener (not the shared default-profile
+# listener ``SHARED_LISTENER_MIRROR_PLATFORMS`` covers) -> (bind-host attr, port attr) on the
+# adapter instance, read by ``_adapter_listener_claim`` to detect two profiles racing the same
+# socket. Photon's sidecar and WAHA's webhook listener are both single-socket, single-session
+# resources: a genuinely distinct session (different host/port) connects fine side by side, but
+# the SAME host:port can only ever be bound once per process.
+_LISTENER_CLAIM_ATTRS: dict[str, tuple[str, str]] = {
+    "photon": ("_sidecar_bind", "_sidecar_port"),
+    "waha": ("_host", "_port"),
+}
+# Config key (under ``platforms.<platform>.extra.``) a duplicate-listener remedy message points at.
+_LISTENER_PORT_CONFIG_KEY: dict[str, str] = {"photon": "sidecar_port", "waha": "port"}
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
@@ -1186,11 +1199,19 @@ class GatewayAdapterLifecycleMixin:
             )
         else:
             bind, port = claim[-2:]
-            message = head + f"sidecars on the same listener. Configure a distinct listener for profile '{profile_name}'."
+            port_key = _LISTENER_PORT_CONFIG_KEY.get(pv, "port")
+            message = (
+                head + "on the same listener. Give each profile its own listener "
+                f"(platforms.{pv}.extra.{port_key}), or — if these two profiles are meant to share "
+                f"ONE {pv} connection — remove platforms.{pv} from profile '{profile_name}' and add a "
+                "gateway.profile_routes entry on the owning profile instead."
+            )
             logger.error(
-                "Profile '%s' and '%s' both configure %s sidecars on %s:%s — refusing to start the duplicate "
-                "listener. Set platforms.%s.extra.sidecar_port to a distinct port for profile '%s'.",
-                owner, profile_name, pv, bind, port, pv, profile_name,
+                "Profile '%s' and '%s' both configure %s on the same listener (%s:%s) — refusing to start "
+                "the duplicate. Give profile '%s' its own platforms.%s.extra.%s, or — if this is meant to be "
+                "ONE shared %s connection — remove platforms.%s from '%s' and route it via "
+                "gateway.profile_routes on profile '%s' instead.",
+                owner, profile_name, pv, bind, port, profile_name, pv, port_key, pv, pv, profile_name, owner,
             )
         self._update_platform_runtime_status(
             f"{profile_name}:{platform.value}", platform_state="fatal",
@@ -1844,16 +1865,27 @@ class GatewayAdapterLifecycleMixin:
 
     @staticmethod
     def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
-        """Exclusive listener claim (Photon sidecar bind+port): distinct credentials still cannot
-        share a port, so the later adapter is rejected before connect() disturbs the first."""
-        bind = getattr(adapter, "_sidecar_bind", None)
-        if getattr(platform, "value", None) != "photon" or not isinstance(bind, str) or not bind.strip():
+        """Exclusive listener claim (bind+port the adapter binds its own inbound socket on):
+        distinct credentials still cannot share a port, so the later adapter is rejected before
+        connect() disturbs the first. Photon binds a sidecar; WAHA binds its own inbound webhook
+        listener for one shared WhatsApp session (#waha-multiplex) — same hazard, same resolution.
+        A profile that genuinely wants to SHARE one WAHA session across profiles (not run a second
+        one) should use ``gateway.profile_routes`` instead of a second ``platforms.waha.enabled``
+        block; this claim only guards against the listener collision, it does not make the two
+        profiles share the connection."""
+        pv = getattr(platform, "value", None)
+        attrs = _LISTENER_CLAIM_ATTRS.get(pv) if isinstance(pv, str) else None
+        if attrs is None:
+            return None
+        bind_attr, port_attr = attrs
+        bind = getattr(adapter, bind_attr, None)
+        if not isinstance(bind, str) or not bind.strip():
             return None
         try:
-            port = int(getattr(adapter, "_sidecar_port", None))
+            port = int(getattr(adapter, port_attr, None))
         except (TypeError, ValueError):
             return None
-        return ("listener", "photon", bind.strip().lower(), port)
+        return ("listener", pv, bind.strip().lower(), port)
 
     @staticmethod
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:

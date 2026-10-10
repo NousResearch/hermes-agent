@@ -111,7 +111,11 @@ def test_opaque_sdk_rejection_is_reported_with_the_servers_status_and_body(monke
 
     assert asyncio.run(_real_client_roundtrip(200, "application/json")) == {}  # 2xx: nothing recorded
     recorded = asyncio.run(_real_client_roundtrip(400, "text/plain; charset=utf-8"))
-    assert recorded == {"status": 400, "method": "POST", "url": "http://127.0.0.1:1/mcp", "body": body}
+    assert recorded.items() >= {
+        "status": 400, "method": "POST", "url": "http://127.0.0.1:1/mcp", "body": body,
+        "rpc_method": None,
+    }.items()
+    assert isinstance(recorded["recorded_at"], float)
 
     def _connect_sees(rejection):
         task, _calls = _task(monkeypatch, ExceptionGroup("g", [_SdkInternalError()]),

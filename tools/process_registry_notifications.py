@@ -99,7 +99,11 @@ def _delegation_model_not_found(results, config) -> bool:
     if not model:
         return False
     patterns = _model_not_found_patterns()
-    texts = (" ".join(str(x) for x in (r.get("error"), r.get("summary")) if x).lower() for r in results or [])
+    texts = (
+        " ".join(str(x) for x in (r.get("error"), r.get("summary")) if x).lower()
+        for r in results or []
+        if r.get("status") not in _DONE
+    )
     return any(model in text and any(p in text for p in patterns) for text in texts)
 
 

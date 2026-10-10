@@ -775,6 +775,14 @@ def _direct_lifecycle_scan(command: str) -> bool:
     )
 
 
+def _strip_inert_hash_comments(text: str) -> str:
+    """Remove shell comment-only lines from referenced scripts before recursive scanning.
+
+    This deliberately does not alter a top-level command or inline comments.
+    """
+    return "\n".join("" if line.lstrip().startswith("#") else line for line in text.splitlines())
+
+
 # --- path handling ----------------------------------------------------------------------------
 
 def _resolve_lenient(path: Path) -> Path:
@@ -1107,7 +1115,7 @@ def _contains_unsafe_gateway_action(
 
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
-            text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
+            _strip_inert_hash_comments(text), cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed,
         )
 

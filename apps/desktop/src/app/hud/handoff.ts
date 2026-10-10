@@ -18,14 +18,14 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { reloadPersistedDrafts, requestComposerDraftSync } from '@/store/composer'
-import { reportHudSession, watchHudState } from '@/store/hud'
+import { $hudAlwaysOnTop, reportHudSession, watchHudAlwaysOnTop, watchHudState } from '@/store/hud'
 import { $selectedStoredSessionId } from '@/store/session'
 import { focusOpenSession, sessionTileDelegate } from '@/store/session-states'
 import { isHudWindow } from '@/store/windows'
 
 import { getActiveComposer, requestComposerFocus } from '../chat/composer/focus'
 import { openSession, type OpenSessionNavigate } from '../open-session'
-import { sessionRoute } from '../routes'
+import { NEW_CHAT_ROUTE, sessionRoute } from '../routes'
 
 /** Session tiles route on `tile:<storedSessionId>` (see session-tile.tsx). */
 const TILE_TARGET_PREFIX = 'tile:'
@@ -117,6 +117,36 @@ export function useHudGoto(navigate: OpenSessionNavigate): void {
   navigateRef.current = navigate
 
   useEffect(() => window.hermesDesktop?.hud?.onGoto?.(id => navigateRef.current(sessionRoute(id))), [])
+}
+
+/**
+ * HUD side: a fresh conversation was asked for — the tray click on an
+ * already-open Mini Assistant, which must not raise the stale one and must
+ * not spawn a second window either. Drop to the new-chat route in place and
+ * put the caret back in the composer: the whole point of the gesture is
+ * "type now", and a window that appears without focus eats the first
+ * keystrokes.
+ */
+export function useHudNewConversation(navigate: OpenSessionNavigate): void {
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
+  useEffect(
+    () =>
+      window.hermesDesktop?.hud?.onNewConversation?.(() => {
+        navigateRef.current(NEW_CHAT_ROUTE)
+        requestComposerFocus()
+      }),
+    []
+  )
+}
+
+/** HUD side: keep the bar's pin button on main's persisted preference, and
+ *  pick that preference up when it changes from Settings or another window. */
+export function useHudAlwaysOnTop(): boolean {
+  useEffect(() => watchHudAlwaysOnTop(), [])
+
+  return useStore($hudAlwaysOnTop)
 }
 
 /** HUD side: keep main told which session this window is on. */

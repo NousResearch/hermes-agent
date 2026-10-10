@@ -39,6 +39,51 @@ export const $hudMode = atom(isHudWindow())
  *  toggle tell "switch the HUD to this tab" apart from "dismiss the HUD". */
 export const $hudSession = atom<null | string>(null)
 
+/** Whether the Mini Assistant floats above the user's other windows. Main's
+ *  persisted preference is the authority (it outlives this window); this atom
+ *  mirrors it so the pin button and the Settings row agree. Defaults to the
+ *  shipped behavior — pinned — until main answers. */
+export const $hudAlwaysOnTop = atom(true)
+
+/** Pin or unpin the Mini Assistant. Applies live when the bar is up and is
+ *  remembered across launches either way. */
+export function setHudAlwaysOnTop(on: boolean): void {
+  const api = window.hermesDesktop?.hud?.alwaysOnTop
+
+  if (!api) {
+    return
+  }
+
+  $hudAlwaysOnTop.set(on === true)
+  void api.set(on === true).then(state => {
+    if (typeof state?.alwaysOnTop === 'boolean') {
+      $hudAlwaysOnTop.set(state.alwaysOnTop)
+    }
+  })
+}
+
+/** Load main's persisted pin state and follow its changes (the Settings row
+ *  and the bar's pin button can disagree otherwise). Returns a disposer. */
+export function watchHudAlwaysOnTop(): () => void {
+  const api = window.hermesDesktop?.hud?.alwaysOnTop
+
+  if (!api) {
+    return () => {}
+  }
+
+  void api.get().then(state => {
+    if (typeof state?.alwaysOnTop === 'boolean') {
+      $hudAlwaysOnTop.set(state.alwaysOnTop)
+    }
+  })
+
+  return api.onChanged(state => {
+    if (typeof state?.alwaysOnTop === 'boolean') {
+      $hudAlwaysOnTop.set(state.alwaysOnTop)
+    }
+  })
+}
+
 /** True when the shell exposes HUD mode (desktop only). */
 export const canUseHud = (): boolean =>
   typeof window !== 'undefined' && typeof window.hermesDesktop?.hud?.open === 'function'

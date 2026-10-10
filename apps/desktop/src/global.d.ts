@@ -176,6 +176,16 @@ declare global {
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
+        /** The Mini Assistant's pin: whether the band floats above the user's
+         *  other windows. Persisted, so the choice outlives the window. */
+        alwaysOnTop?: {
+          get: () => Promise<{ alwaysOnTop: boolean }>
+          set: (on: boolean) => Promise<{ alwaysOnTop: boolean }>
+          onChanged: (callback: (state: { alwaysOnTop: boolean }) => void) => () => void
+        }
+        /** Main → band: drop the current conversation and start a fresh one
+         *  (a tray click on an already-open Mini Assistant). */
+        onNewConversation?: (callback: () => void) => () => void
       }
       // macOS native screenshot gesture; absent on other platforms.
       screenshot?: ScreenshotApi
@@ -395,6 +405,18 @@ declare global {
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
         onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
       }
+      // Tray quick access: what the tray icon does when clicked, and whether
+      // Hermes comes back on its own at login. Device-local, like the tray.
+      trayPreferences?: {
+        get: () => Promise<TrayQuickAccessPreferences>
+        set: (patch: Partial<TrayQuickAccessPreferences>) => Promise<TrayQuickAccessPreferences>
+        onChanged: (callback: (preferences: TrayQuickAccessPreferences) => void) => () => void
+      }
+      /** Main asking the shell to move somewhere — the tray menu's "Settings". */
+      onShellNavigate?: (callback: (request: { path: string }) => void) => () => void
+      /** Summon the Mini Assistant (the tray's compact chat band) from the
+       *  renderer. One window, fresh conversation, caret in the composer. */
+      openMiniAssistant?: (request?: { newConversation?: boolean }) => Promise<{ ok: boolean }>
       setDisableF12?: (blocked: boolean) => void
       setF12ShortcutActive?: (active: boolean) => void
       onF12Shortcut?: (
@@ -1034,6 +1056,19 @@ export interface HermesWindowState {
   isVisible?: boolean
   nativeOverlayWidth: number
   windowButtonPosition: { x: number; y: number } | null
+}
+
+/**
+ * Tray quick access preferences. Mirrors `TrayPreferences` in
+ * electron/tray-access.ts — the renderer only reads and writes it, never
+ * interprets it, so the duplication is a boundary, not a second opinion.
+ */
+export interface TrayQuickAccessPreferences {
+  /** Start Hermes when the user signs in (Windows/macOS). */
+  launchAtLogin: boolean
+  /** Left-clicking the tray icon opens the Mini Assistant on a fresh
+   *  conversation instead of raising the app window. */
+  openNewConversationOnClick: boolean
 }
 
 export interface DesktopProfileRoute {

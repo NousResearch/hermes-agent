@@ -553,6 +553,8 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     enterHud: 'HUD mode',
     exitHud: 'Exit HUD mode',
+    pinMiniAssistant: 'Keep the Mini Assistant always on top',
+    unpinMiniAssistant: 'Let other windows cover the Mini Assistant',
     resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
@@ -1220,6 +1222,18 @@ export const en: Translations = {
         'Minimize windows or close the main window to hide them in the system tray (menu bar on macOS) and keep Hermes running. Use Quit Hermes from the tray menu or Cmd+Q to exit. Off by default; applies only to this device.',
       minimizeToTrayUnavailable:
         'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
+      trayAccessTitle: 'Quick access',
+      trayAccessDesc:
+        'What the tray icon does, whether the Mini Assistant stays on top, and whether Hermes starts when you sign in.',
+      trayNewConversationOnClickTitle: 'New conversation on tray click',
+      trayNewConversationOnClickDesc:
+        'Clicking the tray icon opens the Mini Assistant with a fresh conversation and the caret already in the composer. Turn this off to raise the main window instead.',
+      miniAssistantAlwaysOnTopTitle: 'Keep the Mini Assistant always on top',
+      miniAssistantAlwaysOnTopDesc:
+        'The compact window opened from the tray stays above your other windows. Unpin it — from here or with the pin button in the window — to give it a normal window’s behavior.',
+      launchAtLoginTitle: 'Start Hermes at login',
+      launchAtLoginDesc:
+        'Launch Hermes automatically when you sign in to this computer. Applies only to this device.',
       none: 'None',
       noneParen: '(none)',
       builtinOnly: 'Built-in only',

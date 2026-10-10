@@ -561,6 +561,8 @@ export const frOverrides = {
     openStarmap: 'Ouvrir le graphe de mémoire',
     enterHud: 'Mode HUD',
     exitHud: 'Quitter le mode HUD',
+    pinMiniAssistant: 'Garder le Mini Assistant toujours au premier plan',
+    unpinMiniAssistant: 'Laisser les autres fenêtres passer devant le Mini Assistant',
     resetHudLayout: 'Réinitialiser la taille et la position du HUD',
     layoutEditor: 'Éditeur de disposition',
     layoutEditorTitle: mod => `Éditeur de disposition — ${mod}-clic réinitialise la disposition`
@@ -1573,6 +1575,18 @@ export const frOverrides = {
         'Réduire les fenêtres ou fermer la fenêtre principale les masque dans la zone de notification (barre des menus sur macOS) et Hermes continue de s’exécuter. Utilisez Quitter Hermes dans le menu de la zone de notification ou Cmd+Q pour quitter. Désactivé par défaut ; s’applique uniquement à cet appareil.',
       minimizeToTrayUnavailable:
         'La zone de notification est indisponible. Les fenêtres seront réduites et fermées normalement. Désactivez puis réactivez cette option pour réessayer.',
+      trayAccessTitle: 'Accès rapide',
+      trayAccessDesc:
+        'Ce que fait l’icône de la zone de notification, si le Mini Assistant reste au premier plan et si Hermes démarre à la connexion.',
+      trayNewConversationOnClickTitle: 'Nouvelle conversation au clic sur la zone de notification',
+      trayNewConversationOnClickDesc:
+        'Cliquer sur l’icône ouvre le Mini Assistant avec une conversation vierge et le curseur déjà dans le champ de saisie. Désactivez cette option pour afficher la fenêtre principale à la place.',
+      miniAssistantAlwaysOnTopTitle: 'Garder le Mini Assistant toujours au premier plan',
+      miniAssistantAlwaysOnTopDesc:
+        'La fenêtre compacte ouverte depuis la zone de notification reste au-dessus des autres fenêtres. Désépinglez-la, depuis les paramètres ou le bouton d’épingle, pour lui rendre un comportement de fenêtre normale.',
+      launchAtLoginTitle: 'Démarrer Hermes à la connexion',
+      launchAtLoginDesc:
+        'Lancer Hermes automatiquement à l’ouverture de session de cet ordinateur. S’applique uniquement à cet appareil.',
       none: 'Aucun',
       noneParen: '(aucun)',
       builtinOnly: 'Intégré uniquement',

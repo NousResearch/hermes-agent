@@ -98,6 +98,24 @@ export const SETTINGS_MANIFEST = {
       available: () => Boolean(window.hermesDesktop?.minimizeToTray),
       copy: t => ({ label: t.settings.config.minimizeToTrayTitle, description: t.settings.config.minimizeToTrayDesc })
     },
+    trayAccess: {
+      subpage: 'window-layout',
+      keywords: [
+        'tray',
+        'quick access',
+        'mini assistant',
+        'always on top',
+        'pin',
+        'float',
+        'startup',
+        'login',
+        'autostart',
+        'new conversation',
+        'hud'
+      ],
+      available: () => Boolean(window.hermesDesktop?.trayPreferences),
+      copy: t => ({ label: t.settings.config.trayAccessTitle, description: t.settings.config.trayAccessDesc })
+    },
     translucency: {
       ...appearanceSetting('window-layout', ['opacity', 'transparent', 'glass', 'blur'], 'translucency'),
       available: () => TRANSLUCENCY_SUPPORTED

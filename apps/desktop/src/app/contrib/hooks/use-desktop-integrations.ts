@@ -116,6 +116,22 @@ export function useDesktopIntegrations({
     window.hermesDesktop?.setPreviewShortcutActive?.(true)
   }, [])
 
+  // Main asking the shell to move somewhere — the tray menu's "Settings".
+  // Belongs with the other main→renderer navigation (notification clicks)
+  // rather than inside the settings page: the tray can be clicked while this
+  // window is on any route, or on none at all yet.
+  useEffect(
+    () =>
+      window.hermesDesktop?.onShellNavigate?.(request => {
+        // App-internal routes only. The router owns everything after the
+        // leading slash; anything else is not ours to open.
+        if (typeof request?.path === 'string' && request.path.startsWith('/')) {
+          navigate(request.path)
+        }
+      }),
+    [navigate]
+  )
+
   const restoredRef = useRef(false)
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 

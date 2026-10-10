@@ -7,13 +7,14 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
+import { requestComposerFocus } from '../chat/composer/focus'
 import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 
 import { useHudClickThrough } from './click-through'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
-import { useHudGoto, useReportHudSession } from './handoff'
+import { useHudGoto, useHudNewConversation, useReportHudSession } from './handoff'
 import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 import { useHudTranscriptBand } from './transcript-band'
@@ -216,7 +217,19 @@ export function HudShell() {
   // Main holds the session id on this window's behalf, so leaving HUD mode can
   // hand the app window back whatever conversation ended up here.
   useReportHudSession()
-  useHudGoto(useNavigate())
+  const navigate = useNavigate()
+  useHudGoto(navigate)
+  // A bar summoned from the tray is there to be typed into. Main can ask for a
+  // fresh conversation at any time (a second tray click), which has to land
+  // here — in place — rather than spawn another window.
+  useHudNewConversation(navigate)
+
+  // Caret in the composer on mount. The window is raised with the explicit
+  // intent "type now", and a key window with no focused element still eats the
+  // first keystrokes.
+  useEffect(() => {
+    requestComposerFocus()
+  }, [])
 
   // Which screen EDGE the window is parked against. Parked tight to the top,
   // the composer flips to the window's top edge and the thread grows DOWN

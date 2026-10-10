@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { applyHudResetBounds, defaultHudBounds, HUD_HEIGHT, HUD_WIDTH, normalizeHudResizeBounds } from './hud-geometry'
+import {
+  applyHudResetBounds,
+  defaultHudBounds,
+  HUD_BOTTOM_MARGIN,
+  HUD_HEIGHT,
+  HUD_WIDTH,
+  normalizeHudResizeBounds
+} from './hud-geometry'
 
 test('defaultHudBounds restores the standard size, centered near the bottom of the work area', () => {
   const area = { x: 0, y: 25, width: 1440, height: 875 }
@@ -80,4 +87,23 @@ test('normalizeHudResizeBounds rejects incomplete or non-finite native geometry'
   assert.equal(normalizeHudResizeBounds(null), null)
   assert.equal(normalizeHudResizeBounds({ x: 0, y: 0, width: Number.NaN, height: 320 }), null)
   assert.equal(normalizeHudResizeBounds({ x: 0, y: 0, width: 620 }), null)
+})
+
+test('defaultHudBounds parks the tray entry point in the bottom-right corner, on screen', () => {
+  const area = { x: 0, y: 25, width: 1440, height: 875 }
+  const bounds = defaultHudBounds(area, { anchor: 'bottom-right' })
+
+  assert.equal(bounds.width, HUD_WIDTH)
+  // Its right edge sits one margin from the work area's right edge…
+  assert.equal(area.x + area.width - (bounds.x! + bounds.width), HUD_BOTTOM_MARGIN)
+  // …and it clears the taskbar exactly like the centered default does.
+  assert.equal(bounds.y! + bounds.height + HUD_BOTTOM_MARGIN, area.y + area.height)
+})
+
+test('defaultHudBounds never places the bottom-right spawn off-screen on a narrow display', () => {
+  // Narrower than the bar plus its margins: the clamp keeps x at the work
+  // area's left edge instead of negative, so the window stays reachable.
+  const bounds = defaultHudBounds({ x: -800, y: 0, width: 480, height: 240 }, { anchor: 'bottom-right' })
+
+  assert.equal(bounds.x, -800)
 })

@@ -583,6 +583,8 @@ export interface Translations extends NoticeTranslations {
     openStarmap: string
     enterHud: string
     exitHud: string
+    pinMiniAssistant: string
+    unpinMiniAssistant: string
     resetHudLayout: string
     layoutEditor: string
     layoutEditorTitle: (modifier: string) => string
@@ -1008,6 +1010,14 @@ export interface Translations extends NoticeTranslations {
       minimizeToTrayTitle: string
       minimizeToTrayDesc: string
       minimizeToTrayUnavailable: string
+      trayAccessTitle: string
+      trayAccessDesc: string
+      trayNewConversationOnClickTitle: string
+      trayNewConversationOnClickDesc: string
+      miniAssistantAlwaysOnTopTitle: string
+      miniAssistantAlwaysOnTopDesc: string
+      launchAtLoginTitle: string
+      launchAtLoginDesc: string
       none: string
       noneParen: string
       builtinOnly: string

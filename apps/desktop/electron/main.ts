@@ -325,16 +325,18 @@ import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrit
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
-import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
+import { applyHudResetBounds, defaultHudBounds, type HudBoundsAnchor } from './hud-geometry'
 import { registerHudIpc } from './hud-ipc'
 import { installHudModifierTap } from './hud-modifier'
-import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
+import { applyHudElectronOverlay, promoteHudOverlay, setHudAlwaysOnTop } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { sanitizeHudState } from './hud-state'
 import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { LAUNCH_AT_LOGIN_SUPPORTED, launchAtLoginSettingsFor } from './launch-at-login'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -599,6 +601,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { buildTrayMenuTemplate, sanitizeTrayPreferences, type TrayMenuAction, type TrayPreferences } from './tray-access'
 import {
   UPDATE_HANDOFF_DWELL_MS,
   UPDATE_WAIT_POLL_MS,
@@ -13678,6 +13681,95 @@ function installPreviewGuestPreload() {
 // builder live in session-windows.ts so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
+// ── Tray quick access ───────────────────────────────────────────────────────
+//
+// The tray icon is the entry point; these preferences decide what it does
+// once it is up. `enabled` is deliberately NOT here: minimize-to-tray owns it
+// (and its own file) because the icon's very existence follows from it, and
+// two homes for one switch is how they end up disagreeing.
+const TRAY_PREFERENCES_PATH = path.join(app.getPath('userData'), 'tray-access.json')
+
+// Renderer route for the Settings page (SETTINGS_ROUTE in src/app/routes.ts).
+// The main process cannot import renderer modules, so it travels as the
+// literal the router already understands.
+const SETTINGS_SHELL_ROUTE = '/settings'
+
+function readTrayPreferences(): TrayPreferences {
+  try {
+    return sanitizeTrayPreferences(JSON.parse(fs.readFileSync(TRAY_PREFERENCES_PATH, 'utf8')))
+  } catch {
+    // Missing / unreadable / malformed → shipped defaults.
+    return sanitizeTrayPreferences(undefined)
+  }
+}
+
+let trayPreferences = readTrayPreferences()
+
+function broadcastTrayPreferences() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:tray-preferences:changed', trayPreferences)
+    }
+  }
+}
+
+function writeTrayPreferences(patch: Partial<TrayPreferences>): TrayPreferences {
+  trayPreferences = sanitizeTrayPreferences({ ...trayPreferences, ...patch })
+
+  try {
+    fs.mkdirSync(path.dirname(TRAY_PREFERENCES_PATH), { recursive: true })
+    fs.writeFileSync(`${TRAY_PREFERENCES_PATH}.tmp`, JSON.stringify(trayPreferences, null, 2), 'utf8')
+    fs.renameSync(`${TRAY_PREFERENCES_PATH}.tmp`, TRAY_PREFERENCES_PATH)
+  } catch (error) {
+    rememberLog(`[tray] preferences write failed: ${error?.message || error}`)
+  }
+
+  if ('launchAtLogin' in patch) {
+    applyLaunchAtLogin(trayPreferences.launchAtLogin)
+  }
+
+  return trayPreferences
+}
+
+/** Keep the registered login item honest across reinstalls and moves: the
+ *  Run key holds a path, and that path is only as good as the install that
+ *  wrote it. Re-asserting on every launch is idempotent and cheap. */
+function applyLaunchAtLogin(on: boolean) {
+  if (!LAUNCH_AT_LOGIN_SUPPORTED) {
+    return
+  }
+
+  try {
+    // Only a packaged install has an executable worth registering. In dev the
+    // running binary is the Electron binary, which is the honest answer for
+    // "run this app at login" but not one a user should silently acquire.
+    app.setLoginItemSettings(launchAtLoginSettingsFor(on, app.isPackaged ? process.execPath : null))
+  } catch (error) {
+    rememberLog(`[tray] launch-at-login failed: ${error?.message || error}`)
+  }
+}
+
+/** Tray menu items and left click both land here, so "one gesture, one
+ *  action" — and never two windows — is enforced in exactly one place. */
+function handleTrayAction(action: TrayMenuAction) {
+  switch (action) {
+    case 'new-conversation':
+      openMiniAssistant()
+      break
+    case 'open-app':
+      minimizeToTray.restore()
+      break
+    case 'settings':
+      showSettingsFromTray()
+      break
+    case 'quit':
+      // Not a bypass: this is the same quit the menu item runs, so the
+      // active-work confirmation and teardown still own the last word.
+      app.quit()
+      break
+  }
+}
+
 const minimizeToTray = createMinimizeToTray({
   preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
   getIconPath: getAppIconPath,
@@ -13685,9 +13777,78 @@ const minimizeToTray = createMinimizeToTray({
   // activation (show + focus), not the ambient showInactive path.
   restoreMainWindow: () =>
     ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
+  // Left click opens the Mini Assistant on a fresh conversation with the
+  // caret already in the composer — the point of the whole surface: type
+  // where you are, without raising the app. The preference can send it back
+  // to raising the window (the behavior users had before this existed).
+  onClick: () => handleTrayAction(trayPreferences.openNewConversationOnClick ? 'new-conversation' : 'open-app'),
+  buildMenu: () =>
+    buildTrayMenuTemplate().map(entry =>
+      'action' in entry
+        ? { click: () => handleTrayAction(entry.action), label: entry.label }
+        : { type: 'separator' as const }
+    ),
   isQuittingForHandoff: () => isQuittingForHandoff,
   log: rememberLog
 })
+
+function trayAccessPatch(raw: unknown): Partial<TrayPreferences> {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const patch: Partial<TrayPreferences> = {}
+
+  if (typeof record.launchAtLogin === 'boolean') {
+    patch.launchAtLogin = record.launchAtLogin
+  }
+
+  if (typeof record.openNewConversationOnClick === 'boolean') {
+    patch.openNewConversationOnClick = record.openNewConversationOnClick
+  }
+
+  return patch
+}
+
+ipcMain.handle('hermes:tray-preferences:get', () => trayPreferences)
+ipcMain.handle('hermes:tray-preferences:set', (_event, raw) => {
+  const next = writeTrayPreferences(trayAccessPatch(raw))
+  broadcastTrayPreferences()
+
+  return next
+})
+
+// Summon the Mini Assistant from the renderer (the settings row's "open it"
+// affordance, tests). The same singleton rules as the tray click: one window,
+// fresh conversation, caret in the composer.
+ipcMain.handle('hermes:mini-assistant:open', (_event, request) => {
+  openMiniAssistant({ newConversation: request?.newConversation !== false })
+
+  return { ok: true }
+})
+
+/** The tray menu's "Settings" item: raise the app window and put it on the
+ *  page these preferences live in. */
+function showSettingsFromTray() {
+  ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow })
+
+  const win = mainWindow
+
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  const navigate = () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:shell:navigate', { path: SETTINGS_SHELL_ROUTE })
+    }
+  }
+
+  // A window that was just created has no renderer listening yet; a message
+  // sent into the void is how "Settings" came to look like it did nothing.
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', navigate)
+  } else {
+    navigate()
+  }
+}
 
 function focusWindow(win) {
   if (!win || win.isDestroyed()) {
@@ -14297,21 +14458,18 @@ const HUD_STATE_PATH = path.join(app.getPath('userData'), 'hud-state.json')
 
 function readHudState() {
   try {
-    const raw = JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8'))
-
-    if (
-      [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
-      raw.width >= 380 &&
-      raw.height >= 160
-    ) {
-      return raw
-    }
+    return sanitizeHudState(JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8')))
   } catch {
     // First run / unreadable — fall through to defaults.
+    return null
   }
-
-  return null
 }
+
+// The Mini Assistant's pin state: whether it floats above the user's other
+// windows. Read once at startup, applied to every HUD spawn, and persisted on
+// its own — it is set from Settings (and the bar's pin button) with the bar
+// closed, where there is no live window to take the bounds from.
+let hudAlwaysOnTop = readHudState()?.alwaysOnTop ?? true
 
 function persistHudState() {
   if (!hudWindow || hudWindow.isDestroyed()) {
@@ -14321,10 +14479,40 @@ function persistHudState() {
   try {
     const { x, y, width, height } = hudWindow.getNormalBounds()
     fs.mkdirSync(path.dirname(HUD_STATE_PATH), { recursive: true })
-    writeFileAtomic(HUD_STATE_PATH, JSON.stringify({ x, y, width, height }, null, 2))
+    writeFileAtomic(HUD_STATE_PATH, JSON.stringify({ x, y, width, height, alwaysOnTop: hudAlwaysOnTop }, null, 2))
   } catch (err) {
     rememberLog(`[hud-state] persist failed: ${err?.message || err}`)
   }
+}
+
+/** Pin or unpin the Mini Assistant, live if it is up, and remember the choice
+ *  across launches. Returns the state every window should now read. */
+function setHudAlwaysOnTopPreference(on: boolean): boolean {
+  hudAlwaysOnTop = on === true
+
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    setHudAlwaysOnTop(hudWindow, hudAlwaysOnTop, process.platform)
+    persistHudState()
+  } else {
+    // No bar to take bounds from yet: write the preference next to the last
+    // remembered geometry (or the display-aware default) so it survives a
+    // restart even if the user never opens the bar in this session.
+    try {
+      const bounds = readHudState() ?? hudBounds()
+      fs.mkdirSync(path.dirname(HUD_STATE_PATH), { recursive: true })
+      writeFileAtomic(HUD_STATE_PATH, JSON.stringify({ ...bounds, alwaysOnTop: hudAlwaysOnTop }, null, 2))
+    } catch (err) {
+      rememberLog(`[hud-state] persist always-on-top failed: ${err?.message || err}`)
+    }
+  }
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:hud:always-on-top-changed', { alwaysOnTop: hudAlwaysOnTop })
+    }
+  }
+
+  return hudAlwaysOnTop
 }
 
 function resetHudWindowLayout(): boolean {
@@ -14517,7 +14705,7 @@ function startHudGameOverlayFeed(win: BrowserWindow) {
   win.on('closed', dispose)
 }
 
-function hudBounds() {
+function hudBounds(anchor: HudBoundsAnchor = 'bottom-center') {
   // Remembered spot first — validated against the LIVE displays so a HUD
   // parked on an unplugged monitor comes back on-screen instead of lost.
   const saved = readHudState()
@@ -14542,7 +14730,7 @@ function hudBounds() {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const area = display?.workArea
 
-  return defaultHudBounds(area)
+  return defaultHudBounds(area, { anchor })
 }
 
 function hudUrl(sessionId, profile) {
@@ -14572,9 +14760,9 @@ function broadcastHudState(open) {
   }
 }
 
-function spawnHudWindow(sessionId, profile) {
+function spawnHudWindow(sessionId, profile, anchor: HudBoundsAnchor = 'bottom-center') {
   const win = new BrowserWindow({
-    ...hudBounds(),
+    ...hudBounds(anchor),
     minWidth: 380,
     minHeight: 160,
     title: HUD_WINDOW_TITLE,
@@ -14603,7 +14791,11 @@ function spawnHudWindow(sessionId, profile) {
     // another app; the floating/all-spaces setup below supplies overlay behavior.
     skipTaskbar: !IS_MAC,
     hasShadow: false,
-    alwaysOnTop: true,
+    // Pinned by preference, not by habit. The Mini Assistant's whole promise
+    // is that it stays visible while the user works in another app, but a
+    // user who turned that off has to get an ordinary window back — one that
+    // takes the compositor's z-order instead of re-floating on every spawn.
+    alwaysOnTop: hudAlwaysOnTop,
     // Clips the vibrancy layer to the HUD's silhouette rather than a hard
     // rectangle — the frost stops where the window's corners do.
     roundedCorners: true,
@@ -14620,7 +14812,12 @@ function spawnHudWindow(sessionId, profile) {
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
-  applyHudElectronOverlay(win, process.platform)
+  // Overlay levels (and the all-spaces claim on macOS) only belong to a pinned
+  // bar; an unpinned one keeps the plain alwaysOnTop the options asked for.
+  if (hudAlwaysOnTop) {
+    applyHudElectronOverlay(win, process.platform)
+  }
+
   win.setHiddenInMissionControl?.(true)
 
   // Linux intentionally starts on ONE virtual desktop. During a renderer
@@ -14730,7 +14927,7 @@ function destroyHudWindow(win: BrowserWindow) {
   requestHudClose(win)
 }
 
-function openHudWindow(sessionId, profile) {
+function openHudWindow(sessionId, profile, { anchor }: { anchor?: HudBoundsAnchor } = {}) {
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
 
   if (hudWindow && !hudWindow.isDestroyed()) {
@@ -14745,7 +14942,7 @@ function openHudWindow(sessionId, profile) {
 
       hudSessionId = sessionId || null
       hudProfile = profileKey
-      hudWindow = spawnHudWindow(sessionId, profileKey)
+      hudWindow = spawnHudWindow(sessionId, profileKey, anchor)
       previous.destroy()
       broadcastHudState(true)
       registerHudSnapShortcut()
@@ -14772,7 +14969,7 @@ function openHudWindow(sessionId, profile) {
   hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed())
   hudSessionId = sessionId || null
   hudProfile = profileKey
-  hudWindow = spawnHudWindow(sessionId, profileKey)
+  hudWindow = spawnHudWindow(sessionId, profileKey, anchor)
   broadcastHudState(true)
   registerHudSnapShortcut()
 
@@ -14794,6 +14991,31 @@ function closeHudWindow() {
   hudSnapShortcut.dispose()
   restoreMainWindowFromHud()
   broadcastHudState(false)
+}
+
+// ── Mini Assistant ──────────────────────────────────────────────────────────
+//
+// The tray's quick-access surface: the HUD band raised in the corner near the
+// clock, on a conversation nobody has started yet, with the caret already in
+// the composer. It IS the HUD — same window, same renderer, same sessions —
+// so it cannot drift from the app's own chat surface, and there is no second
+// conversation system to keep in sync.
+function openMiniAssistant({ newConversation = true }: { newConversation?: boolean } = {}) {
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    // Already up: never a second window, and never the stale conversation.
+    // The renderer drops to its fresh-chat route in place and refocuses.
+    if (newConversation) {
+      hudWindow.webContents.send('hermes:hud:new-conversation')
+    }
+
+    focusWindow(hudWindow)
+
+    return hudWindow
+  }
+
+  // `sessionId: null` boots the band on the new-chat route; the corner anchor
+  // only decides where it parks when the user has not moved it before.
+  return openHudWindow(null, null, { anchor: 'bottom-right' })
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -15859,7 +16081,9 @@ const hudIpc = registerHudIpc({
   resetHudLayout: resetHudWindowLayout,
   setHudSessionId: value => {
     hudSessionId = value
-  }
+  },
+  getAlwaysOnTop: () => hudAlwaysOnTop,
+  setAlwaysOnTop: setHudAlwaysOnTopPreference
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
@@ -19380,6 +19604,10 @@ app.whenReady().then(() => {
   keepAwakeMode = readPersistedKeepAwakeMode()
   applyKeepAwake()
   void minimizeToTray.start()
+  // Re-assert the login item against the binary that is actually running: a
+  // reinstall moves the path the Run key holds, and a stale one launches
+  // nothing (or the wrong thing) at sign-in.
+  applyLaunchAtLogin(trayPreferences.launchAtLogin)
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before

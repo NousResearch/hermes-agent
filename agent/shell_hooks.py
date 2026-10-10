@@ -569,13 +569,49 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
+_LAUNCHER_SUPERVISED_MARKERS = ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD")
+
+
+def _launcher_launched_child(environ: Optional[Dict[str, str]] = None) -> bool:
+    """True only when a *generated launcher* booted this process.
+
+    Launcher markers only, mirroring ``hermes_cli.venv_sync._supervised_child``. Deliberately NOT
+    ``INVOCATION_ID`` (systemd exports it to every descendant — a user in a systemd-launched SSH
+    session or CI runner, whose stdin *is* the terminal, still has someone to answer) and NOT
+    ``XPC_SERVICE_NAME`` (interactive macOS terminals hold an app-coalition label there, see
+    ``hermes_cli.main._under_gateway_supervisor``). Parsed as a truthy flag, so an explicit
+    ``0``/``false`` does not suppress the prompt.
+    """
+    env = os.environ if environ is None else environ
+    return any(str(env.get(name, "")).strip().lower() in _TRUTHY for name in _LAUNCHER_SUPERVISED_MARKERS)
+
+
+def _stdin_can_answer() -> bool:
+    """True only when a human can actually answer the consent prompt.
+
+    ``isatty()`` alone is not enough: a process a generated launcher (systemd, launchd, s6, or a
+    Windows Scheduled Task through a console-attached wrapper) booted holds a console handle, so
+    ``isatty()`` is True with nobody to read it. The process then blocks in ``input()`` until the
+    startup watchdog kills it and the launcher restarts it into the same block — the platform
+    stays dead indefinitely (#127822). A launcher-launched child is non-interactive by construction.
+    """
+    if _launcher_launched_child():
+        return False
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
 def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
     """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
     if accept_hooks:
         _record_approval(event, command)
         logger.info("shell hook auto-approved via --accept-hooks / env / config: %s -> %s", event, command)
         return True
-    if not sys.stdin.isatty():
+    if not _stdin_can_answer():
+        logger.info("shell hook consent prompt skipped — no interactive stdin (supervised/detached "
+                    "launch): %s -> %s", event, command)
         return False
     print(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"

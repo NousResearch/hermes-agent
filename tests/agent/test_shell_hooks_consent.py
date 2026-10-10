@@ -223,3 +223,83 @@ class TestHooksAutoAcceptParsing:
         ) is False
 
 
+
+
+class TestSupervisedLaunchNeverBlocks:
+    """A supervised/detached launch holds a console handle — ``isatty()`` is True with nobody to
+    read it — so the consent prompt must degrade to skip+record instead of blocking startup until
+    the watchdog kills the process and the supervisor restarts it into the same block (#127822)."""
+
+    def test_supervised_marker_skips_the_prompt_without_reading_stdin(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+
+        with patch("sys.stdin") as mock_stdin, patch(
+            "builtins.input", side_effect=AssertionError("prompt blocked startup"),
+        ):
+            mock_stdin.isatty.return_value = True  # the console-attached launcher case
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        assert registered == []
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+
+    @pytest.mark.parametrize(
+        "ambient",
+        [
+            pytest.param({}, id="no-launch-markers"),
+            pytest.param({"INVOCATION_ID": "0"}, id="systemd-invocation-id"),
+            pytest.param({"INVOCATION_ID": "8d3f...c2"}, id="systemd-invocation-id-nonempty"),
+            pytest.param({"XPC_SERVICE_NAME": "application.com.apple.Terminal"}, id="macos-terminal-xpc-label"),
+            pytest.param({"XPC_SERVICE_NAME": "application.com.googlecode.iterm2"}, id="iterm2-xpc-label"),
+        ],
+    )
+    def test_plain_terminal_still_prompts(self, tmp_path, monkeypatch, ambient):
+        """No *launcher* marker: a real terminal keeps the human prompt — the fix must not silently
+        auto-skip interactive sessions.
+
+        ``INVOCATION_ID`` and a macOS ``XPC_SERVICE_NAME`` app-coalition label are ambient to any
+        terminal on a systemd host or macOS, so neither may classify a tty-driven `hermes` as
+        non-interactive; only the generated-launcher markers do.
+        """
+        from hermes_cli import plugins
+
+        for marker in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                       "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+            monkeypatch.delenv(marker, raising=False)
+        for name, value in ambient.items():
+            monkeypatch.setenv(name, value)
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+
+        with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="y") as mock_input:
+            mock_stdin.isatty.return_value = True
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        mock_input.assert_called_once()
+        assert len(registered) == 1
+
+    def test_launcher_marker_falsy_value_still_prompts(self, tmp_path, monkeypatch):
+        """HERMES_SUPERVISED_CHILD=0/false is an explicit opt-out, not a launcher write."""
+        from hermes_cli import plugins
+
+        for marker in ("HERMES_S6_SUPERVISED_CHILD", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "INVOCATION_ID"):
+            monkeypatch.delenv(marker, raising=False)
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "0")
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+
+        with patch("sys.stdin") as mock_stdin, patch("builtins.input", return_value="y") as mock_input:
+            mock_stdin.isatty.return_value = True
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        mock_input.assert_called_once()
+        assert len(registered) == 1

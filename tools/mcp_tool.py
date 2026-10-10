@@ -287,7 +287,15 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
+            # Pydantic MCP 2.x result models synthesize defaults (ttl_ms=0,
+            # cache_scope="private") even when the server never sent those fields.
+            # Persisting the synthesized 0 makes get_cached_entry() treat the entry as
+            # expired at write time, so mcp_servers.<name>.lazy can never engage.
+            # Preserve absence on the wire via model_fields_set. (#101007)
+            fields_set = getattr(result, "model_fields_set", None)
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
+                if fields_set is not None and snake not in fields_set:
+                    continue
                 hint = mcp_field(result, snake, camel)
                 if hint is not None:
                     cache_meta_out[key] = hint

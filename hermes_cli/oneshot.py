@@ -500,6 +500,28 @@ def _apply_stored_session_runtime(
     return choice
 
 
+def _resolve_oneshot_max_iterations(cfg: dict) -> int:
+    """Resolve the oneshot tool-loop cap.
+
+    Explicit ``HERMES_MAX_ITERATIONS`` (e.g. grokbot-hermes-bridge child env)
+    wins over config so headless callers can hard-cap tool loops. Without the
+    env var, mirror CLI priority: ``agent.max_turns`` → root ``max_turns`` →
+    unlimited. Previously oneshot never passed ``max_iterations``, so
+    ``AIAgent`` defaulted to ``sys.maxsize`` and ignored both config and env.
+    """
+    from hermes_cli.config import resolve_turn_limit
+
+    env_turns = os.getenv("HERMES_MAX_ITERATIONS")
+    if env_turns is not None and str(env_turns).strip() != "":
+        return resolve_turn_limit(env_turns)
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    if agent_cfg.get("max_turns") is not None:
+        return resolve_turn_limit(agent_cfg.get("max_turns"))
+    if cfg.get("max_turns") is not None:
+        return resolve_turn_limit(cfg.get("max_turns"))
+    return resolve_turn_limit(None)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -520,6 +542,8 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    max_iterations = _resolve_oneshot_max_iterations(cfg)
+
     choice = _resolve_model_and_provider(cfg, model, provider)
     # Resume resolves BEFORE the runtime provider: the session's stored model/route must
     # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
@@ -592,6 +616,7 @@ def _run_agent(
             request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
+            max_iterations=max_iterations,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

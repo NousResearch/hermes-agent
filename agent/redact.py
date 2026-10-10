@@ -914,7 +914,7 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
-def _redact_json_string_value(m: re.Match) -> str:
+def _redact_json_string_value(m: re.Match, *, mask=_mask_token) -> str:
     """Mask a captured JSON string value without breaking its escapes."""
     encoded_value = m.group(2)
     try:
@@ -925,18 +925,18 @@ def _redact_json_string_value(m: re.Match) -> str:
         value = encoded_value
     if _ENV_LOOKUP_VALUE_RE.match(value):
         return m.group(0)
-    masked = json.dumps(_mask_token(value), ensure_ascii=False)[1:-1]
+    masked = json.dumps(mask(value), ensure_ascii=False)[1:-1]
     return m.group(1) + masked + m.group(3)
 
 
-def _redact_unterminated_json_string_value(m: re.Match) -> str:
+def _redact_unterminated_json_string_value(m: re.Match, *, mask=_mask_token) -> str:
     """Fail closed on a truncated JSON header value through end-of-line."""
     encoded_value = m.group(2)
     try:
         value = json.loads(f'"{encoded_value}"')
     except json.JSONDecodeError:
         value = encoded_value
-    masked = json.dumps(_mask_token(value), ensure_ascii=False)[1:-1]
+    masked = json.dumps(mask(value), ensure_ascii=False)[1:-1]
     return m.group(1) + masked
 
 
@@ -1007,9 +1007,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 
     if ":" in text and '"' in text:
         for pattern in (_SECRET_HEADER_JSON_RE, _COOKIE_HEADER_JSON_RE):
-            text = pattern.sub(_redact_json_string_value, text)
+            text = pattern.sub(lambda m: _redact_json_string_value(m, mask=mask), text)
         for pattern in (_SECRET_HEADER_JSON_UNTERMINATED_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE):
-            text = pattern.sub(_redact_unterminated_json_string_value, text)
+            text = pattern.sub(lambda m: _redact_unterminated_json_string_value(m, mask=mask), text)
         redact_json = _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False)
         text = _JSON_FIELD_RE.sub(
             lambda m: m.group(0) if m.group(1)[1:-1].lower() == "apikey" else redact_json(m), text)

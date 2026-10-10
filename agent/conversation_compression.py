@@ -3699,7 +3699,7 @@ def _commit_compaction(
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
     verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
 ) -> _CommitOutcome:
-    """Persist the compacted transcript: memory extraction, anti-growth guard, then the
+    """Persist the compacted transcript: anti-growth guard, memory extraction, then the
     in-place archive or the parent->child rotation.
 
     Failures roll the live list back and arm the split-failure cooldown; a refused (would-grow) candidate returns
@@ -3771,7 +3771,7 @@ def _commit_compaction(
                 from agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(
                     agent._session_db, agent.session_id,
-                    messages_before_compression if messages_before_compression is not None else messages,
+                    original_messages,
                     verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
@@ -4049,8 +4049,6 @@ def _begin_compression_attempt(
     }
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
-        # The agent keeps its own copy: a pre-commit restore puts the previous seed back on the compressor.
-        agent._compression_attempt_seed = dict(seed)
         from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
 
         begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))

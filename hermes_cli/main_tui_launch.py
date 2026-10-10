@@ -242,6 +242,13 @@ def _normalize_tui_toolsets(toolsets: object) -> list[str]:
         return _split_comma_items(toolsets, split_non_str=False) if toolsets else []
 
 
+def _set_tui_node_env(env: dict, value: str) -> None:
+    """Set NODE_ENV for the Node TUI without assigning it to gateway children."""
+    if "NODE_ENV" not in env:
+        env["NODE_ENV"] = value
+        env["HERMES_TUI_INJECTED_NODE_ENV"] = "1"
+
+
 def _read_cgroup_memory_limit() -> Optional[int]:
     """Container memory limit in bytes, or None if unconstrained (v2 ``memory.max``, then v1).
 
@@ -383,7 +390,7 @@ def _launch_tui(
         prefix="hermes-tui-active-session-", suffix=".json")
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    _set_tui_node_env(env, "development" if tui_dev else "production")
     if native_mode is None:
         try:
             from hermes_cli.config import load_config

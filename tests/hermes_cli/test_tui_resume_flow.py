@@ -232,6 +232,8 @@ def test_oneshot_closes_its_relay_root_before_agent_teardown(monkeypatch, run_fa
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.delenv("NODE_ENV", raising=False)
+    monkeypatch.delenv("HERMES_TUI_INJECTED_NODE_ENV", raising=False)
     captured = {}
     active_path_during_call = None
 
@@ -265,6 +267,30 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+    assert env["HERMES_TUI_INJECTED_NODE_ENV"] == "1"
+
+
+def test_launch_tui_preserves_caller_owned_node_env(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("NODE_ENV", "staging")
+    monkeypatch.delenv("HERMES_TUI_INJECTED_NODE_ENV", raising=False)
+    captured = {}
+    monkeypatch.setattr(
+        main_tui_launch,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["NODE_ENV"] == "staging"
+    assert "HERMES_TUI_INJECTED_NODE_ENV" not in captured["env"]
 
 
 def test_launch_tui_prefers_launch_cwd_over_inherited_hermes_cwd(monkeypatch, main_mod, tmp_path):

@@ -401,7 +401,8 @@ def _resolve_chat_argv(
     from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
     from hermes_cli.main import PROJECT_ROOT
-    from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
+    from hermes_cli.main_tui_launch import (
+        _apply_tui_python_env, _make_tui_argv, _set_tui_node_env)
 
     profile_dir: Optional[Path] = None
     requested = (profile or "").strip()
@@ -435,7 +436,7 @@ def _resolve_chat_argv(
         env["HERMES_CWD"] = workspace_cwd
         env["HERMES_TUI_CWD"] = workspace_cwd
     _apply_tui_python_env(env)
-    env.setdefault("NODE_ENV", "production")
+    _set_tui_node_env(env, "production")
     # Mouse tracking would swallow wheel events the browser needs for
     # transcript scrolling; disable it for the dashboard PTY only.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")

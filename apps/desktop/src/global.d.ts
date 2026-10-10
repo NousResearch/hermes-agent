@@ -643,8 +643,8 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        /** Persist this source install's update channel and return the fresh check. */
+        setChannel?: (name: 'main' | 'stable') => Promise<DesktopUpdateStatus>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
         /** Claim the pending packaged self-update run (null when none or already claimed). */
         takePendingRun?: () => Promise<UpdateRunReport | null>
@@ -881,6 +881,8 @@ export interface DesktopUpdateStatus {
   currentVersion?: string
   /** The R2 channel name; independent of source branch and package version. */
   channel?: string
+  /** The install's source_check can persist a channel (older runtimes cannot). */
+  channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
   targetSha?: string

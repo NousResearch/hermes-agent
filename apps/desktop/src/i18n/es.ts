@@ -9,6 +9,7 @@ import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
@@ -1561,9 +1562,7 @@ export const esOverrides = {
       screenRecording: 'Grabación de pantalla',
       driverHealth: 'Estado del controlador'
     },
-    about: {
-      updates: 'Actualizaciones'
-    },
+    about: { updates: 'Actualizaciones', channel: esUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Minimizar a la bandeja',
       minimizeToTrayDesc:

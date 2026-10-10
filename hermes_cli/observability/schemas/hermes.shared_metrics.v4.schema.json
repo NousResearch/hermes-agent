@@ -1512,6 +1512,7 @@
                     "aux_model_fallback",
                     "commit_fence_cancelled",
                     "empty_post_handoff_window",
+                    "empty_transcript",
                     "exception",
                     "explicit_interrupt",
                     "feasibility_skip",

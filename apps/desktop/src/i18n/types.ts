@@ -19,6 +19,7 @@ import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
+import type { UpdateChannelCopy } from './types_update_channel'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -1002,9 +1003,7 @@ export interface Translations extends NoticeTranslations {
       screenRecording: string
       driverHealth: string
     }
-    about: {
-      updates: string
-    }
+    about: { updates: string; channel: UpdateChannelCopy }
     config: {
       minimizeToTrayTitle: string
       minimizeToTrayDesc: string

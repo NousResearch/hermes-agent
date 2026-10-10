@@ -300,6 +300,11 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
+  # faster-whisper 1.2.1 passes `metadata_errors` to av.open(), a kwarg PyAV 19
+  # removed — every local transcription dies with a TypeError (fixed upstream in
+  # SYSTRAN/faster-whisper#1495, unreleased). faster-whisper only declares
+  # av>=11, so bound it below 19 until a release carries the fix (#135245).
+  "av>=11,<19; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
@@ -333,6 +338,9 @@ discord = ["discord.py[voice]==2.7.1"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
+  # Same av<19 bound as [voice] above: PyAV 19 removed av.open()'s
+  # `metadata_errors` kwarg that faster-whisper 1.2.1 still passes (#135245).
+  "av>=11,<19; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
 ]
 audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).

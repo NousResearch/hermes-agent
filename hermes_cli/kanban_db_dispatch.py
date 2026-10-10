@@ -79,6 +79,16 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# The explicit requeue stamp a rate-limit requeue writes into
+# ``tasks.last_failure_error`` (see ``_classify_dead_worker_exit``). Promoted to
+# a constant so the stamp and ``check_respawn_guard``'s recognition of it stay
+# in sync: if a later ``reclaimed`` run supersedes the ``rate_limited`` run, the
+# guard must still treat this text as the quota-wall requeue it is — never as a
+# permanent auth blocker (#t_944174bb).
+RATE_LIMIT_REQUEUE_MARKER = (
+    "exited rate-limited (quota wall) — requeued without counting a failure"
+)
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -1099,7 +1109,7 @@ def _classify_dead_worker_exit(
         # NOT count a failure so a long quota window can't trip the breaker.
         return _DeadWorker(
             kind, code,
-            f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
+            f"pid {pid} {RATE_LIMIT_REQUEUE_MARKER}",
             "rate_limited",
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
@@ -1542,6 +1552,14 @@ def check_respawn_guard(
     PR). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
+
+    The rate-limit exemption is keyed on TWO signals: a ``rate_limited`` run
+    row (the bounded cooldown path) OR the explicit requeue stamp in
+    ``last_failure_error`` (the marker-only path, kept for the case where a
+    later bookkeeping row — ``reclaimed`` from the orphan sweep — supersedes
+    the rate_limited run; the stamp is the durable witness to the original
+    quota wall, #t_944174bb). The marker path never schedules from a
+    ``crashed`` latest outcome.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1588,6 +1606,31 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
+
+    # 2a. Rate-limit requeue stamp survived a later ``reclaimed`` run.
+    # The rate-limit requeue stamps ``last_failure_error`` with the quota-wall
+    # marker (see ``RATE_LIMIT_REQUEUE_MARKER``) and never increments
+    # ``consecutive_failures``; a later ``reclaimed`` (orphaned-running sweep)
+    # row is bookkeeping, NOT a fresh failure, so the guard must still treat
+    # this text as the quota requeue it is — not as a permanent auth blocker
+    # (#t_944174bb).  The exemption is allowed for every non-crashed latest
+    # outcome; ``crashed`` falls through to the real blocker check below.
+    if (
+        err
+        and RATE_LIMIT_REQUEUE_MARKER in err
+        and latest_outcome != "crashed"
+    ):
+        if rl_cooldown <= 0:
+            return None
+        if latest_run is not None:
+            ended_at = latest_run["ended_at"]
+            if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+                return "rate_limit_cooldown"
+        # Stamp present, no in-cooldown run row — return None to mirror the
+        # rate_limited-run branch's post-cooldown path: the quota requeue is
+        # the durable state, not an auth blocker.
+        return None
+
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

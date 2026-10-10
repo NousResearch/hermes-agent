@@ -493,6 +493,63 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def test_request_review_clears_stale_rate_limit_fingerprint(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A review handoff must clear a stale quota fingerprint from ``last_failure_error``.
+
+    Live incident (t_25535974, 2026-09-21): run 1 exited rate-limited, which
+    stamps ``last_failure_error`` with quota text WITHOUT touching
+    ``consecutive_failures`` (deliberate — the requeue must look like a quota
+    blocker to the READY lane). The retry succeeded and the worker called
+    ``request_review``, but nothing on that path cleared the fingerprint.
+    The review lane's ``check_respawn_guard`` then hit ``blocker_auth`` (its
+    rate-limit-cooldown early-return is keyed on the LATEST run's outcome —
+    ``review_requested`` is neither ``spawn_failed`` nor ``rate_limited`` —
+    so it fell through to the quota-text check) on every tick, forever: the
+    reviewer never spawned and the card sat in ``review`` until a human
+    completed it manually.
+
+    Contract: ``request_review`` is a successful implementer handoff — it
+    clears the stale fingerprint (but NOT ``consecutive_failures``; the M2
+    contract reserves counter resets for ``complete_task``) so the review
+    lane can spawn.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="quota survivor", assignee="dev")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        # Simulate the rate-limited requeue stamp (same write site as the
+        # dispatcher's reaper): quota text, counter untouched.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                ("pid 1 exited rate-limited (quota wall) — requeued without counting a failure", tid),
+            )
+
+        assert kb.request_review(
+            conn, tid, summary="delivered",
+            expected_run_id=claimed.current_run_id,
+        )
+
+        row = conn.execute(
+            "SELECT last_failure_error FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        assert row["last_failure_error"] is None
+        # The review lane must now spawn the reviewer.
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert tid in [s[0] for s in res.spawned]
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

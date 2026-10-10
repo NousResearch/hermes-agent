@@ -363,6 +363,7 @@ terminal:
   docker_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
   docker_run_as_host_user: false   # See "Running container as host user" below
   docker_snap_compat: false        # See "Snap-packaged Docker (AppArmor)" below
+  docker_zero_cap: false           # Add no capabilities back after --cap-drop ALL
   docker_forward_env:              # Host env vars to forward into container
     - "GITHUB_TOKEN"
   docker_env:                      # Literal env vars to inject (KEY=value)
@@ -434,7 +435,7 @@ Edge cases worth knowing:
 Parallel subagents spawned via `delegate_task(tasks=[...])` share this one container — concurrent `cd`, env mutations, and writes to the same path will collide. If a subagent needs an isolated sandbox, it must register a per-task image override via `register_task_env_overrides()`, which RL and benchmark environments (TerminalBench2, HermesSweEnv, etc.) do automatically for their per-task Docker images.
 
 **Security hardening:**
-- `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back
+- `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back by default; `docker_zero_cap: true` adds none back
 - `--security-opt no-new-privileges`
 - `--pids-limit 256`
 - Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB) <!-- no-tmp: ok — documents the sandbox's own tmpfs -->
@@ -455,6 +456,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
 | `TERMINAL_DOCKER_SNAP_COMPAT` | `docker_snap_compat` | `true` / `false` — default `false` |
+| `TERMINAL_DOCKER_ZERO_CAP` | `docker_zero_cap` | `true` / `false` — default `false` |
 | `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |
 | `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |
 | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` | `docker_shared_container_key` | Explicit shared identity for trusted profiles; empty by default |
@@ -694,6 +696,20 @@ terminal:
 When enabled, Hermes appends `--user $(id -u):$(id -g)` to the `docker run` command so files written into bind-mounted directories (`/workspace`, `/root`, anything in `docker_volumes`) are owned by your host user, not root. The trade-off: the container can no longer `apt install` or write to root-owned paths like `/root/.npm` — use a base image whose `HOME` is owned by a non-root user (or add your required tooling at image build time) if you need both.
 
 Leave this `false` (the default) for backwards-compatible behavior. Turn it on when your workflow is mostly "edit mounted host files" and you're tired of `sudo chown -R`.
+
+### Zero-Capability Docker Sandbox
+
+For a stricter opt-in posture, configure Hermes to add no Linux capabilities back after `--cap-drop ALL`:
+
+```yaml
+terminal:
+  backend: docker
+  docker_zero_cap: true
+```
+
+Hermes rejects `docker_extra_args` that add capabilities, enable privileged mode, or disable `no-new-privileges`. Strict and default runs use separate container identities, and Hermes only reuses a strict container after `docker inspect` confirms the zero-capability posture.
+
+This also removes the `SETUID` and `SETGID` capabilities normally supplied to root-started images so their init process can drop privileges. Use an image that already runs as its intended user, or enable `docker_run_as_host_user`, if that init flow cannot start without them. The setting is off by default, so existing Docker terminal behavior is unchanged.
 
 ### Snap-packaged Docker (AppArmor)
 

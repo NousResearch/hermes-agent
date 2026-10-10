@@ -684,16 +684,6 @@ def _dispatch_plugin(rid, params, session, name, arg):
     return None
 
 
-def _bundle_key_for(name: str):
-    """Skill-bundle key for ``name`` when it is NOT a registry command; None otherwise / on failure."""
-    try:
-        if _tools_mod("hermes_cli.commands").resolve_command(name) is None:
-            return _tools_mod("agent.skill_bundles").resolve_bundle_command_key(name)
-        return None
-    except Exception:
-        return None
-
-
 def _dispatch_bundle(rid, params, session, name, arg):
     bundle_key = _bundle_key_for(name)
     if bundle_key is None:
@@ -1121,9 +1111,15 @@ def _(rid, params: dict) -> dict:
     # Skill/bundle and _PENDING_INPUT_COMMANDS must NOT reach the slash worker. Plugin
     # commands also bypass it but return normal slash.exec output (TUI keeps the pager path).
     parts = cmd.lstrip("/").split(maxsplit=1)
-    base = (parts[0] if parts else "").lower()
+    raw = parts[0] if parts else ""
+    base = raw.lower()
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
+    # Native-target quick aliases return the directive understood by the TUI.
+    with _session_home_scope(session):
+        alias = _native_quick_alias(raw, base)
+    if alias is not None:
+        return _methods["command.dispatch"](rid, {"name": alias, "arg": arg, "session_id": sid})
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

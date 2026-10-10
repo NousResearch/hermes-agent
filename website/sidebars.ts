@@ -804,6 +804,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/gateway-session-lifecycle',
             'developer-guide/multiplexing-gateway',
             'developer-guide/completion-backlog-delivery',
+            'developer-guide/agent-runtime-primitives',
             'developer-guide/session-storage',
             'developer-guide/state-db-recovery',
             'developer-guide/provider-runtime',

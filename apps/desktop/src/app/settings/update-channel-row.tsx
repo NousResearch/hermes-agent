@@ -1,12 +1,12 @@
 import { useStore } from '@nanostores/react'
-import type { ReactElement } from 'react'
+import { type ReactElement, useState } from 'react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { confirm } from '@/store/confirm'
 import { notifyError } from '@/store/notifications'
-import { $updateChecking, $updateStatus, setUpdateChannel, type SourceUpdateChannel, sourceUpdateChannel } from '@/store/updates'
+import { $updateChecking, $updateStatus, checkUpdates, setUpdateChannel, type SourceUpdateChannel, sourceUpdateChannel } from '@/store/updates'
 
 import { ListRow } from './primitives'
 
@@ -19,7 +19,10 @@ export function UpdateChannelRow(): ReactElement | null {
   const a = t.settings.about.channel
   const status = useStore($updateStatus)
   const checking = useStore($updateChecking)
-  const channel = sourceUpdateChannel(status)
+  // The confirmed choice paints at once; the check that follows the save can be slow.
+  const [pending, setPending] = useState<SourceUpdateChannel | null>(null)
+  const saved = sourceUpdateChannel(status)
+  const channel = pending ?? saved
 
   if (channel === null) {
     return null
@@ -43,11 +46,16 @@ export function UpdateChannelRow(): ReactElement | null {
     }
 
     triggerHaptic('crisp')
+    setPending(next)
 
     try {
       await setUpdateChannel(next)
     } catch (error) {
+      // A throw may still follow a save, so re-read the install instead of guessing.
       notifyError(error, a.failed)
+      void checkUpdates()
+    } finally {
+      setPending(null)
     }
   }
 
@@ -55,7 +63,7 @@ export function UpdateChannelRow(): ReactElement | null {
     <ListRow
       action={
         <SegmentedControl
-          disabled={checking}
+          disabled={checking || pending !== null}
           onChange={id => void change(id)}
           options={[
             { id: 'stable', label: a.stable },

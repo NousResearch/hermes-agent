@@ -881,6 +881,8 @@ export interface DesktopUpdateStatus {
   currentVersion?: string
   /** The R2 channel name; independent of source branch and package version. */
   channel?: string
+  /** The install's source_check can persist a channel (older runtimes cannot). */
+  channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
   targetSha?: string

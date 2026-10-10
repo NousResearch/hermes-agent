@@ -126,7 +126,13 @@ describe('AboutSettings', (): void => {
 
   it('lets a source checkout pick its channel and confirms the move to stable releases', async (): Promise<void> => {
     const about = en.settings.about.channel
-    $updateStatus.set({ supported: true, behind: 0, mechanism: 'posix-handoff', branch: 'main' })
+    const source = { supported: true, behind: 0, mechanism: 'posix-handoff', channelSelectable: true } as const
+    // The save resolves only when released, so the in-flight paint is observable.
+    let release!: () => void
+    vi.mocked(setUpdateChannel).mockImplementationOnce(
+      () => new Promise(resolve => (release = () => resolve({ ...source, channel: 'stable' })))
+    )
+    $updateStatus.set({ ...source, branch: 'main' })
     render(<AboutSettings />)
     expect(screen.getByRole('button', { name: about.main }).getAttribute('aria-pressed')).toBe('true')
 
@@ -139,9 +145,12 @@ describe('AboutSettings', (): void => {
     await waitFor((): void => {
       expect(setUpdateChannel).toHaveBeenCalledWith('stable')
     })
+    // The confirmed choice shows while the save + check is still running.
+    expect(screen.getByRole('button', { name: about.stable }).getAttribute('aria-pressed')).toBe('true')
+    release()
 
     // Back to every commit is never older code, so it needs no confirmation.
-    $updateStatus.set({ supported: true, behind: 0, mechanism: 'posix-handoff', channel: 'stable' })
+    $updateStatus.set({ ...source, channel: 'stable' })
     await waitFor((): void => {
       expect(screen.getByRole('button', { name: about.stable }).getAttribute('aria-pressed')).toBe('true')
     })
@@ -151,11 +160,13 @@ describe('AboutSettings', (): void => {
     })
     expect($confirmRequest.get()).toBeNull()
 
-    // Packaged installs own their channel.
-    $updateStatus.set({ supported: true, behind: 0, mechanism: 'electron-updater', channel: 'stable' })
+    // An older runtime cannot save a channel, and a packaged install owns its own.
+    $updateStatus.set({ ...source, channel: 'stable', channelSelectable: undefined })
     await waitFor((): void => {
       expect(screen.queryByText(about.title)).toBeNull()
     })
+    $updateStatus.set({ ...source, mechanism: 'electron-updater', channel: 'stable' })
+    expect(screen.queryByText(about.title)).toBeNull()
   })
 
   it('a commit client refuses updates without hiding an unrelated backend update', (): void => {

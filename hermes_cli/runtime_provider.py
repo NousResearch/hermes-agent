@@ -320,13 +320,76 @@ def _cfg_provider(model_cfg: dict[str, Any]) -> str:
     return str(model_cfg.get("provider") or "").strip().lower()
 
 
+# Providers whose ``model.base_url`` legitimately names a third-party or per-deployment host,
+# so a host-plausibility gate must not touch them. Everyone else in the registry is a vendor
+# whose endpoint is authoritative: a leftover ``model.base_url`` from a previous ``custom``
+# setup redirects that vendor's own credential to whatever host the stale URL names (#133179).
+_BASE_URL_UNCHECKED_PROVIDERS = frozenset({
+    "openrouter",  # a non-openrouter.ai config base_url is a deliberate mirror/proxy (#10622)
+    "xai",  # model.base_url is the relay override while the pool row keeps the host (#121347)
+    "openai-codex",  # proxy override while the pool row keeps the canonical URL
+    "actual",  # loopback daemon, host varies per install
+    "anthropic",  # its own protocol-plausibility gate (_anthropic_base_url_override_ok) applies
+    "lmstudio",  # local/LAN no-auth server, host varies per install
+    "zai",  # global/China endpoints are probed per account (auth_zai_kimi.ZAI_ENDPOINTS)
+})
+
+
+def _registrable_domain(hostname: str) -> str:
+    """Last two dot-labels of ``hostname`` ("" when it has none)."""
+    labels = [lbl for lbl in (hostname or "").lower().split(".") if lbl]
+    return ".".join(labels[-2:]) if len(labels) >= 2 else ""
+
+
+def _vendor_base_url_plausible(provider: str, base_url: str) -> bool:
+    """Whether ``base_url`` sits on a host ``provider`` (or an id-family sibling such as
+    minimax/minimax-cn or kimi-coding/kimi-coding-cn) plausibly owns: equal to, or under the
+    registrable domain of, one of their registry ``inference_base_url`` hosts. A leftover custom
+    ``base_url`` (#133179) points somewhere else entirely and must not override the vendor's own
+    endpoint, or the vendor's credential is sent to the host the stale URL names. The suffix
+    match is dot-boundary anchored, so api.deepseek.com.attacker.test does not read as deepseek.
+    Unknown providers, and families without any registry endpoint, have nothing authoritative
+    to defend and stay unchecked."""
+    if PROVIDER_REGISTRY.get(provider) is None:
+        return True
+    head = provider.split("-", 1)[0]
+    hosts: set = set()
+    for pid, pc in PROVIDER_REGISTRY.items():
+        if pid.split("-", 1)[0] != head:
+            continue
+        host = base_url_hostname(pc.inference_base_url or "")
+        if domain := _registrable_domain(host):
+            hosts.update({host, domain})
+    if not hosts:
+        return True
+    hostname = base_url_hostname(base_url or "")
+    return bool(hostname) and any(
+        hostname == h or hostname.endswith("." + h) for h in hosts
+    )
+
+
 def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> str:
     """``model.base_url`` (stripped, no trailing slash) only when ``model.provider`` is
-    ``provider`` — a stale base_url must not leak into another provider."""
+    ``provider`` — a stale base_url must not leak into another provider. For registered vendors
+    the URL must additionally sit on the provider's own host family; otherwise it names some
+    other endpoint (a leftover from a previous ``custom`` setup) and the vendor's endpoint stays
+    authoritative (#133179)."""
     configured_provider = _cfg_provider(model_cfg)
     if provider == "actual":
         configured_provider = _models.normalize_provider(configured_provider)
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
+    if not _same_registered_provider(provider, configured_provider):
+        return ""
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    if base_url and provider not in _BASE_URL_UNCHECKED_PROVIDERS and not _vendor_base_url_plausible(provider, base_url):
+        env_var = PROVIDER_REGISTRY[provider].base_url_env_var if PROVIDER_REGISTRY.get(provider) else ""
+        logger.warning(
+            "Ignoring model.base_url=%s for provider '%s': that host is not one of the provider's own, "
+            "so the provider's official endpoint stays authoritative (a leftover URL from a previous "
+            "custom setup would send the %s credential to it; #133179).%s",
+            base_url, provider, provider,
+            f" Point {env_var} at your gateway instead." if env_var else "")
+        return ""
+    return base_url
 
 
 def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:

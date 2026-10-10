@@ -3982,7 +3982,7 @@ export interface ToolShowRow {
   name: string
   description: string
 }
-/** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative and its agent is rebuilt. */
+/** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative. Its agent is rebuilt when the effective selection changes. */
 export interface ToolsConfigureParams {
   action: ToolsAction
   names: string[]
@@ -5466,7 +5466,7 @@ export interface RpcMethods {
   'system.battery': { params: SystemBatteryParams; result: SystemBatteryResult }
   /** Record the client's column width for server-side rendering. */
   'terminal.resize': { params: TerminalResizeParams; result: TerminalResizeResult }
-  /** Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now. */
+  /** Persist a toolset / MCP enable-disable change and rebuild the session agent when the effective selection changes. */
   'tools.configure': { params: ToolsConfigureParams; result: ToolsConfigureResult }
   /** Every toolset with its resolved tool names, flagged against the session's (or config's) enabled set. */
   'tools.list': { params: _SessionScoped; result: ToolsetsListResult }

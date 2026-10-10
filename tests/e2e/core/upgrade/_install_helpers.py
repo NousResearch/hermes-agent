@@ -165,6 +165,17 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
                   timeout=timeout, input="")
 
 
+def pin_main_channel(sb: Sandbox) -> None:
+    """Follow every commit on main, as `hermes update --set-channel main` records it.
+
+    An official-origin source checkout defaults to the stable channel (the latest published GitHub
+    release). These sandboxes publish commits on main and no releases, and their subject is moving
+    between commits; channel resolution has its own suites (test_release_channel_records,
+    tests/hermes_cli/test_source_release_channels.py)."""
+    cp = sb.cli("update", "--set-channel", "main", timeout=120)
+    assert cp.returncode == 0 and "Update channel for" in cp.stdout, "could not pin the main channel:\n" + describe(cp)
+
+
 def provider_config(base_url: str, version: int | None, extra: str = "") -> str:
     """A hand-edited user config: comments, a key HEAD does not know, and the fake provider."""
     ver = f"_config_version: {version}\n" if version is not None else ""

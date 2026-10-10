@@ -154,6 +154,52 @@ def test_single_query_text_fallback_binds_route_and_preserves_explicit_auxiliary
     assert aux._RUNTIME_MAIN_CONTEXT.get() is None
 
 
+def test_single_query_text_fallback_restores_outer_runtime_on_error(monkeypatch):
+    """The quiet image path restores a pre-existing runtime after preprocessing fails."""
+    from types import SimpleNamespace
+
+    import agent.auxiliary_client as aux
+    from hermes_cli.cli_single_query import _route_single_query_images
+
+    monkeypatch.setattr(
+        "agent.image_routing.decide_image_input_mode",
+        lambda *_args, **_kwargs: "text",
+    )
+    seen = []
+
+    def fail(_text, _images, *, announce):
+        seen.append(aux._RUNTIME_MAIN_CONTEXT.get())
+        assert announce is False
+        raise RuntimeError("synthetic image preprocessing failure")
+
+    cli_obj = SimpleNamespace(
+        provider="provider-a",
+        requested_provider="provider-a",
+        model="model-a",
+        _preprocess_images_with_vision=fail,
+    )
+    route = {
+        "model": "model-b",
+        "runtime": {"provider": "provider-b", "requested_provider": "provider-b"},
+    }
+    outer = {"provider": "provider-outer", "model": "model-outer"}
+
+    with aux.scoped_runtime_main(outer):
+        with pytest.raises(RuntimeError, match="synthetic image preprocessing failure"):
+            _route_single_query_images(
+                cli_obj,
+                "inspect",
+                "inspect",
+                [Path("image.png")],
+                [],
+                turn_route=route,
+            )
+        assert aux._RUNTIME_MAIN_CONTEXT.get() == outer
+
+    assert seen == [{"provider": "provider-b", "requested_provider": "provider-b", "model": "model-b"}]
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None
+
+
 def test_single_query_no_image_bypasses_text_preprocessing(monkeypatch):
     from types import SimpleNamespace
     from hermes_cli.cli_single_query import _route_single_query_images

@@ -36,7 +36,9 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-const renderPlain = (node: React.ReactNode) => {
+// The escape stream exactly as it reaches the terminal, OSC sequences and
+// all — the only view that can prove an OSC 8 hyperlink was emitted.
+const renderAnsi = (node: React.ReactNode) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -60,10 +62,13 @@ const renderPlain = (node: React.ReactNode) => {
   instance.cleanup()
 
   return output
+}
+
+const renderPlain = (node: React.ReactNode) =>
+  renderAnsi(node)
     .replace(OSC_RE, '')
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
-}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -270,36 +275,6 @@ describe('Md wrapping', () => {
 })
 
 describe('Md link labels', () => {
-  const BEL = String.fromCharCode(7)
-  const ESC = String.fromCharCode(27)
-  const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-
-  const renderAnsi = (node: React.ReactNode) => {
-    const stdout = new PassThrough()
-    const stdin = new PassThrough()
-    const stderr = new PassThrough()
-    let output = ''
-
-    Object.assign(stdout, { columns: 120, isTTY: false, rows: 24 })
-    Object.assign(stdin, { isTTY: false })
-    Object.assign(stderr, { isTTY: false })
-    stdout.on('data', chunk => {
-      output += chunk.toString()
-    })
-
-    const instance = renderSync(node, {
-      patchConsole: false,
-      stderr: stderr as NodeJS.WriteStream,
-      stdin: stdin as NodeJS.ReadStream,
-      stdout: stdout as NodeJS.WriteStream
-    })
-
-    instance.unmount()
-    instance.cleanup()
-
-    return output
-  }
-
   const md = (text: string, width = 200) =>
     React.createElement(Box, { width }, React.createElement(Md, { cols: width, t: DEFAULT_THEME, text }))
 

@@ -46,8 +46,8 @@ class TestWebhookProfileResolution:
             multiplex=True, served=("default", "worker"),
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [(name, f"/profiles/{name}") for name in served],
+            "hermes_cli.profiles.profile_is_served",
+            lambda name, multiplex: name in served,
         )
 
         assert adapter._resolve_request_profile(Req("worker")) == "worker"

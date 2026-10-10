@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -57,6 +58,10 @@ def progress(tmp_path):
             def corrupt(self) -> None:
                 status.write_text("}not json{")
 
+            def page(self) -> str:
+                with urlopen(f"http://127.0.0.1:{port}/", timeout=5) as r:
+                    return r.read().decode("utf-8")
+
             def poll(self) -> dict:
                 with urlopen(f"http://127.0.0.1:{port}/progress", timeout=5) as r:
                     return json.loads(r.read())
@@ -65,6 +70,51 @@ def progress(tmp_path):
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+class _TranslationOptOutParser(HTMLParser):
+    """Count matching opt-out metadata globally and while inside ``head``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_head = False
+        self.match_count = 0
+        self.head_match_count = 0
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        if tag == "head":
+            self._in_head = True
+        if tag != "meta":
+            return
+
+        attributes = dict(attrs)
+        if (
+            attributes.get("name") == "google"
+            and attributes.get("content") == "notranslate"
+        ):
+            self.match_count += 1
+            if self._in_head:
+                self.head_match_count += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "head":
+            self._in_head = False
+
+
+def test_update_page_opts_out_of_automatic_translation(progress):
+    """The opt-out is document metadata, so it must remain in ``head``.
+
+    Translation heuristics read it from ``head``; a substring-only assertion
+    would stay green if a refactor moved the exact tag into ``body`` and broke
+    the document-level opt-out.
+    """
+    parser = _TranslationOptOutParser()
+    parser.feed(progress.page())
+    parser.close()
+
+    assert (parser.match_count, parser.head_match_count) == (1, 1)
 
 
 def test_elapsed_advances_between_publishes(progress):

@@ -56,6 +56,12 @@ try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+try:
+    from .adapter_slash import _rewrite_known_bang_command, _slash_command_text, _slash_thread_id
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_slash import (  # type: ignore
+        _rewrite_known_bang_command, _slash_command_text, _slash_thread_id,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -393,21 +399,6 @@ def _slack_mention_detection_text(event: dict) -> str:
     blocks = event.get("blocks")
     extra = [m for m in _collect_slack_block_mentions(blocks) if m not in flat] if blocks else []
     return (flat.strip() + "\n" + " ".join(extra)).strip() if extra else flat
-
-
-def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
-    if not text.startswith("!"):
-        return text
-    try:
-        from hermes_cli.commands import is_gateway_known_command
-        first_token = text[1:].split(maxsplit=1)[0]
-        cmd_name = first_token.split("@", 1)[0].lower()
-        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-            return "/" + text[1:]
-    except Exception:  # pragma: no cover - defensive
-        pass
-    return text
 
 
 def _slack_permalink_path(channel_id: str | None, message_ts: str | None) -> str:
@@ -1015,6 +1006,10 @@ class SlackAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack rejects slash commands inside threads; "!" is rewritten to "/" for known commands.
     typed_command_prefix = "!"
+    # Class-level default for the optional slash-command namespace prefix (resolved per instance
+    # in __init__). Kept here so the receive paths that read it stay safe on adapters built
+    # without __init__ — object.__new__ partial instances are the standard fixture shape.
+    _command_prefix: str = ""
     # ``reply_in_thread: false`` gives both a flat outbound reply and a whole-channel
     # session bucket, so a flat continuable cron continues on a plain reply.
     supports_inchannel_continuable = True
@@ -1134,6 +1129,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+        # Optional slash-command namespace prefix (e.g. "myorg-") so multiple gateway apps can
+        # share one Slack workspace without their global, non-namespaced slash commands colliding.
+        # Resolved once from platforms.slack.extra.command_prefix; "" (the default) leaves every
+        # name unchanged. Baked into the routing regex, stripped again in _handle_slash_command.
+        from hermes_cli.commands_platforms import slack_command_prefix
+        self._command_prefix = slack_command_prefix(self.config.extra)
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1666,12 +1667,16 @@ class SlackAdapter(BasePlatformAdapter):
         # ALSO be declared in the app manifest (`hermes slack manifest`): Socket Mode won't
         # deliver undeclared commands at all.
         from hermes_cli.commands_platforms import slack_native_slashes
-        _slash_names = [name for name, _d, _h in slack_native_slashes()]
+        # The optional namespace prefix (e.g. "myorg-") is baked into the matcher so /myorg-model
+        # reaches this handler; _handle_slash_command strips it again before dispatch. An empty
+        # prefix matches the bare command names unchanged.
+        _prefix = re.escape(self._command_prefix)
+        _slash_names = [name for name, _d, _h in slack_native_slashes(self._command_prefix)]
         if _slash_names:
             _slash_pattern = re.compile(
-                r"^/(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
+                r"^/" + _prefix + r"(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
         else:  # pragma: no cover - registry always non-empty
-            _slash_pattern = re.compile(r"^/hermes$")
+            _slash_pattern = re.compile(r"^/" + _prefix + r"hermes$")
 
         self._app.command(_slash_pattern)(self._handle_hermes_command)
 
@@ -4554,7 +4559,7 @@ class SlackAdapter(BasePlatformAdapter):
         command_text = (
             mention_stripped
             if mention_stripped.startswith("/")
-            else _rewrite_known_bang_command(mention_stripped))
+            else _rewrite_known_bang_command(mention_stripped, self._command_prefix))
         if command_text.startswith("/"):
             original_text = text = command_probe_text = command_text
             is_command_text = True
@@ -4575,8 +4580,9 @@ class SlackAdapter(BasePlatformAdapter):
         event, dedup_team_id, channel_id = accepted
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
-        # — only for known gateway commands, so "!nice work" passes through.
-        command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
+        # — only for known gateway commands, so "!nice work" passes through. The namespace
+        # prefix rides along: with one configured only ``!myorg-stop`` rewrites, never ``!stop``.
+        command_probe_text = _rewrite_known_bang_command(original_text.lstrip(), self._command_prefix)
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
         is_command_text = command_probe_text.startswith("/")
@@ -6065,8 +6071,8 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = command.get("team_id", "")
         if team_id and channel_id:
             self._remember_channel_team(channel_id, team_id)
-        text = self._slash_command_text(command)
-        thread_id = self._slash_thread_id(command)
+        text = _slash_command_text(command, self._command_prefix)
+        thread_id = _slash_thread_id(command)
         if self._slash_channel_gated(channel_id):
             logger.debug("[Slack] Ignoring slash command in ignored/non-allowed channel: %s", channel_id)
             return
@@ -6095,40 +6101,6 @@ class SlackAdapter(BasePlatformAdapter):
             await self.handle_message(event)
         finally:
             _slash_user_id.reset(_slash_user_id_token)
-
-    @staticmethod
-    def _slash_command_text(command: dict) -> str:
-        """Gateway message text for a slash payload. Native slashes keep Slack's raw argument
-        payload verbatim (internal/trailing spacing). ``/hermes`` (or a missing ``command``) maps
-        ``<subcommand> [args]`` via the registry, else free-form text is a regular question."""
-        slash_name = (command.get("command") or "").lstrip("/").strip()
-        raw_text = str(command.get("text") or "")
-        if slash_name not in {"hermes", ""}:
-            return f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
-        legacy_text = raw_text.strip()
-        from hermes_cli.commands_platforms import slack_subcommand_map
-        subcommand_map = slack_subcommand_map()
-        subcommand_map["compact"] = "/compress"
-        first_word = legacy_text.split()[0] if legacy_text.split() else ""
-        if first_word in subcommand_map:
-            rest = legacy_text[len(first_word) :].strip()
-            mapped = subcommand_map[first_word]
-            return f"{mapped} {rest}".strip() if rest else mapped
-        return legacy_text or "/help"
-
-    @staticmethod
-    def _slash_thread_id(command: dict) -> Optional[str]:
-        """Thread anchor for a slash payload so session-scoped commands (``/model``)
-        hit the same thread session. Shape varies by surface: top-level or nested
-        ``message``/``container``; ``thread_ts`` preferred over ``message_ts``."""
-        nested = (command.get(k) for k in ("message", "container"))
-        candidates = [command] + [n for n in nested if isinstance(n, dict)]
-        for ts_key in ("thread_ts", "message_ts"):
-            for payload in candidates:
-                value = payload.get(ts_key)
-                if value:
-                    return str(value)
-        return None
 
     def _stash_slash_context(
         self, team_id: str, channel_id: str, user_id: str, response_url: str) -> None:

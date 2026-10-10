@@ -1062,6 +1062,40 @@ def _classify_dead_worker(
     return dead
 
 
+_SCOPE_OOM_MARKERS = (
+    "Failed with result 'oom-kill'",
+    "The kernel OOM killer killed some processes in this unit",
+)
+
+
+def _worker_scope_oom_killed(task_id: str, *, window: str = "-3h") -> bool:
+    """True when a transient worker scope of ``task_id`` was stopped by the kernel OOM killer.
+
+    A worker scope runs with the default ``OOMPolicy=stop``, so when the kernel
+    kills a process inside it systemd stops the whole scope and the worker is
+    left with no way to report anything: its signal path exits 0, or the scope is
+    already gone before a sweeper polls the pid. ``--collect`` removes the scope
+    the moment it exits, so ``systemctl show`` reports ``LoadState=not-found``
+    with ``Result=success`` afterwards and cannot tell an OOM death from a clean
+    one. The user manager's journal keeps the record, so read it there, bounded to
+    this one task's scopes and a short window (only a death that is about to be
+    booked asks).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl", "--user",
+                "-u", f"hermes-worker-kanban-{task_id}-run-*.scope",
+                "--since", window, "-o", "cat", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = proc.stdout or ""
+    return any(marker in output for marker in _SCOPE_OOM_MARKERS)
+
+
 def _classify_dead_worker_exit(
     pid: int,
     claimer: Optional[str],
@@ -1082,7 +1116,31 @@ def _classify_dead_worker_exit(
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
+    # An OOM death reaches here unreadable: the signal path exits 0 (clean_exit) or
+    # the scope is already gone ("pid not alive"), so the cause is read from the
+    # journal for whichever booking this death gets. Deferred to a call so a
+    # quota-wall requeue or a terminal-provider crash, which need no cause, pay for
+    # no journal read.
+    def oom_killed() -> bool:
+        return bool(task_id) and _worker_scope_oom_killed(task_id)
+
     if kind == "clean_exit":
+        if oom_killed():
+            # The kernel killed a process inside the worker's own cgroup and
+            # systemd stopped the scope, so this rc=0 is the worker's signal
+            # path, not the worker skipping its paperwork. Booking it as a
+            # protocol violation burns the violation streak for a death the
+            # worker did not cause and hides the cause: a lane that needed more
+            # memory than the scope ceiling.
+            return _DeadWorker(
+                kind, code,
+                f"pid {pid} exited rc=0 because the kernel OOM killer stopped its worker "
+                "scope: the lane needed more memory than the scope limit. This is not a "
+                "protocol violation, no terminal kanban call was possible. Bound the lane's "
+                "memory (test parallelism) or raise the worker ceiling, then retry.",
+                "crashed",
+                {"pid": pid, "claimer": claimer, "exit_code": code, "oom_killed": True},
+            )
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
@@ -1123,6 +1181,17 @@ def _classify_dead_worker_exit(
     else:
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
+    if oom_killed():
+        # The bare kinds above say nothing about the cause, and an OOM death
+        # reaches here as "pid not alive" (the scope is gone before the sweeper
+        # polls it) as often as it reaches the clean_exit branch. Name it, or the
+        # board shows a vanished worker and the operator has no reason to look at
+        # the lane's memory.
+        error_text += (
+            " - the kernel OOM killer stopped this run's worker scope: the lane needed "
+            "more memory than the scope limit"
+        )
+        event_payload["oom_killed"] = True
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code

@@ -221,7 +221,7 @@ class TestFallbackChainAdvancement:
 
         with (
             patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                "agent.chat_completion_helpers.fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
@@ -257,7 +257,7 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with (
             patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                "agent.chat_completion_helpers.fallback_entry_unavailable_without_network",
                 return_value=None,
             ),
             patch(
@@ -545,3 +545,40 @@ class TestMoaPresetFallback:
                             fallback_model={"provider": "moa", "model": "default"})
         _assert_bound_to_moa_preset(agent)
         assert agent._fallback_activated is True
+
+
+def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
+    """Unsafe remote payloads must go directly to a local fallback.
+
+    The firewall has already rejected the current request, so retrying the
+    same payload against another remote provider only creates noisy false
+    provider failures and cannot succeed.
+    """
+    agent = _make_agent(
+        fallback_model=[
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            {
+                "provider": "custom",
+                "model": "hermes-review-fast:latest",
+                "base_url": "http://127.0.0.1:11434/v1",
+            },
+        ]
+    )
+    clients = [_mock_client(base_url="http://127.0.0.1:11434/v1")]
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(clients[0], "hermes-review-fast:latest"),
+    ) as resolve_client:
+        assert (
+            agent._try_activate_fallback(FailoverReason.egress_policy_blocked)
+            is True
+        )
+
+    assert agent.provider == "custom"
+    assert agent.model == "hermes-review-fast:latest"
+    assert agent._fallback_index == 2
+    resolve_client.assert_called_once()

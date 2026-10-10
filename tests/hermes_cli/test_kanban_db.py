@@ -1165,7 +1165,7 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
-        assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        assert (env["HERMES_KANBAN_BRANCH"], env["HERMES_CONTROL_HOME"]) == ("wt/t_dispatch_env", str(default_home))
         for key in sc._VAR_MAP:
             if key == "HERMES_SESSION_SOURCE":
                 # Re-set by the dispatcher, so what matters is that it carries

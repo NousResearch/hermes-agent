@@ -2201,6 +2201,7 @@ class GatewayTurnMixin:
                 inbound_message_id=str(event.message_id) if event.message_id else None,
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 title_user_message=prepared.title_user_message,
+                context_source_slices=tuple(getattr(event, "_gateway_source_slices", ())),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
@@ -3912,17 +3913,10 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
-        # Re-baseline the cached agent's message_count before recursing, else the coherence guard
-        # rebuilds on OUR OWN flushed rows (the outer handler re-baselines only after the chain).
-        # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued
-        # (/queue) follow-up turn. The first turn has completed and flushed its own user + assistant rows to
-        # the SessionDB, so the cross-process coherence guard (#45966) — which this recursive _run_agent
-        # call re-enters — would otherwise see the grown on-disk count against the stale build-time snapshot
-        # and rebuild the agent on THIS process's OWN writes, destroying the prompt-cache prefix #46237 was
-        # merged to preserve. The existing re-baseline in _handle_message_with_agent only runs after the
-        # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
-        # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
-        # guard will consult. Fail-safe in helper.
+        # Re-baseline before recursion: our flushed rows would otherwise trigger the coherence
+        # guard (#45966) to rebuild the agent and break its cached prefix (#46237). The outer
+        # handler's re-baseline runs too late, after the whole chain. Use the follow-up's own
+        # (session_key, session_id), matching the recursive coherence check.
         # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
         # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
         # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
@@ -3942,6 +3936,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
+                context_source_slices=tuple(getattr(pending_event, "_gateway_source_slices", ())),
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
@@ -4274,6 +4269,7 @@ class GatewayTurnMixin:
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        context_source_slices: tuple = (),
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4306,7 +4302,7 @@ class GatewayTurnMixin:
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
             channel_prompt=channel_prompt, moa_config=moa_config,
-            title_user_message=title_user_message,
+            title_user_message=title_user_message, context_source_slices=context_source_slices,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,

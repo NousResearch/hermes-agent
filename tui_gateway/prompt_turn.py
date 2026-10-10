@@ -704,6 +704,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     prompt = text
     if isinstance(prompt, str) and "@" in prompt:
         from agent.context_references import preprocess_context_references
+        from agent.source_provenance import provenance_kwargs_for_agent, clear_agent_source_provenance
         from agent.model_metadata import get_model_context_length
         ctx_len = get_model_context_length(
             getattr(agent, "model", "") or _resolve_model(),
@@ -711,9 +712,19 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
             config_context_length=getattr(agent, "_config_context_length", None))
-        ctx = preprocess_context_references(
-            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
+        try:
+            ctx = preprocess_context_references(
+                prompt,
+                cwd=cwd,
+                allowed_root=cwd,
+                context_length=ctx_len,
+                **provenance_kwargs_for_agent(agent, establish_turn=True),
+            )
+        except BaseException:
+            clear_agent_source_provenance(agent)
+            raise
         if ctx.blocked:
+            clear_agent_source_provenance(agent)
             _emit(
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
             return None
@@ -1043,6 +1054,8 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
     """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset scopes (not home)."""
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
+    from agent.source_provenance import clear_pending_source_provenance
+    clear_pending_source_provenance(st.agent)
     history, run_kwargs = st.history, st.run_kwargs
     history.clear()
     if isinstance(run_kwargs, dict):

@@ -145,7 +145,7 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         a = kb.create_task(conn, title="alpha", assignee="factory", priority=5)
@@ -184,7 +184,7 @@ def test_complete_happy_path(worker_env):
     assert d["task_id"] == worker_env
     # Verify via kernel
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
@@ -424,7 +424,7 @@ def test_block_happy_path(worker_env):
     d = json.loads(out)
     assert d["ok"] is True
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "blocked"
@@ -708,7 +708,7 @@ def test_comment_rejects_caller_supplied_author(worker_env):
     })
     assert "author" in json.loads(out)["error"]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         assert kb.list_comments(conn, worker_env) == []
@@ -732,7 +732,7 @@ def test_create_happy_path(worker_env):
     assert d["status"] == "todo"  # parent isn't done yet
     assert d["gated"] is True and d["gated_by"] == worker_env
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
@@ -799,7 +799,7 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="blocked", assignee="worker")
@@ -891,7 +891,7 @@ def test_worker_lifecycle_through_tools(worker_env):
 
     # Verify final state
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         parent = kb.get_task(conn, worker_env)
@@ -940,7 +940,7 @@ def test_worker_lifecycle_through_tools(worker_env):
 def test_worker_complete_rejects_foreign_task_id(worker_env):
     """A worker cannot complete a task that isn't its own (#19534)."""
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="sibling")
@@ -973,7 +973,7 @@ def test_worker_can_comment_on_foreign_task(worker_env):
     to ``_handle_comment`` would fail CI immediately.
     """
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="sibling")
@@ -1009,7 +1009,7 @@ def test_worker_unblock_rejects_foreign_task_id(worker_env):
     pinning is "worker cannot mutate foreign task via kanban_unblock".
     """
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="blocked sibling", assignee="peer")
@@ -1483,3 +1483,152 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_remote_worker_payload_replaces_private_paths_with_local_tokens():
+    from tools.kanban_tools import (
+        _project_remote_worker_state,
+        _sanitize_remote_worker_payload,
+    )
+
+    workspace = "/Users/example/.hermes/kanban/boards/demo/workspaces/t_12345678"
+    payload = {
+        "task": {
+            "workspace_path": workspace,
+            "body": (
+                "Run env HERMES_HOME=/Users/example/.hermes hermes check "
+                "then inspect /home/user/private.txt; command --worktree "
+                f"{workspace}. Then continue."
+            ),
+        },
+        "events": [{"payload": {"workspace": workspace}}],
+    }
+    projected = _project_remote_worker_state(payload, current_run_id=None)
+    sanitized = _sanitize_remote_worker_payload(
+        projected,
+        workspace_path=workspace,
+        control_home="/Users/example/.hermes",
+    )
+
+    rendered = json.dumps(sanitized)
+    assert "/Users/" not in rendered
+    assert "/home/" not in rendered
+    assert sanitized["task"]["workspace_path"] is None
+    assert sanitized["task"]["workspace_access"] == "dispatcher_current_directory"
+    assert "$HERMES_CONTROL_HOME" in sanitized["task"]["body"]
+    assert "--worktree $HERMES_KANBAN_WORKSPACE. Then" in sanitized["task"]["body"]
+    assert "--worktree .." not in sanitized["task"]["body"]
+    assert "<private-path>" in sanitized["task"]["body"]
+
+
+
+def test_remote_worker_projection_excludes_obsolete_attempt_history():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Repair current PR state.",
+            "status": "running",
+        },
+        "parents": [],
+        "children": [],
+        "comments": [{"author": "worker", "body": "protocol violation"}],
+        "events": [
+            {"kind": "blocked", "run_id": "run-old", "payload": "old failure"},
+            {"kind": "started", "run_id": "run-current", "payload": "current"},
+        ],
+        "runs": [
+            {"id": "run-old", "status": "blocked", "error": "manual_reclaim"},
+            {
+                "id": "run-review",
+                "status": "review_requested",
+                "outcome": "review_requested",
+                "summary": "Verify canonical head and the bounded CI handoff; do not reimplement.",
+            },
+            {"id": "run-current", "status": "running", "error": None},
+        ],
+        "worker_context": "Prior attempts: protocol violation and manual reclaim",
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    rendered = json.dumps(projected)
+    assert "run-old" not in rendered
+    assert "old failure" not in rendered
+    assert "protocol violation" not in rendered
+    assert projected["comments"] == []
+    assert projected["runs"] == []
+    assert projected["events"] == []
+    assert projected["task"].get("current_run_id") is None
+    assert projected["review_assignment"] is True
+    assert "This is a review run" in projected["worker_context"]
+    assert "bounded CI handoff" not in rendered
+    assert "Verify canonical current state" in projected["history_policy"]
+
+
+
+def test_remote_worker_projection_does_not_reuse_superseded_review_handoff():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Original implementation assignment.",
+            "status": "running",
+        },
+        "runs": [
+            {
+                "status": "review_requested",
+                "summary": "obsolete review handoff",
+            },
+            {
+                "outcome": "blocked",
+                "summary": "reviewer failed after the handoff",
+            },
+            {"status": "running"},
+        ],
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    assert projected["review_assignment"] is False
+    assert "obsolete review handoff" not in json.dumps(projected)
+
+
+
+def test_create_normalizes_worker_supplied_scratch_path(worker_env):
+    """Model-generated scratch paths must stay under Hermes-managed storage."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "review child",
+        "assignee": "reviewer",
+        "workspace_kind": "scratch",
+        "workspace_path": "/home/user/worktrees/guessed-parent",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"
+    assert result["workspace_path"] is None
+
+    from hermes_cli import kanban_db as kb
+
+    from hermes_cli import kanban_db_connect as kbc, kanban_db_workspace as kbw
+    conn = kbc.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child.workspace_path is None
+        resolved = kbw.resolve_workspace(child)
+        assert kb._is_managed_scratch_path(resolved)
+    finally:
+        conn.close()
+
+
+
+def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "attempt-management evidence, not task blockers" in KANBAN_GUIDANCE
+    assert "Never block because an earlier worker crashed" in KANBAN_GUIDANCE
+    assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE

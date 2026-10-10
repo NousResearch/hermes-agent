@@ -4,6 +4,9 @@ A foreground command with timeout > FOREGROUND_MAX_TIMEOUT is promoted to a trac
 process with notify_on_complete (never refused: in one 1,393-agent run 454 refusals were every one
 re-sent lower/split/background, 251 of them test suites).
 """
+import importlib
+import sys
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 
@@ -153,3 +156,12 @@ class TestPromotionKeepsTheDetachmentGuard:
             result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
         assert "'&' backgrounding" in result["error"]
         assert "nohup" in result2["error"]
+
+
+@pytest.fixture(autouse=True)
+def _use_default_foreground_timeout(monkeypatch):
+    """Keep the module-level default tests independent of worker env overrides."""
+    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
+    module = sys.modules.get("tools.terminal_tool")
+    if module is not None:
+        importlib.reload(module)

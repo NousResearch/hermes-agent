@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import auxiliary_client as aux
+from agent import auxiliary_client as aux, auxiliary_egress_recovery
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def nous_is_the_only_working_provider():
     """Main provider unusable; Nous would win the discovery chain; no configured fallback policy."""
     aux._aux_unhealthy_until.clear()
     with patch.object(aux, "_try_main_provider_route", return_value=None), \
-         patch.object(aux, "_try_configured_fallback_chain", return_value=(None, None, "")), \
+         patch.object(auxiliary_egress_recovery, "try_configured_fallback_chain", return_value=(None, None, "")), \
          patch.object(aux, "_try_main_fallback_chain", return_value=(None, None, "")), \
          patch.object(aux, "_try_openrouter", return_value=(None, None)), \
          patch.object(aux, "_try_nous", return_value=(MagicMock(name="nous"), "nous-model")):
@@ -45,7 +45,7 @@ def test_quarantined_fallback_hands_over_to_the_next_configured_entry():
     healthy = MagicMock(name="second-fallback")
     route = aux._LadderRoute(None, "compression", "", False, "", "xai-oauth", None, None, None, None, None,
                              {"provider": "xai-oauth"}, None, None)
-    with patch.object(aux, "_try_configured_fallback_chain", return_value=(healthy, "m2", "fallback_chain[1](nous)")), \
+    with patch.object(auxiliary_egress_recovery, "try_configured_fallback_chain", return_value=(healthy, "m2", "fallback_chain[1](nous)")), \
          patch.object(aux, "_try_payment_fallback") as discovery:
         client, _model, label = aux._next_fallback_after_quarantine(
             "compression", "auto", True, route, None, None)

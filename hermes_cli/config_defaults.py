@@ -72,7 +72,7 @@ DEFAULT_CONFIG = {
     "attachments": {
         "storage": "hermes-home",
     },
-    "agent": {
+    "agent": {"guarded_prompt_mode": {"enabled": False, "routes": []},
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

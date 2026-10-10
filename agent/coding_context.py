@@ -11,6 +11,9 @@ workspace snapshot is probed once per session and replayed through
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import logging
 import os
@@ -185,6 +188,7 @@ def _agent_config_value(config: Optional[dict[str, Any]], key: str, default: Any
             from hermes_cli.config import load_config, load_config_readonly
             config = load_config_readonly() if readonly else load_config()
         except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
             config = {}
     return ((config or {}).get("agent", {}) or {}).get(key, default)
 
@@ -202,6 +206,7 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
         from agent.runtime_cwd import resolve_agent_cwd
         return resolve_agent_cwd()
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         return Path(os.getcwd())
 
 
@@ -225,6 +230,7 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     try:
         temp_root = Path(tempfile.gettempdir()).resolve()
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         temp_root = None
     skip = (_home(), temp_root)
     for parent in (current, *current.parents)[:7]:
@@ -288,6 +294,7 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
             if isinstance(cfg, dict) and mcp_server_enabled(cfg)
         ]
     except Exception:
+        logger.debug("Optional metadata or provenance operation failed", exc_info=True)
         return []
 
 
@@ -567,3 +574,48 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if f.context_files:
         lines.append(f"- Context files: {', '.join(f.context_files)}")
     return "\n".join(lines)
+
+
+def guarded_prompt_enabled(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Whether this session may use the explicitly opt-in local prompt profile.
+
+    The smaller profile is deliberately fail-closed. It is available only in
+    a focused coding workspace and only when the active provider/model pair
+    is an exact entry in ``agent.guarded_prompt_mode.routes``.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            logger.debug("Optional metadata or provenance operation failed", exc_info=True)
+            return False
+    agent_cfg = (config or {}).get("agent", {}) or {}
+    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
+        return False
+    raw = agent_cfg.get("guarded_prompt_mode")
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return False
+    routes = raw.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        return False
+    provider_name = str(provider or "").strip().lower()
+    model_name = str(model or "").strip().lower()
+    allowed_routes = {
+        (str(route.get("provider") or "").strip().lower(), str(route.get("model") or "").strip().lower())
+        for route in routes
+        if isinstance(route, dict)
+    }
+    if not provider_name or not model_name or (provider_name, model_name) not in allowed_routes:
+        return False
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).is_coding

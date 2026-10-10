@@ -24,7 +24,7 @@ def test_transport_failure_without_attached_request_reports_unknown_size():
     assert exception_chain == "RemoteProtocolError"
 
 
-def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
+def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog, tmp_path):
     request_content = b'{"input":"payload"}'
     request = httpx.Request(
         "POST",
@@ -42,15 +42,15 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
         def create(self, **_kwargs):
             raise connection_error
 
-    client = SimpleNamespace(responses=FailingResponses())
+    client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FailingResponses())
     agent = SimpleNamespace(
         _interrupt_requested=False,
-        _current_api_request_id="request-id",
+        _current_api_request_id="request-id", _current_turn_id="turn-id", _llm_egress_state_dir=tmp_path,
         _fallback_index=0,
         is_subagent=False,
         model="gpt-5.6-sol",
         provider="openai-codex",
-        session_id="",
+        session_id="session-id",
         _client_log_context=lambda: "",
         _buffer_diagnostic_status=lambda message: None,
     )
@@ -87,7 +87,7 @@ def _zero_event_then_completed_client(seen_inputs: list):
             raise httpx.ConnectError("no first byte")
         return _FakeCreateStream(events)
 
-    return SimpleNamespace(responses=SimpleNamespace(create=_create))
+    return SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=SimpleNamespace(create=_create))
 
 
 def _oversized_codex_kwargs(size: int) -> dict:

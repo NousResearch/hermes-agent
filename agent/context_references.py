@@ -123,6 +123,16 @@ class ContextReference:
     line_end: int | None = None
 
 
+@dataclass(frozen=True)
+class ContextSourceSlice:
+    """Read bytes awaiting the consuming gateway turn's identity; never a grant."""
+
+    path: Path
+    line_start: int
+    line_end: int
+    content: bytes
+
+
 @dataclass
 class ContextReferenceResult:
     message: str
@@ -132,6 +142,7 @@ class ContextReferenceResult:
     injected_tokens: int = 0
     expanded: bool = False
     blocked: bool = False
+    source_slices: list[ContextSourceSlice] = field(default_factory=list)
 
 
 UrlFetcher = Callable[[str], str | Awaitable[str]] | None
@@ -179,10 +190,14 @@ def parse_context_references(message: str) -> list[ContextReference]:
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None, session_id: str | None = None, turn_id: str | None = None,
+    request_id: str | None = None, policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root,
+        source_provenance_registry=source_provenance_registry, session_id=session_id,
+        turn_id=turn_id, request_id=request_id, policy_digest=policy_digest,
     )
     try:
         asyncio.get_running_loop()
@@ -199,6 +214,8 @@ def preprocess_context_references(
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None, session_id: str | None = None, turn_id: str | None = None,
+    request_id: str | None = None, policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -211,9 +228,12 @@ async def preprocess_context_references_async(
     # are assembled in ref order; the token-budget check runs once afterwards.
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))
+    provenance_context = _build_source_provenance_context(source_provenance_registry,
+        session_id=session_id, turn_id=turn_id, request_id=request_id, policy_digest=policy_digest)
+    source_slices: list[ContextSourceSlice] = []
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          max_inline_tokens=hard_limit, provenance_context=provenance_context, source_slices=source_slices)
         for ref in refs[:_MAX_EXPANDED_REFERENCES]
     )
     expanded = await asyncio.gather(*tasks)
@@ -243,6 +263,7 @@ async def preprocess_context_references_async(
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
         final = f"{final}\n\n--- Attached Context ---\n\n" + "\n\n".join(blocks)
+    result.source_slices = source_slices
     result.message = final.strip()
     result.expanded = bool(blocks or warnings)
     return result
@@ -258,11 +279,12 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 async def _expand_reference(
     ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
-    max_inline_tokens: int | None = None,
+    max_inline_tokens: int | None = None, provenance_context=None, source_slices=None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
+            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens,
+                                          provenance_context=provenance_context, source_slices=source_slices)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -285,7 +307,7 @@ async def _expand_reference(
 
 
 def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
-                           max_inline_tokens: int | None = None) -> Expansion:
+                           max_inline_tokens: int | None = None, provenance_context=None, source_slices=None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
@@ -303,6 +325,21 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # counting/formatting: the registry lock blocks every tracked connect/close.
         with offline_file_access(path, what="preview context reference"):
             early, text = _read_file_reference(ref, path, max_inline_tokens)
+            if (ref.line_start is not None and early is None
+                    and (max_inline_tokens is None or estimate_tokens_rough(text) <= max_inline_tokens)):
+                source_path = Path(os.path.expanduser(ref.target))
+                if not source_path.is_absolute():
+                    source_path = cwd / source_path
+                if provenance_context is not None:
+                    provenance_context.registry.issue_file_slice(
+                        path=source_path, line_start=ref.line_start, line_end=ref.line_end or ref.line_start,
+                        content=text.encode("utf-8"), session_id=provenance_context.session_id,
+                        turn_id=provenance_context.turn_id, request_id=provenance_context.request_id,
+                        policy_digest=provenance_context.policy_digest)
+                elif source_slices is not None:
+                    source_slices.append(ContextSourceSlice(
+                        source_path, ref.line_start, ref.line_end or ref.line_start, text.encode("utf-8"),
+                    ))
     except LiveConnectionError:
         return None, _on_disk_reference_block(
             ref, path, descriptor="live SQLite database file",
@@ -349,7 +386,8 @@ def _read_file_reference(
             return ("".join(pieces) if collect else "") if seen else None
 
         parts, total_chars = [], 0
-        with path.open(encoding="utf-8") as fh:
+        # Match the registry's LF-delimited raw slices without newline translation.
+        with path.open(encoding="utf-8", newline="\n") as fh:
             for _ in range(max(ref.line_start - 1, 0)):
                 if _next_line(fh, collect=False) is None:
                     break
@@ -697,3 +735,23 @@ def _file_metadata(path: Path) -> str:
             return f"{lines + 1} lines"
     except (LiveConnectionError, OSError):
         return f"{size} bytes"
+
+
+def _build_source_provenance_context(
+    registry,
+    *,
+    session_id: str | None,
+    turn_id: str | None,
+    request_id: str | None,
+    policy_digest: str | None,
+):
+    """Return a trusted grant context only when the whole identity is present."""
+    if registry is None or not all(
+        isinstance(value, str) and value
+        for value in (session_id, turn_id, request_id, policy_digest)
+    ):
+        return None
+    from agent.source_provenance import SourceProvenanceContext, SourceProvenanceRegistry
+    if not isinstance(registry, SourceProvenanceRegistry):
+        return None
+    return SourceProvenanceContext(registry, session_id, turn_id, request_id, policy_digest)

@@ -1,3 +1,4 @@
+from agent import auxiliary_egress_recovery
 """Auxiliary ``provider: auto`` fallback walk is multi-hop (#106367).
 
 When a ``fallback_providers`` candidate itself fails with a quota/rate-limit/payment/capacity
@@ -71,7 +72,7 @@ def _walk_patches(primary, main_chain_selections):
         patch("agent.auxiliary_client._resolve_task_provider_model",
               return_value=("auto", None, None, None, None)),
         patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "modelA")),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain", return_value=(None, None, "")),
         patch("agent.auxiliary_client._try_main_fallback_chain",
               side_effect=list(main_chain_selections) + [(None, None, "")]),
         patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),

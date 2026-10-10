@@ -6,6 +6,8 @@ Companions: ``file_tools_paths`` (task-aware resolution), ``file_tools_write_gua
 staleness state).
 """
 
+from agent import source_provenance_tools
+
 import base64
 import errno
 import json
@@ -630,6 +632,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "block or produce infinite output.")
 
         _resolved = _resolve_path_for_task(path, task_id)
+        source_path = source_provenance_tools.original_source_path(path, task_id)
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
@@ -710,6 +713,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+
+        source_provenance_tools.issue_unredacted_read_provenance(
+            source_path=source_path, resolved=_resolved, offset=offset, limit=limit,
+            returned_content=result.content or "", result_dict=result_dict,
+            file_ops=file_ops, redacted=redacted)
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)

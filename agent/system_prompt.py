@@ -298,7 +298,7 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     return " ".join(g for g in tool_guidance if g) or None
 
 
-def _skills_prompt(agent: Any) -> str:
+def _skills_prompt(agent: Any, guarded: bool = False) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
@@ -311,7 +311,7 @@ def _skills_prompt(agent: Any) -> str:
     except Exception:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, compact_all_categories=guarded, skills_dir_override=_agent_skills_dir(agent))
 
 
 def _auto_load_parts(agent: Any) -> list[str]:
@@ -550,21 +550,50 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
-def _guidance_parts(agent: Any) -> list[str]:
+GUARDED_EXECUTION_CONTRACT = (
+    "# Guarded coding execution contract\n"
+    "- Work only in the current session worktree. Inspect git status before edits "
+    "and preserve unrelated user changes.\n"
+    "- Ground claims in tools: read/search before changing code; use tools for "
+    "files, git, system state, calculations, and current facts.\n"
+    "- Make the requested change through tools, then verify it with the relevant "
+    "command and report its real result. Do not claim completion from a plan or guess.\n"
+    "- Batch independent read-only calls. Serialize dependent edits. Respect tool "
+    "permissions and confirmations for side effects.\n"
+    "- All listed skills remain available. Load a relevant skill with skill_view; "
+    "use tool discovery when a needed capability is not visible."
+)
+
+
+
+def _guarded_prompt_modes(agent: Any) -> tuple[bool, bool]:
+    """Resolve compact guidance and protected-worker context from the session's owners."""
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+    from agent.coding_context import guarded_prompt_enabled
+    remote_worker = bool(owned_kanban_task() and provider_uses_egress_firewall(agent.provider))
+    compact = remote_worker or bool(agent.valid_tool_names and guarded_prompt_enabled(
+        platform=agent.platform, cwd=resolve_context_cwd(), provider=agent.provider, model=agent.model))
+    return compact, remote_worker
+
+
+def _guidance_parts(agent: Any, guarded: bool = False) -> list[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: list[str] = []
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (
                 ("_task_completion_guidance", TASK_COMPLETION_GUIDANCE),
-                ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
+                ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE if not guarded else ""),
             ) if getattr(agent, flag, True)
         ]
-    parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+    parts.append(getattr(agent, "_kanban_worker_guidance", None) if guarded else _tool_guidance_block(agent))
+    if guarded:
+        parts.append(GUARDED_EXECUTION_CONTRACT)
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    if not guarded:
+        parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -573,7 +602,7 @@ def _guidance_parts(agent: Any) -> list[str]:
         parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-    if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
+    if not guarded and _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))
     # delegate_task background delivery is intentionally between turns. Put this after the generic persistence
@@ -749,8 +778,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
-    stable_parts.extend(_guidance_parts(agent))
-    skills_prompt = _skills_prompt(agent)
+    guarded, remote_worker = _guarded_prompt_modes(agent)
+    stable_parts.extend(_guidance_parts(agent, guarded))
+    skills_prompt = _skills_prompt(agent, guarded)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
@@ -761,8 +791,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
-    environment_hints = _pb.build_environment_hints()
-    coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
+    environment_hints = "" if remote_worker else _pb.build_environment_hints()
+    coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = (
+        ([], [], []) if remote_worker else _coding_parts(agent))
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent)
     # ── Context tier (project/worktree-dependent, may change between sessions) ──
@@ -783,10 +814,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: list[str] = [skills_prompt, *_memory_parts(agent)]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
-    volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
+    if not remote_worker:
+        volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     # The profile line names this home's path, so it rides in the volatile tier: the stable
     # prefix then stays byte-identical across every profile (and home) on the host.
-    volatile_parts.append(_active_profile_line(agent))
+    volatile_parts.append(
+        f"Active Hermes profile: {_active_profile_name(agent, _ambient_file_safety_profile_name)}. "
+        "Work only in the current task workspace and use relative paths."
+        if remote_worker else _active_profile_line(agent))
     volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.

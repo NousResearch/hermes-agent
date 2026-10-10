@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_context import GatewayInboundContextMixin
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
@@ -67,7 +68,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -1675,36 +1676,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             custom_providers=_msg_custom_providers,
         )
 
-    async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
-    ) -> Optional[str]:
-        """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
-        try:
-            from agent.context_references import preprocess_context_references_async
-
-            try:
-                from tools.terminal_scope import terminal_env as _ts_env
-            except ImportError:
-                _ts_env = os.environ.get
-            _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
-            _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
-            _ctx_result = await preprocess_context_references_async(
-                message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
-            )
-            if _ctx_result.blocked:
-                _adapter = self._delivery_adapter_for(source)
-                if _adapter:
-                    await _adapter.send(
-                        source.chat_id,
-                        "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
-                    )
-                return None
-            if _ctx_result.expanded:
-                message_text = _ctx_result.message
-        except Exception as exc:
-            logger.warning("@ context reference expansion failed: %s", exc)
-            logger.debug("@ context reference expansion failure detail", exc_info=True)
-        return message_text
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
@@ -1714,6 +1685,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
+        event._gateway_source_slices = []
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
@@ -1732,7 +1704,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+            message_text = await self._expand_inbound_context_references(
+                source, session_key, message_text, source_slices=event._gateway_source_slices,
+            )
             if message_text is None:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an

@@ -52,7 +52,7 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
     """
     patches = [
         patch(
-            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+            "agent.llm_egress_runtime.fallback_entry_unavailable_without_network",
             return_value=None,
         ),
         patch(

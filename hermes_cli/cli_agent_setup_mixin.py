@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -26,6 +27,29 @@ def _single_query_clarify_callback(questions: list) -> dict:
     return {"answers": {}, "outcome": "undelivered", "notice": (
         "single-query mode: no user available to answer. Pick the best choices using your own "
         "judgment, or make the most reasonable assumption you can, and continue.")}
+
+
+def _remote_kanban_private_work(provider: str | None) -> bool:
+    """Return whether this CLI is a protected-remote Kanban worker."""
+
+    from agent.delegation_context import owned_kanban_task
+    if not owned_kanban_task():
+        return False
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    return provider_uses_egress_firewall(provider)
+
+
+def _remote_kanban_toolsets(_configured: list[str] | None) -> list[str]:
+    """Return the bounded capability set for protected-remote workers.
+
+    Kanban lifecycle tools are injected by ``model_tools`` from the task
+    environment. Keeping this list explicit prevents profile-loading drift
+    from exposing desktop, memory, delegation, and skill-management schemas
+    to a short-lived reviewer or repair worker.
+    """
+
+    return ["terminal", "file", "web"]
 
 
 def _current_runtime(cli) -> dict:
@@ -653,6 +677,9 @@ class CLIAgentSetupMixin:
         try:
             runtime = runtime_override or _current_runtime(self)
             effective_model = model_override or self.model
+            remote_kanban_private_work = _remote_kanban_private_work(runtime.get("provider"))
+            effective_toolsets = (_remote_kanban_toolsets(self.enabled_toolsets)
+                                 if remote_kanban_private_work else self.enabled_toolsets)
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
             single_query_mode = getattr(self, "_single_query_mode", False)
@@ -670,7 +697,7 @@ class CLIAgentSetupMixin:
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
-                enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=effective_toolsets, disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
@@ -690,14 +717,18 @@ class CLIAgentSetupMixin:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
-                pass_session_id=self.pass_session_id, skip_context_files=self.ignore_rules,
-                skip_memory=self.ignore_rules, tool_progress_callback=self._on_tool_progress,
+                pass_session_id=self.pass_session_id, skip_context_files=self.ignore_rules or remote_kanban_private_work,
+                skip_memory=self.ignore_rules or remote_kanban_private_work,
+                skip_background_review=remote_kanban_private_work, tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
+            if remote_kanban_private_work:
+                self.agent._llm_egress_max_sanitized_bytes = 196_608
+                self.agent._llm_egress_max_sanitized_segment_bytes = 32_768
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

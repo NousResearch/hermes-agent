@@ -52,6 +52,7 @@ class FailoverReason(enum.Enum):
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
     model_entitlement = "model_entitlement"  # This account cannot use the requested model — rotate credential (model-scoped), else fall back
     incomplete_response = "incomplete_response"  # Codex/Responses turn stuck emitting reasoning only (no answer, no tool call) after replay + nudge — hand to a different provider
+    egress_policy_blocked = "egress_policy_blocked"  # Local privacy firewall denied remote transport
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
@@ -983,6 +984,13 @@ def classify_api_error(
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
     The credential is never included in the returned context."""
     from hermes_cli.anon_auth import is_anonymous_request
+    from agent.llm_egress_firewall import EgressBlocked
+    if isinstance(error, EgressBlocked):
+        return ClassifiedError(
+            reason=FailoverReason.egress_policy_blocked, provider=provider or None, model=model or None,
+            message="remote request denied by local egress policy",
+            error_context={"reason_codes": error.decision.reason_codes}, retryable=False, should_fallback=True,
+        )
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":

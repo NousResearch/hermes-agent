@@ -1663,9 +1663,7 @@ class TurnRunner:
         return persist_override, ctx.persist_user_timestamp
 
     def _native_image_run_message(self):
-        """Wrap the user turn as an OpenAI-style multimodal content list when
-        _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
-        same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
+        """Consume this session's staged images once, or retain plain text when none are readable."""
         ctx = self._ctx
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
@@ -1683,8 +1681,7 @@ class TurnRunner:
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override):
-        """Run the turn with the per-session gateway approval callback registered: dangerous-command
-        approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
+        """Run the source-bound turn under the gateway's sync-to-async approval callback."""
         from gateway.run import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
@@ -1693,6 +1690,8 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
+            from gateway.source_context import bind_inbound_source_slices
+            bind_inbound_source_slices(agent, ctx.context_source_slices)
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
@@ -1715,17 +1714,17 @@ class TurnRunner:
                 kwargs["moa_config"] = ctx.moa_config
             if persist_user_timestamp_override is not None:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
-            # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
-            # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
+            # Persist the raw inbound id, rather than the reply anchor, for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
             from agent.notification_presentation import notification_turn
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)
         finally:
+            from agent.source_provenance import clear_agent_source_provenance
+            clear_agent_source_provenance(agent)
             unregister_gateway_notify(session_key)
-            # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
-            # run (interrupt, completion, gateway shutdown). Idempotent.
+            # Clear pending clarify entries so completion or interruption leaves no blocked thread.
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)

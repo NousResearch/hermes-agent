@@ -6917,6 +6917,19 @@ def _define_discord_view_classes() -> None:
             other_btn.callback = self._on_other
             self.add_item(other_btn)
 
+        async def on_timeout(self):
+            # Component expiry must not discard a still-live gateway question.
+            from tools.clarify_gateway import mark_awaiting_text
+
+            self.resolved = True
+            self._disable_all()
+            footer = (
+                t("platform.discord.prompt.clarify_hint_text")
+                if mark_awaiting_text(self.clarify_id)
+                else t("platform.discord.prompt.expired_footer")
+            )
+            await self._expire_embed(footer)
+
         @staticmethod
         def _button_label(index: int, choice: str) -> str:
             """``"N. <choice>"`` within Discord's 80-char (UTF-16) label cap.

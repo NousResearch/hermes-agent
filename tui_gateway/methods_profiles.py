@@ -6,6 +6,7 @@ onto server.py, so they must not collide with its globals.
 
 import contextlib
 import logging
+import os
 import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -283,12 +284,15 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     row["avatar_rev"] = _try(lambda: _avatar_rev(profile_dir), None)
 
 
+def _rev_token(ext: str, st) -> str:
+    return f"{ext}:{st.st_mtime_ns}:{st.st_size}"
+
+
 def _avatar_rev(profile_dir) -> str | None:
     for ext in _ASSET_EXTS:
         path = profile_dir / "assets" / f"avatar.{ext}"
         if path.is_file():
-            st = path.stat()
-            return f"{ext}:{st.st_mtime_ns}:{st.st_size}"
+            return _rev_token(ext, path.stat())
     return None
 
 
@@ -471,9 +475,12 @@ def _(rid, params: dict) -> dict:
     for ext, mime in _ASSET_EXTS.items():
         target = profile_dir / "assets" / f"{asset}.{ext}"
         if target.is_file():
-            blob = target.read_bytes()
-            return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
-                             "rev": _try(lambda: _avatar_rev(profile_dir), None) if asset == "avatar" else None,
+            # Stat the open handle so ``rev`` describes exactly these bytes: a concurrent set_asset
+            # swapping the file must not pair old bytes with the new rev (which would never move again).
+            with open(target, "rb") as fh:
+                blob = fh.read()
+                rev = _rev_token(ext, os.fstat(fh.fileno())) if asset == "avatar" else None
+            return _ok(rid, {"found": True, "mime": mime, "size": len(blob), "rev": rev,
                              "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
     return _ok(rid, {"found": False})
 

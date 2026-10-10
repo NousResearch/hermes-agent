@@ -12,6 +12,7 @@ import pytest
 
 import tui_gateway.server as srv
 from tui_gateway import profile_roster_cache as cache
+from tui_gateway.contracts.registry import METHODS, check_result
 
 
 @pytest.fixture(autouse=True)
@@ -31,12 +32,16 @@ def tutor(tmp_path, monkeypatch):
 
 
 def _row(name="tutor"):
-    rows = srv._methods["profiles.list"](1, {})["result"]["profiles"]
-    return next(r for r in rows if r["name"] == name)
+    result = srv._methods["profiles.list"](1, {})["result"]
+    # The fields must be declared on the wire contract, not just emitted (extra="forbid").
+    check_result(METHODS["profiles.list"], result)
+    return next(r for r in result["profiles"] if r["name"] == name)
 
 
 def _asset(name="tutor"):
-    return srv._methods["profiles.get_asset"](1, {"name": name, "asset": "avatar"})["result"]
+    result = srv._methods["profiles.get_asset"](1, {"name": name, "asset": "avatar"})["result"]
+    check_result(METHODS["profiles.get_asset"], result)
+    return result
 
 
 def test_no_avatar_has_no_rev(tutor):

@@ -23994,6 +23994,18 @@
             "default": false,
             "title": "Has Avatar",
             "type": "boolean"
+          },
+          "avatar_rev": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avatar Rev"
           }
         },
         "required": [
@@ -24783,6 +24795,18 @@
             ],
             "default": null,
             "title": "Size"
+          },
+          "rev": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rev"
           },
           "data": {
             "anyOf": [

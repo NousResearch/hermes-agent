@@ -166,6 +166,9 @@ class ProfileRow(Result):
     ui_meta_revisions: dict[str, int] = Field(default_factory=dict)
     ui_meta: dict[str, JsonValue] | None = None
     has_avatar: bool = False
+    # Content revision of the stored avatar (``ext:mtime_ns:size``); clients re-download a cached
+    # avatar only when this moves. ``None`` when there is no avatar.
+    avatar_rev: str | None = None
 
 
 class ProfilesListParams(ProfileParams):
@@ -345,6 +348,8 @@ class ProfilesGetAssetResult(Result):
     found: bool
     mime: str | None = None
     size: int | None = None
+    # Avatar only: the ``avatar_rev`` of exactly the bytes in ``data``.
+    rev: str | None = None
     data: str | None = None
 
 

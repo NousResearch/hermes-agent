@@ -1988,6 +1988,7 @@ export interface ProfileRow {
   ui_meta_revisions?: Record<string, number>
   ui_meta?: Record<string, unknown> | null
   has_avatar?: boolean
+  avatar_rev?: string | null
 }
 /** Newest human-facing session of a profile (``_latest_profile_session_rows``). */
 export interface ProfileSessionPreview {
@@ -2146,6 +2147,7 @@ export interface ProfilesGetAssetResult {
   found: boolean
   mime?: string | null
   size?: number | null
+  rev?: string | null
   data?: string | null
 }
 /** Client→server method params / server→client request params. Unknown keys are rejected. */

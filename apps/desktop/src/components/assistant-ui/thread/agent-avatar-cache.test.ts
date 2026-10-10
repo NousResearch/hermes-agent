@@ -113,4 +113,14 @@ describe('agent avatar cache', () => {
     expect(await resolveAgentAvatar('tutor')).toBe('data:image/png;base64,tutorr2')
     expect([listCalls, assetCalls]).toEqual([3, 2])
   })
+
+  it('keeps serving a hit without re-downloading when the gateway reports no avatar_rev', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(3_000_000)
+    withAvatar.add('legacy')
+
+    expect(await resolveAgentAvatar('legacy')).toBe('data:image/png;base64,legacy')
+    now.mockReturnValue(3_000_000 + HIT_TTL_MS + 1)
+    expect(await resolveAgentAvatar('legacy')).toBe('data:image/png;base64,legacy')
+    expect(assetCalls).toBe(1)
+  })
 })

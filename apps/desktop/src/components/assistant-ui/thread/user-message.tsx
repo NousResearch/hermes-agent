@@ -170,20 +170,27 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
       rev = profile.avatar_rev ?? null
 
-      // Same file as the cached copy: skip the image download, just re-arm the TTL.
-      if (hit?.url && rev !== null && hit.rev === rev) {
+      // Same file as the cached copy (or an older gateway that reports no rev,
+      // which keeps the old serve-forever behaviour): skip the image download,
+      // just re-arm the TTL.
+      if (hit?.url && (rev === null || hit.rev === rev)) {
         return hit.url
       }
 
-      const asset = await gateway.request<{ data?: string; found?: boolean }>('profiles.get_asset', {
-        asset: 'avatar',
-        name: profile.name
-      })
+      const asset = await gateway.request<{ data?: string; found?: boolean; rev?: null | string }>(
+        'profiles.get_asset',
+        { asset: 'avatar', name: profile.name }
+      )
+
+      rev = asset?.rev ?? rev
 
       return asset?.found && asset.data ? asset.data : null
     } catch {
       // Older gateway (no profiles.* RPCs) or transient failure — keep a
-      // cached image if we had one, else the 🤖 glyph fallback is correct.
+      // cached image (and its rev, so the next probe doesn't re-download an
+      // unchanged file) if we had one, else the 🤖 glyph fallback is correct.
+      rev = hit?.rev ?? null
+
       return hit?.url ?? null
     } finally {
       agentAvatarInflight.delete(key)

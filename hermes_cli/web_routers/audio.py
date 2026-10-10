@@ -384,6 +384,57 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 
+#: Endings that make an idle flush safe: the clip stops where a reader would pause.
+SENTENCE_ENDINGS = (".", "!", "?", "…", ":")
+
+#: Softer boundaries a long silence may cut at — a clause break, never inside a word.
+CLAUSE_ENDINGS = (",", ";", "—", "–", "-")
+
+
+def _speakable_head(buf: str, min_len: int) -> tuple:
+    """``(head, rest)`` — the largest prefix of *buf* that ends on a safe boundary.
+
+    Used by the idle flush. Draining the whole buffer there (``chunker.flush()``) ended the clip
+    wherever the delta happened to stop — mid-word — and left the remainder to be spoken as a
+    fragment unrelated to the sentence it came from. Measured on a live lesson: a 42-character
+    sentence came out as a 1.24 s clip with no continuation.
+
+    Prefer the last clause mark, then the last whitespace. Return ``("", buf)`` when neither exists
+    (one very long token) or the head would be shorter than *min_len* — the end-of-text flush still
+    speaks it, so waiting costs latency, never content.
+    """
+    text = buf.rstrip()
+    if not text:
+        return "", buf
+    cut = -1
+    for mark in CLAUSE_ENDINGS:
+        cut = max(cut, text.rfind(mark))
+    if cut < 0:
+        cut = max(text.rfind(" "), text.rfind("\n"), text.rfind("\t"))
+    if cut < 0:
+        return "", buf
+    head = text[: cut + 1].strip()
+    if len(head) < min_len:
+        return "", buf
+    return head, text[cut + 1:]
+
+
+#: Speak-stream idle flush: how long the producer waits before speaking an unterminated buffer.
+#: Module-level so the behaviour is testable without a real two-second pause.
+IDLE_POLL_SECONDS = 0.5
+IDLE_POLLS_BEFORE_FORCE_FLUSH = 4  # ~2s of silence
+
+
+def _should_abort_synthesis(*, barge_in: bool, saw_done: bool) -> bool:
+    """Whether the client's receive loop ending means "stop speaking".
+
+    A real barge-in always aborts. A receive that ends **after** end-of-text is a normal completion
+    — the client closing once it has the whole reply — and aborting there is what clipped the tail;
+    only a disconnect *before* ``done`` means the client went away mid-reply.
+    """
+    return barge_in or not saw_done
+
+
 class _SyncSentencePCMStreamer:
     """Speak one sentence through the sync TTS tool and yield int16 mono PCM.
 
@@ -686,8 +737,8 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         # end-of-turn. Mirror the CLI speaker pipeline: poll with a timeout and
         # flush when the producer goes idle — immediately when the buffer ends
         # on sentence punctuation, after a longer quiet spell otherwise.
-        idle_poll_seconds = 0.5
-        idle_polls_before_force_flush = 4  # ~2s of silence
+        idle_poll_seconds = IDLE_POLL_SECONDS
+        idle_polls_before_force_flush = IDLE_POLLS_BEFORE_FORCE_FLUSH
 
         def _sentences():
             idle_polls = 0
@@ -699,8 +750,18 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                     buffered = chunker.buf.strip()
                     if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
                         continue
-                    if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                    if buffered.endswith(SENTENCE_ENDINGS):
                         yield from chunker.flush()
+                    elif idle_polls >= idle_polls_before_force_flush:
+                        # Long silence on an unterminated buffer. Speak only up to a safe boundary
+                        # and KEEP the rest — `chunker.flush()` here would drain the whole buffer,
+                        # ending the clip mid-word and leaving the remainder to be spoken as an
+                        # unrelated fragment.
+                        head, rest = _speakable_head(chunker.buf, chunker.min_len)
+                        if head:
+                            chunker.buf = rest
+                            idle_polls = 0
+                            yield head
                     continue
                 idle_polls = 0
                 if delta is None:
@@ -728,20 +789,32 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     threading.Thread(target=_produce, daemon=True).start()
 
     async def _pump_client():
-        # Text frames feed synthesis; done ends the text; stop/disconnect
-        # (or any unparseable frame) is barge-in.
+        # Text frames feed synthesis; `done` ends the text; `stop`/disconnect is barge-in.
+        #
+        # `stop` is armed only for an actual barge-in, or for a client that vanished BEFORE saying
+        # it was done. It used to be set whenever this loop ended, which included the normal
+        # completion path — the client closing once it had the whole reply — and that aborted the
+        # producer inside its chunk loop, dropping the tail of a reply the transcript already
+        # showed in full. Reading continues after `done` so a barge-in during playback still works.
+        # Initialised before the `try`: a socket that fails on the FIRST receive must still leave
+        # both flags defined, or the decision below raises NameError exactly when the stream breaks.
+        saw_done = False
+        barge_in = False
         try:
             while True:
                 frame = json.loads(await ws.receive_text())
                 if frame.get("text"):
                     text_q.put(str(frame["text"]))
                 if frame.get("stop"):
+                    barge_in = True
                     break
                 if frame.get("done"):
+                    saw_done = True
                     text_q.put(None)
         except Exception:
             pass
-        stop.set()
+        if _should_abort_synthesis(barge_in=barge_in, saw_done=saw_done):
+            stop.set()
         text_q.put(None)  # unblock the producer
 
     pump = asyncio.ensure_future(_pump_client())

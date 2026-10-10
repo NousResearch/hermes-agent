@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
+from gateway.outbound_suppression import outbound_suppressed
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
@@ -992,10 +993,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
     ) -> bool:
-        """Send one shutdown notice; True when delivered. Failures are debug-logged, never raised."""
-        where = "home channel " if kind == "home channel" else ""
-        fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
-        if not await self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs):
+        """Send one shutdown notice; True when delivered, False if failed or ``suppress_outbound`` dropped it (never raises)."""
+        fail_fmt = f"Failed to send shutdown notification to {'home channel ' if kind == 'home channel' else ''}%s:%s: %s"
+        if outbound_suppressed(platform_str, msg) or not await self._send_notice_logged(
+            adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs
+        ):
             return False
         logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
         return True
@@ -1088,9 +1090,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         with _log_suppressed(logging.DEBUG, "drain_notification_suppressed check failed: %s"):
             from gateway.drain_control import drain_notification_suppressed
             if drain_notification_suppressed():
-                logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
-                )
+                logger.info("Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)")
                 return
         # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
         # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'

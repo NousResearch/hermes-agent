@@ -175,9 +175,9 @@ class GatewayNotificationsMixin:
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
-        from gateway.run import _is_slack_ignored_channel
+        from gateway.run import _is_slack_ignored_channel, outbound_suppressed
         adapter = self._delivery_adapter_for(source)
-        if not adapter:
+        if not adapter or outbound_suppressed(getattr(source, "platform", None), content):
             return
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)

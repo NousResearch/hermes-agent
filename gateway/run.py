@@ -46,6 +46,7 @@ from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
+from gateway.outbound_suppression import outbound_suppressed
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -709,9 +710,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _eos_start >= 0:
         text = text[:_eos_start].rstrip()
 
-    # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
-    # See #7921.
-    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+    # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too
+    # (#7921). An operator ``suppress_outbound`` match drops the reply the same way ("" = nothing sent).
+    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX) or outbound_suppressed(platform, text):
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -725,11 +726,10 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
     text = str(message or "").strip()
-    if not text:
+    if not text or outbound_suppressed(platform, text):  # raw-text surfaces are never suppressed
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
-
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (

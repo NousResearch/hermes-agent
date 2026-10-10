@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -14,6 +15,19 @@ logger = logging.getLogger(__name__)
 def _dispose_manager(plugins, manager) -> None:
     host = getattr(manager, "_plugin_host_instance", None)
     try:
+        from agent.plugin_stream_hooks import (
+            _stop_dispatcher,
+            retire_plugin_observer_dispatchers,
+        )
+
+        dispatchers = retire_plugin_observer_dispatchers(manager, unload_all=True)
+        deadline = time.monotonic() + 0.2
+        for dispatcher in dispatchers:
+            _stop_dispatcher(
+                dispatcher,
+                timeout=max(0.0, deadline - time.monotonic()),
+                discard_pending=True,
+            )
         plugins._clear_plugin_submodules(manager)
     finally:
         try:

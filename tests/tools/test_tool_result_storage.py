@@ -406,6 +406,22 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    def test_reused_tool_call_id_keeps_the_earlier_spill(self):
+        """tool_call_ids repeat across turns (deterministic_call_id fallback, provider reuse): the
+        earlier "Full output saved to" stub must keep resolving to its own result."""
+        from pathlib import Path
+
+        from tools.tool_result_storage import extract_persisted_path
+
+        first, second = "A" * 60_000, "B" * 60_000
+        paths = [
+            extract_persisted_path(maybe_persist_tool_result(
+                content=content, tool_name="terminal", tool_use_id="call_reused", env=None,
+                threshold=30_000))
+            for content in (first, second)
+        ]
+        assert [Path(p).read_text(encoding="utf-8") for p in paths] == [first, second]
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

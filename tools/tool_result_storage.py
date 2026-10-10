@@ -171,6 +171,18 @@ def _safe_result_filename(tool_use_id: str) -> str:
     return f"{safe_stem}.txt"
 
 
+def _spill_filename(tool_use_id: str, content: str) -> str:
+    """``_safe_result_filename``, plus a content digest when that name is already taken: tool_call_ids
+    repeat (``deterministic_call_id`` has no turn component, providers reuse ids, every text part of a
+    multimodal envelope shares one id), and an overwrite leaves the earlier "Full output saved to"
+    stub pointing at a different result."""
+    filename = _safe_result_filename(tool_use_id)
+    if (get_spillover_dir() / filename).exists():
+        digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+        filename = f"{filename.removesuffix('.txt')}_{digest}.txt"
+    return filename
+
+
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
     if len(content) <= max_chars:
@@ -303,7 +315,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     # The size decision above stays on the raw inline result (that is what cost context); the file
     # and the preview carry the pageable text inside an MCP envelope (#90426).
     persisted_content = _pageable_text(content)
-    filename = _safe_result_filename(tool_use_id)
+    filename = _spill_filename(tool_use_id, persisted_content)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:

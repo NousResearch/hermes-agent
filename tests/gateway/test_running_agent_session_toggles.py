@@ -9,14 +9,8 @@ slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
   * /verbose — cycles the per-platform tool-progress display mode;
     affects the ongoing stream.
 
-Commands whose handlers say "takes effect on next message" stay on the
-catch-all by design:
-
-  * /fast — writes config.yaml only
-  * /reasoning — writes config.yaml only
-
-These tests lock in both behaviors so the allowlist doesn't silently
-grow or shrink.
+Inference commands also dispatch while busy and update the running agent's next request.
+These tests cover both admission and live request settings without replacing the cached agent.
 """
 
 from datetime import datetime
@@ -25,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.fast_mode import effective_request_overrides
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -165,4 +160,45 @@ async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     assert runner._running_agents[sk] is agent
     assert result == "tool progress: new"
 
+
+@pytest.mark.asyncio
+async def test_inference_controls_dispatch_while_busy():
+    for command, argument in (("reasoning", "high"), ("fast", "fast")):
+        runner = _make_runner()
+        key = build_session_key(_make_source())
+        agent = runner._running_agents[key]
+        handler = AsyncMock(return_value="updated")
+        setattr(runner, f"_handle_{command}_command", handler)
+        event = _make_event(f"/{command} {argument}")
+
+        assert await runner._handle_message(event) == "updated"
+        handler.assert_awaited_once_with(event)
+        assert runner._running_agents[key] is agent
+        agent.interrupt.assert_not_called()
+        assert not runner._pending_messages
+
+
+def test_busy_inference_controls_reconfigure_live_requests():
+    runner = _make_runner()
+    key = build_session_key(_make_source())
+    agent = runner._running_agents[key]
+    agent.reasoning_config = {"enabled": True, "effort": "low"}
+    agent.service_tier = None
+    agent.model, agent.provider, agent.base_url = "gpt-5.1", "openai", "https://api.openai.com/v1"
+    agent._gateway_base_request_overrides = {"extra_body": {"custom": "keep"}}
+    agent.request_overrides = dict(agent._gateway_base_request_overrides)
+    runner._agent_cache = {key: (agent,)}
+
+    runner._apply_reasoning_selection(key, "telegram", "high")
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+    first_request = effective_request_overrides(agent)
+    runner._apply_fast_selection(key, "fast")
+    assert first_request == {"extra_body": {"custom": "keep"}}
+    assert effective_request_overrides(agent) == {
+        "extra_body": {"custom": "keep"}, "service_tier": "priority",
+    }
+    runner._apply_fast_selection(key, "normal")
+    assert effective_request_overrides(agent) == first_request
+    assert runner._running_agents[key] is agent
+    assert runner._agent_cache[key][0] is agent
 

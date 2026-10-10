@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -26,6 +27,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -148,6 +151,9 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    paused: bool = False
+    """True when the global emergency stop (``hermes pause``) declined this
+    tick: nothing was reclaimed, promoted or spawned (dry runs included)."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -1972,7 +1978,21 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    While ``hermes pause`` is engaged the tick is declined up front with
+    ``paused=True`` — this is the chokepoint every dispatch door shares, so
+    none has to remember the check.
     """
+    try:
+        from agent.estop import check_paused
+    except ImportError:
+        # Unimportable estop fails OPEN (a packaging fault must not wedge the
+        # board); an unreadable sentinel fails SAFE inside is_engaged().
+        pass
+    else:
+        if check_paused("kanban.dispatch_once", logger):
+            return DispatchResult(paused=True)
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,

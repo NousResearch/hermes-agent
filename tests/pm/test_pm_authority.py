@@ -399,6 +399,22 @@ def test_tree_digest_is_content_bound(pm_env):
         pytest.skip("symlinks unavailable on this host")
 
 
+def test_doctor_omits_declined_optional_default(pm_env, capsys, monkeypatch):
+    """An explicitly declined default is policy, not a missing installation."""
+    from pm.cli import cmd_doctor
+    from pm.defaults import record_declined
+    from pm.install import ensure
+
+    package = registry._packages["faketool"]
+    monkeypatch.setattr(package, "default", True)
+    ensure("faketool", base_env={})
+    record_declined(add=["faketool"])
+    shutil.rmtree(paths.store_root() / Facts(paths.facts_path()).get("faketool")["entry"])
+
+    assert cmd_doctor(None) == 0
+    assert "faketool" not in capsys.readouterr().out
+
+
 def test_doctor_flags_tampered_entry_bytes(pm_env, capsys):
     """Post-install tampering: doctor re-hashes the realized tree against
     the recorded digest and flags it; restoring the bytes clears it."""

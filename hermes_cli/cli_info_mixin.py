@@ -938,7 +938,13 @@ class CLIInfoMixin:
 
             shutdown_mcp_servers()
             reprobe_tool_availability()  # explicit reload also re-probes check_fn availability
-            new_tools = discover_mcp_tools()  # reads config.yaml fresh
+            from tools.mcp_oauth import suppress_interactive_oauth
+            # Reloads run beside the CLI prompt (and config-watch reloads run in a
+            # background thread). OAuth's paste fallback would otherwise read
+            # that same stdin and can keep stealing keys after an auth timeout.
+            # Users can authorize explicitly with `hermes mcp login <server>`.
+            with suppress_interactive_oauth():
+                new_tools = discover_mcp_tools()  # reads config.yaml fresh
 
             with _lock:
                 connected_servers = set(_servers.keys())

@@ -240,6 +240,7 @@ describe('useComposerSubmit external request routing', () => {
     })
 
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith('[setup] links opened', {
+      submission_id: expect.any(String),
       composerScope: 'stored-session',
       displayKind: 'hidden'
     })
@@ -264,6 +265,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(visibleMain.onSubmit).toHaveBeenCalledWith('ship this branch', {
+        submission_id: expect.any(String),
         composerScope: 'session-a'
       })
     )
@@ -281,6 +283,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(tile.onSubmit).toHaveBeenCalledWith('ship project B', {
+        submission_id: expect.any(String),
         composerScope: 'tile-session'
       })
     )
@@ -295,6 +298,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(second.onSubmit).toHaveBeenCalledWith('ship exactly one session', {
+        submission_id: expect.any(String),
         composerScope: 'session-second'
       })
     )
@@ -313,6 +317,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(visibleB.onSubmit).toHaveBeenCalledWith('ship session B', {
+        submission_id: expect.any(String),
         composerScope: 'session-b'
       })
     )
@@ -458,7 +463,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', { composerScope: 'stored-session' })
+      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', { submission_id: expect.any(String), composerScope: 'stored-session' })
     )
     expect(clearDraft).toHaveBeenCalledTimes(1)
     expect(onSteer).not.toHaveBeenCalled()
@@ -507,6 +512,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('ordinary question', {
+        submission_id: expect.any(String),
         attachments: [],
         composerScope: 'stored-session'
       })
@@ -541,6 +547,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('look at @terminal:`zsh:23-58`', {
+        submission_id: expect.any(String),
         attachments: [],
         composerScope: 'stored-session'
       })
@@ -846,7 +853,7 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { composerScope: 'stored-session' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { submission_id: expect.any(String), composerScope: 'stored-session' }))
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
   })

@@ -14,6 +14,7 @@ import {
   freezeComposerTransportPayload,
   isFreshDraftScope
 } from '@/store/composer'
+import { type ComposerDraftRetry, draftRetry } from '@/store/composer-draft-retry'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
@@ -53,6 +54,9 @@ interface UseComposerSubmitArgs {
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  /** Restored-send identity (see use-composer-draft); absent = every send is a new message. */
+  rememberDraftRetry?: (scope: string | null, retry: ComposerDraftRetry) => void
+  takeDraftRetry?: (text: string, attachments: ComposerAttachment[]) => ComposerDraftRetry | undefined
 }
 
 /**
@@ -89,7 +93,9 @@ export function useComposerSubmit({
   queuedPrompts,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  rememberDraftRetry,
+  takeDraftRetry
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
@@ -129,8 +135,15 @@ export function useComposerSubmit({
           }
         : {}
 
+    // The composer owns this send's identity: the caller's (a queue entry), the restored draft's
+    // (the explicit retry), else a new one. Equal text never inherits an identity, so a new
+    // message that repeats an uncertain send, in this pane or another, is its own turn.
+    const submissionId = target?.submission_id ?? crypto.randomUUID()
+
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
+      // Restored with its identity: Enter on this exact draft retries the same send.
+      rememberDraftRetry?.(restoreScope, draftRetry(submissionId, text, submittedAttachments))
 
       if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
@@ -144,6 +157,7 @@ export function useComposerSubmit({
     void Promise.resolve(
       onSubmit(text, {
         ...target,
+        submission_id: submissionId,
         ...(attachments ? { attachments } : {}),
         composerScope: submittedScope,
         ...assignment,
@@ -254,9 +268,10 @@ export function useComposerSubmit({
         return false
       }
 
+      const retry = takeDraftRetry?.(text, [])
       triggerHaptic('submit')
       clearDraft()
-      dispatchSubmit(text)
+      dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
     } else if (!blockingPrompt && !attachments.length && text.trim()) {
       // Busy Send follows the backend busy-input policy: interrupt redirects
       // the live turn (Cursor-style stop-and-correct), steer injects at the
@@ -387,13 +402,14 @@ export function useComposerSubmit({
       void drainNextQueued()
     } else if (payloadPresent) {
       const submittedAttachments = cloneAttachments(attachments)
+      const retry = takeDraftRetry?.(text, submittedAttachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments)
+      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
     }
 
     focusInput()

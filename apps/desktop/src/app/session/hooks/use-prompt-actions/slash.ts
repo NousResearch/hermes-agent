@@ -240,15 +240,20 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       }
 
       try {
-        const prepared = (await adoptPreparedSubmission(
-          preparedSubmissionKey(
-            resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
-            destination,
-            rawCommand,
-            options?.attachments ?? $composerAttachments.get(),
-            retryOptions
-          )
-        ))?.entry
+        // An explicit retry of this exact invocation reuses its retained expansion; the same
+        // command typed again is a new invocation.
+        const prepared = options?.submission_id
+          ? (await adoptPreparedSubmission(
+              preparedSubmissionKey(
+                resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
+                destination,
+                rawCommand,
+                options?.attachments ?? $composerAttachments.get(),
+                retryOptions
+              ),
+              options.submission_id
+            ))?.entry
+          : undefined
 
         if (prepared) {
           return await submitPromptText(prepared.text, {

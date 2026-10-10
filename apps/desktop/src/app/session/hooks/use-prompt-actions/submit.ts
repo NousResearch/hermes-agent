@@ -444,13 +444,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       let retainedKey: string | undefined
 
       try {
-        const adopted = await adoptPreparedSubmission(retryKeyForTarget())
+        // Only an explicit retry (the caller names the uncertain send's identity) reuses a
+        // retained entry; a new message with the same text is a new turn.
+        const adopted = options?.submission_id
+          ? await adoptPreparedSubmission(retryKeyForTarget(), options.submission_id)
+          : undefined
+
         retained = adopted?.entry
         retainedKey = adopted?.key
 
         // A legacy send has no deduplication identity. After an ambiguous ACK
-        // even an upgraded server cannot safely admit it under the saved ID.
-        if (retained?.legacyAttempted) {
+        // even an upgraded server cannot safely admit it under the saved ID, so
+        // the retry is refused once, visibly, and the entry is retired: sending
+        // the words again afterwards is the user's informed new turn.
+        if (retained?.legacyAttempted && retainedKey) {
+          await removePreparedSubmission(retainedKey, retained.id).catch(error => console.warn('[prepared-submission-retire]', error))
+          notify({ kind: 'warning', title: copy.promptFailed, message: copy.legacySendUnconfirmed })
+
           return false
         }
       } catch (err) {

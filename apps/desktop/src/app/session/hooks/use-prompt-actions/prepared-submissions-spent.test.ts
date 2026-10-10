@@ -37,7 +37,7 @@ test('an admitted identity whose journal removal failed stays spent across a rel
   // Renderer reload: module memory is gone, the file entry is not.
   vi.resetModules()
   const reloaded = await import('./prepared-submissions')
-  expect(await reloaded.adoptPreparedSubmission(intent)).toBeUndefined()
+  expect(await reloaded.adoptPreparedSubmission(intent, 'admitted-id')).toBeUndefined()
   expect(await reloaded.readPreparedSubmission(intent)).toBeUndefined()
 
   // Storage recovers: the stale file entry is retired instead of lingering.
@@ -101,8 +101,8 @@ test('two windows retiring different admitted entries keep both tombstones acros
     inWindow(storageView(shared).storage as unknown as Storage)
     vi.resetModules()
     const reloaded = await import('./prepared-submissions')
-    expect(await reloaded.adoptPreparedSubmission(intent('from A'))).toBeUndefined()
-    expect(await reloaded.adoptPreparedSubmission(intent('from B'))).toBeUndefined()
+    expect(await reloaded.adoptPreparedSubmission(intent('from A'), 'admitted-a')).toBeUndefined()
+    expect(await reloaded.adoptPreparedSubmission(intent('from B'), 'admitted-b')).toBeUndefined()
   } finally {
     inWindow(realStorage)
   }

@@ -1427,6 +1427,7 @@
     "desktop.imagePreviewFailed",
     "desktop.imageSaved",
     "desktop.imageWriteFailed",
+    "desktop.legacySendUnconfirmed",
     "desktop.modelSwitchConfirmBody",
     "desktop.modelSwitchConfirmLabel",
     "desktop.modelSwitchConfirmTitle",

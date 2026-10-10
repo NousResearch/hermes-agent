@@ -247,6 +247,39 @@ describe('submit timeout admission fences', () => {
     expect(submits).toHaveLength(2)
   })
 
+  // Adolanium 6055121721: after a lost identityless (legacy) ACK, Enter on that exact text did
+  // nothing forever. The explicit retry is refused once, visibly; a new send of the words is the
+  // user's informed new turn and goes out.
+  it('a lost legacy acknowledgement is surfaced once and never blocks sending the same text again', async () => {
+    const submits: Record<string, unknown>[] = []
+    clearNotifications()
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      // A legacy serve refuses every submission_id before admission.
+      if (params?.submission_id) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+
+      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+
+      return { ok: true } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(submits).toHaveLength(2)
+    const shown = $notifications.get().map(n => n.message)
+    // The restored draft keeps its identity; pressing Enter again after the notice sends it.
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(true)
+    expect(submits).toHaveLength(4)
+    expect(shown).toContain(en.desktop.legacySendUnconfirmed)
+  })
+
   it('retries an identified timeout with the same admission identity after resume', async () => {
     const submits: Record<string, unknown>[] = []
 

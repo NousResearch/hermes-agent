@@ -140,13 +140,13 @@ export async function listPreparedImageDrafts(target: string, scopeKey: string) 
   return Object.entries(await readJournal()).flatMap(([key, entry]) => {
     const [scope, session, text, , displayKind, fromQueue, submissionId] = JSON.parse(key)
 
-    // Restoring an ordinary draft must recreate its exact retry key. Queue and
-    // slash submissions own their recovery. Historical slash keys intentionally
-    // omit submissionId, so the retained invocation must also be excluded.
-    return scope === scopeKey && session === target && !displayKind && !fromQueue && !submissionId &&
-      !String(text).trimStart().startsWith('/') &&
+    // An ordinary draft restores with its own identity, so sending it again is the
+    // explicit retry of that entry. Queue and slash submissions own their recovery
+    // (historical slash keys omit submissionId; the retained invocation is excluded).
+    return scope === scopeKey && session === target && !displayKind && !fromQueue &&
+      (!submissionId || submissionId === entry.id) && !String(text).trimStart().startsWith('/') &&
       !entry.legacyAttempted && entry.attachments.some(attachment => attachment.kind === 'image')
-      ? [{ key, text: String(text), attachments: entry.attachments }]
+      ? [{ key, id: entry.id, text: String(text), attachments: entry.attachments }]
       : []
   })
 }
@@ -188,14 +188,28 @@ function holdPreparedSubmission(key: string): Promise<boolean> {
   })
 }
 
-const intentVariant = (intent: string, key: string) => key === intent || key.startsWith(`${intent.slice(0, -1)},`)
+const sameDestination = (intent: string, key: string) => {
+  const [scope, session] = JSON.parse(intent)
+  const [savedScope, savedSession] = JSON.parse(key)
 
-/** The retained entry an explicit retry of `intent` may reuse: this window's own, or one a
- *  closed window left. A live other window's uncertain send is never adopted. */
-export async function adoptPreparedSubmission(intent: string): Promise<{ key: string; entry: PreparedSubmission } | undefined> {
+  return scope === savedScope && session === savedSession
+}
+
+/** The retained entry an explicit retry may reuse: the one carrying exactly `submissionId` on the
+ *  same destination (scope + session) as `intent`, held by this window or left by a closed one.
+ *  Equal text never selects an entry: a new message is a new intent even when it repeats an
+ *  uncertain one, and a live other window's uncertain send is never adopted. */
+export async function adoptPreparedSubmission(
+  intent: string,
+  submissionId: string
+): Promise<{ key: string; entry: PreparedSubmission } | undefined> {
   const journal = await readJournal()
 
-  for (const key of Object.keys(journal).filter(key => intentVariant(intent, key)).sort()) {
+  const keys = Object.keys(journal)
+    .filter(key => journal[key].id === submissionId && sameDestination(intent, key))
+    .sort()
+
+  for (const key of keys) {
     if (await holdPreparedSubmission(key)) { return { key, entry: journal[key] } }
   }
 

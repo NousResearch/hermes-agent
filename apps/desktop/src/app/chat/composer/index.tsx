@@ -28,6 +28,7 @@ import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
+import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts } from '@/store/composer-queue'
@@ -290,11 +291,13 @@ export function ChatBar({
     isHelpHint,
     isSteerableText,
     loadIntoComposer,
+    rememberDraftRetry,
     requestMainFocus,
     sessionIdRef,
     setComposerText,
     stashAt,
-    syncDraftFromEditor
+    syncDraftFromEditor,
+    takeDraftRetry
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
 
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
@@ -438,7 +441,9 @@ export function ChatBar({
     queuedPrompts,
     sessionId,
     setComposerText,
-    stashAt
+    stashAt,
+    rememberDraftRetry,
+    takeDraftRetry
   })
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
@@ -1296,7 +1301,10 @@ export function ChatBar({
             <SuggestionPills sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}
-              onRestore={loadIntoComposer}
+              onRestore={(text, restored, id) => {
+                loadIntoComposer(text, restored)
+                rememberDraftRetry(activeQueueSessionKey, draftRetry(id, text, restored))
+              }}
               request={requestBusyConfig}
               sessionKey={activeQueueSessionKey}
             />

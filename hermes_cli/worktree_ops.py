@@ -562,7 +562,8 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
         env = noninteractive_repo_git_env(worktree_path)
         if env is None:
             return True
-        result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout,
+        # A user's status.showUntrackedFiles=no would otherwise make untracked-only work read clean.
+        result = _git(["status", "--porcelain", "-z", "--untracked-files=all"], worktree_path, timeout=timeout,
                       stdin=subprocess.DEVNULL, env=env)
         if result.returncode != 0:
             return True

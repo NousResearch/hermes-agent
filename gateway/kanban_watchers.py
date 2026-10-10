@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -262,6 +263,14 @@ class GatewayKanbanWatchersMixin:
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
         failure never stops the next. Shutdown: ``self._running`` is checked
         between ticks and the in-flight ``to_thread`` returns on its own.
+
+        ``kanban.*`` settings (max_in_progress, max_spawn, failure_limit, ...)
+        are re-resolved from config at the top of every tick — same as the
+        external ``hermes kanban daemon`` loop — so an operator edit to
+        ``config.yaml`` (or a controller script writing it via `hermes config
+        set`) takes effect on the next tick, no gateway restart required.
+        `load_config` mtime-caches the file, so this re-read is cheap when
+        nothing changed.
         """
         boot = self._kanban_dispatcher_boot()
         if boot is None:
@@ -294,6 +303,26 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                # Re-resolve dispatch settings (max_in_progress, max_spawn,
+                # failure_limit, ...) every tick instead of once at boot, so
+                # a config edit (e.g. a resource-controller script calling
+                # `hermes config set kanban.max_in_progress N`) takes effect
+                # within one tick, matching the external daemon's behavior.
+                # `load_config` is mtime-cached, so a no-op edit costs nothing.
+                try:
+                    _fresh_cfg = _load_config()
+                    _fresh_kanban_cfg = _fresh_cfg.get("kanban", {}) if isinstance(_fresh_cfg, dict) else {}
+                    _new_settings = _resolve_dispatcher_settings(_fresh_kanban_cfg, _kb, quiet=True)
+                    if _new_settings != settings:
+                        logger.info("kanban dispatcher: settings changed %s -> %s",
+                                    asdict(settings), asdict(_new_settings))
+                    settings = _new_settings
+                    dispatcher.settings = settings
+                    interval = settings.interval
+                except Exception:
+                    logger.exception("kanban dispatcher: failed to re-resolve settings this tick; "
+                                      "keeping previous settings")
+
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():

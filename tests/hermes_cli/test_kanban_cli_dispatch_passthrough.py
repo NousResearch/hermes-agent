@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.conftest import fresh_hermes_modules
 
 
 @pytest.fixture()
@@ -23,10 +24,8 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    with fresh_hermes_modules():
+        yield test_home
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

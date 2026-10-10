@@ -804,10 +804,13 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
-def _assignment_sub(render, *, check_keyword: bool):
-    """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
+def _assignment_sub(render, *, check_keyword: bool, keep_urls: bool = False):
+    """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction.
+    ``keep_urls`` also keeps a match that holds a URL (``token_url: https://…``)."""
     def _sub(m):
         groups = m.groups()
+        if keep_urls and "://" in m.group(0):
+            return m.group(0)
         if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
             return m.group(0)
         return render(groups)
@@ -816,8 +819,9 @@ def _assignment_sub(render, *, check_keyword: bool):
 
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
-    that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
-    params are intentionally passed through, see redact_sensitive_text).
+    that would match ``token=``/``key=`` URL params skip ``://`` text; the line-anchored
+    ones only keep matches that hold a URL (web-URL query params are intentionally
+    passed through, see redact_sensitive_text).
 
     ``mask_nonreusable`` masks the assignments with the ``«redacted:…»`` sentinel that
     ``file_read=True`` already uses for prefix-matched credentials. Without it an agent
@@ -825,7 +829,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
+        def _render_env(g):
+            return f"{g[0]}={g[1]}{mask(g[2])}{g[1]}"
+        _redact_env = _assignment_sub(_render_env, check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
@@ -835,16 +841,18 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
-        # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are
-        # intentionally passed through (see note near the bottom of this function); _DB_CONNSTR_RE still
-        # guards connection-string passwords. Extra gate: every _CFG_*_RE match requires a secret keyword in
-        # the key, so a text without any secret keyword cannot match — skipping is exact. This matters
-        # because _CFG_DOTTED_RE backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs (e.g.
-        # base64/hex blobs in compaction payloads); the linear keyword scan prevents that pathological path
-        # on secret-free text.
-        if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
-            text = _CFG_DOTTED_RE.sub(_redact_env, text)
-            text = _CFG_ANCHORED_RE.sub(_redact_env, text)
+        # Lowercase/dotted config keys (issue #16413). _CFG_DOTTED_RE skips URL text entirely — web-URL query
+        # params are intentionally passed through (see note near the bottom of this function); _DB_CONNSTR_RE
+        # still guards connection-string passwords. _CFG_ANCHORED_RE is line-anchored, so it cannot match
+        # inside a URL and only keeps a match that holds one. Extra gate: every _CFG_*_RE match requires a
+        # secret keyword in the key, so a text without any secret keyword cannot match — skipping is exact.
+        # This matters because _CFG_DOTTED_RE backtracks quadratically on long unbroken [A-Za-z0-9_.\-] runs
+        # (e.g. base64/hex blobs in compaction payloads); the linear keyword scan prevents that pathological
+        # path on secret-free text.
+        if _CFG_SECRET_WORD_RE.search(text):
+            if "://" not in text:
+                text = _CFG_DOTTED_RE.sub(_redact_env, text)
+            text = _CFG_ANCHORED_RE.sub(_assignment_sub(_render_env, check_keyword=True, keep_urls=True), text)
 
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(
@@ -858,10 +866,11 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     if ":" in text and "'" in text:
         text = _redact_python_repr_fields(text)
 
-    # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
-    if ":" in text and "://" not in text:
+    # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes). Line-anchored, so
+    # a URL elsewhere in the text (config.yaml's base_url next to api_key) must not switch it off.
+    if ":" in text:
         text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True, keep_urls=True), text)
     return text
 
 

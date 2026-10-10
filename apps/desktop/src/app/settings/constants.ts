@@ -255,6 +255,19 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  // ChatGPT/Codex subscription voices accepted by gpt-live-1-codex. Keep
+  // separate from API GPT-Live voices: the providers expose different sets.
+  'voice.gpt_live.subscription_voice': [
+    'cove',
+    'arbor',
+    'breeze',
+    'ember',
+    'juniper',
+    'maple',
+    'sol',
+    'spruce',
+    'vale'
+  ],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -483,6 +496,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     autoTts: 'Read Responses Aloud',
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
+      subscriptionVoice: 'GPT-Live Voice',
       voice: 'GPT-Live Voice',
       instructions: 'GPT-Live Persona'
     }
@@ -670,9 +684,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   voice: {
     autoTts: 'Automatically speak assistant responses.',
     voiceChatMode:
-      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
+      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model listens and talks, then delegates real work to Hermes with its selected model and full toolset. API billing and eligible ChatGPT/Codex subscription access are explicit, separate choices.',
     gptLive: {
-      voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
+      subscriptionVoice: 'Voice used by ChatGPT/Codex subscription mode.',
+      voice: 'Voice used by API-billed GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
     }
@@ -785,6 +800,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Mic,
     keys: [
       'voice.voice_chat_mode',
+      'voice.gpt_live.subscription_voice',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
       'tts.provider',

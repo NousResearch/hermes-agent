@@ -155,12 +155,24 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     monkeypatch,
 ):
-    """Non-chat commands never launch the TUI, so they must keep their own
-    MCP discovery even when the ambient display config resolves to TUI —
-    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
-    calls = {"inline": 0}
+    """Non-chat commands never launch the TUI, so ``_is_tui_chat_launch`` must not consult
+    ``_resolve_use_tui`` there — otherwise an ambient TUI display config would hand a
+    non-chat command to the TUI startup path (#111717).
 
-    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
+    ``hermes mcp serve`` was the one command that reached the inline-discovery branch, and it
+    reached it only because of that same carve-out. It now takes its own stdio-server path:
+    it serves a fixed hand-registered tool set and must not spawn every configured MCP server
+    (#30757). The invariant this test guards is therefore the TUI-consult rule, not the
+    discovery count for ``mcp serve`` — see ``test_mcp_serve_startup_skips_external_discovery``.
+    """
+    calls = {"inline": 0}
+    consulted = []
+
+    def _resolve_use_tui(_args):
+        consulted.append(True)
+        return True
+
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", _resolve_use_tui)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
@@ -187,9 +199,12 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
         ),
     )
 
+    assert main_mod._is_tui_chat_launch(_agent_args(command="mcp", mcp_action="serve")) is False
+    assert consulted == [], "non-chat command consulted _resolve_use_tui"
+
     main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
 
-    assert calls["inline"] == 1
+    assert calls["inline"] == 0
 
 
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
@@ -500,3 +515,75 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
     build_agent()
     assert len(runs) == 2
+
+
+def _isolate_agent_startup(monkeypatch) -> list:
+    """Stub every discovery side effect of ``_prepare_agent_startup`` and record the
+    external MCP discovery calls that survive. Returns the mutable call log."""
+    calls: list = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names)
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *a, **k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.outbound_webhooks",
+        types.SimpleNamespace(register_from_config=lambda *a, **k: None),
+    )
+    return calls
+
+
+def test_mcp_serve_startup_skips_external_discovery(monkeypatch, _reset_mcp_server_filter):
+    """``hermes mcp serve`` serves a fixed, hand-registered tool set (``mcp_serve._TOOL_NAMES``):
+    it never calls ``discover_mcp_tools``. Startup must therefore not spawn every configured
+    external MCP server for tools the server cannot expose (#30757)."""
+    calls = _isolate_agent_startup(monkeypatch)
+    main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
+
+    assert calls == []
+
+
+def test_mcp_admin_commands_are_not_agent_runtime(monkeypatch, _reset_mcp_server_filter):
+    """``mcp list`` / ``add`` / ``catalog`` do not run an agent turn, so they are not agent-runtime
+    commands at all: ``_prepare_agent_startup`` returns before any discovery."""
+    for action in ("list", "add", "catalog", "configure", "remove"):
+        calls = _isolate_agent_startup(monkeypatch)
+        main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action=action))
+        assert calls == [], f"`hermes mcp {action}` triggered external MCP discovery"
+
+
+def test_chat_still_discovers_external_mcp_servers(monkeypatch, _reset_mcp_server_filter):
+    """Control: ``chat`` is the agent-runtime command that must keep discovery."""
+    calls = _isolate_agent_startup(monkeypatch)
+    monkeypatch.setattr(main_mod, "_should_background_mcp_startup", lambda args: False)
+    main_mod._prepare_agent_startup(_agent_args(command="chat"))
+
+    assert calls == [None]
+
+
+def test_cron_run_keeps_its_runtime_discovery_behavior(monkeypatch, _reset_mcp_server_filter):
+    """``cron run``/``tick`` are agent-runtime commands, but their MCP startup happens on the
+    runtime path (``gateway``/``acp``-style dedicated startup), so the CLI wrapper must not
+    pre-run a second inline discovery for them."""
+    calls = _isolate_agent_startup(monkeypatch)
+    main_mod._prepare_agent_startup(_agent_args(command="cron", cron_command="run"))
+
+    assert calls == []

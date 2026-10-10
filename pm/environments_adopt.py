@@ -81,8 +81,18 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
     if os.environ.get("PYTHONPATH"):
         os.environ["PYTHONPATH"] = _replace(os.environ["PYTHONPATH"], old, new)
     os.environ["PATH"] = _replace(os.environ.get("PATH", ""), venv_bin_dir(previous), venv_bin_dir(selected))
+    ws = selected.parent / "workspace"
+    if ws.is_dir():
+        from pm.paths import repo_root
+        from pm.workspace import _propagate_workspace_identity
+        try:
+            _propagate_workspace_identity(repo_root(), ws)
+        except Exception:
+            pass
     importlib.invalidate_caches()
     return True
+
+
 
 
 def _running_and_selected(project_root: Path) -> tuple[Path, Path] | None:

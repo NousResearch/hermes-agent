@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
-import { createPoolStopper, type PoolStopEntry } from './pool-stop'
+import { createPoolStopper, type PoolStopEntry, withPoolEntryAfterStop } from './pool-stop'
 
 // Pins the orphaned-backend class from #62721: fire-and-forget pool stops
 // (SIGTERM + immediate entry delete) dropped the process handle before the
@@ -246,4 +246,96 @@ test('failed teardown blocks same-profile respawn until the actual late exit', a
   child.emit('exit')
   assert.equal(stopper.inFlight('profile'), undefined)
   assert.equal(stopper.hasPending(), false)
+})
+
+test('reconnect waits for remote cleanup before looking up or replacing the pooled backend', async () => {
+  const key = 'conn:lab::librarian'
+  const pool = new Map<string, PoolStopEntry>([[key, { process: null }]])
+  const events: string[] = []
+
+  let finishRemoteCleanup = () => {}
+
+  const remoteCleanup = new Promise<void>(resolve => {
+    finishRemoteCleanup = resolve
+  })
+
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => events.push('stop-local-child'),
+    waitForExit: async () => {
+      events.push('local-child-exited')
+    },
+    afterStop: async key => {
+      events.push(`remote-cleanup-start:${key}`)
+      await remoteCleanup
+      events.push(`remote-cleanup-done:${key}`)
+    }
+  })
+
+  const stop = stopper.stop(key)
+  await Promise.resolve()
+
+  const lookup = vi.spyOn(pool, 'get')
+  const replacement = { process: null }
+
+  const reconnect = () =>
+    withPoolEntryAfterStop(pool, stopper, key, existing => {
+      if (existing) {
+        return existing
+      }
+
+      events.push('reconnect')
+      pool.set(key, replacement)
+
+      return replacement
+    })
+
+  const first = reconnect()
+  const second = reconnect()
+
+  await Promise.resolve()
+  assert.equal(lookup.mock.calls.length, 0, 'do not look up the key while remote cleanup is running')
+  assert.equal(pool.has(key), false)
+
+  finishRemoteCleanup()
+  await stop
+
+  assert.equal(await first, replacement)
+  assert.equal(await second, replacement)
+  assert.equal(await reconnect(), replacement, 'reuse the backend when no stop is pending')
+  assert.deepEqual(events, [
+    'stop-local-child',
+    'local-child-exited',
+    `remote-cleanup-start:${key}`,
+    `remote-cleanup-done:${key}`,
+    'reconnect'
+  ])
+})
+
+test('failed teardown prevents reconnect from looking up or replacing the pooled backend', async () => {
+  const key = 'conn:lab::librarian'
+  const pool = new Map<string, PoolStopEntry>([[key, { process: null }]])
+  const failure = new Error('remote cleanup failed')
+
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => {},
+    waitForExit: async () => {},
+    afterStop: async () => {
+      throw failure
+    }
+  })
+
+  const stop = stopper.stop(key)
+  const lookup = vi.spyOn(pool, 'get')
+  const reuseOrCreate = vi.fn()
+  const reconnect = withPoolEntryAfterStop(pool, stopper, key, reuseOrCreate)
+
+  await Promise.all([
+    assert.rejects(stop, error => error === failure),
+    assert.rejects(reconnect, error => error === failure)
+  ])
+
+  assert.equal(lookup.mock.calls.length, 0)
+  assert.equal(reuseOrCreate.mock.calls.length, 0)
 })

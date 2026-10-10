@@ -53,6 +53,23 @@ export interface PoolStopper {
   stopAll: () => Promise<void>
 }
 
+export async function withPoolEntryAfterStop<Entry, Result>(
+  pool: ReadonlyMap<string, Entry>,
+  stopper: Pick<PoolStopper, 'inFlight'>,
+  key: string,
+  handleEntry: (entry: Entry | undefined) => Result | Promise<Result>
+): Promise<Result> {
+  const stopping = stopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
+  // Run the callback with the lookup so it can publish a replacement before
+  // another caller observes the empty slot.
+  return handleEntry(pool.get(key))
+}
+
 export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
   const stops = new Map<string, Promise<void>>()
 

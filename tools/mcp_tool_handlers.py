@@ -393,7 +393,17 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    trusted_meta = None
+    if server_name == "agentcrew_m3":
+        from gateway.session_context import get_trusted_transport
+        transport = get_trusted_transport()
+        if transport is not None:
+            trusted_meta = {"com.agentcrew/trustedTransport": transport}
+    _call_coro = (
+        server.session.call_tool(tool_name, arguments=args, meta=trusted_meta)
+        if trusted_meta is not None
+        else server.session.call_tool(tool_name, arguments=args)
+    )
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.

@@ -6,6 +6,7 @@ other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
 import os
+import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
@@ -55,6 +56,10 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # Request-local proof that the client resumes SessionDB history. No env fallback
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
+
+# Trusted local-only transport envelope for selected MCP clients. No environment fallback and no
+# subprocess export: model-generated tool arguments can never supply or overwrite this value.
+_TRUSTED_TRANSPORT = ContextVar("HERMES_TRUSTED_TRANSPORT", default=None)
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -120,6 +125,7 @@ def set_session_vars(
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None,
+    trusted_transport: dict[str, str] | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -140,6 +146,7 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    tokens.append(_TRUSTED_TRANSPORT.set(copy.deepcopy(trusted_transport)))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -154,6 +161,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _TRUSTED_TRANSPORT.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -167,6 +175,7 @@ def reset_session_vars() -> None:
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _TRUSTED_TRANSPORT.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -177,6 +186,17 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def get_trusted_transport() -> dict[str, str] | None:
+    """Return a copy of the gateway-owned inbound envelope for this task, if one was bound."""
+    value = _TRUSTED_TRANSPORT.get()
+    return copy.deepcopy(value) if isinstance(value, dict) else None
+
+
+def set_trusted_transport(value: dict[str, str] | None) -> None:
+    """Bind gateway-owned metadata after ordinary session variables are established."""
+    _TRUSTED_TRANSPORT.set(copy.deepcopy(value))
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

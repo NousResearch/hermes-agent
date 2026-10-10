@@ -185,7 +185,7 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
     return body
 
 
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003, 99992354})  # reply target withdrawn/missing/invalid → create fallback
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -2472,7 +2472,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
             sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
-            raw_message=data, message_id=token or str(uuid.uuid4()),
+            raw_message=data, message_id=getattr(context, "open_message_id", "") or token or str(uuid.uuid4()),
         )
 
     async def _dispatch_synthetic_event(
@@ -3948,7 +3948,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             )
                             return response
                         logger.warning(
-                            "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
+                            "[Feishu] Reply to %s failed (code %s — reply target withdrawn/missing/invalid); "
                             "falling back to new message in chat %s",
                             active_reply_to, code, chat_id,
                         )

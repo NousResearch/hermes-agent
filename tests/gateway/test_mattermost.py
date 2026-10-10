@@ -24,6 +24,13 @@ class TestMattermostProgressThreadRouting:
 
 class TestMattermostDisplayHygiene:
 
+    def test_trailing_self_mention_requires_a_boundary(self):
+        from plugins.platforms.mattermost.adapter import _strip_edge_self_mentions
+
+        assert _strip_edge_self_mentions("ping @hermes-bot", ["@hermes-bot"]) == "ping"
+        assert _strip_edge_self_mentions("ping mail@hermes-bot", ["@hermes-bot"]) == "ping mail@hermes-bot"
+        assert _strip_edge_self_mentions("ping support@hermes.bot", ["@hermes.bot"]) == "ping support@hermes.bot"
+
     def test_mattermost_platform_opt_in_can_enable_interim_assistant_messages(self):
         """Mattermost can still opt into commentary explicitly per platform."""
         user_config = {
@@ -96,6 +103,60 @@ def _make_adapter():
     )
     adapter = MattermostAdapter(config)
     return adapter
+
+
+class TestMattermostEdgeSelfMentionStrip:
+    """Edge-only self-mention stripping in _apply_channel_gating (#125380): the
+    co-recipient set must survive and no `****` / doubled-space residue may appear."""
+
+    def setup_method(self):
+        for var in ("MATTERMOST_ALLOWED_CHANNELS", "MATTERMOST_REQUIRE_MENTION",
+                    "MATTERMOST_FREE_RESPONSE_CHANNELS"):
+            os.environ.pop(var, None)
+        self.adapter = _make_adapter()
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter._bot_user_id = "botuid"
+
+    def _gate(self, text):
+        return self.adapter._apply_channel_gating("chan_456", text)
+
+    def test_handoff_keeps_own_and_peer_mentions_inline(self):
+        """The exact #125380 evidence: mid-text self-mention is NOT stripped — every
+        profile must see the same recipient set, not its own handle deleted."""
+        result = self._gate("Not my line. Handing it off: @designerbot @hermes-bot — one line each")
+        assert result == "Not my line. Handing it off: @designerbot @hermes-bot — one line each"
+
+    def test_bold_mention_redacts_to_nothing_only_at_edge(self):
+        """Emphasis-wrapped mentions are KEPT (fidelity over stripping — the old
+        strip-everywhere behavior is what produced the literal `****` residue), and
+        no output ever contains `****`."""
+        assert self._gate("**@hermes-bot** status ok") == "**@hermes-bot** status ok"
+        assert self._gate("report for **@qabot** and **@hermes-bot** ok") == \
+            "report for **@qabot** and **@hermes-bot** ok"
+        assert "****" not in (self._gate("**@hermes-bot** ping") or "")
+
+    def test_leading_self_mention_strips_clean(self):
+        assert self._gate("@hermes-bot run the check") == "run the check"
+
+    def test_trailing_self_mention_strips_clean(self):
+        assert self._gate("run the check @hermes-bot") == "run the check"
+        assert self._gate("run the check @hermes-bot.") == "run the check."
+
+    def test_case_insensitive_edge_strip(self):
+        assert self._gate("@Hermes-Bot run it") == "run it"
+
+    def test_boundary_prevents_short_handle_eating_longer_one(self):
+        self.adapter._bot_username = "al"
+        assert self._gate("@alice do it") == "@alice do it"
+        assert self._gate("@al do it") == "do it"
+
+    def test_no_doubled_space_from_inline_mention(self):
+        """Inline occurrences are preserved (never cut), so no doubled-space residue."""
+        result = self._gate("hey @hermes-bot and @otherbot, sync up")
+        assert result == "hey @hermes-bot and @otherbot, sync up"
+
+    def test_mention_gate_still_ignores_posts_without_mention(self):
+        assert self._gate("just ambient chatter") is None
 
 
 class TestMattermostFormatMessage:

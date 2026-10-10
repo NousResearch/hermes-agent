@@ -108,6 +108,12 @@ describe('mergeTranslations', () => {
 })
 
 describe('RTL_LOCALES', () => {
+  it('marks Arabic and Hebrew as right-to-left', () => {
+    expect(RTL_LOCALES.has('ar')).toBe(true)
+    expect(RTL_LOCALES.has('he')).toBe(true)
+    expect(RTL_LOCALES.has('en')).toBe(false)
+  })
+
   it('only names locales that have an endonym', () => {
     for (const locale of RTL_LOCALES) {
       expect(Object.keys(LOCALE_ENDONYMS)).toContain(locale)

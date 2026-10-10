@@ -46,6 +46,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'ar'
   },
   {
+    id: 'he',
+    name: LOCALE_ENDONYMS.he,
+    englishName: 'Hebrew',
+    configValue: 'he'
+  },
+  {
     id: 'ru',
     name: LOCALE_ENDONYMS.ru,
     englishName: 'Russian',
@@ -165,6 +171,14 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   ar_eg: 'ar',
   arabic: 'ar',
   العربية: 'ar',
+  he: 'he',
+  'he-il': 'he',
+  he_il: 'he',
+  iw: 'he',
+  'iw-il': 'he',
+  iw_il: 'he',
+  hebrew: 'he',
+  עברית: 'he',
   ru: 'ru',
   'ru-ru': 'ru',
   ru_ru: 'ru',

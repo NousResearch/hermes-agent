@@ -279,7 +279,12 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
             continue
         try:
             payload = json.loads(body[len(BLACKBOARD_PREFIX):])
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
+            # RecursionError (deeply nested but well-formed JSON) is not a JSONDecodeError,
+            # so it escapes a bare `except json.JSONDecodeError` and kills an idempotent retry.
+            continue
+        # Any agent can comment on the root, so the payload may be valid JSON that is not an object.
+        if not isinstance(payload, dict):
             continue
         key = payload.get("key")
         if not isinstance(key, str) or not key:

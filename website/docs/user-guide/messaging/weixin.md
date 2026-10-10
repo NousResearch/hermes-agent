@@ -200,7 +200,7 @@ The adapter receives media attachments from users, downloads them from the WeCha
 | **Files** | Downloaded, AES-decrypted, and cached. Original filename is preserved. |
 | **Voice** | If a text transcription is available, it's extracted as text. Otherwise the audio (SILK format) is downloaded and cached. |
 
-**Quoted messages:** Media from quoted (replied-to) messages is also extracted, so the agent has context about what the user is replying to.
+**Quoted messages:** Media from quoted (replied-to) messages is also extracted, so the agent has context about what the user is replying to. Newer WeChat clients may send a quoted message as a server message ID only, without embedding the quoted body; the adapter keeps a bounded in-memory cache of recent inbound and outbound message bodies and resolves such quotes from it, falling back to an explicit `[引用: 内容未缓存]` placeholder when the cache misses (for example, after a restart).
 
 ### AES-128-ECB Encrypted CDN
 

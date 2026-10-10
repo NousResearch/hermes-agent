@@ -54,6 +54,16 @@ def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path:
         _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
 
 
+def test_install_gate_skips_foreign_plugin_json_when_native_manifest_present(tmp_path: Path) -> None:
+    # A foreign-harness plugin.json (no Agent Plugins $schema) beside a valid native
+    # plugin.yaml must not fail the install gate: the native manifest wins everywhere
+    # else in the plugin system (#125927).
+    (tmp_path / "plugin.yaml").write_text("name: example-plugin\n", encoding="utf-8")
+    (tmp_path / "plugin.json").write_text(json.dumps({"name": "example-plugin"}), encoding="utf-8")
+
+    _refuse_unavailable_portable_plugin("example-plugin", tmp_path)  # must not raise
+
+
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────
 
 

@@ -746,6 +746,28 @@ class TestPidExistsZombieProbe:
         assert calls == [os.getpid()]
 
 
+class TestPidExistsHidepid2:
+    """#135102: under ``hidepid=2`` / ``ProtectProc=invisible``, another user's PID is
+    invisible in ``/proc`` so ``psutil.Process(pid)`` raises ``NoSuchProcess``; the PID is
+    alive but owned by a different user, so ``_pid_exists`` must fall back to the stdlib
+    ``os.kill(pid, 0)`` probe rather than return ``False`` immediately.
+    """
+
+    @pytest.mark.platforms("linux")
+    def test_psutil_nosuchprocess_falls_through_to_stdlib(self, monkeypatch):
+        """A PID hidden from psutil by hidepid=2 must be confirmed alive via os.kill."""
+        import psutil as real_psutil
+        pid = os.getpid()
+
+        def raise_nosuchprocess(_self):
+            raise real_psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(real_psutil.Process, "status", raise_nosuchprocess)
+
+        # os.kill(pid, 0) for our own PID succeeds, so the stdlib path returns True.
+        assert status._pid_exists(pid) is True
+
+
 class TestScopedLocks:
     @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):

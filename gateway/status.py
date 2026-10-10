@@ -953,7 +953,7 @@ def _pid_exists(pid: int) -> bool:
             if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
-            return False
+            return pid_exists_stdlib(pid)  # hidepid=2 makes other-users' PIDs look absent to psutil; os.kill(pid,0) proves liveness.
         except Exception:
             pass
         return bool(psutil.pid_exists(pid))

@@ -26,6 +26,27 @@ function renderMarkdown(source: string, surface: Surface) {
 }
 
 describe.each<Surface>(['chat', 'file preview'])('postfix currency in %s Markdown', surface => {
+  it('preserves a lone postfix amount without a second dollar to pair with', () => {
+    const source = 'il costo è 12,87 $'
+    const { container } = renderMarkdown(source, surface)
+
+    expect(container.textContent).toBe(source)
+    expect(container.querySelectorAll('.katex')).toHaveLength(0)
+    expect(preprocessMarkdown(source)).toBe('il costo è 12,87 \\$')
+    expect(normalizeFilePreviewMath(source)).toBe('il costo è 12,87 \\$')
+  })
+
+  it.each(['inline code', 'fenced code'])('preserves shell dollars inside %s', route => {
+    const command = "ip route get $(getent hosts example.com | awk '{print $1;exit}')"
+    const source = route === 'inline code' ? `\`${command}\`` : `\`\`\`bash\n${command}\n\`\`\``
+    const { container } = renderMarkdown(source, surface)
+
+    expect(container.querySelector('code')?.textContent?.trimEnd()).toBe(command)
+    expect(container.querySelectorAll('.katex')).toHaveLength(0)
+    expect(preprocessMarkdown(source)).toBe(source)
+    expect(normalizeFilePreviewMath(source)).toBe(source)
+  })
+
   it.each<[string, string, string, string[]]>([
     [
       'an invoice with emphasis',

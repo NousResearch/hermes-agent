@@ -66,7 +66,7 @@ def _drive_waiter(monkeypatch, paths: list[str]):
                 return await mo._make_callback_waiter(port, timeout=30)()
         try:
             out["result"] = asyncio.run(main())
-        except Exception as exc:  # noqa: BLE001 — the timeout is the failure under test
+        except Exception as exc:
             out["exc"] = exc
 
     thread = threading.Thread(target=run)

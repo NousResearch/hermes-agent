@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "正在規劃：{task}"
     ack_conversation: "正在根據此對話的上下文進行規劃…"
+  initiate_setup:
+    ack: "正在開始設定…"
   init:
     start_failed: "無法啟動 /init — 請再試一次。"
     ack_update: "正在依專案掃描結果更新 AGENTS.md…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ 工作階段資料庫回報的損毀錯誤僅限於搜尋索引（FTS5）；訊息資料表並未受損。修復前訊息可能無法保存：請執行 `hermes {profile_arg}doctor --fix`，然後重新啟動閘道。除非 `hermes {profile_arg}doctor` 確認有損毀，否則請勿執行復原工具或還原備份。"
     db_then_restart: "{action} 然後執行 `hermes {profile_arg}gateway restart`。"
     db_unavailable: "⚠️ 工作階段資料庫無法使用 — 訊息可能不會被儲存，且 /resume 將是空的。原因：{cause}。{action}"
+  cron_store:
+    unwritable: "⚠️ Cron 儲存區 {store} 自 {since} 起無法寫入（{error}）。在恢復可寫入之前，排程工作將被略過。修復方式：{fix}。"
+    recovered: "✅ Cron 儲存區 {store} 已恢復可寫入；略過了 {skipped} 次執行，每個工作將補執行一次。"
   whoami:
     scope_dm: "私訊"
     scope_group: "群組／頻道"
@@ -1553,6 +1558,8 @@ slash:
     description: "在此工作階段以固定間隔重複執行提示"
   plan:
     description: "將 markdown 實作計畫寫入 .hermes/plans/，不執行任何動作"
+  initiate-setup:
+    description: "執行首次設定：了解你，並依你的需求設定 Hermes"
   moa:
     description: "以預設的 Mixture of Agents 預設組執行一次提示，然後還原你的模型"
   subgoal:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 規劃中：{task}"
       from_conversation: "📋 正在根據這段對話的上下文進行規劃…"
+    initiate_setup:
+      starting: "🧭 正在開始設定..."
     init:
       updating: "⚡ 正在根據專案掃描更新 AGENTS.md…"
       generating: "⚡ 正在根據專案掃描產生 AGENTS.md…"
@@ -3674,7 +3683,7 @@ tips:
   t197: "軌跡儲存（--save-trajectories）會記錄完整的工具使用軌跡，供模型訓練使用。"
   t198: "外掛有三種類型：一般（工具／hook）、記憶提供方，以及上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接從 GitHub 安裝外掛。"
-  t200: "外部記憶提供方：內建 OpenViking；Honcho、Hindsight、Mem0 等更多可透過 hermes plugins install 安裝。"
+  t200: "外部記憶提供方：Honcho、Hindsight、Mem0、OpenViking 等可透過 hermes plugins install 安裝。"
   t201: "外掛 hook 包含 pre/post_tool_call、pre/post_llm_call，以及用來標準化輸出的 transform_terminal_output。"
   t202: "提示快取（Anthropic）透過重用已快取的系統提示詞前綴來降低費用。"
   t203: "代理會在背景執行緒中自動產生工作階段標題 — 完全不影響延遲。"

@@ -22,9 +22,9 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or holographic, retaindb, byterover,
-                         # or honcho / hindsight / supermemory / mem0 (plugin catalog — run
-                         # `hermes plugins install <name>` first)
+  provider: holographic  # or retaindb, byterover,
+                         # or honcho / hindsight / supermemory / mem0 / openviking (plugin
+                         # catalog — run `hermes plugins install <name>` first)
 ```
 
 ## How It Works
@@ -39,6 +39,8 @@ When a memory provider is active, Hermes automatically:
 6. **Adds provider-specific tools** so the agent can search, store, and manage memories
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
+
+Everything Hermes hands a provider (turns, the transcript including tool output, recall queries, session-end and pre-compression transcripts, mirrored memory writes, delegation results and the arguments of the provider's own tools) passes through the same secret scrub as chat-platform and cron delivery first, so a key echoed into tool output is masked before the provider can store it. Like that delivery scrub it applies even with `security.redact_secrets: false`. Credentials with no recognisable shape (an arbitrary password, an opaque token outside a `key=value` or `Bearer` context) are not detected; your local transcript keeps the original text.
 
 ## Available Providers
 
@@ -292,12 +294,16 @@ Earlier Hermes releases shipped Honcho in-tree. If a profile still has `memory.p
 
 ### OpenViking
 
+:::info Plugin catalog
+OpenViking is maintained by Volcengine and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. Source: [volcengine/OpenViking — examples/hermes-plugin](https://github.com/volcengine/OpenViking/tree/main/examples/hermes-plugin). Existing setups are migrated automatically — see [Migrating from bundled OpenViking](#migrating-from-bundled-openviking).
+:::
+
 Context database by Volcengine (ByteDance) with filesystem-style knowledge hierarchy, tiered retrieval, and automatic memory extraction into 6 categories.
 
 | | |
 |---|---|
 | **Best for** | Self-hosted knowledge management with structured browsing |
-| **Requires** | OpenViking initialized, validated, and running |
+| **Requires** | `hermes plugins install openviking`; OpenViking initialized, validated, and running |
 | **Data storage** | Self-hosted (local or cloud) |
 | **Cost** | Free (open-source, AGPL-3.0) |
 
@@ -310,7 +316,8 @@ openviking-server init
 openviking-server doctor
 openviking-server
 
-# Then configure Hermes
+# Then install and configure the Hermes plugin
+hermes plugins install openviking
 hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
@@ -333,11 +340,13 @@ OpenViking server settings live in `ov.conf` (`--config`,
 live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 `~/.openviking/ovcli.conf`).
 
-When the endpoint is local and nothing is listening, Hermes starts
-`openviking-server` in the background. That server gets your model-provider
-keys (for its embedding and VLM models), your `HOME` and
-`OPENVIKING_CONFIG_FILE`, but never bot, gateway or relay tokens, and not
-Hermes's `PYTHONPATH`. Put anything else the server needs in `ov.conf`.
+When the endpoint is local and nothing is listening, the plugin starts
+`openviking-server` in the background. At the cataloged version that server
+inherits the full Hermes process environment (minus `PYTHONPATH`), including
+any bot, gateway or relay tokens set there. If that matters to you, start
+`openviking-server` yourself before Hermes so the plugin never spawns it.
+The fix is tracked upstream in
+[volcengine/OpenViking#5553](https://github.com/volcengine/OpenViking/pull/5553).
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
@@ -363,6 +372,16 @@ searchable. The setting changes future writes, not existing memory locations.
 Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
 requests. This standard harness identifier contains no per-user identifier and
 does not add a separate request.
+
+### Migrating from bundled OpenViking
+
+OpenViking used to ship inside the Hermes tree. If your `config.yaml` already has `memory.provider: openviking`, there is nothing to do for most users:
+
+- `hermes update` installs the catalog plugin into every profile home that names the provider.
+- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, Desktop), Hermes installs it and tells you it did.
+- With `security.allow_lazy_installs: false` the agent-start path does not install anything; it prints the exact `hermes plugins install openviking` command instead.
+
+`memory.provider`, `memory.openviking.*`, the `OPENVIKING_*` keys in `.env`, `~/.openviking/` and the memories on your OpenViking server are untouched. Verify with `hermes memory status` and `hermes plugins list`.
 
 ---
 
@@ -519,7 +538,7 @@ Hindsight used to ship inside the Hermes tree (and as the `hermes-agent[hindsigh
 
 - `hermes update` installs the catalog plugin into every profile home that names the provider. Each line names the profile it is about. In a terminal it asks before preparing the plugin's Python dependencies; when several profiles use the provider, the questions are asked once and the answers apply to all of them. Without a terminal (the Desktop app, a script, a service) nobody can answer, so each profile prepares them unattended when its `security.allow_lazy_installs` is on (the default); a profile with it off gets the exact `hermes -p <profile> plugins install hindsight` command instead, and the other profiles still migrate.
 - If the plugin is still missing on the first agent start (`hermes chat`, Desktop, the gateway, …), Hermes installs it, dependencies included, and shows ``✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (memory.provider and your stored memories are unchanged; check its settings with `hermes memory status`).`` Messaging platforms get the line with the first reply.
-- When the agent-start install cannot happen, you see why instead of silently running without external memory: with `security.allow_lazy_installs: false` the warning names the install command for that profile; offline or declined installs show the error and the same command.
+- When the agent-start install cannot happen, you see why instead of silently running without external memory: with `security.allow_lazy_installs: false` the warning names the install command for that profile; offline or declined installs show the error and the same command. After a failed attempt, agent starts in the next hour skip the install and only repeat the command; `hermes update` always retries.
 - Agent start never asks a question (the chat prompt owns the terminal). A catalog provider that never shipped with Hermes (for example `mnemosyne`) is therefore not installed on agent start: the warning names `hermes plugins install <name>` for that profile, or install it from the dashboard/Desktop Plugins page.
 
 What changes on disk: the plugin appears in `~/.hermes/plugins/hindsight/` and `config.yaml` gains `plugins.enabled: [hindsight]`. `memory.provider`, `$HERMES_HOME/hindsight/config.json`, `HINDSIGHT_API_KEY` in `.env` and your memory bank data are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
@@ -759,7 +778,7 @@ package command. Restart Hermes after successful dependency preparation.
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** (plugin catalog) | Cloud/Self-hosted | Paid/Free | 5 | `hermes plugins install honcho` | Dialectic user modeling + session-scoped context |
-| **OpenViking** | Self-hosted | Free | 6 | `openviking` + server | Filesystem hierarchy + tiered loading |
+| **OpenViking** (plugin catalog) | Self-hosted | Free | 6 | `hermes plugins install openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install mem0` | Server-side LLM extraction + self-hosted/OSS modes |
 | **Hindsight** (plugin catalog) | Cloud/Local | Free/Paid | 3 | `hermes plugins install hindsight` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
@@ -783,8 +802,11 @@ Memory providers are moving out of the Hermes tree into their maintainers' own r
 published through the [plugin catalog](./plugins.md). Hindsight moved first (see
 [Migrating from bundled Hindsight](#migrating-from-bundled-hindsight)), then Honcho (see
 [Upgrading from the bundled Honcho](#upgrading-from-the-bundled-honcho)), Supermemory (see
-[Migrating from bundled Supermemory](#migrating-from-bundled-supermemory)) and Mem0 (see
-[Migrating from bundled Mem0](#migrating-from-bundled-mem0)). Nothing changes for you: the
+[Migrating from bundled Supermemory](#migrating-from-bundled-supermemory)), Mem0 (see
+[Migrating from bundled Mem0](#migrating-from-bundled-mem0)) and OpenViking (see
+[Migrating from bundled OpenViking](#migrating-from-bundled-openviking)). Holographic, RetainDB
+and ByteRover leave core on October 15, 2026; their standalone repositories are unmaintained
+and open for a new maintainer. Nothing changes for you: the
 provider name, the settings it reads, its data directory and its tools stay the same.
 When a provider you have configured stops shipping with Hermes, `hermes update` installs its
 catalog plugin for every profile that names it; if you update through the Desktop app, the

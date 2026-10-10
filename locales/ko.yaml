@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "계획 중: {task}"
     ack_conversation: "이 대화의 컨텍스트로 계획을 세우고 있어요…"
+  initiate_setup:
+    ack: "설정을 시작하는 중…"
   init:
     start_failed: "/init을 시작할 수 없었어요 — 다시 시도해 주세요."
     ack_update: "프로젝트 스캔 결과로 AGENTS.md를 업데이트하고 있어요…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ 세션 데이터베이스가 검색 인덱스(FTS5)에 한정된 손상 오류를 보고했어요. 메시지 테이블은 손상되지 않았어요. 수리될 때까지 메시지가 저장되지 않을 수 있어요: `hermes {profile_arg}doctor --fix`를 실행한 뒤 게이트웨이를 재시작하세요. `hermes {profile_arg}doctor`가 손상을 확인하지 않는 한 복구 도구를 실행하거나 백업을 복원하지 마세요."
     db_then_restart: "{action} 그런 다음 `hermes {profile_arg}gateway restart`를 실행하세요."
     db_unavailable: "⚠️ 세션 데이터베이스를 사용할 수 없어요 — 메시지가 저장되지 않을 수 있고 /resume이 비어 있을 거예요. 원인: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ cron 저장소 {store}에 {since}부터 쓸 수 없습니다 ({error}). 다시 쓸 수 있을 때까지 예약된 작업을 건너뜁니다. 해결: {fix}."
+    recovered: "✅ cron 저장소 {store}에 다시 쓸 수 있습니다. 건너뛴 실행 {skipped}건, 작업마다 한 번씩 따라잡습니다."
   whoami:
     scope_dm: "DM"
     scope_group: "그룹/채널"
@@ -1553,6 +1558,8 @@ slash:
     description: "이 세션에서 프롬프트를 일정 간격으로 반복 실행"
   plan:
     description: "실행 없이 마크다운 구현 계획을 .hermes/plans/에 작성"
+  initiate-setup:
+    description: "첫 설정 실행: 사용자에 대해 알아보고 Hermes를 사용자에게 맞게 설정합니다"
   moa:
     description: "기본 Mixture of Agents 프리셋으로 프롬프트 하나를 실행한 뒤 원래 모델 복원"
   subgoal:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 계획 수립 중: {task}"
       from_conversation: "📋 이 대화의 컨텍스트로 계획을 세우는 중..."
+    initiate_setup:
+      starting: "🧭 설정을 시작하는 중..."
     init:
       updating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 업데이트하는 중..."
       generating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 생성하는 중..."
@@ -3674,7 +3683,7 @@ tips:
   t197: "궤적 저장(--save-trajectories)은 모델 학습용으로 도구 사용 전체 기록을 남겨요."
   t198: "플러그인은 세 종류예요: 일반(도구/훅), 메모리 제공자, 컨텍스트 엔진."
   t199: "hermes plugins install owner/repo로 GitHub에서 직접 플러그인을 설치할 수 있어요."
-  t200: "외부 메모리 제공자: OpenViking은 기본 포함이고, Honcho, Hindsight, Mem0 등은 hermes plugins install로 설치해요."
+  t200: "외부 메모리 제공자: Honcho, Hindsight, Mem0, OpenViking 등은 hermes plugins install로 설치해요."
   t201: "플러그인 훅에는 pre/post_tool_call, pre/post_llm_call, 그리고 출력 정규화용 transform_terminal_output이 있어요."
   t202: "프롬프트 캐싱(Anthropic)은 캐시된 시스템 프롬프트 접두부를 재사용해 비용을 줄여요."
   t203: "에이전트는 백그라운드 스레드에서 세션 제목을 자동 생성해요 — 지연 시간에 영향이 없어요."

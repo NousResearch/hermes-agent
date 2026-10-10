@@ -21,6 +21,7 @@ from agent.context_compressor import SUMMARY_PREFIX
 from agent.conversation_compression_reply_anchor import (
     _ensure_compressed_keeps_last_assistant_reply,
 )
+import itertools
 
 # Trailing whitespace on purpose: a conforming engine may hand the row back stripped.
 REPLY = "x" * 200 + " just-delivered verdict report the user is still reading.  "
@@ -33,7 +34,7 @@ def _assert_no_same_role_adjacency(messages):
     """Strict alternation, tool rows included: a tool-call assistant is an assistant row
     too, so never assistant;assistant (or user;user / tool;tool) anywhere in the view."""
     roles = [m.get("role") for m in messages]
-    assert not any(a == b for a, b in zip(roles, roles[1:])), f"same-role adjacency in {roles}"
+    assert not any(a == b for a, b in itertools.pairwise(roles)), f"same-role adjacency in {roles}"
 
 
 def _count_reply(messages):

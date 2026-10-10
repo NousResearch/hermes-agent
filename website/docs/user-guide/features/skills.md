@@ -934,7 +934,7 @@ Valid installs continue to use their source adapter’s existing synchronous fet
 Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits
-Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
+Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. An install costs about two API calls (the repo and its file tree); the skill's files themselves download from `raw.githubusercontent.com`, which the limit does not count. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
 :::
 
 ### Publishing a custom skill tap

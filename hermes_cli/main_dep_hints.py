@@ -9,7 +9,7 @@ def missing_optional_deps_message(surface: str, what: str, extra: str) -> str:
     )
 
 
-def smart_app_control_block_message(error: BaseException) -> "str | None":
+def smart_app_control_block_message(error: BaseException) -> str | None:
     """Guidance for Windows Smart App Control / Application Control blocking the embedded
     Python runtime's ``_ssl`` module, or ``None`` when *error* is not that case.
 

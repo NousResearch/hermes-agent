@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
+  initiate_setup:
+    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
     db_then_restart: "{action} ثم `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ قاعدة بيانات الجلسات غير متاحة — قد لا تُحفظ الرسائل وسيكون /resume فارغًا. السبب: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ مخزن cron ‏{store} غير قابل للكتابة ({error}) منذ {since}. يتم تخطي المهام المجدولة حتى يقبل الكتابة مجددًا. الحل: {fix}."
+    recovered: "✅ مخزن cron ‏{store} قابل للكتابة مجددًا؛ {skipped} تشغيل/تشغيلات متخطاة، وستُعوَّض كل مهمة مرة واحدة."
   whoami:
     scope_dm: "رسالة خاصة"
     scope_group: "مجموعة/قناة"
@@ -1553,6 +1558,8 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
+  initiate-setup:
+    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
+    initiate_setup:
+      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."
@@ -3674,7 +3683,7 @@ tips:
   t197: "يسجّل حفظ المسارات (--save-trajectories) آثار استخدام الأدوات كاملةً لتدريب النماذج."
   t198: "ثلاثة أنواع من الإضافات: عامة (أدوات/خطافات)، ومزوّدو الذاكرة، ومحرّكات السياق."
   t199: "يثبّت hermes plugins install owner/repo الإضافات مباشرة من GitHub."
-  t200: "مزوّدو الذاكرة الخارجيون: OpenViking مضمّن؛ وHoncho وHindsight وMem0 وغيرهم عبر hermes plugins install."
+  t200: "مزوّدو الذاكرة الخارجيون: Honcho وHindsight وMem0 وOpenViking وغيرهم عبر hermes plugins install."
   t201: "تشمل خطافات الإضافات pre/post_tool_call وpre/post_llm_call وtransform_terminal_output لتوحيد شكل المخرجات."
   t202: "يقلّل تخزين المطالبات مؤقتًا (Anthropic) التكاليف بإعادة استخدام بادئات موجّه النظام المخزّنة."
   t203: "يولّد الوكيل عناوين الجلسات تلقائيًا في خيط خلفي — دون أي تأثير على زمن الاستجابة."

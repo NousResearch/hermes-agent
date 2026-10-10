@@ -74,6 +74,26 @@ BASE_URLS = {
     "custom": "http://127.0.0.1:8080/v1",
 }
 
+# Agents built from a base_url alone (``AIAgent(base_url=..., api_key=...)``: ``run_agent.py``
+# main, the batch runner, library callers) carry ``provider=""``. Their request quirks are
+# detected from the host, so each host-detected quirk gets one base_url-only cell, plus generic
+# and local endpoints. Keys are ``base-url:<label>``; they sit outside the registry coverage check.
+BASE_URL_ONLY = {
+    "base-url:openrouter": ("anthropic/claude-opus-5.5", "https://openrouter.ai/api/v1"),
+    "base-url:nous": ("anthropic/claude-opus-5.5", "https://inference-api.nousresearch.com/v1"),
+    "base-url:kimi": ("kimi-k3", "https://api.moonshot.ai/v1"),
+    "base-url:kimi-coding": ("kimi-k3", "https://api.kimi.com/coding/v1"),
+    "base-url:tokenhub": ("hunyuan-t1", "https://tokenhub.tencentmaas.com/v1"),
+    "base-url:github-models": ("openai/gpt-5.5", "https://models.github.ai/inference"),
+    # o-series stays on chat completions and takes the GitHub reasoning branch; gpt-5.5 above goes to Responses.
+    "base-url:github-models-chat": ("openai/o4-mini", "https://models.github.ai/inference"),
+    "base-url:nvidia-nim": ("nvidia/nemotron-3-super", "https://integrate.api.nvidia.com/v1"),
+    "base-url:qwen-portal": ("qwen3-coder-plus", "https://portal.qwen.ai/v1"),
+    "base-url:lmstudio-port": ("qwen/qwen3-8b", "http://127.0.0.1:1234/v1"),
+    "base-url:ollama": ("qwen3:8b", "http://127.0.0.1:11434/v1"),
+    "base-url:generic": ("my-model", "https://llm.example.com/v1"),
+}
+
 # Values that legitimately differ per run or per release; everything else compares exactly.
 _VOLATILE = (
     (re.compile(r"client=hermes-client-v[^\"]*"), "client=hermes-client-v<VERSION>"),
@@ -174,24 +194,36 @@ def _load() -> dict[str, Any]:
 
 
 CELLS = _cells()
+BASE_URL_CELLS = [(key, model, url) for key, (model, url) in BASE_URL_ONLY.items()]
+
+
+def _check(key: str, actual: dict[str, Any], model: str, base_url: str) -> None:
+    if UPDATE:
+        golden = _load()
+        golden[key] = {"model": model, "base_url": base_url, **actual}
+        SNAPSHOT.write_text(json.dumps(dict(sorted(golden.items())), indent=1, sort_keys=True) + "\n",
+                            encoding="utf-8")
+        return
+    expected = _load().get(key)
+    assert expected is not None, f"{key} has no recorded wire; regenerate the snapshot (module docstring)"
+    expected = {k: v for k, v in expected.items() if k not in ("model", "base_url")}
+    assert actual == expected, f"{key} wire changed — {_first_divergence(expected, actual)}"
 
 
 @pytest.mark.parametrize("provider,model,base_url", CELLS, ids=[c[0] for c in CELLS])
 def test_provider_wire_matches_snapshot(offline, provider, model, base_url):
-    actual = _wire(provider, model, base_url)
-    if UPDATE:
-        golden = _load()
-        golden[provider] = {"model": model, "base_url": base_url, **actual}
-        SNAPSHOT.write_text(json.dumps(dict(sorted(golden.items())), indent=1, sort_keys=True) + "\n",
-                            encoding="utf-8")
-        return
-    expected = _load().get(provider)
-    assert expected is not None, f"{provider} has no recorded wire; regenerate the snapshot (module docstring)"
-    expected = {k: v for k, v in expected.items() if k not in ("model", "base_url")}
-    assert actual == expected, f"{provider} wire changed — {_first_divergence(expected, actual)}"
+    _check(provider, _wire(provider, model, base_url), model, base_url)
+
+
+@pytest.mark.parametrize("key,model,base_url", BASE_URL_CELLS, ids=[c[0] for c in BASE_URL_CELLS])
+def test_base_url_only_wire_matches_snapshot(offline, key, model, base_url):
+    actual = _wire("", model, base_url)
+    if key == "base-url:github-models-chat":
+        assert actual["api_mode"] == "chat_completions", "cell no longer reaches the chat-completions GitHub branch"
+    _check(key, actual, model, base_url)
 
 
 def test_snapshot_covers_every_provider():
-    recorded, current = set(_load()), {c[0] for c in CELLS}
+    recorded, current = set(_load()), {c[0] for c in CELLS} | set(BASE_URL_ONLY)
     assert current <= recorded, f"providers without a recorded wire: {sorted(current - recorded)}"
     assert recorded <= current, f"snapshot entries for providers that no longer exist: {sorted(recorded - current)}"

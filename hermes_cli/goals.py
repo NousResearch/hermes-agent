@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -295,11 +295,11 @@ class GoalContract:
     def is_empty(self) -> bool:
         return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS)
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> dict[str, str]:
         return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalContract":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalContract:
         if not isinstance(data, dict):
             return cls()
         return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
@@ -309,7 +309,7 @@ class GoalContract:
         return "\n".join(f"- {_CONTRACT_LABELS[f]}: {getattr(self, f).strip()}" for f in _CONTRACT_FIELDS if getattr(self, f).strip())
 
 
-def parse_contract(text: str) -> Tuple[str, GoalContract]:
+def parse_contract(text: str) -> tuple[str, GoalContract]:
     """Split user-typed goal text into a headline + contract from inline ``field: value`` lines.
 
     A headline without an explicit ``outcome:`` IS the outcome — it is not duplicated into the
@@ -317,8 +317,8 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
     """
     if not text:
         return "", GoalContract()
-    headline_parts: List[str] = []
-    fields: Dict[str, List[str]] = {f: [] for f in _CONTRACT_FIELDS}
+    headline_parts: list[str] = []
+    fields: dict[str, list[str]] = {f: [] for f in _CONTRACT_FIELDS}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -334,7 +334,7 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
     return " ".join(headline_parts).strip(), contract
 
 
-def _render_extra_criteria(subgoals: List[str]) -> str:
+def _render_extra_criteria(subgoals: list[str]) -> str:
     return "\n".join(f"- Extra criterion {i}: {text}" for i, text in enumerate(subgoals, start=1))
 
 
@@ -354,11 +354,11 @@ class GoalGate:
     last_exit_code: Optional[int] = None
     last_output_tail: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalGate":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalGate:
         if not isinstance(data, dict):
             return cls(command="")
         return cls(
@@ -371,7 +371,7 @@ class GoalGate:
         )
 
 
-def _gate_workspace() -> Tuple[Optional[str], Optional[str]]:
+def _gate_workspace() -> tuple[Optional[str], Optional[str]]:
     """``(cwd, refusal)`` for this check's gates. A multi-session backend's process directory is not
     the session's project, so gates run in the scoped session workspace (#125369). A declared
     workspace that is not a directory on this host (deleted, remote, container) is a refusal: a
@@ -393,7 +393,7 @@ def _gate_workspace() -> Tuple[Optional[str], Optional[str]]:
         return None, None  # deleted launch directory: subprocess reports it per gate
 
 
-def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
+def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> tuple[bool, int, str]:
     """Run one gate through the shell. Returns ``(passed, exit_code, output_tail)``; a timeout kills
     the process and counts as exit code -1."""
     try:
@@ -432,7 +432,7 @@ class GoalState:
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
-    subgoals: List[str] = field(default_factory=list)
+    subgoals: list[str] = field(default_factory=list)
     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
     # agent into busy-work. pid → until exit; session → until that process_registry session's OWN
     # trigger fires (exit OR watch_patterns match — preferred for watchers that signal mid-run);
@@ -449,13 +449,13 @@ class GoalState:
     waiting_since: float = 0.0
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
-    gates: List[GoalGate] = field(default_factory=list)
+    gates: list[GoalGate] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "GoalState":
+    def from_json(cls, raw: str) -> GoalState:
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
@@ -501,9 +501,9 @@ def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
 
 
-_DB_CACHE: Dict[str, Any] = {}
+_DB_CACHE: dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
-_DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
+_DB_BOOTSTRAP_INFLIGHT: dict[str, threading.Event] = {}
 
 # How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap before degrading to None.
 # Normal SessionDB init is ~10-100ms so a mid-bootstrap call usually picks the cached instance up;
@@ -771,7 +771,7 @@ def _goal_judge_timeout() -> float:
     return _goal_judge_setting("timeout", DEFAULT_JUDGE_TIMEOUT, float)
 
 
-def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
+def _extract_json_object(raw: str) -> Optional[dict[str, Any]]:
     """Best-effort: strip code fences, parse the blob, else pull the first ``{...}`` out."""
     if not raw:
         return None
@@ -794,7 +794,7 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+def _parse_judge_response(raw: str) -> tuple[str, str, bool, Optional[dict[str, Any]]]:
     """Parse the judge's reply, fail-open. Returns ``(verdict, reason, parse_failed, wait_directive)``.
 
     ``parse_failed`` flags non-JSON output so callers can auto-pause after N in a row.
@@ -844,10 +844,10 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     return "continue", f"{reason} (wait verdict had no target — continuing)", False, None
 
 
-def _render_background_block(background_processes: Optional[List[Dict[str, Any]]]) -> str:
+def _render_background_block(background_processes: Optional[list[dict[str, Any]]]) -> str:
     """Render RUNNING ``process_registry.list_sessions()`` entries for the judge prompt. Empty string
     when nothing is running, so the prompt stays byte-identical to the no-background case."""
-    lines: List[str] = []
+    lines: list[str] = []
     for p in background_processes or []:
         if not isinstance(p, dict) or p.get("status") == "exited" or not p.get("pid"):
             continue
@@ -895,11 +895,11 @@ def judge_goal(
     last_response: str,
     *,
     timeout: Optional[float] = None,
-    subgoals: Optional[List[str]] = None,
-    background_processes: Optional[List[Dict[str, Any]]] = None,
+    subgoals: Optional[list[str]] = None,
+    background_processes: Optional[list[dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
-) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
+) -> tuple[str, str, bool, Optional[dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)``; verdict is done /
@@ -928,7 +928,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
-        current_time=safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
+        current_time=safe_strftime(datetime.now(tz=UTC).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
@@ -1018,7 +1018,7 @@ def last_user_message_from_db(session_id: Optional[str]) -> Any:
         return ""
 
 
-def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Fail-safe snapshot of RUNNING ``process_registry`` sessions for the judge; ``[]`` on any error
     so the loop degrades to its pre-wait-barrier behavior.
 
@@ -1074,7 +1074,7 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
 
 # ── GoalManager — the orchestration surface CLI + gateway talk to ──────
 
-def _decision(status, should_continue: bool, prompt: Optional[str], verdict: str, reason: str, message: str) -> Dict[str, Any]:
+def _decision(status, should_continue: bool, prompt: Optional[str], verdict: str, reason: str, message: str) -> dict[str, Any]:
     return {"status": status, "should_continue": should_continue, "continuation_prompt": prompt,
             "verdict": verdict, "reason": reason, "message": message}
 
@@ -1160,7 +1160,7 @@ class GoalManager:
         self._state.paused_reason = reason
         self._save()
 
-    def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> Dict[str, Any]:
+    def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> dict[str, Any]:
         self._pause_state(paused_reason)
         return _decision("paused", False, None, verdict, reason, message)
 
@@ -1298,7 +1298,7 @@ class GoalManager:
             lines.append(f"- {i}. $ {g.command}{status}")
         return "\n".join(lines)
 
-    def _check_gates(self) -> Optional[Dict[str, Any]]:
+    def _check_gates(self) -> Optional[dict[str, Any]]:
         """Run quality gates in order; return a decision dict on failure.
 
         Every eligible boundary re-executes a failed gate. A git HEAD+porcelain fingerprint used to
@@ -1437,7 +1437,7 @@ class GoalManager:
 
     # --- the main entry point called after every turn -----------------
 
-    def _waiting_decision(self, state: GoalState) -> Dict[str, Any]:
+    def _waiting_decision(self, state: GoalState) -> dict[str, Any]:
         if state.waiting_on_session is not None:
             tgt = f"session {state.waiting_on_session}"
         elif state.waiting_on_pid is not None:
@@ -1447,7 +1447,7 @@ class GoalManager:
         reason = state.waiting_reason or tgt
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
-    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Optional[Dict[str, Any]]:
+    def _apply_wait_directive(self, wait_directive: dict[str, Any], reason: str, *, active_delegations: int = 0) -> Optional[dict[str, Any]]:
         """Judge said WAIT: set the barrier and park. The counted turn stands (the judge ran) but no
         continuation fires; the loop resumes once the barrier clears. ``None`` = the barrier is
         unobservable here, so the caller continues instead."""
@@ -1469,7 +1469,7 @@ class GoalManager:
             tgt = f"{wait_directive['seconds']}s"
         return _decision("active", False, None, "wait", reason, f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}")
 
-    def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> Dict[str, Any]:
+    def _budget_pause(self, state: GoalState, verdict: str, reason: str, note: str = "") -> dict[str, Any]:
         return self._pause_decision(
             f"turn budget exhausted ({state.turns_used}/{state.max_turns})", verdict, reason,
             f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
@@ -1478,9 +1478,9 @@ class GoalManager:
 
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
-        background_processes: Optional[List[Dict[str, Any]]] = None,
+        background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
         own continuations increment ``turns_used`` — both consume model budget."""
@@ -1632,7 +1632,7 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
     Each iteration: stop if the worker already terminated the task (``kanban_complete`` /
@@ -1654,7 +1654,7 @@ def run_kanban_goal_loop(
         except Exception as exc:
             _log(f"kanban goal loop: block_fn failed ({exc})")
 
-    def _result(outcome: str, reason: str) -> Dict[str, Any]:
+    def _result(outcome: str, reason: str) -> dict[str, Any]:
         return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
 
     max_turns = int(max_turns or DEFAULT_MAX_TURNS)
@@ -1749,11 +1749,27 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
-    "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
-    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
-    "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
-    "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
+    "CONTINUATION_PROMPT_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "DEFAULT_MAX_TURNS",
+    "DRAFT_CONTRACT_SYSTEM_PROMPT",
+    "JUDGE_USER_PROMPT_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "KANBAN_GOAL_CONTINUATION_TEMPLATE",
+    "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "GoalContract",
+    "GoalGate",
+    "GoalManager",
+    "GoalState",
+    "clear_goal",
+    "draft_contract",
+    "judge_goal",
+    "load_goal",
+    "migrate_goal_to_session",
+    "parse_contract",
+    "run_gate",
     "run_kanban_goal_loop",
+    "save_goal",
 ]

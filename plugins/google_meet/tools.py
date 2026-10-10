@@ -37,12 +37,12 @@ def resolve_node(node: str):
 _NODE_PROP = {"type": "string"}
 
 
-def _str(description: str) -> Dict[str, Any]:
+def _str(description: str) -> dict[str, Any]:
     return {"type": "string", "description": description}
 
 
-def _schema(name: str, description: str, properties: Dict[str, Any], required=None) -> Dict[str, Any]:
-    params: Dict[str, Any] = {"type": "object", "properties": properties}
+def _schema(name: str, description: str, properties: dict[str, Any], required=None) -> dict[str, Any]:
+    params: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
         params["required"] = required
     params["additionalProperties"] = False
@@ -129,14 +129,14 @@ def _dispatch(node: Optional[str], op: str, remote, local) -> str:
     return _json({"success": bool(res.get("ok")), "node": node_name, **res})
 
 
-def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
+def handle_meet_join(args: dict[str, Any], **_kw) -> str:
     url = (args.get("url") or "").strip()
     if not url:
         return _err("url is required")
     mode = (args.get("mode") or "transcribe").strip().lower()
     if mode not in {"transcribe", "realtime"}:
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
-    common: Dict[str, Any] = dict(
+    common: dict[str, Any] = dict(
         url=url, guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         headed=bool(args.get("headed", False)), mode=mode)
@@ -151,11 +151,11 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     return _dispatch(args.get("node"), "start_bot", lambda c: c.start_bot(**common), _local)
 
 
-def handle_meet_status(args: Dict[str, Any], **_kw) -> str:
+def handle_meet_status(args: dict[str, Any], **_kw) -> str:
     return _dispatch(args.get("node"), "status", lambda c: c.status(), pm.status)
 
 
-def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
+def handle_meet_transcript(args: dict[str, Any], **_kw) -> str:
     try:
         last = int(args["last"]) if args.get("last") is not None else None
     except (TypeError, ValueError):
@@ -166,12 +166,12 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
                      lambda: pm.transcript(last=last))
 
 
-def handle_meet_leave(args: Dict[str, Any], **_kw) -> str:
+def handle_meet_leave(args: dict[str, Any], **_kw) -> str:
     return _dispatch(args.get("node"), "stop", lambda c: c.stop(),
                      lambda: pm.stop(reason="agent called meet_leave"))
 
 
-def handle_meet_say(args: Dict[str, Any], **_kw) -> str:
+def handle_meet_say(args: dict[str, Any], **_kw) -> str:
     text = (args.get("text") or "").strip()
     if not text:
         return _err("text is required")

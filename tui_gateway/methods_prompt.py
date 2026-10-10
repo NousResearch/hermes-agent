@@ -729,6 +729,7 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -1359,7 +1360,7 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 def _approval_reply(rid, result_key, call):
     """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
     try:
-        import tools.approval as approval
+        from tools import approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
         return _err(rid, 5004, str(e))

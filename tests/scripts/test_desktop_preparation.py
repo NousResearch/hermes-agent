@@ -273,3 +273,27 @@ def test_flavored_icon_staging_hands_the_admitted_checkout_back(tmp_path):
         with flavored_assets(rendered, assets):
             raise RuntimeError("packaging failed")
     require_source(source, commit)
+
+
+def test_clean_run_cannot_delete_the_outputs_of_a_build_that_holds_the_lock(tmp_path):
+    from scripts.bundles.desktop_inputs import build_lock
+    from scripts.bundles.desktop_prepare import BuildRequest, prepare
+
+    source, commit = _project(tmp_path)
+    request = BuildRequest.create(source, tag=None, commit=commit, variant="light",
+                                  work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={})
+    running = source / "apps/desktop/release/running-build.msix"
+    running.parent.mkdir(parents=True)
+    running.write_text("output of the build that holds the lock", encoding="utf-8")
+    (source / ".gitignore").write_text(".build/\napps/desktop/release/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=source, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                    "commit", "-m", "ignore outputs"], cwd=source, check=True, capture_output=True)
+    request = BuildRequest.create(source, tag=None, commit=subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True).strip(), variant="light",
+        work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={})
+
+    with build_lock(source), pytest.raises(ValueError, match="another desktop"):
+        prepare(request, clean=True)
+
+    assert running.read_text(encoding="utf-8") == "output of the build that holds the lock"

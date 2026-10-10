@@ -12,8 +12,6 @@ name: Live provider canaries
 #   LIVE_OPENAI_API_KEY, LIVE_GEMINI_API_KEY, LIVE_XAI_API_KEY
 
 on:
-  schedule:
-    - cron: "17 7 * * *"  # nightly, 07:17 UTC
   push:
     tags:
       - "v*"  # release gate

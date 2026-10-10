@@ -47,6 +47,44 @@ def _looks_like_error_output(content: Any) -> bool:
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return first.startswith(("error:", "failed:", "traceback ", "exception:"))
 
+def _terminal_outcome(result: dict[str, Any]) -> str:
+    """Command completion is distinct from verification of the requested task."""
+    code, output = result.get("exit_code"), result.get("output")
+    if type(code) is not int or code < 0 or code >= 128 or code == 124 or not isinstance(output, str):
+        return "unknown"
+    if result.get("session_id") or result.get("environment_recreated"):
+        return "unknown"
+    if str(result.get("status") or "").lower() in {"running", "background", "timeout", "interrupted"}:
+        return "unknown"
+    if any(marker in output for marker in ("[Command timed out", "[Command interrupted]")):
+        return "unknown"
+    return "failed" if code or _looks_like_error_output(result) else "succeeded"
+
+
+def _terminal_execution_evidence(content: str) -> dict[str, Any]:
+    """Compact observed outcome; never infer task acceptance from summary prose.
+
+    The summary supplies check results. Raw output stays in the child's transcript;
+    missing or incomplete envelopes cannot establish successful execution.
+    """
+    try:
+        result = json.loads(content)
+    except (TypeError, ValueError):
+        return {"outcome": "unknown"}
+    if not isinstance(result, dict):
+        return {"outcome": "unknown"}
+    evidence: dict[str, Any] = {"outcome": _terminal_outcome(result)}
+    if type(result.get("exit_code")) is int:
+        evidence["exit_code"] = result["exit_code"]
+    output, total = result.get("output"), result.get("output_total_chars")
+    if isinstance(output, str):
+        evidence["output_truncated"] = bool(
+            result.get("truncated") or result.get("truncation_note")
+            or (type(total) is int and total > len(output))
+        )
+    return evidence
+
+
 def _extract_output_tail(result: dict[str, Any], *, max_entries: int = 12, max_chars: int = 8000) -> list[dict[str, Any]]:
     """Last N tool-call results ``{tool, preview, is_error}`` from a child's conversation (the overlay's "Output"
     section), chronological order. Content blocks are flattened first so a block-wrapped "Error: ..." is still

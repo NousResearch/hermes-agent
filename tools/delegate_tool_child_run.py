@@ -21,6 +21,7 @@ from tools.delegate_tool_registry import (
 )
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
+    _terminal_execution_evidence,
 )
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -544,6 +545,11 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
             tc_id = msg.get("tool_call_id")
             target = trace_by_id.get(tc_id) if tc_id else None
             if target is not None:
+                if target["tool"] == "terminal":
+                    execution = _terminal_execution_evidence(content)
+                    result_meta["execution"] = execution
+                    if execution["outcome"] == "failed":
+                        result_meta["status"] = "error"
                 target.update(result_meta)
             elif tool_trace:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call

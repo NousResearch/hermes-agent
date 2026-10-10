@@ -322,6 +322,10 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  dispatch_auto_reload: true       # default: when dispatch-plane code changed
+                                   # under a running gateway, restart it
+                                   # (drain-first, once no worker is running).
+                                   # false keeps the doctor warning only.
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.

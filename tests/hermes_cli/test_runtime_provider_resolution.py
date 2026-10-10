@@ -298,6 +298,9 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
+        rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False)
+    )
+    monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",
         lambda **kw: (_ for _ in ()).throw(AuthError("stale", provider="qwen-oauth", code="qwen_auth_missing")),

@@ -2106,10 +2106,15 @@ def _dispatch_lane_task(
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:
+        # A missing path outside the assignee's mounts will not fix itself on
+        # retry: park it as needs_input so it stays blocked until a human acts.
+        unavailable = isinstance(exc, _kbw.WorkspaceUnavailable)
         if _record_task_failure(
-            conn, claimed.id, f"workspace: {exc}",
+            conn, claimed.id, f"workspace: {exc}", force_trip=unavailable,
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
         ):
+            if unavailable:
+                _kb.block_task(conn, claimed.id, reason=str(exc), kind="needs_input")
             result.auto_blocked.append(claimed.id)
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))

@@ -755,6 +755,249 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _mock_docker_volumes(monkeypatch, volumes, *, assignee="worker"):
+    """Give ``assignee`` a fake ``terminal.docker_volumes``; other profiles have none."""
+
+    def fake(name):
+        if name != assignee:
+            raise FileNotFoundError(f"no profile {name!r}")
+        return volumes
+
+    monkeypatch.setattr(kbw, "_assignee_docker_volumes", fake)
+
+
+def _write_profile(root: Path, name: str, volumes: list[str]) -> Path:
+    """A named profile under ``root`` whose config.yaml carries ``volumes``."""
+    home = root / "profiles" / name
+    home.mkdir(parents=True)
+    body = "terminal:\n  docker_volumes:\n" + "".join(f"    - {v}\n" for v in volumes)
+    (home / "config.yaml").write_text(body, encoding="utf-8")
+    return home
+
+
+_requires_no_workspace_anchor = pytest.mark.skipif(
+    Path("/workspace").exists(),
+    reason="/workspace exists on this machine; the container-anchor heuristic "
+    "only translates paths whose anchor is missing",
+)
+
+
+@_requires_no_workspace_anchor
+
+
+def test_dir_workspace_translates_container_path_via_docker_volume(
+    kanban_home, tmp_path, monkeypatch
+):
+    """A dir task carrying an in-container path (e.g. created by a dockerized
+    agent) resolves to the host side of the configured bind mount."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"])
+    with kbc.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="cos",
+            assignee="worker",
+            workspace_kind="dir",
+            workspace_path="/workspace/chief-of-staff/notes",
+        )
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kbw.resolve_workspace(task)
+    assert ws == host_ws / "chief-of-staff" / "notes"
+    assert ws.is_dir()
+
+
+@_requires_no_workspace_anchor
+
+
+def test_legacy_scratch_explicit_container_path_translates(
+    kanban_home, tmp_path, monkeypatch
+):
+    """The legacy scratch-with-explicit-path branch gets the same rewrite."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"])
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="legacy", assignee="worker")
+        kbw.set_workspace_path(conn, t, "/workspace/scratch-area")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kbw.resolve_workspace(task)
+    assert ws == host_ws / "scratch-area"
+    assert ws.is_dir()
+
+
+@_requires_no_workspace_anchor
+
+
+def test_dir_workspace_uses_assignee_mount_not_dispatcher_mount(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Each profile mounts its own workspace at /workspace. The dispatcher
+    (launch profile) must map through the ASSIGNEE's mount, not its own."""
+    import hermes_cli.config as config_mod
+
+    dispatcher_ws = tmp_path / "dispatcher-ws"
+    seo_ws = tmp_path / "seo-ws"
+    seo_ws.mkdir()  # a dir path is only created under an existing mount root
+    (kanban_home / "config.yaml").write_text(
+        f"terminal:\n  docker_volumes:\n    - {dispatcher_ws}:/workspace\n",
+        encoding="utf-8",
+    )
+    _write_profile(kanban_home, "seo-agency", [f"{seo_ws}:/workspace"])
+    # Sanity: the ambient config really is the dispatcher's.
+    assert config_mod.load_config()["terminal"]["docker_volumes"] == [
+        f"{dispatcher_ws}:/workspace"
+    ]
+    with kbc.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="seo",
+            assignee="seo-agency",
+            workspace_kind="dir",
+            workspace_path="/workspace/audit",
+        )
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kbw.resolve_workspace(task)
+    assert ws == seo_ws / "audit"
+    assert ws.is_dir()
+    assert not dispatcher_ws.exists()
+
+
+@_requires_no_workspace_anchor
+
+
+def test_translate_prefers_longest_container_prefix(kanban_home, tmp_path):
+    """A nested mount (/workspace/projects) wins over its parent (/workspace),
+    read from a real profile config.yaml."""
+    host_ws = tmp_path / "host-ws"
+    host_projects = tmp_path / "host-projects"
+    _write_profile(
+        kanban_home,
+        "worker",
+        [f"{host_ws}:/workspace", f"{host_projects}:/workspace/projects:rw"],
+    )
+    out = kbw._translate_container_workspace_path(
+        Path("/workspace/projects/app"), task_id="t1", assignee="worker"
+    )
+    assert out == host_projects / "app"
+    # Everything else under /workspace still maps through the parent mount.
+    out = kbw._translate_container_workspace_path(
+        Path("/workspace/other"), task_id="t1", assignee="worker"
+    )
+    assert out == host_ws / "other"
+
+
+def test_translate_leaves_existing_host_path_untouched(tmp_path, monkeypatch):
+    """A path whose anchor exists on this machine is never rewritten, even
+    with mounts configured."""
+    host_ws = tmp_path / "host-ws"
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"])
+    native = tmp_path / "native" / "dir"
+    out = kbw._translate_container_workspace_path(native, task_id="t1", assignee="worker")
+    assert out == native
+
+
+def test_translate_passes_through_unmounted_container_path(monkeypatch):
+    """A missing-anchor path that sits under no configured mount is returned
+    as-is (and left to fail loudly downstream)."""
+    _mock_docker_volumes(monkeypatch, ["/some-host:/workspace"])
+    p = Path("/container-only/data")
+    assert kbw._translate_container_workspace_path(p, task_id="t1", assignee="worker") == p
+
+
+@_requires_no_workspace_anchor
+
+
+def test_translate_never_falls_back_to_dispatcher_mounts(kanban_home, tmp_path):
+    """No assignee, an unknown assignee, or an assignee without a matching
+    mount means no translation, even though the dispatcher's own config
+    maps /workspace."""
+    dispatcher_ws = tmp_path / "dispatcher-ws"
+    (kanban_home / "config.yaml").write_text(
+        f"terminal:\n  docker_volumes:\n    - {dispatcher_ws}:/workspace\n",
+        encoding="utf-8",
+    )
+    _write_profile(kanban_home, "other-mounts", [f"{tmp_path / 'data'}:/data"])
+    for assignee in (None, "", "no-such-profile"):
+        assert kbw._container_volume_map(assignee) == []
+    assert kbw._container_volume_map("other-mounts") == [(Path("/data"), tmp_path / "data")]
+    p = Path("/workspace/audit")
+    for assignee in (None, "", "no-such-profile", "other-mounts"):
+        assert kbw._translate_container_workspace_path(
+            p, task_id="t1", assignee=assignee
+        ) == p
+
+
+def test_translate_degrades_without_docker_volumes(monkeypatch):
+    """Empty, missing, or unloadable assignee config means no translation."""
+    p = Path("/workspace/chief-of-staff/x")
+    for vols in ([], None):
+        monkeypatch.setattr(kbw, "_assignee_docker_volumes", lambda _n, v=vols: v or [])
+        assert kbw._container_volume_map("worker") == []
+        assert kbw._translate_container_workspace_path(p, task_id="t1", assignee="worker") == p
+
+    def boom(_name):
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(kbw, "_assignee_docker_volumes", boom)
+    assert kbw._container_volume_map("worker") == []
+    assert kbw._translate_container_workspace_path(p, task_id="t1", assignee="worker") == p
+
+
+def test_dir_workspace_outside_assignee_mounts_is_not_created(kanban_home, tmp_path, monkeypatch):
+    """A missing dir path outside every mount of a sandboxed assignee raises
+    instead of leaving a ghost dir the worker can never see."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"])
+    ghost = tmp_path / "projects" / "site"
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="g", assignee="worker", workspace_kind="dir", workspace_path=str(ghost))
+        task = kb.get_task(conn, t)
+        with pytest.raises(kbw.WorkspaceUnavailable, match="does not exist on the host"):
+            kbw.resolve_workspace(task)
+        # Under an existing mount root the dir is still created.
+        kbw.set_workspace_path(conn, t, str(host_ws / "a" / "b"))
+        assert kbw.resolve_workspace(kb.get_task(conn, t)).is_dir()
+    assert not ghost.exists() and not ghost.parent.exists()
+
+
+def test_dispatch_blocks_unmounted_dir_workspace_as_needs_input(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable,
+):
+    """The dispatcher parks the card on the first attempt with a typed
+    needs_input block, so it does not auto-promote and retry."""
+    host_ws = tmp_path / "host-ws"
+    host_ws.mkdir()
+    _mock_docker_volumes(monkeypatch, [f"{host_ws}:/workspace"], assignee="a")
+    ghost = tmp_path / "projects" / "site"
+
+    def spawn(task, workspace, board=None):
+        raise AssertionError("must not spawn")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="g", assignee="a", workspace_kind="dir", workspace_path=str(ghost))
+        res = kbd.dispatch_once(conn, spawn_fn=spawn, failure_limit=5)
+        row = conn.execute(
+            "SELECT status, block_kind, last_failure_error FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+    assert res.auto_blocked == [tid]
+    assert (row["status"], row["block_kind"]) == ("blocked", "needs_input")
+    assert "use a mounted host path" in row["last_failure_error"]
+    assert not ghost.exists()
+
+
+def test_container_volume_map_skips_malformed_specs(monkeypatch):
+    _mock_docker_volumes(
+        monkeypatch,
+        ["relative:also-relative", 42, "/only-host", "/h:/c:ro"],
+    )
+    assert kbw._container_volume_map("worker") == [(Path("/c"), Path("/h"))]
+
+
 
 
 

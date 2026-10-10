@@ -2065,7 +2065,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
         except ImportError:
             return print(_t("skin.unavailable"))
-        new_skin = _command_arg(cmd).lower()
+        new_skin = _command_arg(cmd)
         if not new_skin:  # show current skin and list available
             current = get_active_skin_name()
             _pr(f"\n  {_t('skin.current', name=current)}", f"  {_t('skin.available_header')}")
@@ -2076,6 +2076,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _pr(f"\n  {_t('skin.usage')}",
                        f"  {_t('skin.custom_hint', dir=display_hermes_home())}\n")
         available = {s["name"] for s in list_skins()}
+        # Built-ins are lowercase but a user skin keeps its own case (`MyTheme`): an exact name
+        # wins, else a case-insensitive match switches to the listed spelling.
+        if new_skin not in available:
+            new_skin = next((n for n in sorted(available) if n.lower() == new_skin.lower()), new_skin)
         if new_skin not in available:
             return _pr(f"  {_t('skin.unknown', name=new_skin)}",
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")

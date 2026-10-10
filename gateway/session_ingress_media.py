@@ -305,7 +305,17 @@ def collect_unheld_api_images(db):
     """Collect retained API images no admission holds any more: deleting a chat retires its
     admissions and erases their references, so those bytes have no owner left. Only the exact
     name ``commit_api_images`` gives (``api_<sha256[:32]><ext>`` under its own digest) is a
-    candidate; retained hosted documents are held by prompt text, never by a media reference."""
+    candidate; retained hosted documents are held by prompt text, never by a media reference.
+
+    Candidates are enumerated from the ACTIVE home's media root while ownership is decided by
+    ``db``: a sweep whose database belongs to another profile would see every image here as
+    unowned, so it collects nothing."""
+    from hermes_constants import get_hermes_home
+    if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
+        import logging
+        logging.getLogger(__name__).warning(
+            'Skipped retained API image collection: %s is not the active profile store', db.db_path)
+        return 0
     root = _media_root()
     return release_unheld_media(db, [
         {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())

@@ -114,6 +114,46 @@ def test_survivor_still_runs_after_sibling_removal(mgr):
     assert results == [{"who": "b"}]
 
 
+def test_second_callback_runs_after_first_times_out(mgr, monkeypatch):
+    """The regression the PR promises: two callbacks under ONE hook name, the
+    first times out - the second must still launch (no inherited suppression)."""
+    import time as time_mod
+
+    import hermes_cli.plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_mod, "_resolve_hook_callback_timeout", lambda: 0.05)
+
+    hold = threading.Event()
+    started = threading.Event()
+
+    def blocker(**_kwargs):
+        started.set()
+        hold.wait(timeout=10.0)
+        return "late"
+
+    def sibling(**_kwargs):
+        return "sibling-ran"
+
+    ctx = _ctx(mgr)
+    ctx.register_hook("post_tool_call", blocker)
+    ctx.register_hook("post_tool_call", sibling)
+
+    mgr.invoke_hook("post_tool_call", tool_name="terminal", args={}, result="{}")
+    try:
+        assert started.wait(timeout=1.0)
+        blocked_key = ("post_tool_call", mgr._hook_registration_tokens[id(blocker)])
+        sibling_key = ("post_tool_call", mgr._hook_registration_tokens[id(sibling)])
+        # The hung callback keeps its own back-off ...
+        assert blocked_key in mgr._hook_timeout_suppressed_until
+        # ... and must not hand it to the sibling under the same hook name.
+        assert sibling_key not in mgr._hook_timeout_suppressed_until
+
+        results = mgr.invoke_hook("post_tool_call", tool_name="terminal", args={}, result="{}")
+        assert "sibling-ran" in results
+    finally:
+        hold.set()
+
+
 def test_suppression_window_sticks_to_the_same_callback(mgr, monkeypatch):
     """Suppression is per-callback: after a timeout, the same callback's
     token key must be in the suppression map (the window is not lost)."""

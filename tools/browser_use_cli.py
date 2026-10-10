@@ -518,6 +518,16 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if (provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg())
             and not _is_managed_browser_use(provider)):
+        # Direct-API returns no CDP on purpose so the CLI can autospawn. Autospawn only
+        # happens when BROWSER_USE_API_KEY is set. With the key missing, None used to
+        # leave the harness to discover an installed Chrome (DevToolsActivePort).
+        from agent.secret_scope import get_secret
+        if not get_secret("BROWSER_USE_API_KEY", ""):
+            from tools.tool_backend_helpers import selection_error
+            return selection_error(
+                "browser", "'browser-use'",
+                "BROWSER_USE_API_KEY is not set, so browser_exec cannot start a Browser Use cloud browser",
+            )
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
         return None
 

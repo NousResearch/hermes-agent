@@ -1523,6 +1523,9 @@ class TestPermissionErrorOnLockFile:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         lock = tmp_path / "gateway.lock"
         lock.write_text("existing owner")
+        # The owner is live (its gateway.pid names a running process): an unopenable lock with no
+        # provable holder is the stale #42685 case and is replaced (test_runtime_ownership).
+        (tmp_path / "gateway.pid").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
         inode = lock.stat().st_ino
         lock.chmod(0)
         try:

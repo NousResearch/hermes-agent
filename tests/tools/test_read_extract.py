@@ -804,6 +804,69 @@ class TestPdfCoverageNote(unittest.TestCase):
         # empty page between the two \f markers is preserved.
         self.assertEqual(pages, ["alpha beta", "gamma", ""])
 
+    def test_needs_ocr_error_falls_back_to_text_layer(self):
+        from tools import read_extract
+
+        class NeedsOcrError(Exception):
+            pages = list(range(1, 4))
+
+        fake_mod = mock.Mock()
+        fake_mod.NeedsOcrError = NeedsOcrError
+        fake_mod.to_markdown.side_effect = NeedsOcrError("all pages need OCR")
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(b"%PDF-1.4 fake")
+            path = fh.name
+        try:
+            with mock.patch.object(read_extract, "_anydoc", return_value=fake_mod), \
+                 mock.patch.object(
+                     read_extract, "_pdf_page_texts",
+                     return_value=["page one text with enough readable content", "page two text with enough readable content", "page three text with enough readable content"],
+                 ):
+                text = read_extract._extract_anydoc(path)
+        finally:
+            os.unlink(path)
+        self.assertIn("page one text", text)
+        self.assertIn("page three text", text)
+        self.assertNotIn("NEEDS OCR", text)
+        self.assertIn("OCR VERDICT OVERRIDE", text)
+
+    def test_needs_ocr_error_bytes_falls_back_to_text_layer_with_display_path(self):
+        from tools import read_extract
+
+        class NeedsOcrError(Exception):
+            pages = [2]
+
+        fake_mod = mock.Mock()
+        fake_mod.NeedsOcrError = NeedsOcrError
+        fake_mod.to_markdown_bytes.side_effect = NeedsOcrError("one page needs OCR")
+        backend_path = "/workspace/report.pdf"
+        with mock.patch.object(read_extract, "_anydoc", return_value=fake_mod), \
+             mock.patch.object(
+                 read_extract,
+                 "_pdf_page_texts",
+                 return_value=["page one text with enough readable content", "", "page three text with enough readable content"],
+             ):
+            text = read_extract._extract_anydoc_bytes(b"%PDF-1.4 fake", backend_path)
+        self.assertIn("EXTRACTION COVERAGE WARNING", text)
+        self.assertIn("page 2", text)
+        self.assertIn("/workspace/report.pdf", text)
+
+    def test_needs_ocr_error_bytes_without_pdftotext_keeps_ocr_warning(self):
+        from tools import read_extract
+
+        class NeedsOcrError(Exception):
+            pages = [1, 2]
+
+        fake_mod = mock.Mock()
+        fake_mod.NeedsOcrError = NeedsOcrError
+        fake_mod.to_markdown_bytes.side_effect = NeedsOcrError("all pages need OCR")
+        with mock.patch.object(read_extract, "_anydoc", return_value=fake_mod), \
+             mock.patch.object(read_extract, "_pdf_page_texts", return_value=None):
+            text = read_extract._extract_anydoc_bytes(b"%PDF-1.4 fake", "/workspace/scan.pdf")
+        self.assertIn("NEEDS OCR", text)
+        self.assertIn("pages 1, 2", text)
+
+
     def test_extract_anydoc_prepends_note_for_pdf(self):
         """The warning leads the extracted text for .pdf inputs (a trailing
         footer would land on a page the model may never fetch)."""

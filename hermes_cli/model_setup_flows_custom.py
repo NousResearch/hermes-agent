@@ -188,6 +188,10 @@ def _model_flow_custom(config):
             model.pop("api_mode", None)
 
     if model_name:
+        from hermes_cli.model_entitlement_guard import ensure_pick_entitled
+        if not ensure_pick_entitled(model_name, provider="custom", base_url=effective_url,
+                                    api_key=effective_key):
+            return
         _save_model_choice(model_name)
         cfg, model = _load_config_model_section()
         _apply_endpoint(model)
@@ -387,6 +391,10 @@ def _model_flow_named_custom(config, provider_info):
             return
 
     # Activate and save the model to the custom_providers entry
+    from hermes_cli.model_entitlement_guard import ensure_pick_entitled
+    if not ensure_pick_entitled(model_name, provider=provider_key or name,
+                                base_url=base_url, api_key=api_key):
+        return
     _save_model_choice(model_name)
     cfg, model = _load_config_model_section()
     # The endpoint being activated owns the credential: drop the previous endpoint's pointer

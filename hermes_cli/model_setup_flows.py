@@ -589,8 +589,9 @@ def _model_flow_copilot(config, current_model=""):
         print("No change.")
         return
     selected = _normalize(selected)
-    _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
+    if _persist_model(selected, provider_id, base_url=effective_base,
+                      api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key)) is None:
+        return
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 

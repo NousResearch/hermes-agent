@@ -99,11 +99,22 @@ def _commit_model_config(cfg: dict) -> None:
 
 def _persist_model(selected: str, provider: str, *, base_url: str | None = None, api_mode: str | None = None,
                    drop_base_url: bool = False, drop_api_mode: bool = False, clear_creds: bool = True,
-                   finish=None) -> dict:
+                   finish=None) -> dict | None:
     """The standard persist step: ``_save_model_choice`` → model section with ``provider``,
     ``base_url`` then ``api_mode`` (that order is the config.yaml key order) → scrub inline
     endpoint credentials (``clear_creds``; ``drop_api_mode`` also pops ``api_mode``) →
-    *finish(cfg, model)* for extra sections → save + deactivate OAuth provider."""
+    *finish(cfg, model)* for extra sections → save + deactivate OAuth provider.
+
+    Returns None (and writes nothing) when the entitlement gate refuses the pick:
+    a model the endpoint proves this account cannot use must not become the
+    default (t_27cf7a7b — the gate in ``hermes_cli.model_entitlement_guard``).
+    """
+    from hermes_cli.model_entitlement_guard import ensure_pick_entitled, resolve_endpoint
+
+    endpoint, endpoint_key = resolve_endpoint(provider)
+    if not ensure_pick_entitled(selected, provider=provider, base_url=base_url or endpoint,
+                                api_key=endpoint_key):
+        return None
     cfg, model = _begin_model_config(selected, provider)
     if base_url is not None:
         model["base_url"] = base_url
@@ -123,11 +134,15 @@ def _persist_model(selected: str, provider: str, *, base_url: str | None = None,
 
 def _finish_model(selected, provider: str, done: str, *, no_change: str = "No change.", **persist_kw):
     """``_persist_model`` + confirmation line when *selected*, else the no-change line.
-    Returns the saved model section (None when nothing was selected)."""
+    Returns the saved model section (None when nothing was selected, or when the
+    entitlement gate refused the pick — ``_persist_model`` prints the reason)."""
     if not selected:
         print(no_change)
         return None
     model = _persist_model(selected, provider, **persist_kw)
+    if model is None:
+        print(no_change)
+        return None
     print(done)
     return model
 

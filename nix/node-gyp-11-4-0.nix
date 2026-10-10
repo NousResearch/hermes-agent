@@ -21,7 +21,7 @@ let
       ln -s ${./node-gyp-11-4-0-package-lock.json} package-lock.json
     '';
 
-    npmDepsHash = "sha256-P25m02VxIXkPD7rYI2Wki9+levrtNg2xk8pU+nEUXsE=";
+    npmDepsHash = "sha256-0tPK8LY+yDEiwIw+SYljXaD10M9SJROHEzZSWWDgSi0=";
 
     npmDepsFetcherVersion = 2;
 

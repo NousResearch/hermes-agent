@@ -38,19 +38,19 @@ jobs:
 
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules
-      # again and runs the postinstalls again, which includes the Electron
-      # binary fetch. This caches the installed tree itself, keyed on the
+      # again and runs the package postinstalls again. This caches the
+      # installed tree itself, keyed on the
       # lockfile, and skips ``npm ci`` on an exact hit. There are no
       # restore-keys: a partial hit leaves a stale tree, so anything other
       # than an exact lockfile match reinstalls from the start.
       #
-      # This install runs WITH scripts, so the tree holds the postinstall
-      # artifacts. The postinstall of electron unpacks its binary into
-      # node_modules/electron/dist, which is inside the cached tree.
+      # This install runs WITH scripts, so the tree holds other postinstall
+      # artifacts. Electron 42 fetches its binary on first use; if the checks
+      # invoke Electron, its dist directory is then inside the cached tree.
       #
       # The ~/.cache/electron download cache stays out of the key on purpose.
-      # ``npm ci`` is skipped on a hit, so nothing reads that cache. It only
-      # makes the archive larger.
+      # An exact installed-tree hit skips ``npm ci``. If Electron's binary was
+      # not fetched before that tree was saved, first use fetches it then.
       - name: Restore node_modules
         id: node-modules-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
 import { afterEach, test, vi } from 'vitest'
 
 import {
@@ -13,8 +12,7 @@ import {
   resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCreatePr,
-  reviewList,
-  SIMPLE_GIT_UNSAFE_BINARY_WARN
+  reviewList
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
 
@@ -97,37 +95,42 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
   }
 })
 
-test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+test('gitFor accepts trusted custom binaries without replacing console.warn', () => {
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
-  // `windowsGitHost()` resolves nothing in this process (no configured roots, no
-  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
-  // spaced `Program Files` path, which warns once per factory call.
   const warnings: unknown[][] = []
   const originalWarn = console.warn
-
-  const recordingWarn = (...args: unknown[]) => {
-    warnings.push(args)
-  }
-
+  const recordingWarn = (...args: unknown[]) => { warnings.push(args) }
   console.warn = recordingWarn
 
   try {
     for (let i = 0; i < 5; i += 1) {
       gitFor(process.cwd(), spacedBin)
     }
-
     assert.equal(console.warn, recordingWarn)
-
-    // The escape hatch used directly still warns: the message gitFor filters is a
-    // live emission of the installed simple-git, so the filter cannot go stale
-    // silently (an upgrade that rewords it fails this test, not production).
-    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
     console.warn('unrelated warning')
   } finally {
     console.warn = originalWarn
   }
 
-  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
+  assert.deepEqual(warnings, [['unrelated warning']])
+})
+
+test.skipIf(process.platform === 'win32')('gitFor executes a trusted binary under a spaced path', async () => {
+  const dir = makeRepo()
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes git binary '))
+
+  tempDirs.push(binDir)
+  const gitBin = path.join(binDir, 'git')
+  const installedGit = (process.env.PATH || '').split(path.delimiter)
+    .map(dir => path.join(dir, 'git'))
+    .find(candidate => fs.existsSync(candidate))
+
+  assert.ok(installedGit)
+  fs.symlinkSync(installedGit, gitBin)
+
+  const status = await gitFor(dir, gitBin).status()
+
+  assert.equal(status.isClean(), true)
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

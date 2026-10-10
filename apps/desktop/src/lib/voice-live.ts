@@ -1,4 +1,4 @@
-import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
+import { hermesApiAs, profileScoped, type ResolvedOwner, resolveOwnerNow } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
@@ -216,7 +216,7 @@ export class VoiceLiveSession {
   /** Whose (connection, profile) this session dials; null → the active scope.
    *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
    *  voice configured there is the voice that answers. */
-  private readonly owner: null | OwnerScope
+  private readonly owner: null | ResolvedOwner
   private readonly handlers: VoiceLiveHandlers
   private peer: null | RTCPeerConnection = null
   private events: null | RTCDataChannel = null
@@ -235,7 +235,7 @@ export class VoiceLiveSession {
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
-  constructor(handlers: VoiceLiveHandlers, owner: null | OwnerScope = null) {
+  constructor(handlers: VoiceLiveHandlers, owner: null | ResolvedOwner = null) {
     this.handlers = handlers
     this.owner = owner
     this.audio = new Audio()
@@ -280,6 +280,10 @@ export class VoiceLiveSession {
       throw new Error('GPT-Live session already started')
     }
 
+    // Resolve before WebRTC setup awaits. Null halves are a real untagged
+    // owner after this point; hermesApiAs preserves them instead of consulting
+    // whichever connection happens to be active when the SDP is ready.
+    const owner = this.owner ?? resolveOwnerNow()
     const connection = new RTCPeerConnection()
     this.peer = connection
 
@@ -323,16 +327,17 @@ export class VoiceLiveSession {
       throw new Error('Missing local SDP offer')
     }
 
-    const response = await hermesApi<{
+    const response = await hermesApiAs<{
       ok: boolean
       session?: { id: string }
       transport?: { sdp: string; type: string }
-    }>({
-      ...ownerScoped(this.owner ?? undefined),
+    }>(owner, {
       body: { history, sdp },
       method: 'POST',
       path: '/api/audio/voice-live/session',
-      timeoutMs: 45_000
+      timeoutMs: 45_000,
+      // An ownerless chat keeps the active scope's ordinary lane, as the bare profileScoped() did.
+      ...(this.owner ? {} : { priority: undefined })
     })
 
     if (!response?.ok || !response.transport?.sdp) {

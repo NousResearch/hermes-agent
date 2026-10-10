@@ -1,4 +1,4 @@
-import { setTtsLease } from '@/hermes'
+import { type ResolvedOwner, setTtsLease } from '@/hermes'
 
 // The desktop's speech-output toggles — "Read replies aloud" and voice
 // conversation mode — are the user telling us TTS is about to be needed (or no
@@ -8,8 +8,9 @@ import { setTtsLease } from '@/hermes'
 // as dead air; releasing the last lease unloads resident local models.
 //
 // This module is the renderer's single choke point for that signal. It dedupes
-// (several composers/tiles observe the same toggle), serializes per lease so a
-// fast on→off→on can't be reordered on the wire, and never surfaces failures —
+// (several composers/tiles observe the same toggle), serializes per
+// (lease, connection, profile) so a fast on→off→on can't be reordered or
+// re-homed on the wire, and never surfaces failures —
 // warm-up is an optimization; the toggle itself must not depend on it.
 
 // Per-renderer id so two windows in conversation mode hold DISTINCT leases —
@@ -24,47 +25,56 @@ export const CONVERSATION_LEASE = `desktop:conversation:${RENDERER_ID}`
 const sent = new Map<string, boolean>()
 const inFlight = new Map<string, Promise<void>>()
 
+function ownerKey(lease: string, owner: ResolvedOwner): string {
+  return JSON.stringify([lease, owner.connectionId, owner.profile])
+}
+
 /**
- * Bring the backend's view of `lease` in line with `active`. Idempotent: a
+ * Bring the owner's backend view of `lease` in line with `active`. Idempotent: a
  * repeat of the last sent state is a no-op. The initial `false` (nothing was
  * ever acquired) is also skipped — releasing a lease we never held would only
  * churn the backend on app start.
  */
-export function syncTtsLease(lease: string, active: boolean): Promise<void> {
-  const last = sent.get(lease)
+export function syncTtsLease(
+  lease: string,
+  active: boolean,
+  owner: ResolvedOwner = { connectionId: null, profile: null }
+): Promise<void> {
+  const key = ownerKey(lease, owner)
+  const last = sent.get(key)
 
   if (last === active || (last === undefined && !active)) {
-    return inFlight.get(lease) ?? Promise.resolve()
+    return inFlight.get(key) ?? Promise.resolve()
   }
 
-  sent.set(lease, active)
+  sent.set(key, active)
 
-  const previous = inFlight.get(lease) ?? Promise.resolve()
+  const previous = inFlight.get(key) ?? Promise.resolve()
 
   const next = previous
     .then(async () => {
       // Latest intent wins: if the toggle flipped again while we were queued,
       // the newer call sends its own state and this one has nothing to say.
-      if (sent.get(lease) !== active) {
+      if (sent.get(key) !== active) {
         return
       }
 
-      await setTtsLease(lease, active)
+      await setTtsLease(lease, active, owner)
     })
     .catch(() => {
       // Backend not up yet / older backend without the endpoint / warm-up
       // failure: forget what we "sent" so the next flip retries honestly.
-      if (sent.get(lease) === active) {
-        sent.delete(lease)
+      if (sent.get(key) === active) {
+        sent.delete(key)
       }
     })
     .finally(() => {
-      if (inFlight.get(lease) === next) {
-        inFlight.delete(lease)
+      if (inFlight.get(key) === next) {
+        inFlight.delete(key)
       }
     })
 
-  inFlight.set(lease, next)
+  inFlight.set(key, next)
 
   return next
 }

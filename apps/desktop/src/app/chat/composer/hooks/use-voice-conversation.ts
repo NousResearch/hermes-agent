@@ -703,6 +703,13 @@ export function useVoiceConversation({
   /** Non-streaming providers still speak completed sentences during generation. */
   const awaitFallbackSpeech = useCallback(
     (responseId: string) => {
+      const conversation = conversationRef.current
+
+      if (!conversation) {
+        return
+      }
+
+      const owner = conversation.owner
       const sentenceBuffer = new IncrementalSpeechSentenceBuffer()
       const speechQueue: string[] = []
       let sourceLength = 0
@@ -765,7 +772,7 @@ export function useVoiceConversation({
         // `fallback` or was unavailable for this reply — POST each sentence
         // straight to /api/audio/speak (same server TTS) instead of re-probing.
         const playback = playSpeechText(sentence, {
-          ...ownerRef.current,
+          ...owner,
           source: 'voice-conversation',
           syncOnly: true
         })
@@ -854,6 +861,11 @@ export function useVoiceConversation({
       }
 
       const sequenceBeforeStart = $voicePlayback.get().sequence
+      const conversation = conversationRef.current
+
+      if (!conversation) {
+        return
+      }
 
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
@@ -866,7 +878,7 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ ...ownerRef.current, source: 'voice-conversation' })
+        const session = await startSpeechStream({ ...conversation.owner, source: 'voice-conversation' })
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {

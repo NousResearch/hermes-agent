@@ -1779,6 +1779,27 @@ describe('createGatewayEventHandler', () => {
     expect((ctx.system.sys as any).mock.calls.length).toBe(lines.length)
   })
 
+  it('tells the user a timed-out approval was withdrawn and the command did not run', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    serverRequest('approval', { command: 'gh run list', description: 'network command' }, 'approval-1')
+    onEvent({ payload: { id: 'approval-1', method: 'approval', reason: 'timeout' }, type: 'request.cancel' } as any)
+
+    expect(getOverlayState().approval).toBeNull()
+    const lines = (ctx.system.sys as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/did not run/)
+
+    // Answered on another surface, or withdrawn with the session: no notice.
+    for (const reason of ['resolved', 'session_closed', 'interrupted']) {
+      serverRequest('approval', { command: 'gh run list', description: 'network command' }, `approval-${reason}`)
+      onEvent({ payload: { id: `approval-${reason}`, method: 'approval', reason }, type: 'request.cancel' } as any)
+    }
+
+    expect((ctx.system.sys as any).mock.calls.length).toBe(1)
+  })
+
   it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

@@ -297,9 +297,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Mark the turn final as delivered by a prior mid-stream edit.  Records what was
         ACKED on the wire, not ``_accumulated``: a throttled stream's last ack may be an
         older cursor-suffixed preview, which must not suppress the corrective send."""
-        acked = self._last_sent_text or self._accumulated
-        if self.cfg.cursor and acked.endswith(self.cfg.cursor):
-            acked = acked[: -len(self.cfg.cursor)]
+        acked = self._delivery_record_text(self._last_sent_text or self._accumulated)
         self._mark_final_delivered(record=acked)
 
     def _mark_final_delivered(self, record: Optional[str] = None) -> None:
@@ -318,6 +316,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _display_payload(self, text: str) -> str:
         """Normalize like ``_send_or_edit`` output: directive strip + fence close + strip."""
         return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
+
+    def _delivery_record_text(self, text: str) -> str:
+        """Normalize text for delivery-record comparison: display-clean, cursor stripped.
+
+        A mid-segment frame always carries the cosmetic cursor (``"<answer> ▉"``), so text
+        retained verbatim never compares equal to the final answer — the retention in
+        ``_reset_segment_state`` then does nothing precisely when it matters, and the
+        gateway re-sends a reply the user already has on screen.  The cursor is not part of
+        the content that was delivered, so both sides of every delivery comparison strip it.
+        """
+        cleaned = self._clean_for_display(text or "").strip()
+        cursor = getattr(self.cfg, "cursor", "") or ""
+        if cursor and cleaned.endswith(cursor):
+            cleaned = cleaned[: -len(cursor)].strip()
+        return cleaned
 
     def _record_turn_final_payload(self, text: str) -> None:
         """Record what the user actually saw as this turn's final answer.  On a split ``text``
@@ -359,21 +372,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
+        target = self._delivery_record_text(text)
         seen = (self._visible_prefix(), *self._delivered_commentary_texts,
                 *self._delivered_segment_texts)
-        return bool(target) and any(sent.strip() == target for sent in seen)
+        return bool(target) and any(self._delivery_record_text(sent) == target for sent in seen)
 
     def has_durably_delivered_text(self, text: str) -> bool:
         """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
         finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
         sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
         back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
-        target = self._clean_for_display(text or "").strip()
+        target = self._delivery_record_text(text)
         seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
         if self._already_sent:
             seen.append(self._visible_prefix())
-        return bool(target) and any(sent.strip() == target for sent in seen)
+        return bool(target) and any(self._delivery_record_text(sent) == target for sent in seen)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -451,8 +464,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
-        # Retain the segment's visible text so has_delivered_text still matches.
-        finalized = self._clean_for_display(self._last_sent_text).strip()
+        # Retain the segment's visible text so has_delivered_text still matches.  Normalized
+        # with the comparison side: the ACKed text of a mid-segment frame still carries the
+        # cursor, and a record that never compares equal retains nothing at all.
+        finalized = self._delivery_record_text(self._last_sent_text)
         if finalized:
             self._delivered_segment_texts.append(finalized)
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:

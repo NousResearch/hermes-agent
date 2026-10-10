@@ -213,6 +213,34 @@ class TestDisplayResumedHistory:
 
         assert output.strip() == ""
 
+    def test_off_config_suppresses_display(self):
+        """`off` is published as a resume_display option in the settings schema
+        (``hermes_cli/web_server_config.py``), so a user can pick it there, but the
+        recap reader only ever short-circuited on ``minimal`` — picking `off`
+        rendered the FULL recap, the opposite of what was chosen. Regression for #5703.
+        """
+        cli = _make_cli(config_overrides={"display": {"resume_display": "off"}})
+        assert cli.resume_display == "off"
+        cli.conversation_history = _simple_history()
+        output = self._capture_display(cli)
+
+        assert output.strip() == ""
+
+    def test_capped_recap_names_the_full_transcript_path(self):
+        """The recap is a capped TAIL (``display.resume_exchanges``), so once earlier
+        exchanges are dropped the panel must say where the rest of the transcript
+        is — otherwise the tail reads as the whole conversation and the user has no
+        way to discover ``/history``. Regression for #5703.
+        """
+        cli = _make_cli()
+        cli.conversation_history = _large_history(30)
+        output = self._capture_display(cli)
+
+        # the tail really is capped ...
+        assert "earlier messages" in output
+        # ... and the panel points at the uncapped view
+        assert "/history" in output
+
 
 
 

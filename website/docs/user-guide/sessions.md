@@ -209,6 +209,7 @@ The recap:
 - **Collapses tool calls** to a count with tool names (e.g., `[3 tool calls: terminal, web_search]`)
 - **Hides** system messages, tool results, and internal reasoning
 - **Caps** at the last 10 exchanges with a "... N earlier messages ..." indicator
+- **Points at the full transcript**: whenever exchanges were capped, the panel ends with "Want the full transcript? Run /history." — `/history` shows the whole conversation, uncapped
 - Uses **dim styling** to distinguish from the active conversation
 
 To disable the recap and keep the minimal one-liner behavior, set in `~/.hermes/config.yaml`:
@@ -217,6 +218,9 @@ To disable the recap and keep the minimal one-liner behavior, set in `~/.hermes/
 display:
   resume_display: minimal   # default: full
 ```
+
+`off` is also accepted and does the same thing; it is the value the settings UI offers
+alongside `minimal`.
 
 :::tip
 Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a 6-char hex suffix (e.g. `20250305_091523_a1b2c3`), gateway sessions use an 8-char suffix (e.g. `20250305_091523_a1b2c3d4`). You can resume by ID (full or unique prefix) or by title — both work with `-c` and `-r`.

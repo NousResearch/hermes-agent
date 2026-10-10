@@ -1,0 +1,2367 @@
+"""The post-turn review fork must not overlap a live turn, nor replay an oversized transcript.
+
+Observed pattern this pins down: a 65-call turn finishes, the automatic background review forks
+with the WHOLE ~205K-token snapshot, and a queued gateway follow-up starts ~100ms later — two
+>200K contexts decoding at once for the same session. The contracts asserted here:
+
+* a live turn already registered on the session wins; the automatic review never forks;
+* a queued gateway follow-up wins the same way (it becomes the next live turn);
+* an oversized snapshot keeps a bounded, user-anchored recent suffix instead of replaying verbatim;
+* a normal bounded snapshot still replays verbatim, so ordinary learning + warm-cache parity stay;
+* the fork stays detached from the canonical session either way.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import functools
+import hashlib
+import itertools
+import threading
+import types
+from typing import cast
+
+import pytest
+
+import run_agent as run_agent_module
+from agent import background_review as background_review_module
+from agent import review_admission
+from agent.model_metadata import estimate_messages_tokens_rough
+from agent.turn_facade import TurnFacadeMixin
+from run_agent import AIAgent
+
+
+class ImmediateThread:
+    """Run the review worker inline so the assertions see a finished review."""
+
+    def __init__(self, *, target, daemon=None, name=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def _bare_agent(session_id: str = "overlap-session") -> AIAgent:
+    agent = object.__new__(AIAgent)
+    agent.model = "fake-model"
+    agent.platform = "whatsapp"
+    agent.provider = "openai"
+    agent.base_url = ""
+    agent.api_key = ""
+    agent.api_mode = ""
+    agent.session_id = session_id
+    agent._parent_session_id = ""
+    agent._credential_pool = None
+    agent._memory_store = object()
+    agent._memory_enabled = True
+    agent._user_profile_enabled = False
+    agent._cached_system_prompt = "test-cached-system-prompt"
+    agent.session_start = _dt.datetime(2026, 9, 10, 16, 0, 0)
+    agent._MEMORY_REVIEW_PROMPT = "review memory"
+    agent._SKILL_REVIEW_PROMPT = "review skills"
+    agent._COMBINED_REVIEW_PROMPT = "review both"
+    agent.background_review_callback = None
+    agent.status_callback = None
+    agent._safe_print = lambda *_args, **_kwargs: None
+    agent._background_review_agent = None
+    agent._background_review_run = None
+    agent._background_review_lock = threading.Lock()
+    agent._active_children = []
+    agent._active_children_lock = threading.Lock()
+    return agent
+
+
+@pytest.fixture
+def review_forks(monkeypatch):
+    """Capture every fork the review path builds, plus the history it replays."""
+    forks: list[dict] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+            self.record = {"init": kwargs, "history": None, "attrs": {}}
+            forks.append(self.record)
+
+        def __setattr__(self, name, value):
+            if name not in ("record", "_session_messages"):
+                self.record["attrs"][name] = value
+            object.__setattr__(self, name, value)
+
+        def run_conversation(self, **kwargs):
+            self.record["history"] = kwargs.get("conversation_history")
+            self.record["user_message"] = kwargs.get("user_message")
+
+        def release_clients(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(
+        run_agent_module, "threading", types.SimpleNamespace(Thread=ImmediateThread)
+    )
+    return forks
+
+
+@pytest.fixture(autouse=True)
+def clear_review_admission_state():
+    """One failed assertion must not leak a process-global session admission into later tests."""
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
+    yield
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
+
+
+def _snapshot(pairs: int, filler_chars: int) -> list[dict]:
+    """``pairs`` user/assistant exchanges, each assistant turn carrying ``filler_chars`` of text."""
+    messages: list[dict] = []
+    for i in range(pairs):
+        messages.append({"role": "user", "content": f"question {i}"})
+        messages.append({
+            "role": "assistant",
+            "content": f"answer {i} " + ("x" * filler_chars),
+        })
+    return messages
+
+
+def _config(**task_overrides) -> dict:
+    return {"auxiliary": {"background_review": {"enabled": True, **task_overrides}}}
+
+
+def _patch_config(monkeypatch, cfg: dict) -> None:
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(config_module, "load_config_readonly", lambda *a, **k: cfg)
+    monkeypatch.setattr(config_module, "load_config", lambda *a, **k: cfg)
+
+
+def _assert_plain_user_anchor(history: list[dict]) -> None:
+    assert history, "replayed history must not be empty"
+    first = history[0]
+    assert first.get("role") == "user"
+    content = first.get("content")
+    if isinstance(content, list):
+        assert not any(
+            isinstance(block, dict)
+            and (block.get("type") == "tool_result" or block.get("tool_use_id"))
+            for block in content
+        )
+
+
+# ---------------------------------------------------------------------------
+# 1 + 2 — the foreground always wins
+# ---------------------------------------------------------------------------
+
+
+def test_live_turn_on_the_same_session_blocks_the_automatic_review(
+    review_forks, monkeypatch, caplog
+):
+    """A turn already registered on this session means the review must not fork at all."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    token = review_admission.note_turn_started(agent.session_id)
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+            )
+    finally:
+        review_admission.note_turn_finished(agent.session_id, token)
+
+    assert review_forks == [], "review forked while a live turn held the session"
+    assert review_admission.REASON_LIVE_TURN in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
+
+
+def test_second_agent_cancels_canonical_review_for_the_same_owner(monkeypatch):
+    targets = []
+
+    class CapturedThread:
+        def __init__(self, *, target, daemon=None, name=None):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    _patch_config(monkeypatch, _config(defer="never"))
+    monkeypatch.setattr(
+        run_agent_module,
+        "threading",
+        types.SimpleNamespace(Thread=CapturedThread),
+    )
+    first = _bare_agent("shared-session")
+    second = _bare_agent("shared-session")
+    AIAgent._spawn_background_review(
+        first,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+    first_run = first._background_review_run
+    assert first_run is not None
+
+    cancelled = background_review_module.cancel_background_review_for_live_turn(
+        second, wait=False
+    )
+
+    assert cancelled is first_run
+    assert first_run.cancel_requested.is_set()
+    targets[0]()
+
+
+def test_rotated_parent_keeps_review_ownership_scoped_to_each_session():
+    agent = _bare_agent("session-before-rotation")
+    profile_key = review_admission.current_profile_key()
+    first = background_review_module.prepare_background_review_run(
+        agent,
+        session_id="session-before-rotation",
+        profile_key=profile_key,
+    )
+    assert first is not None
+
+    agent.session_id = "session-after-rotation"
+    second = background_review_module.prepare_background_review_run(
+        agent,
+        session_id="session-after-rotation",
+        profile_key=profile_key,
+    )
+
+    try:
+        assert second is not None
+        assert (
+            review_admission.current_review_run("session-before-rotation", profile_key)
+            is first
+        )
+        assert (
+            review_admission.current_review_run("session-after-rotation", profile_key)
+            is second
+        )
+        cancelled = background_review_module.cancel_background_review_for_live_turn(
+            agent,
+            wait=False,
+            session_id="session-after-rotation",
+            profile_key=profile_key,
+        )
+        assert cancelled is second
+        assert second.cancel_requested.is_set()
+        assert first.cancel_requested.is_set() is False
+    finally:
+        background_review_module.finish_background_review_run(agent, second)
+        background_review_module.finish_background_review_run(agent, first)
+
+
+def test_rotated_parent_cancel_targets_the_registry_owner_not_the_slot():
+    """After rotation the slot points at the NEWEST prepared run; cancelling the OLD session
+    must resolve through the canonical registry and fence only that session's run."""
+    agent = _bare_agent("session-before-rotation")
+    profile_key = review_admission.current_profile_key()
+    first = background_review_module.prepare_background_review_run(
+        agent, session_id="session-before-rotation", profile_key=profile_key
+    )
+    agent.session_id = "session-after-rotation"
+    second = background_review_module.prepare_background_review_run(
+        agent, session_id="session-after-rotation", profile_key=profile_key
+    )
+    assert first is not None and second is not None
+    assert agent._background_review_run is second
+
+    try:
+        cancelled = background_review_module.cancel_background_review_for_live_turn(
+            agent,
+            wait=False,
+            session_id="session-before-rotation",
+            profile_key=profile_key,
+        )
+        assert cancelled is first
+        assert first.cancel_requested.is_set()
+        assert second.cancel_requested.is_set() is False
+        # An unadmitted run is revoked on the spot; its successor keeps its ownership.
+        assert first.request_done.is_set()
+        assert (
+            review_admission.current_review_run("session-before-rotation", profile_key)
+            is None
+        )
+        assert (
+            review_admission.current_review_run("session-after-rotation", profile_key)
+            is second
+        )
+    finally:
+        background_review_module.finish_background_review_run(agent, second)
+        background_review_module.finish_background_review_run(agent, first)
+
+
+def test_cancelling_prepared_unstarted_review_acknowledges_without_worker():
+    agent = _bare_agent("prepared-without-worker")
+    run = background_review_module.prepare_background_review_run(agent)
+    assert run is not None
+    cancellation_returned = threading.Event()
+
+    def cancel_and_wait():
+        background_review_module.cancel_background_review_for_live_turn(agent)
+        cancellation_returned.set()
+
+    foreground = threading.Thread(target=cancel_and_wait, daemon=True)
+    foreground.start()
+    try:
+        assert cancellation_returned.wait(2.0), (
+            "an unstarted prepared run has no worker that can publish its acknowledgement"
+        )
+    finally:
+        background_review_module.finish_background_review_run(agent, run)
+        foreground.join(timeout=2.0)
+
+    assert foreground.is_alive() is False
+    assert run.request_done.is_set()
+    assert review_admission.current_review_run(agent.session_id) is None
+
+
+def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
+    monkeypatch,
+):
+    """The foreground fences and interrupts an admitted fork, but must not start its own
+    provider work until that fork publishes its request exit — with no timeout escape: every
+    escalation bound elapses unacknowledged, and the turn still parks on the unbounded wait."""
+    import agent.conversation_loop as conversation_loop_module
+
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.01, raising=False
+    )
+    agent = _bare_agent("facade-waits-for-review")
+    # A full (lease-less) facade pass reads these on the way to the loop.
+    agent._session_db = None
+    agent._persist_disabled = False
+    agent._reset_activity_labels_after_turn = lambda: None
+    agent._conversation_root_id = lambda: agent.session_id
+    agent.log_prefix = ""
+    agent._vprint = lambda *_a, **_k: None
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._pending_redirect = None
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+
+    run = background_review_module.prepare_background_review_run(agent)
+    assert run is not None
+    assert (
+        run.begin_request(object()) is True
+    )  # an admitted fork with a request on the wire
+
+    entered_wait = threading.Event()
+    release = threading.Event()
+    loop_entered = threading.Event()
+    observed_timeouts: list = []
+
+    class ControlledCompletion:
+        def __init__(self):
+            self.set_calls = 0
+
+        def wait(self, timeout=None):
+            observed_timeouts.append(timeout)
+            if timeout is not None:
+                return False  # an escalation bound elapsed with no acknowledgement
+            entered_wait.set()
+            assert release.wait(timeout=10.0)
+            return True
+
+        def set(self):
+            self.set_calls += 1
+
+        def is_set(self):
+            return self.set_calls > 0
+
+    run.request_done = ControlledCompletion()
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _fork, **_kwargs: None,
+    )
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        loop_entered.set()
+        return {"final_response": "ok", "messages": history or [], "failed": False}
+
+    monkeypatch.setattr(conversation_loop_module, "run_conversation", fake_run)
+
+    outcome: dict = {}
+
+    def foreground():
+        try:
+            outcome["result"] = TurnFacadeMixin.run_conversation(agent, "hi")
+        except BaseException as exc:  # surfaced by the assertions below
+            outcome["error"] = exc
+
+    turn = threading.Thread(target=foreground, daemon=True)
+    turn.start()
+    try:
+        assert entered_wait.wait(2.0)
+        assert run.cancel_requested.is_set()
+        # The waiter is parked on the fork's exit: the loop cannot have been entered.
+        assert loop_entered.is_set() is False
+    finally:
+        release.set()
+        turn.join(timeout=10.0)
+        background_review_module.finish_background_review_run(agent, run)
+
+    assert not turn.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    assert observed_timeouts[-1] is None
+    assert observed_timeouts[:-1] and all(t == 0.01 for t in observed_timeouts[:-1])
+    assert loop_entered.is_set()
+    assert outcome["result"]["final_response"] == "ok"
+    assert review_admission.other_live_turn(agent.session_id, None) is False
+
+
+def test_review_uses_the_durable_turn_lease_shared_by_other_processes(tmp_path):
+    import os
+
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    parent = types.SimpleNamespace(_session_db=review_db)
+    review_agent = types.SimpleNamespace()
+    run = background_review_module._BackgroundReviewRun()
+
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        parent, review_agent, "shared-session", run
+    )
+
+    assert reason is None
+    assert lease is not None
+    foreground_holder = f"pid={os.getpid()}:turn=foreground"
+    assert not foreground_db.try_acquire_session_turn_lease(
+        "shared-session", foreground_holder, ttl_seconds=5
+    )
+    lease.release()
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", foreground_holder, ttl_seconds=5
+    )
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
+
+
+def test_queued_gateway_followup_blocks_the_automatic_review(
+    review_forks, monkeypatch, caplog
+):
+    """A follow-up already queued for this session becomes the next live turn — it wins."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    agent.followup_pending_callback = lambda: True
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+
+    assert review_forks == [], (
+        "review forked while a follow-up was queued for the session"
+    )
+    assert review_admission.REASON_QUEUED_FOLLOWUP in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
+
+
+def test_raising_followup_probe_fails_safe_and_blocks_automatic_review(
+    review_forks, monkeypatch, caplog
+):
+    """Unknown foreground state cannot authorize lower-priority provider work."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+
+    def raise_from_probe():
+        raise RuntimeError("probe failed")
+
+    agent.followup_pending_callback = raise_from_probe
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+
+    assert review_forks == []
+    assert "admission_probe_failed" in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
+
+
+def test_raising_request_admission_gate_fails_safe():
+    def raise_from_gate():
+        raise RuntimeError("gate failed")
+
+    run = background_review_module._BackgroundReviewRun(admission_gate=raise_from_gate)
+
+    assert run.begin_request(object()) is False
+    assert run.refused_reason == "admission_probe_failed"
+    assert run.cancel_requested.is_set()
+
+
+def test_live_turn_starting_after_early_gate_fences_the_prepared_review(
+    review_forks,
+    monkeypatch,
+    caplog,
+):
+    """Close the check-before-prepare race: once a run is installed, a new turn must win."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    original_prepare = background_review_module.prepare_background_review_run
+    race_token = None
+
+    def prepare_then_start_live_turn(parent, **kwargs):
+        nonlocal race_token
+        run = original_prepare(parent, **kwargs)
+        race_token = review_admission.note_turn_started(parent.session_id)
+        return run
+
+    monkeypatch.setattr(
+        background_review_module,
+        "prepare_background_review_run",
+        prepare_then_start_live_turn,
+    )
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+            )
+    finally:
+        if race_token is not None:
+            review_admission.note_turn_finished(
+                getattr(agent, "session_id", ""), race_token
+            )
+
+    assert review_forks == [], (
+        "review crossed a live turn that started after its early gate"
+    )
+    assert review_admission.REASON_LIVE_TURN in caplog.text
+
+
+def test_live_turn_registering_during_the_foreground_probe_is_refused_at_publication():
+    """Force a live turn into the sample-to-publication gap while the registry lock is free.
+
+    The foreground sample runs the host probe, which takes the gateway's per-session state
+    lock, so the process-wide registry lock must NOT be held across it: the gateway fence takes
+    a state lock and THEN the registry lock, and a probe holding both in the other order wedged
+    the event loop behind a review. The gap that leaves is closed at publication instead — the
+    registry lock is taken for a live-turn re-check and the publication together — so a turn
+    that registered during the probe refuses the review, and a turn registering after the
+    publication finds a fork to cancel.
+    """
+
+    class TrackingRLock:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._owner = None
+            self._depth = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            owner = threading.get_ident()
+            if self._owner == owner:
+                self._depth += 1
+            else:
+                self._owner = owner
+                self._depth = 1
+            return self
+
+        def __exit__(self, *_args):
+            self._depth -= 1
+            if self._depth == 0:
+                self._owner = None
+            self._lock.release()
+
+        def held_by_current_thread(self):
+            return self._owner == threading.get_ident()
+
+    session_id = "forced-registry-race"
+    profile = "/profile"
+    live_registered = threading.Event()
+    live_finished = threading.Event()
+    published = []
+    cancelled_forks = []
+    live_tokens = []
+    live_threads = []
+    registry_held_in_probe = []
+    registered_before_probe_returned = []
+    review_agent = object()
+    original_lock = review_admission._lock
+    admission_lock = TrackingRLock()
+    review_admission._lock = admission_lock
+
+    class ObservedRun(background_review_module._BackgroundReviewRun):
+        def __setattr__(self, name, value):
+            if name == "_review_agent" and value is review_agent:
+                published.append(live_registered.is_set())
+            super().__setattr__(name, value)
+
+    def register_and_cancel_live_turn():
+        with admission_lock:
+            live_tokens.append(review_admission.note_turn_started(session_id, profile))
+            live_registered.set()
+            cancelled_forks.append(run.cancel())
+        live_finished.set()
+
+    def foreground_gate():
+        registry_held_in_probe.append(admission_lock.held_by_current_thread())
+        live_thread = threading.Thread(target=register_and_cancel_live_turn)
+        live_threads.append(live_thread)
+        live_thread.start()
+        # A contender registers while the probe runs; it must never wait behind the probe, so
+        # the wait is bounded rather than blocking on the (old) lock-holding path.
+        registered_before_probe_returned.append(live_registered.wait(timeout=3.0))
+
+    try:
+        run = ObservedRun(
+            admission_gate=foreground_gate,
+            live_turn_gate=lambda: review_admission.live_turn_block_reason(
+                session_id, None, profile
+            ),
+            foreground_admission_lock=review_admission.admission_lock(),
+        )
+
+        admitted = run.begin_request(review_agent)
+        assert len(live_threads) == 1
+        assert live_finished.wait(timeout=10.0)
+        live_threads[0].join(timeout=10.0)
+
+        assert registry_held_in_probe == [False]
+        assert registered_before_probe_returned == [True]
+        assert admitted is False
+        assert run.refused_reason == review_admission.REASON_LIVE_TURN
+        assert published == []
+        assert cancelled_forks == [None]
+        assert run.cancel_requested.is_set()
+    finally:
+        for token in live_tokens:
+            review_admission.note_turn_finished(session_id, token, profile)
+        review_admission._lock = original_lock
+
+
+def test_queue_side_cancel_is_never_blocked_by_the_foreground_probe():
+    """The run lock must not be held across the host foreground probe.
+
+    The probe is the gateway's, and it takes that session's admission lock; the gateway's queue
+    fence takes the SAME admission lock and then cancels, which takes the run lock. Holding the run
+    lock across the probe inverts the two orders, so the fence — running on the gateway event loop —
+    would wedge behind a review that is itself waiting on the loop's lock.
+    """
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+    cancel_returned = threading.Event()
+    admitted: list = []
+
+    def parked_gate():
+        probe_entered.set()
+        release_probe.wait(timeout=10.0)
+
+    run = background_review_module._BackgroundReviewRun(admission_gate=parked_gate)
+    requester = threading.Thread(
+        target=lambda: admitted.append(run.begin_request(object()))
+    )
+    canceller = threading.Thread(
+        target=lambda: (run.cancel(), cancel_returned.set()),
+    )
+    try:
+        requester.start()
+        assert probe_entered.wait(timeout=10.0)
+        canceller.start()
+        fence_blocked = not cancel_returned.wait(timeout=10.0)
+    finally:
+        release_probe.set()
+        requester.join(timeout=10.0)
+        canceller.join(timeout=10.0)
+
+    assert not fence_blocked, (
+        "queue-side cancel blocked behind the review's foreground probe"
+    )
+    assert admitted == [False]
+    assert run.cancel_requested.is_set()
+
+
+def test_followup_arriving_after_post_prepare_check_blocks_provider_request(
+    review_forks, monkeypatch
+):
+    """Force the late queue interleaving without sleep: admission re-checks after fork build."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    queued = {"value": False}
+    agent.followup_pending_callback = lambda: queued["value"]
+    original_build = background_review_module.build_cache_parity_fork
+
+    def build_then_queue(*args, **kwargs):
+        fork = original_build(*args, **kwargs)
+        queued["value"] = True
+        return fork
+
+    monkeypatch.setattr(
+        background_review_module, "build_cache_parity_fork", build_then_queue
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert len(review_forks) == 1, (
+        "the forced interleaving must reach fork construction"
+    )
+    assert review_forks[0]["history"] is None, (
+        "provider-capable run_conversation was admitted"
+    )
+    assert agent._background_review_run is None
+
+
+def test_admission_gate_refusal_logs_one_body_free_line(
+    review_forks, monkeypatch, caplog
+):
+    """The last-word gate is the one that actually closes the race, so it must leave a trace.
+
+    Every other skip/defer decision logs ``reason slug + hashed owner tag``; a refusal at
+    ``begin_request`` used to log nothing at all, so the cheapest signal that self-improvement is
+    being starved was invisible. One INFO record, no message bodies, no raw session id, and the
+    same profile+session hash every other review line carries.
+    """
+    _patch_config(monkeypatch, _config())
+    session_id = "raw-session-id-must-not-be-logged"
+    agent = _bare_agent(session_id)
+    queued = {"value": False}
+    agent.followup_pending_callback = lambda: queued["value"]
+    original_build = background_review_module.build_cache_parity_fork
+
+    def build_then_queue(*args, **kwargs):
+        fork = original_build(*args, **kwargs)
+        queued["value"] = True
+        return fork
+
+    monkeypatch.setattr(
+        background_review_module, "build_cache_parity_fork", build_then_queue
+    )
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "private message body"}],
+            review_memory=True,
+        )
+
+    assert review_forks[0]["history"] is None, (
+        "provider-capable run_conversation was admitted"
+    )
+    refusals = [
+        record
+        for record in caplog.records
+        if review_admission.REASON_QUEUED_FOLLOWUP in record.getMessage()
+    ]
+    assert len(refusals) == 1, "gate refusal must log exactly once"
+    assert refusals[0].levelname == "INFO"
+    refusal_text = refusals[0].getMessage()
+    assert (
+        review_admission.owner_tag(review_admission.current_profile_key(), session_id)
+        in refusal_text
+    )
+    assert session_id not in refusal_text
+    assert "private message body" not in refusal_text
+
+
+@pytest.mark.parametrize(
+    "hook_name,expected_line",
+    [
+        ("prepare_background_review_run", "skipped after prepare"),
+        ("build_cache_parity_fork", "refused at admission"),
+    ],
+)
+def test_late_gate_skip_line_tags_the_session_captured_at_spawn(
+    review_forks, monkeypatch, caplog, hook_name, expected_line
+):
+    """A parent may rotate sessions while its review is still being admitted; each late gate's
+    skip line must name the frozen review owner, not whatever the parent points at by then.
+
+    ``hook_name`` is the last production step before the gate: the post-prepare re-check runs
+    right after ``prepare_background_review_run``; ``begin_request`` right after
+    ``build_cache_parity_fork``. Both hooks rotate the parent and queue a follow-up, so the gate
+    refuses and logs — which session tag it carries is the contract.
+    """
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent("session-one")
+    profile_key = review_admission.current_profile_key()
+    queued = {"value": False}
+    agent.followup_pending_callback = lambda: queued["value"]
+    original = getattr(background_review_module, hook_name)
+
+    def hook_then_rotate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        agent.session_id = "session-two"
+        queued["value"] = True
+        return result
+
+    monkeypatch.setattr(background_review_module, hook_name, hook_then_rotate)
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+
+    assert all(fork["history"] is None for fork in review_forks), (
+        "provider-capable run_conversation was admitted"
+    )
+    assert agent._background_review_run is None
+    refusals = [
+        record
+        for record in caplog.records
+        if review_admission.REASON_QUEUED_FOLLOWUP in record.getMessage()
+    ]
+    assert len(refusals) == 1, "gate refusal must log exactly once"
+    refusal_text = refusals[0].getMessage()
+    assert expected_line in refusal_text
+    assert review_admission.owner_tag(profile_key, "session-one") in refusal_text
+    assert review_admission.owner_tag(profile_key, "session-two") not in refusal_text
+
+
+def test_early_gate_skip_line_tags_the_frozen_review_session(
+    review_forks, monkeypatch, caplog
+):
+    """A gateway candidate freezes its owner at finalize and spawns after delivery; when the
+    parent rotated in between, the skip line must name the frozen owner the gate checked."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent("session-two")
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started("session-one", profile_key)
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                _review_profile_key=profile_key,
+                _review_session_id="session-one",
+            )
+    finally:
+        review_admission.note_turn_finished("session-one", token, profile_key)
+
+    assert review_forks == [], "review forked while a live turn held the frozen session"
+    skips = [
+        record
+        for record in caplog.records
+        if review_admission.REASON_LIVE_TURN in record.getMessage()
+    ]
+    assert len(skips) == 1, "early gate skip must log exactly once"
+    skip_text = skips[0].getMessage()
+    assert review_admission.owner_tag(profile_key, "session-one") in skip_text
+    assert review_admission.owner_tag(profile_key, "session-two") not in skip_text
+
+
+def test_cancelled_review_does_not_log_a_gate_refusal(
+    review_forks, monkeypatch, caplog
+):
+    """A live turn cancelling the run is already logged by the canceller — no second line."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    original_build = background_review_module.build_cache_parity_fork
+
+    def build_then_cancel(*args, **kwargs):
+        fork = original_build(*args, **kwargs)
+        agent._background_review_run.cancel()
+        return fork
+
+    monkeypatch.setattr(
+        background_review_module, "build_cache_parity_fork", build_then_cancel
+    )
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+
+    assert review_forks[0]["history"] is None, "cancelled run reached the provider"
+    assert "refused at admission" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "canceller,expected_reason",
+    [
+        (
+            background_review_module.cancel_background_review_for_pending_followup,
+            "queued_followup_cancelled",
+        ),
+        (
+            functools.partial(
+                background_review_module.cancel_background_review_for_live_turn,
+                wait=False,
+            ),
+            "live_turn_cancelled",
+        ),
+    ],
+    ids=["queue_side_fence", "live_turn"],
+)
+def test_cancellation_logs_owner_and_reason_once(
+    monkeypatch, caplog, canceller, expected_reason
+):
+    """A fence is a skip decision like any other: whoever cancels the review leaves one INFO
+    line with the hashed owner and a stable slug, and a repeated fence on the same run adds
+    nothing. Without it a review that vanished mid-flight was invisible in the logs."""
+    agent = _bare_agent("raw-session-id-must-not-be-logged")
+    profile_key = review_admission.current_profile_key()
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _fork, **_kwargs: None,
+    )
+    run = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert run is not None and run.begin_request(object())
+
+    def cancellations():
+        return [
+            record
+            for record in caplog.records
+            if expected_reason in record.getMessage()
+        ]
+
+    try:
+        with caplog.at_level("INFO"):
+            canceller(agent, session_id=agent.session_id, profile_key=profile_key)
+            assert len(cancellations()) == 1, "cancellation must log exactly once"
+            canceller(agent, session_id=agent.session_id, profile_key=profile_key)
+            assert len(cancellations()) == 1, "a repeated fence must not log again"
+    finally:
+        background_review_module.finish_background_review_run(agent, run)
+
+    assert run.cancel_requested.is_set()
+    line = cancellations()[0]
+    assert line.levelname == "INFO"
+    text = line.getMessage()
+    assert review_admission.owner_tag(profile_key, agent.session_id) in text
+    assert agent.session_id not in text
+
+
+def test_explicit_refine_remains_exempt_from_late_followup_gate(
+    review_forks, monkeypatch
+):
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    agent.followup_pending_callback = lambda: True
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        explicit=True,
+    )
+
+    assert len(review_forks) == 1
+    assert review_forks[0]["history"] is not None
+
+
+def test_explicit_refine_has_no_automatic_aggregate_input_budget(
+    review_forks, monkeypatch
+):
+    _patch_config(monkeypatch, _config(max_input_tokens=1))
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        explicit=True,
+    )
+
+    assert review_forks[0]["attrs"].get("_review_input_token_budget") is None
+
+
+def test_queue_side_fence_does_not_cancel_explicit_refine(monkeypatch):
+    agent = _bare_agent()
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _agent, **_kwargs: None,
+    )
+    run = background_review_module.prepare_background_review_run(
+        agent, followup_cancellable=False
+    )
+    assert run is not None
+    assert run.begin_request(object()) is True
+
+    background_review_module.cancel_background_review_for_pending_followup(agent)
+
+    assert run.cancel_requested.is_set() is False
+    background_review_module.finish_background_review_run(agent, run)
+
+
+def test_terminal_review_cannot_be_relabeled_preempted_before_slot_cleanup():
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(object()) is True
+
+    assert run.mark_request_finished() is True
+    assert run.cancel() is None
+
+    assert run.cancel_requested.is_set() is False
+
+
+def test_cancel_after_provider_phase_returns_does_not_requeue_completed_review(
+    review_forks, monkeypatch
+):
+    """A cancel landing after the provider phase returned, while the lease release, usage
+    attribution and fork unregister are still pending, must not relabel a COMPLETED review as
+    preempted: its memory/skill writes already happened, so a requeue would run it all again."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    runs, enqueued, interrupts = [], [], []
+    original_prepare = background_review_module.prepare_background_review_run
+
+    def _capture_prepare(*args, **kwargs):
+        runs.append(original_prepare(*args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(
+        background_review_module, "prepare_background_review_run", _capture_prepare
+    )
+    monkeypatch.setattr(
+        agent, "_requeue_deferred_review", lambda kwargs: enqueued.append(kwargs)
+    )
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        lambda review_agent, **_kwargs: interrupts.append(review_agent),
+    )
+    # Land the live-turn cancel inside the post-return window of the fork's finally.
+    monkeypatch.setattr(
+        background_review_module,
+        "_record_review_usage_to_parent",
+        lambda *_args, **_kwargs: (
+            background_review_module.cancel_background_review_for_live_turn(
+                agent, wait=False
+            )
+        ),
+    )
+
+    AIAgent._spawn_background_review_now(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        task_cfg={"defer": "auto"},
+        _idle_queue_origin=True,
+        _review_session_id=agent.session_id,
+    )
+
+    assert review_forks and review_forks[0]["history"] is not None
+    assert runs[0].request_done.is_set()
+    assert runs[0].cancel_requested.is_set() is False
+    assert interrupts == []
+    assert enqueued == []
+
+
+def test_foreground_wait_has_no_timeout_escape_into_provider_work(monkeypatch):
+    """Every escalation bound may elapse unacknowledged; the waiter then parks on an
+    UNBOUNDED wait — it never returns into provider work before the exit is published."""
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.01, raising=False
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    observed_timeouts = []
+
+    class ControlledCompletion:
+        def wait(self, timeout=None):
+            observed_timeouts.append(timeout)
+            if timeout is not None:
+                return False
+            entered.set()
+            release.wait(timeout=10.0)
+            return True
+
+    run = background_review_module._BackgroundReviewRun()
+    run.request_done = ControlledCompletion()
+    waiter = threading.Thread(
+        target=background_review_module.wait_for_background_review_cancellation,
+        args=(run,),
+    )
+    waiter.start()
+    assert entered.wait(timeout=10.0)
+    release.set()
+    waiter.join(timeout=10.0)
+
+    assert not waiter.is_alive()
+    assert observed_timeouts[-1] is None
+    assert observed_timeouts[:-1] and all(t == 0.01 for t in observed_timeouts[:-1])
+
+
+def test_deferred_dispatch_does_not_exclude_a_different_current_turn(
+    review_forks,
+    monkeypatch,
+    caplog,
+):
+    """Dispatch excludes only its spawning turn, not a newer foreground turn."""
+    from agent import review_idle_queue
+
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    queued: dict = {}
+    monkeypatch.setattr(run_agent_module, "_review_should_defer", lambda *_args: True)
+    monkeypatch.setattr(
+        review_idle_queue.QUEUE,
+        "enqueue",
+        lambda _agent, _key, kwargs: queued.update(kwargs),
+    )
+
+    spawning_token = review_admission.note_turn_started(agent.session_id)
+    agent._active_turn_token = spawning_token
+    try:
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+    finally:
+        review_admission.note_turn_finished(agent.session_id, spawning_token)
+
+    current_token = review_admission.note_turn_started(agent.session_id)
+    agent._active_turn_token = current_token
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review_now(agent, **queued)
+    finally:
+        review_admission.note_turn_finished(agent.session_id, current_token)
+
+    assert review_forks == [], "deferred review crossed a newer foreground turn"
+    assert review_admission.REASON_LIVE_TURN in caplog.text
+
+
+def test_review_thread_keeps_the_session_identity_captured_at_spawn(
+    review_forks, monkeypatch
+):
+    targets = []
+
+    class CapturedThread:
+        def __init__(self, *, target, daemon=None, name=None):
+            targets.append(target)
+
+        def start(self):
+            pass
+
+    _patch_config(monkeypatch, _config(defer="never"))
+    monkeypatch.setattr(
+        run_agent_module,
+        "threading",
+        types.SimpleNamespace(Thread=CapturedThread),
+    )
+    agent = _bare_agent("session-one")
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "session one"}],
+        review_memory=True,
+    )
+
+    agent.session_id = "session-two"
+    targets[0]()
+
+    assert review_forks[0]["init"]["parent_session_id"] == "session-one"
+    assert review_forks[0]["attrs"]["session_id"] == "session-one"
+
+
+def test_turn_registration_is_released_when_review_cancellation_raises(monkeypatch):
+    """An exceptional cancellation path must not block reviews on the session forever."""
+    session_id = "cancel-error-session"
+    agent = types.SimpleNamespace(session_id=session_id, platform="whatsapp")
+
+    def fail_cancel(_agent, **_kwargs):
+        raise RuntimeError("cancel failed")
+
+    monkeypatch.setattr(
+        background_review_module,
+        "cancel_background_review_for_live_turn",
+        fail_cancel,
+    )
+
+    with pytest.raises(RuntimeError, match="cancel failed"):
+        TurnFacadeMixin.run_conversation(cast(TurnFacadeMixin, agent), "hello")
+
+    assert review_admission.other_live_turn(session_id, None) is False
+
+
+def test_active_turn_token_assignment_exception_leaves_no_live_token():
+    """Registration is balanced even when the host rejects the token attribute."""
+
+    class RejectActiveTurnToken:
+        session_id = "assignment-error-session"
+        platform = "whatsapp"
+
+        def __setattr__(self, name, value):
+            if name == "_active_turn_token":
+                raise RuntimeError("assignment failed")
+            object.__setattr__(self, name, value)
+
+    agent = RejectActiveTurnToken()
+    with pytest.raises(RuntimeError, match="assignment failed"):
+        TurnFacadeMixin.run_conversation(cast(TurnFacadeMixin, agent), "hello")
+
+    assert review_admission.other_live_turn(agent.session_id, None) is False
+
+
+def test_review_admitted_when_the_session_is_free(review_forks, monkeypatch):
+    """The exclusion is scoped to the session: another session's turn must not starve learning."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    token = review_admission.note_turn_started("some-other-session")
+    try:
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+    finally:
+        review_admission.note_turn_finished("some-other-session", token)
+
+    assert len(review_forks) == 1
+    assert review_forks[0]["history"] is not None
+
+
+def test_live_turn_registry_isolated_by_canonical_profile_and_session():
+    session_id = "shared-session-id"
+    token = review_admission.note_turn_started(session_id, "/profiles/alpha")
+    try:
+        assert (
+            review_admission.other_live_turn(session_id, None, "/profiles/alpha")
+            is True
+        )
+        assert (
+            review_admission.other_live_turn(session_id, None, "/profiles/beta")
+            is False
+        )
+    finally:
+        review_admission.note_turn_finished(session_id, token, "/profiles/beta")
+
+    # Cleanup uses the token's registration key, not the caller's current/wrong profile, and
+    # remains idempotent.
+    review_admission.note_turn_finished(session_id, token, "/profiles/alpha")
+    assert (
+        review_admission.other_live_turn(session_id, None, "/profiles/alpha") is False
+    )
+
+
+def test_review_check_keeps_spawning_profile_across_deferred_dispatch(
+    review_forks, monkeypatch
+):
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent("shared-session-id")
+    alpha_token = review_admission.note_turn_started(
+        agent.session_id, "/profiles/alpha"
+    )
+    try:
+        # Simulate the idle dispatcher running outside the originating profile context. The fixed
+        # profile key must keep beta independent from alpha even though the session IDs match.
+        AIAgent._spawn_background_review_now(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+            task_cfg={},
+            _review_profile_key="/profiles/beta",
+            _idle_queue_origin=True,
+        )
+    finally:
+        review_admission.note_turn_finished(
+            agent.session_id, alpha_token, "/profiles/alpha"
+        )
+
+    assert len(review_forks) == 1
+    assert review_forks[0]["history"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 3 + 4 — replay is bounded for oversized sessions, verbatim for normal ones
+# ---------------------------------------------------------------------------
+
+
+def test_replay_token_budget_defaults_when_missing():
+    assert (
+        review_admission.replay_token_budget({})
+        == review_admission.MAX_REPLAY_TOKENS_DEFAULT
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [0, -1, review_admission.MAX_REPLAY_TOKENS_DEFAULT + 1],
+)
+def test_operator_cannot_disable_or_raise_automatic_replay_bound(raw):
+    assert (
+        review_admission.replay_token_budget({"max_replay_tokens": raw})
+        == review_admission.MAX_REPLAY_TOKENS_DEFAULT
+    )
+
+
+@pytest.mark.parametrize("raw", [None, True, False, "not-a-number"])
+def test_invalid_replay_token_budget_warns_and_uses_default(raw, caplog):
+    with caplog.at_level("WARNING", logger=review_admission.__name__):
+        budget = review_admission.replay_token_budget({"max_replay_tokens": raw})
+
+    assert budget == review_admission.MAX_REPLAY_TOKENS_DEFAULT
+    assert "Invalid auxiliary.background_review.max_replay_tokens" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "carrier_content",
+    [
+        [{"type": "tool_result", "content": "result"}],
+        [{"type": "text", "tool_use_id": "toolu_sensitive", "text": "result"}],
+    ],
+    ids=["tool-result-type", "tool-use-id"],
+)
+def test_anthropic_tool_result_user_message_cannot_anchor_replay(carrier_content):
+    carrier = {"role": "user", "content": carrier_content}
+    latest_turn = [
+        {"role": "user", "content": "latest question"},
+        {"role": "assistant", "content": "latest answer"},
+    ]
+    snapshot = [
+        {"role": "user", "content": "old question " + ("x" * 8_000)},
+        {"role": "assistant", "content": "old tool request"},
+        carrier,
+        {"role": "assistant", "content": "tool result acknowledged"},
+        *latest_turn,
+    ]
+    budget = estimate_messages_tokens_rough(snapshot[2:])
+
+    replay, reason = review_admission.bounded_replay_history(snapshot, budget)
+
+    assert replay == latest_turn
+    assert reason == review_admission.REASON_OVERSIZED
+
+
+def test_openai_tool_call_and_result_remain_paired_in_bounded_replay():
+    complete_turn = [
+        {"role": "user", "content": "run the tool"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+        {"role": "assistant", "content": "done"},
+    ]
+    snapshot = [
+        {"role": "user", "content": "old question " + ("x" * 8_000)},
+        {"role": "assistant", "content": "old answer"},
+        *complete_turn,
+    ]
+    budget = estimate_messages_tokens_rough(complete_turn)
+
+    replay, reason = review_admission.bounded_replay_history(snapshot, budget)
+
+    assert replay == complete_turn
+    assert replay[1]["tool_calls"][0]["id"] == replay[2]["tool_call_id"]
+    assert reason == review_admission.REASON_OVERSIZED
+
+
+def test_bounded_replay_estimates_each_message_once(monkeypatch):
+    from agent import model_metadata
+
+    snapshot = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "new question"},
+        {"role": "assistant", "content": "new answer"},
+    ]
+    estimated = []
+
+    def estimate_one(messages):
+        assert len(messages) == 1
+        estimated.append(messages[0])
+        return 10
+
+    monkeypatch.setattr(model_metadata, "estimate_messages_tokens_rough", estimate_one)
+
+    replay, reason = review_admission.bounded_replay_history(snapshot, budget=25)
+
+    assert estimated == snapshot
+    assert replay == snapshot[2:]
+    assert reason == review_admission.REASON_OVERSIZED
+
+
+def test_session_tag_is_deterministic_and_does_not_disclose_session_id():
+    session_id = "customer@example.com:private-conversation-12345"
+    expected = hashlib.sha256(session_id.encode()).hexdigest()[:8]
+
+    assert review_admission.session_tag(session_id) == expected
+    assert review_admission.session_tag(session_id) == expected
+    assert session_id not in expected
+
+
+def test_owner_tag_distinguishes_profiles_without_disclosing_identity():
+    session_id = "customer@example.com:private-conversation-12345"
+
+    alpha = review_admission.owner_tag("/profiles/alpha", session_id)
+    beta = review_admission.owner_tag("/profiles/beta", session_id)
+
+    assert alpha != beta
+    assert alpha == review_admission.owner_tag("/profiles/alpha", session_id)
+    assert session_id not in alpha
+    assert "/profiles/alpha" not in alpha
+
+
+def test_oversized_snapshot_is_replayed_bounded(review_forks, monkeypatch, caplog):
+    """An oversized transcript must never be replayed verbatim into the fork."""
+    _patch_config(monkeypatch, _config(max_replay_tokens=2_000))
+    snapshot = _snapshot(pairs=60, filler_chars=800)
+    assert estimate_messages_tokens_rough(snapshot) > 2_000
+
+    agent = _bare_agent()
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=snapshot,
+            review_memory=True,
+        )
+
+    assert len(review_forks) == 1
+    history = review_forks[0]["history"]
+    assert history is not None
+    assert len(history) < len(snapshot), (
+        "full transcript replayed into an oversized review"
+    )
+    assert estimate_messages_tokens_rough(history) <= 2_000
+    _assert_plain_user_anchor(history)
+    assert review_admission.REASON_OVERSIZED in caplog.text
+
+
+def test_zero_max_replay_tokens_still_bounds_automatic_replay(
+    review_forks, monkeypatch, caplog
+):
+    """``max_replay_tokens: 0`` cannot switch the automatic replay bound off: on the composed
+    spawn path the ceiling still applies and the oversized snapshot is replayed bounded."""
+    monkeypatch.setattr(review_admission, "MAX_REPLAY_TOKENS_DEFAULT", 2_000)
+    _patch_config(monkeypatch, _config(max_replay_tokens=0))
+    snapshot = _snapshot(pairs=60, filler_chars=800)
+    assert estimate_messages_tokens_rough(snapshot) > 2_000
+
+    agent = _bare_agent()
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=snapshot,
+            review_memory=True,
+        )
+
+    assert len(review_forks) == 1
+    history = review_forks[0]["history"]
+    assert history is not None
+    assert len(history) < len(snapshot), (
+        "max_replay_tokens=0 replayed the full transcript into an automatic review"
+    )
+    assert estimate_messages_tokens_rough(history) <= 2_000
+    _assert_plain_user_anchor(history)
+    assert review_admission.REASON_OVERSIZED in caplog.text
+
+
+def test_bounded_snapshot_still_replays_the_full_transcript(review_forks, monkeypatch):
+    """Normal sessions keep the verbatim (warm-cache) replay — learning is not degraded."""
+    _patch_config(monkeypatch, _config(max_replay_tokens=2_000))
+    snapshot = _snapshot(pairs=3, filler_chars=40)
+    assert estimate_messages_tokens_rough(snapshot) < 2_000
+
+    agent = _bare_agent()
+    AIAgent._spawn_background_review(
+        agent, messages_snapshot=snapshot, review_memory=True
+    )
+
+    assert len(review_forks) == 1
+    assert review_forks[0]["history"] == snapshot
+
+
+def test_single_turn_larger_than_replay_budget_skips_automatic_review(
+    review_forks,
+    monkeypatch,
+    caplog,
+):
+    """Do not pay for a review when no complete user-led suffix can fit the replay budget."""
+    _patch_config(monkeypatch, _config(max_replay_tokens=100))
+    snapshot = [{"role": "user", "content": "x" * 10_000}]
+
+    agent = _bare_agent()
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=snapshot,
+            review_memory=True,
+        )
+
+    assert review_forks == []
+    assert review_admission.REASON_OVERSIZED in caplog.text
+
+
+@pytest.mark.parametrize(
+    "task_cfg, window",
+    [
+        ({}, 128_000),
+        ({}, 65_536),
+        ({}, 200_000),
+        ({}, None),
+        ({"max_replay_tokens": 50_000}, 128_000),
+        ({"max_input_tokens": 40_000}, 128_000),
+    ],
+)
+def test_replay_budget_is_the_ceiling_or_a_request_share_net_of_the_overhead(
+    task_cfg, window
+):
+    """One rule: the automatic replay never exceeds one of ``REVIEW_REQUEST_SHARES`` equal shares
+    of the aggregate input budget net of what every request carries besides it — the parent's
+    system prompt and tools[] (inherited byte-identical on the same-model path) and the review
+    prompt. The fork resolves its parent's context window, so the parent answers at spawn."""
+    agent = _bare_agent()
+    if window is not None:
+        agent.context_compressor = types.SimpleNamespace(context_length=window)
+    prompt = agent._COMBINED_REVIEW_PROMPT
+
+    ceiling = review_admission.replay_token_budget(task_cfg)
+    aggregate = background_review_module._review_input_token_budget(task_cfg, agent)
+    share = aggregate // review_admission.REVIEW_REQUEST_SHARES
+    overhead = review_admission.request_overhead_tokens(agent, prompt)
+
+    assert 0 < overhead < share
+    assert review_admission.replay_token_budget(task_cfg, agent, prompt) == min(
+        ceiling, share - overhead
+    )
+
+
+def test_first_request_overhead_alone_above_the_aggregate_skips_the_review(
+    review_forks, monkeypatch, caplog
+):
+    """When the parent's system prompt and tools[] leave no room under the operator's aggregate
+    cap, no replay can make the fork's first request fit: the review is skipped under its own
+    slug (a warning) instead of spawning a fork that is refused at its first request."""
+    _patch_config(monkeypatch, _config(max_input_tokens=1_000))
+    agent = _bare_agent()
+    # ~2k tokens of system prompt: wider than the whole aggregate on its own.
+    agent._cached_system_prompt = "s" * 8_000
+    snapshot = _snapshot(pairs=2, filler_chars=40)
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent, messages_snapshot=snapshot, review_memory=True
+        )
+
+    assert review_forks == []
+    assert review_admission.REASON_OVERHEAD_EXCEEDS_BUDGET in caplog.text
+
+
+def test_replay_never_exceeds_the_forks_aggregate_input_budget(
+    review_forks, monkeypatch
+):
+    """The fork's FIRST provider request is refused outright when its projection exceeds the
+    aggregate input budget (75% of the review model's window) with nothing consumed: a
+    zero-request review with no memory or skill writes. That request is not the replay alone —
+    the same-model fork inherits the parent's system prompt and tools[] byte-identically and
+    appends the review prompt — so the replay admitted at spawn must leave room for all of it,
+    and the fork must carry its owner tag so a refusal there is greppable."""
+    from agent.conversation_loop import _reserve_review_input_request
+    from agent.model_metadata import _estimate_tools_tokens_rough
+
+    _patch_config(monkeypatch, _config())
+    window = 128_000
+    fake_fork = run_agent_module.AIAgent  # the review_forks fixture's recorder
+
+    class WindowedFork(fake_fork):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.context_compressor = types.SimpleNamespace(context_length=window)
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", WindowedFork)
+    agent = _bare_agent()
+    agent.context_compressor = types.SimpleNamespace(context_length=window)
+    agent._cached_system_prompt = "system prompt " + "s" * 20_000  # ~5k tokens
+    agent.tools = [  # ~12k tokens of advertised schemas (a gateway surface)
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "d" * 400,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"arg": {"type": "string", "description": "e" * 500}},
+                },
+            },
+        }
+        for index in range(50)
+    ]
+    snapshot = _snapshot(pairs=50, filler_chars=8_000)
+    aggregate = background_review_module._review_input_token_budget({}, agent)
+    assert (
+        aggregate
+        < estimate_messages_tokens_rough(snapshot)
+        <= review_admission.MAX_REPLAY_TOKENS_DEFAULT
+    )
+
+    AIAgent._spawn_background_review(
+        agent, messages_snapshot=snapshot, review_memory=True
+    )
+
+    assert len(review_forks) == 1
+    record = review_forks[0]
+    history = record["history"]
+    assert history is not None
+    fork_budget = record["attrs"]["_review_input_token_budget"]
+    assert fork_budget == aggregate
+    _assert_plain_user_anchor(history)
+    # Request #1 as the loop projects it: system prompt + replay + the review prompt user
+    # message, plus the advertised tools[] (agent/turn_request_assembly.py).
+    projected = estimate_messages_tokens_rough(
+        [{"role": "system", "content": record["attrs"]["_cached_system_prompt"]}]
+        + history
+        + [{"role": "user", "content": record["user_message"]}]
+    ) + _estimate_tools_tokens_rough(record["attrs"]["tools"])
+    fresh_fork = types.SimpleNamespace(
+        _review_input_token_budget=fork_budget,
+        session_prompt_tokens=0,
+        _review_input_tokens_reserved=0,
+    )
+    assert _reserve_review_input_request(fresh_fork, projected) is True, (
+        f"replay admitted at spawn is refused at the fork's first request "
+        f"({projected} > {fork_budget})"
+    )
+    assert record["attrs"]["_review_owner_tag"] == review_admission.owner_tag(
+        review_admission.current_profile_key(), agent.session_id
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5 — persistence isolation survives both paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("pairs,filler", [(3, 40), (60, 800)])
+def test_review_fork_stays_detached_from_the_canonical_session(
+    review_forks, monkeypatch, pairs, filler
+):
+    """Bounded or oversized, the fork shares the session id but never writes that session."""
+    _patch_config(monkeypatch, _config(max_replay_tokens=2_000))
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=_snapshot(pairs=pairs, filler_chars=filler),
+        review_memory=True,
+    )
+
+    assert len(review_forks) == 1
+    attrs = review_forks[0]["attrs"]
+    assert attrs["session_id"] == agent.session_id  # prefix-cache parity
+    assert attrs["_persist_disabled"] is True
+    assert attrs["_session_db"] is None
+    assert attrs["_end_session_on_close"] is False
+
+
+# ---------------------------------------------------------------------------
+# Occupied canonical slot: a decision that is logged (automatic) or refused (/refine)
+# ---------------------------------------------------------------------------
+
+
+def test_occupied_review_slot_logs_owner_and_reason(caplog):
+    """An immediate automatic spawn that finds the canonical (profile, session) slot occupied
+    is a skip decision like any other: exactly one owner-tagged ``review_slot_busy`` line, the
+    occupant left untouched, no raw session id."""
+    agent = _bare_agent("occupied-slot")
+    profile_key = review_admission.current_profile_key()
+    occupant = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert occupant is not None
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review_now(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                _review_profile_key=profile_key,
+                _review_session_id=agent.session_id,
+            )
+    finally:
+        background_review_module.finish_background_review_run(agent, occupant)
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_REVIEW_SLOT_BUSY in record.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, agent.session_id) in lines[0]
+    assert agent.session_id not in lines[0]
+    assert occupant.cancel_requested.is_set() is False
+
+
+def test_explicit_refine_refuses_when_review_slot_is_occupied():
+    """/refine must not report success when nothing started: the spawn raises so both
+    handlers print a failure instead of 'Reviewing this conversation in the background'."""
+    agent = _bare_agent("occupied-slot-explicit")
+    profile_key = review_admission.current_profile_key()
+    occupant = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert occupant is not None
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            AIAgent._spawn_background_review_now(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                explicit=True,
+                _review_session_id=agent.session_id,
+            )
+    finally:
+        background_review_module.finish_background_review_run(agent, occupant)
+
+    assert occupant.cancel_requested.is_set() is False
+    assert review_admission.current_review_run(agent.session_id, profile_key) is None
+
+
+def test_review_fork_turn_is_not_a_live_foreground_turn(monkeypatch):
+    """The fork replays through the same facade as a user turn. It must not register itself as
+    a live turn on the session it reviews: ``live_turn_active`` is reserved for real foreground
+    work, so a concurrent spawn attempt reads the truthful ``review_slot_busy`` instead."""
+    import agent.conversation_loop as conversation_loop_module
+
+    parent = _bare_agent("fork-not-foreground")
+    profile_key = review_admission.current_profile_key()
+    fork = _bare_agent(parent.session_id)
+    fork._foreground_exempt_fork = True
+    fork._session_db = None
+    fork._persist_disabled = True
+    fork._reset_activity_labels_after_turn = lambda: None
+    fork._conversation_root_id = lambda: fork.session_id
+    fork.log_prefix = ""
+    fork._vprint = lambda *_a, **_k: None
+    fork._interrupt_requested = False
+    fork._interrupt_message = None
+    fork._pending_redirect = None
+    fork._execution_thread_id = None
+    fork._interrupt_thread_signal_pending = False
+    observed = []
+
+    def fake_run(_agent, *_args, **_kwargs):
+        observed.append(
+            review_admission.foreground_block_reason(
+                parent, None, profile_key, parent.session_id
+            )
+        )
+        return {"final_response": "Nothing to save.", "messages": [], "failed": False}
+
+    monkeypatch.setattr(conversation_loop_module, "run_conversation", fake_run)
+
+    result = TurnFacadeMixin.run_conversation(fork, "review prompt")
+
+    assert result["final_response"] == "Nothing to save."
+    assert observed == [None]
+    assert (
+        review_admission.other_live_turn(parent.session_id, None, profile_key) is False
+    )
+
+
+@pytest.mark.parametrize("write_origin", ["background_review", "side_question"])
+def test_cache_parity_forks_are_stamped_foreground_exempt(review_forks, write_origin):
+    """The builder, not each caller, marks a same-session fork as not-a-foreground-turn: the
+    facade keys on that stamp, so no fork kind can register itself as a live turn on the
+    session it replays."""
+    background_review_module.build_cache_parity_fork(
+        _bare_agent(), {}, max_iterations=3, write_origin=write_origin
+    )
+
+    assert review_forks[0]["attrs"]["_foreground_exempt_fork"] is True
+
+
+class _SideQuestionFork(AIAgent):
+    """What ``build_cache_parity_fork`` constructs for /btw: the real facade over a stubbed loop."""
+
+    def __init__(self, **_init_kwargs):
+        self._session_messages = []
+        self._reset_activity_labels_after_turn = lambda: None
+        self._conversation_root_id = lambda: self.session_id
+        self.log_prefix = ""
+        self._vprint = lambda *_a, **_k: None
+        self._interrupt_requested = False
+        self._interrupt_message = None
+        self._pending_redirect = None
+        self._execution_thread_id = None
+        self._interrupt_thread_signal_pending = False
+
+    def release_clients(self):
+        pass
+
+    def shutdown_memory_provider(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_side_question_fork_answers_beside_a_running_explicit_review(monkeypatch):
+    """/btw replays through the same facade on the parent's session, like the review fork, and
+    is no foreground turn either: upstream answered it beside a running review. It must not
+    fence the run (an explicit /refine included), block behind that run's acknowledgement, or
+    label the session ``live_turn_active`` for the review's own gate."""
+    import agent.conversation_loop as conversation_loop_module
+    from agent.side_question import answer_side_question
+
+    parent = _bare_agent("btw-beside-refine")
+    profile_key = review_admission.current_profile_key()
+    run = background_review_module.prepare_background_review_run(
+        parent, followup_cancellable=False
+    )
+    assert run is not None
+    # /refine mid-request, with a fork that never acknowledges on its own.
+    assert run.begin_request(object()) is True
+
+    def acknowledge_instead_of_hanging(*_args, **_kwargs):
+        # A fence from the facade would wait on this fork's exit; publish it so the assertions
+        # below report instead of the test hanging.
+        background_review_module.finish_background_review_run(parent, run)
+
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        acknowledge_instead_of_hanging,
+    )
+    observed = {}
+
+    def fake_run(fork, *_args, **_kwargs):
+        observed["write_origin"] = fork._memory_write_origin
+        observed["live_turn"] = review_admission.other_live_turn(
+            parent.session_id, None, profile_key
+        )
+        observed["fenced"] = run.cancel_requested.is_set()
+        return {"final_response": "foo.py", "messages": [], "failed": False}
+
+    def no_digest_fallback(*_args, **_kwargs):
+        raise AssertionError("/btw fell back to the digest instead of the fork")
+
+    monkeypatch.setattr(conversation_loop_module, "run_conversation", fake_run)
+    monkeypatch.setattr(run_agent_module, "AIAgent", _SideQuestionFork)
+    monkeypatch.setattr("agent.side_question._answer_via_oneshot", no_digest_fallback)
+    history = [
+        {"role": "user", "content": "fix foo.py"},
+        {"role": "assistant", "content": "fixed"},
+    ]
+    try:
+        answer = answer_side_question("which file?", history, parent_agent=parent)
+    finally:
+        background_review_module.finish_background_review_run(parent, run)
+
+    assert answer == "foo.py"
+    assert observed == {
+        "write_origin": "side_question",
+        "live_turn": False,
+        "fenced": False,
+    }
+    assert run.cancel_requested.is_set() is False
+
+
+# ---------------------------------------------------------------------------
+# A fork that never acknowledges its cancel: fail loud and escalate, never fail open
+# ---------------------------------------------------------------------------
+
+
+def test_unacknowledged_cancel_escalates_without_failing_open(monkeypatch, caplog):
+    """The foreground's wait has no fail-open, so a fork wedged in a stalled stream or a
+    blocking tool must be unwedged deterministically: after the first bound the waiter logs the
+    owner and tears down the fork's clients; after the second it revokes every further provider
+    call; and it still returns only once the fork publishes its request exit."""
+    from agent.conversation_loop import (
+        _reserve_review_input_request,
+        _review_input_budget_exhausted,
+    )
+
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.05, raising=False
+    )
+    agent = _bare_agent("wedged-review")
+    profile_key = review_admission.current_profile_key()
+    released_clients = threading.Event()
+
+    class WedgedFork:
+        # /refine: no aggregate budget to fall back on.
+        _review_input_token_budget = None
+        session_prompt_tokens = 0
+
+        def hard_interrupt(self, *_args, **_kwargs):
+            pass  # the abort hook is stuck behind the wedge
+
+        def release_clients(self):
+            released_clients.set()
+
+    fork = WedgedFork()
+    run = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert run is not None
+    assert run.begin_request(fork) is True
+    waiter_done = threading.Event()
+
+    def foreground():
+        background_review_module.cancel_background_review_for_live_turn(
+            agent, session_id=agent.session_id, profile_key=profile_key
+        )
+        waiter_done.set()
+
+    waiter = threading.Thread(target=foreground, daemon=True)
+    with caplog.at_level("WARNING"):
+        waiter.start()
+        try:
+            assert released_clients.wait(timeout=10.0)
+            deadline = threading.Event()
+            # Bounded poll for the second stage (no timing assertion).
+            for _ in range(200):
+                if getattr(fork, "_review_revoked", False):
+                    break
+                deadline.wait(0.05)
+            assert getattr(fork, "_review_revoked", False) is True
+            # The exit was never published: the waiter is still parked, never in provider work.
+            assert waiter_done.is_set() is False
+            assert _reserve_review_input_request(fork, 10) is False
+            assert _review_input_budget_exhausted(fork) is True
+        finally:
+            background_review_module.finish_background_review_run(agent, run)
+            waiter.join(timeout=10.0)
+
+    assert waiter_done.is_set()
+    owner = review_admission.owner_tag(profile_key, agent.session_id)
+    for slug in (
+        review_admission.REASON_CANCEL_UNACKNOWLEDGED,
+        review_admission.REASON_REVIEW_REVOKED,
+    ):
+        lines = [r.getMessage() for r in caplog.records if slug in r.getMessage()]
+        assert len(lines) == 1, (slug, caplog.text)
+        assert owner in lines[0]
+        assert agent.session_id not in lines[0]
+
+
+def test_cancel_thread_start_failure_retries_the_interrupt_inline(monkeypatch):
+    """Thread exhaustion must not leave an admitted fork un-fenced."""
+    interrupted = []
+
+    class Fork:
+        def hard_interrupt(self, message=None, *, tool_reason=None):
+            interrupted.append(tool_reason)
+
+    class DeadThread:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        background_review_module,
+        "threading",
+        types.SimpleNamespace(
+            Thread=DeadThread, Event=threading.Event, Lock=threading.Lock
+        ),
+    )
+
+    background_review_module._interrupt_background_review(Fork())
+
+    assert interrupted == ["background review superseded"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-process exclusion: /refine holds the durable row too, and a foreground waiter wins it
+# ---------------------------------------------------------------------------
+
+
+def _durable_fork_stub(run_conversation):
+    """Minimal fork double for ``_run_review_fork`` with a real durable lease around it."""
+    return types.SimpleNamespace(
+        _memory_enabled=True,
+        _user_profile_enabled=False,
+        _session_messages=[],
+        _touch_activity=lambda *_a, **_k: None,
+        run_conversation=run_conversation,
+        release_clients=lambda: None,
+        hard_interrupt=lambda *_a, **_k: None,
+    )
+
+
+def _no_liveness_watchdog(monkeypatch):
+    import agent.turn_liveness as turn_liveness_module
+
+    monkeypatch.setattr(
+        turn_liveness_module,
+        "resolve_turn_liveness_settings",
+        lambda *_a, **_k: (None, 15.0),
+    )
+
+
+def test_explicit_refine_takes_the_durable_turn_lease(tmp_path, monkeypatch):
+    """/refine is exempt from the replay/budget policy, never from exclusion: while its fork
+    replays, a foreground turn in ANOTHER process (CLI resume, Desktop) must find the durable
+    session row owned."""
+    import os
+
+    from hermes_state import SessionDB
+
+    _no_liveness_watchdog(monkeypatch)
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    parent = types.SimpleNamespace(_session_db=review_db)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_run(**_kwargs):
+        entered.set()
+        assert release.wait(timeout=10.0)
+
+    fork = _durable_fork_stub(blocking_run)
+    monkeypatch.setattr(
+        background_review_module,
+        "build_cache_parity_fork",
+        lambda *_a, **_k: (fork, {"routed": False}, False),
+    )
+    run = background_review_module._BackgroundReviewRun()
+    st = background_review_module._ReviewForkState()
+    worker = threading.Thread(
+        target=background_review_module._run_review_fork,
+        args=(parent, [{"role": "user", "content": "hi"}], "prompt", None, run, st),
+        kwargs={"explicit": True, "review_session_id": "shared-session"},
+        daemon=True,
+    )
+    worker.start()
+    foreground_holder = f"pid={os.getpid()}:turn=foreground"
+    try:
+        assert entered.wait(timeout=10.0)
+        assert not foreground_db.try_acquire_session_turn_lease(
+            "shared-session", foreground_holder, ttl_seconds=5
+        )
+    finally:
+        release.set()
+        worker.join(timeout=10.0)
+
+    assert not worker.is_alive()
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", foreground_holder, ttl_seconds=5
+    )
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
+
+
+def test_explicit_refine_reports_a_session_busy_in_another_process(
+    tmp_path, monkeypatch, caplog
+):
+    """The handler has already said 'reviewing in the background' by the time the fork claims
+    the row, so a durable refusal must reach the user through the review's own report channel
+    and log the body-free reason with the owner tag."""
+    import os
+
+    from hermes_state import SessionDB
+
+    _no_liveness_watchdog(monkeypatch)
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    other_process = f"pid={os.getpid()}:turn=cli-resume:platform=cli"
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", other_process, ttl_seconds=60
+    )
+    agent = _bare_agent("shared-session")
+    agent._session_db = review_db
+    notices: list[str] = []
+    agent.background_review_callback = notices.append
+    replayed = []
+    fork = _durable_fork_stub(lambda **kwargs: replayed.append(kwargs))
+    monkeypatch.setattr(
+        background_review_module,
+        "build_cache_parity_fork",
+        lambda *_a, **_k: (fork, {"routed": False}, False),
+    )
+    run = background_review_module.prepare_background_review_run(
+        agent, followup_cancellable=False, session_id="shared-session"
+    )
+    assert run is not None
+
+    with caplog.at_level("INFO"):
+        background_review_module._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "prompt",
+            review_run=run,
+            review_memory=True,
+            explicit=True,
+            review_session_id="shared-session",
+        )
+    foreground_db.release_session_turn_lease("shared-session", other_process)
+
+    assert replayed == []
+    assert run.request_done.is_set()
+    assert len(notices) == 1 and "another Hermes process" in notices[0]
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_DURABLE_BUSY in r.getMessage()
+    ]
+    assert len(lines) == 1
+    assert _owner_tag_for(run, "shared-session") in lines[0]
+    assert "shared-session" not in lines[0]
+
+
+def _owner_tag_for(run, session_id):
+    key = getattr(run, "_review_owner_key", None)
+    return (
+        review_admission.owner_tag(*key)
+        if key
+        else review_admission.owner_tag("", session_id)
+    )
+
+
+def test_foreground_waiter_preempts_a_background_review_lease(tmp_path, caplog):
+    """Foreground outranks automatic review ACROSS processes: a waiting foreground asks the
+    review holder to yield; the review's next renewal tick hard-interrupts its fork, fences its
+    run and stops renewing; the waiter acquires once the fork's exit releases the row — never
+    while the row is still held (no overlap), and a wedged fork is escalated from the tick."""
+    import os
+
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    parent = types.SimpleNamespace(_session_db=review_db)
+    interrupted = threading.Event()
+    released_clients = []
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: interrupted.set(),
+        release_clients=lambda: released_clients.append(True),
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        parent, fork, "shared-session", run
+    )
+    assert reason is None and lease is not None
+    clock = [0.0]
+    lease._now = lambda: clock[0]
+    acquired: list[bool] = []
+    foreground_holder = f"pid={os.getpid()}:turn=foreground:platform=cli"
+    waiter = threading.Thread(
+        target=lambda: acquired.append(
+            foreground_db.acquire_session_turn_lease(
+                "shared-session",
+                foreground_holder,
+                ttl_seconds=5,
+                wait_seconds=30,
+                poll_interval_seconds=0.05,
+            )
+        ),
+        daemon=True,
+    )
+    with caplog.at_level("INFO"):
+        waiter.start()
+        try:
+            # Bounded: the waiter's next poll writes the yield marker.
+            for _ in range(400):
+                lease.refresh_tick()
+                if interrupted.is_set():
+                    break
+                interrupted.wait(0.05)
+            assert interrupted.is_set()
+            assert run.cancel_requested.is_set()
+            # Still held: a waiter never reclaims a lease its holder has not released.
+            assert acquired == []
+            assert not foreground_db.try_acquire_session_turn_lease(
+                "shared-session", foreground_holder, ttl_seconds=5
+            )
+            # A fork that does not unwind is escalated from the tick, not left to the TTL.
+            clock[0] += background_review_module._CANCEL_ACK_ESCALATION_SECONDS
+            assert lease.refresh_tick() is None
+            assert released_clients == [True]
+        finally:
+            lease.stop_refresher()
+            lease.release()  # the fork's finally, once the interrupt unwound it
+            waiter.join(timeout=10.0)
+
+    assert acquired == [True]
+    assert lease.refresh_tick() is False
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_PREEMPTED_CROSS_PROCESS in r.getMessage()
+    ]
+    assert len(lines) == 1
+    assert "shared-session" not in lines[0]
+
+
+def _expire_lease_row(path, holder: str) -> None:
+    """Rewind a row's ``expires_at`` on a raw connection: the TTL elapses without a clock or a sleep."""
+    import sqlite3
+    import time
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+            (time.time() - 1.0, holder),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _shared_review_lease(tmp_path):
+    """An admitted review lease on a store shared with a second (foreground) handle."""
+    import os
+
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    interrupted = threading.Event()
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: interrupted.set(),
+        release_clients=lambda: None,
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        types.SimpleNamespace(_session_db=review_db), fork, "shared-session", run
+    )
+    assert reason is None and lease is not None
+    foreground_holder = f"pid={os.getpid()}:turn=foreground:platform=cli"
+    return path, foreground_db, lease, run, interrupted, foreground_holder
+
+
+def test_yielded_review_lease_keeps_renewing_until_the_fork_exits(tmp_path):
+    """After a cross-process yield the review keeps renewing its row: the row is released only
+    by the fork's own exit, so a waiter's reclaim-on-expiry never lands beside a live fork —
+    the TTL is a bound on a DEAD fork, not a fail-open window on a yielded one."""
+    path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
+    # The waiting foreground's failed attempt stamps the yield; the next tick honours it.
+    assert not foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+    )
+    assert lease.refresh_tick() is None
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+
+    # The TTL elapses with the fork still alive: the yielded tick must renew.
+    _expire_lease_row(path, lease.holder)
+    assert lease.refresh_tick() is None
+    assert not foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+    )
+
+    lease.stop_refresher()
+    lease.release()  # the fork's finally
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5
+    )
+    foreground_db.release_session_turn_lease("shared-session", fg)
+
+
+def test_transcript_edit_yield_is_logged_with_its_own_cause_and_recorded_on_the_run(
+    tmp_path, caplog
+):
+    """The fork's tick names the cause that stamped its row: a user edit reads as
+    ``review_preempted_by_transcript_edit`` — never as a cross-process preemption, so grepping
+    the cross-process slug counts only foreground turns from other processes — and the run
+    remembers the yield for the requeue policy. A detached delegation delivery is an append
+    after the snapshot: it neither stamps the row nor stops the fork."""
+    path, foreground_db, lease, run, interrupted, _fg = _shared_review_lease(tmp_path)
+    user_row_id = foreground_db.append_message("shared-session", "user", "ask")
+    foreground_db.append_message("shared-session", "assistant", "reply")
+
+    foreground_db.append_delegation_delivery(
+        "shared-session", "done", {"delegation_id": "d1"}
+    )
+    assert lease.refresh_tick() is None
+    assert not run.cancel_requested.is_set()
+    assert not interrupted.is_set()
+
+    foreground_db.rewind_to_message("shared-session", user_row_id)
+    with caplog.at_level("INFO"):
+        assert lease.refresh_tick() is None
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+    assert review_admission.REASON_PREEMPTED_CROSS_PROCESS not in caplog.text
+    fork_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == background_review_module.logger.name
+        and review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT in r.getMessage()
+    ]
+    assert len(fork_lines) == 1, caplog.text
+    assert lease._owner in fork_lines[0]
+    assert "shared-session" not in fork_lines[0]
+    assert (
+        run.lease_yield_reason == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+    )
+    lease.stop_refresher()
+    lease.release()
+
+
+@pytest.mark.parametrize("yielded", [False, True], ids=["before_yield", "after_yield"])
+def test_review_lease_loss_is_logged_once_and_stops_the_fork(tmp_path, caplog, yielded):
+    """A holder-fenced renewal miss means the row was reclaimed under the fork (a dead-PID
+    sweep, or a TTL that elapsed with no renewal) and another process may now own the session:
+    the fork is fenced and hard-interrupted exactly like a yield, the loss is logged ONCE with
+    the hashed owner, and the tick keeps running as the escalation clock."""
+    path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
+    if yielded:
+        assert not foreground_db.try_acquire_session_turn_lease(
+            "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+        )
+        assert lease.refresh_tick() is None
+        assert interrupted.is_set()
+
+    # The row vanishes under the fork.
+    foreground_db.release_session_turn_lease("shared-session", lease.holder)
+    with caplog.at_level("INFO"):
+        assert lease.refresh_tick() is None
+        assert lease.refresh_tick() is None
+
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_LEASE_LOST in r.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert lease._owner in lines[0]
+    assert "shared-session" not in lines[0]
+    lease.stop_refresher()
+    assert lease.refresh_tick() is False

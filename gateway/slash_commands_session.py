@@ -112,6 +112,28 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+def rehome_review_delivery_completion(nested_event: MessageEvent, carrier: MessageEvent) -> None:
+    """Move a completion a nested turn left on its own synthetic event onto ``carrier``.
+
+    ``gateway.run_turn._handle_message_with_agent`` parks a turn's review-ownership completion
+    on the live session guard and falls back to the turn's event only when the adapter holds no
+    guard. A handler that nests a turn through an event it built itself (``/retry``) can meet
+    that fallback: the inline dispatch read the guard before calling the handler, and the
+    outgoing task whose reply was on the wire unwound — releasing the guard — before the nested
+    turn reached its carrier lookup. No delivery path reads the synthetic event, so the token
+    would stay live for the process lifetime. ``carrier`` is the event the handler was
+    dispatched with, which both the inline dispatch and a background task read once the handler
+    returns (``_take_review_delivery_callback``); a command event never carries a completion of
+    its own, so nothing is overwritten.
+    """
+    completion = getattr(nested_event, "_gateway_review_delivery_complete", None)
+    if nested_event is carrier or not callable(completion):
+        return
+    with contextlib.suppress(Exception):
+        delattr(nested_event, "_gateway_review_delivery_complete")
+    carrier._gateway_review_delivery_complete = completion
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -426,9 +448,13 @@ class GatewaySessionCommandsMixin:
             return t("gateway.retry.failed_unchanged")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         self._record_model_friction("retry", source, session_entry.session_id)
-        return await self._handle_message(MessageEvent(
+        retried = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        try:
+            return await self._handle_message(retried)
+        finally:
+            rehome_review_delivery_completion(retried, event)
 
     def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner

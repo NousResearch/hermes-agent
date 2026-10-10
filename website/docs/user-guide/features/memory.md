@@ -395,16 +395,116 @@ summary of older ones) rather than the full transcript — minimizing what it
 writes to the new cache. Capture holds: in testing, memory capture was
 identical and skill capture near-identical to the main-model review.
 
-Leave it at `auto` (or set it to your main model) and nothing changes — the
-review keeps running on the main model with the full warm-cache replay.
+Leave it at `auto` (or set it to your main model) and ordinary reviews keep
+running on the main model with a warm-cache replay. Oversized conversations are
+bounded as described below.
 
 ### Same-model review reasoning
 
 A review using the same model as the parent **always inherits the parent's reasoning effort**. Setting `auxiliary.background_review.reasoning_effort` does not override it, whether the route is `auto` or explicitly selects the parent provider/model.
 
-Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
+Reasoning settings, the system prompt, the selected conversation replay, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix where the replay is unchanged. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
 
 To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
+
+### Replay and foreground bounds (`max_replay_tokens`)
+
+Automatic review never takes priority over the conversation. If another message
+is already queued for the same gateway session, the review is skipped. A live
+turn also fences or cancels a review before foreground work continues. Manual
+`/refine` remains explicit and is not subject to these automatic-review gates.
+
+Exclusion also holds across processes. A review fork holds the session's durable
+turn lease (the same row a CLI resume, the Desktop app, or another gateway takes
+for a turn), so no two processes decode the same session at once. A foreground
+turn arriving from another process asks the review to yield: the fork is
+interrupted on its next renewal tick (every few seconds) and keeps renewing the
+lease until it exits, so the user's turn starts the moment the fork is gone —
+never beside it — and the turn never waits for the review to finish its work.
+The lease is reclaimed from a review only when its process is dead or its
+renewals stopped for a full TTL, and both sides log that
+(`review_lease_expired_reclaimed`, `review_lease_lost`). A `state.db` write
+lock held by another writer (a compaction publish, a maintenance sweep, another
+session's flush) is a missed renewal, not a loss: the fork keeps running while
+its next renewal can still land before the row expires, and only a lock that
+outlasts the row's whole lifetime stops it (`review_lease_renewal_locked`) —
+without the yield mark, so a deferred review stopped that way is requeued, since
+the transcript did not move. A review holder never
+refuses a transcript write: `/undo`, `/retry` and an edited-and-resubmitted
+prompt land at once and ask the review to yield the same way — the fork logs the
+cause that stamped it (`review_preempted_by_transcript_edit`), never a
+cross-process preemption. A detached delegation delivery is an append after the
+review's snapshot: it lands without asking. A deferred review stopped by either
+yield is dropped rather than requeued (`review_dropped_after_lease_yield`): its
+snapshot no longer describes the transcript. Maintenance sweeps and automatic
+pruning spare a review-held session like any live lease. `/refine` is exempt
+from the replay and input bounds below but NOT from this exclusion: while a
+turn in another process owns the session, the requested review is skipped and a
+notice says so.
+
+Every skip, defer, cancel, or drop is one body-free `agent.log` line carrying a
+hashed owner tag and a stable reason (`live_turn_active`,
+`queued_followup_pending`, `oversized_snapshot`, `durable_foreground_active`,
+`review_slot_busy`, `delivery_unconfirmed`, `pending_followup_handoff`,
+`review_candidate_superseded`, `review_preempted_cross_process`,
+`review_preempted_by_transcript_edit`,
+`review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
+`review_lease_renewal_locked`,
+`review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`,
+`review_input_budget_refused`, `review_overhead_exceeds_budget`,
+`provider_cannot_emit_tool_calls`, …), never the session id or any message text.
+
+Same-model reviews replay an ordinary conversation verbatim for prompt-cache
+reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes
+instead keeps the widest recent suffix that starts on a user message and fits
+the ceiling. If even the newest complete user-led suffix cannot fit, that
+automatic review is skipped rather than issuing an oversized request. Truncating
+the conversation prefix means the bounded review cannot reuse the replay cache
+past the system prefix.
+
+```yaml
+auxiliary:
+  background_review:
+    max_replay_tokens: 120000  # hard ceiling; lower values narrow the replay
+```
+
+The setting defaults to `120000` when omitted, and `120000` is also the hard
+ceiling: lower values narrow the replay; zero, negative, and larger values fall
+back to `120000`. Automatic replay cannot be made unlimited (set `enabled: false`
+to stop automatic reviews instead; explicit `/refine` is not bounded). An
+explicit null, a boolean, or another nonnumeric value is invalid: Hermes logs a
+warning and falls back to `120000`.
+
+The bound applies only to the conversation replay. The review prompt, system
+prompt, and tool definitions still contribute to the provider request. A second
+setting, `max_input_tokens` (see "Capping review cost" below), caps the input
+tokens one automatic review may consume across its whole tool loop; like
+`max_replay_tokens` it can only be lowered, never lifted, and explicit `/refine`
+is exempt. The effective replay bound is the smaller of `max_replay_tokens` and
+one third of that aggregate budget (derived from the review model's context
+window when `max_input_tokens` is unset) net of what every request carries
+besides the replay — the system prompt and tool definitions the fork inherits
+from the conversation and the review prompt. Every provider request the review
+makes replays the conversation and is charged in full, cache reads included, so
+a replay sized for the first request alone would leave room for exactly one
+request: the review could read but never write. Three shares leave it a read
+(the review prompt enforces read-before-write), a write and a closing response;
+on a 200k-token model with the default budget that is roughly 30k tokens of
+replay on a gateway surface. The replay is also never wider than one request
+can carry on the model's window (75% of it, the headroom the derived budget
+keeps).
+
+On a small window the fixed parts alone can eat the whole share: the default
+toolset, the review prompt and a gateway system prompt are ~18k tokens, more
+than a third of the 49,152-token budget a 65,536-token window derives. When the
+budget is the derived default, Hermes raises it to fund three requests of the
+fixed parts plus a 12,288-token replay floor (within one request on the window
+and the 600,000 ceiling), so small-window models still review their newest
+exchanges; an explicit `max_input_tokens` is the operator's cap and is never
+raised. When the fixed parts alone exceed what one request may carry, nothing
+can be replayed and the automatic review is skipped with a warning as
+`review_overhead_exceeds_budget`; a first request that is still refused by the
+budget makes no provider call and is logged as `review_input_budget_refused`.
 
 ### Disabling automatic reviews (`enabled`)
 
@@ -424,21 +524,27 @@ With `enabled: false`, automatic post-turn forks do not spawn; manual
 
 The review loop replays the conversation on every provider request it makes,
 so a single review can multiply input tokens across its tool iterations.
-`max_input_tokens` caps the SUM of replayed input tokens for one review; the
-loop stops before crossing it. `<= 0` means unlimited.
+`max_input_tokens` caps the SUM of replayed input tokens for one automatic
+review; the loop stops before crossing it.
 
 ```yaml
 auxiliary:
   background_review:
-    max_input_tokens: 48000  # <= 0 = unlimited
+    max_input_tokens: 48000  # lower-only; 600000 is the hard ceiling
 ```
 
 When the key is unset, the budget is derived from the review model's resolved
 context window: 75% of the window, capped at 600,000 tokens — so it also binds
-on small local models (a 65,536-token model gets 49,152), where a fixed
-cloud-scale default would never bite. If the window cannot be resolved, a
-conservative 120,000-token fallback applies. Note the key lives under
-`auxiliary:`; a top-level `background_review:` block is not read.
+on small local models (a 65,536-token model gets 49,152, raised only as far as
+three requests of the fixed parts plus the replay floor need; see "Replay and
+foreground bounds" above), where a fixed cloud-scale default would never bite.
+If the window cannot be resolved, a
+conservative 120,000-token fallback applies. `600000` is a hard ceiling for
+automatic reviews: a larger explicit value is clamped to it, and zero, negative,
+or non-numeric values fall back to the derived default instead of lifting the
+bound — automatic review input cannot be made unlimited (set `enabled: false`
+to stop automatic reviews instead; explicit `/refine` is not bounded). Note the
+key lives under `auxiliary:`; a top-level `background_review:` block is not read.
 
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
@@ -472,8 +578,8 @@ next prompt needs — for minutes on a large model — and sending a new prompt
 cancels it, discarding the learning. So on the managed local runtime, reviews
 are **deferred by default**: queued at turn end and executed once the machine
 has been quiet for a short settle window. Nothing about the review itself
-changes — same model, same full-transcript replay, same writes — only the
-execution moment moves.
+changes — same model, same selected replay, same writes — only the execution
+moment moves.
 
 ```yaml
 auxiliary:
@@ -488,12 +594,12 @@ auxiliary:
 | `never` | Old behavior everywhere: spawn immediately at turn end, even on the managed local GPU. |
 
 Queued reviews coalesce per session (a newer turn's snapshot replaces the
-older one — the review replays the whole conversation, so nothing is lost),
-a review preempted by a new prompt is re-queued instead of discarded, and a
-review that has waited longer than `defer_max_age_s` runs even if the machine
-never goes idle. Explicit `/refine` always runs immediately. The queue is
-in-memory: reviews still pending when the app exits are dropped, same as an
-in-flight fork would have been.
+older one, so the eventual review sees the freshest eligible replay), a review
+preempted by a new prompt is re-queued instead of discarded, and a review that
+has waited longer than `defer_max_age_s` runs even if the machine never goes
+idle. Explicit `/refine` always runs immediately. The queue is in-memory:
+reviews still pending when the app exits are dropped, same as an in-flight fork
+would have been.
 
 ## Controlling skill writes (`skills.write_approval`)
 

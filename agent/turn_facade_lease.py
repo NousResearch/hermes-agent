@@ -50,6 +50,7 @@ class DurableTurnLease:
         self._authority_deadline = time.time() + LEASE_TTL_SECONDS if expires_at is None else expires_at
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
+        self.ttl_seconds = LEASE_TTL_SECONDS
         self._lock = threading.Lock()
         self.turn_active = False
         self.interrupt_message: Optional[str] = None
@@ -221,7 +222,7 @@ class DurableTurnLease:
             return self._stop_on_exhausted_authority()
         try:
             if self.db.refresh_session_turn_lease(
-                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS,
+                self._current_session_id(), self.holder, ttl_seconds=self.ttl_seconds,
                 patience_s=min(_REFRESH_WRITE_PATIENCE_S, patience),
             ):
                 self._authority_deadline = started + LEASE_TTL_SECONDS
@@ -377,6 +378,9 @@ def admit_durable_turn_lease(
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
+                from agent.background_review import rebind_foreground_review_ownership
+
+                rebind_foreground_review_ownership(agent, latest_session_id)
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
             reloaded = db.get_messages_as_conversation(

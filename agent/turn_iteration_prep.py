@@ -394,7 +394,7 @@ def begin_iteration(
         if not agent.quiet_mode:
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
-                f"({int(agent.session_input_tokens):,} tokens) — stopping "
+                f"({int(agent.session_prompt_tokens):,} tokens) — stopping "
                 f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")

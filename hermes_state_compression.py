@@ -58,6 +58,20 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> dict[str, Any]:
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
+# Holder mark of a background-review turn lease (``agent/background_review.py``). The WAITING
+# foreground path asks such a holder to yield; a one-shot try — and so review-vs-review — never does.
+BACKGROUND_REVIEW_LEASE_HOLDER_MARK = ":turn=background-review:"
+
+
+def _log_review_lease_reclaimed(session_id: str) -> None:
+    """A review row outlived its renewals (dead process, starved refresher) and a foreground acquire
+    reclaimed it. The fork's own tick logs the loss as ``review_lease_lost``; this is the reclaiming
+    side, owner-tagged and body-free (``agent/review_admission.py``)."""
+    from agent.review_admission import REASON_LEASE_EXPIRED_RECLAIMED, current_profile_key, owner_tag
+    logger.info("Background review lease reclaimed from an unrenewed holder (owner=%s, reason=%s)",
+                owner_tag(current_profile_key(), session_id), REASON_LEASE_EXPIRED_RECLAIMED)
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -572,10 +586,15 @@ class SessionCompressionMixin:
 
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+        preempt_background_review: bool = False,
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
-        share one write transaction."""
+        share one write transaction. ``preempt_background_review`` (the waiting foreground
+        path) stamps a background-review holder to yield in that same transaction; a live
+        review renews until its own exit releases the row, so its row is reclaimed only by the
+        same expired-or-dead rule as any other holder — and that reclaim is logged."""
+        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -589,11 +608,45 @@ class SessionCompressionMixin:
             conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
                          (now - _TURN_LEASE_SWEEP_GRACE_S,))
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return _claim_lease_row(
+            acquired, reclaimed_holder = _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
-            )[0]
-        return bool(self._execute_write(_do, patience_s=patience_s))
+            )
+            if not acquired and preempt_background_review:
+                # First stamp wins (an edit may already have asked): the fork logs the stored cause.
+                conn.execute(
+                    "UPDATE session_turn_leases SET yield_requested_at = COALESCE(yield_requested_at, ?), "
+                    "yield_reason = COALESCE(yield_reason, ?) "
+                    "WHERE conversation_id = ? AND instr(holder, ?) > 0",
+                    (now, REASON_PREEMPTED_CROSS_PROCESS, conversation_id, BACKGROUND_REVIEW_LEASE_HOLDER_MARK))
+            return acquired, reclaimed_holder
+        acquired, reclaimed_holder = self._execute_write(_do, patience_s=patience_s)
+        if reclaimed_holder and BACKGROUND_REVIEW_LEASE_HOLDER_MARK in reclaimed_holder:
+            _log_review_lease_reclaimed(session_id)
+        return bool(acquired)
+
+    def session_turn_lease_yield_reason(self, session_id: str, holder: str) -> Optional[str]:
+        """The body-free slug (``agent/review_admission.py``) under which ``holder`` (a background-review
+        lease) was asked to yield — by a waiting foreground turn or a user transcript rewrite — or None
+        while nobody asked. A stamp is a request even without a stored cause (a row written before
+        ``yield_reason`` existed): only the waiting foreground path stamped then."""
+        if not session_id or not holder:
+            return None
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT yield_requested_at, yield_reason FROM session_turn_leases "
+                "WHERE conversation_id = ? AND holder = ?", (conversation_id, holder)).fetchone()
+        if row is None or row["yield_requested_at"] is None:
+            return None
+        if row["yield_reason"]:
+            return str(row["yield_reason"])
+        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
+        return REASON_PREEMPTED_CROSS_PROCESS
+
+    def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
+        """Whether ``holder`` (a background-review lease) was asked to yield, by any stamper."""
+        return self.session_turn_lease_yield_reason(session_id, holder) is not None
 
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
@@ -606,7 +659,9 @@ class SessionCompressionMixin:
         ``wait_notice_interval_seconds`` after. A busy database is not a holder: the attempt is
         retried at once with a longer write patience, and ``on_contended()`` is called instead,
         since the busy writer may be the holder's last flush. ``should_abort()`` True (e.g.
-        ``/stop``) returns False at once."""
+        ``/stop``) returns False at once. Waiting is the FOREGROUND's path: a background-review
+        holder is asked to yield on every failed attempt, so self-improvement in another process
+        never outranks a user turn."""
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         patience = acquire_patience_s
@@ -622,7 +677,8 @@ class SessionCompressionMixin:
                     logger.debug("session turn lease should_abort callback failed", exc_info=True)
             try:
                 if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=patience):
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=patience,
+                    preempt_background_review=True):
                     return True
             except sqlite3.Error as exc:
                 # Another writer's transaction outlasted the write patience. That is not a lease

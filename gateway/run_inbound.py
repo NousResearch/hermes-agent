@@ -583,11 +583,22 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge *event* into the source adapter's pending slot (no-op without an adapter).
+
+        Direct slot write, so it goes through the same review-admission fence as the FIFO helpers:
+        the merged event IS the next live turn, and an automatic review sampling "no follow-up" a
+        moment earlier must not get its full-transcript request onto the wire beside it.
+        """
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
-        if adapter:
+        if not adapter:
+            return
+
+        def _merge() -> bool:
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+            return True
+
+        self._apply_followup_queue_mutation(adapter, _quick_key, _merge)
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -1267,12 +1278,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             _orphan_adapter = self._delivery_adapter_for(source)
             if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
                 return event, source, is_internal
-            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
+            _rescued = self._rescue_orphaned_overflow(
+                _quick_key, _orphan_adapter, incoming_event=event
+            )
             if _rescued is None:
                 return event, source, is_internal
-            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)

@@ -140,8 +140,9 @@ class SessionMaintenanceMixin:
         return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
 
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
-        """True when a live turn lease / compression lock protects ``sid``; expired or
-        dead-holder guards are reclaimed and fenced as a side effect."""
+        """True when a live turn lease / compression lock protects ``sid`` (a background-review
+        lease included: a probe is not a transcript edit, so the review is never asked to
+        yield); expired or dead-holder guards are reclaimed and fenced as a side effect."""
         from hermes_state import SessionCompressionInProgressError
         from hermes_state_errors import SessionTurnLeaseLostError
         try:

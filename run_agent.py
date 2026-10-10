@@ -175,8 +175,22 @@ def _review_should_defer(agent: Any, task_cfg: Optional[dict[str, Any]]) -> bool
     return defer_mode(task_cfg) == "auto" and review_targets_managed_local(agent, task_cfg)
 
 
-def _review_queue_key(agent: Any) -> str:
-    return str(getattr(agent, "session_id", None) or id(agent))
+def _review_queue_key(
+    agent: Any,
+    profile_key: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> tuple[str, str]:
+    """Profile-scoped idle-queue identity; multiplexed profiles may share a session ID."""
+    if profile_key is None:
+        from agent.review_admission import current_profile_key
+
+        profile_key = current_profile_key()
+    resolved_session = (
+        session_id
+        if session_id is not None
+        else getattr(agent, "session_id", None) or id(agent)
+    )
+    return str(profile_key), str(resolved_session)
 
 
 def _notify_context_engine_session_end(agent: Any, messages: Optional[list]) -> None:
@@ -750,22 +764,87 @@ class AIAgent(
     _summarize_background_review_actions = _forward_static("agent.background_review", "summarize_background_review_actions")
 
     def _spawn_background_review(self, messages_snapshot: list[dict], review_memory: bool = False,
-                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> None:
+                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False,
+                                 _spawning_turn_token: Optional[int] = None,
+                                 _review_profile_key: Optional[str] = None,
+                                 _review_session_id: Optional[str] = None) -> None:
         """Post-turn review entry point: decide WHEN, then spawn.
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
         (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+
+        A live turn or a queued follow-up on the SAME session skips the automatic review outright:
+        self-improvement must never decode beside a user-facing turn, and the next eligible review
+        receives the freshest bounded snapshot. /refine bypasses this like it bypasses ``enabled``.
         """
         # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        automatic = focus is None and not explicit
+        if automatic and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        spawning_turn_token = (
+            _spawning_turn_token
+            if _spawning_turn_token is not None
+            else getattr(self, "_active_turn_token", None)
+        )
+        review_profile_key = (
+            _review_profile_key
+            if _review_profile_key is not None
+            else getattr(self, "_active_turn_profile_key", None)
+        )
+        review_session_id = str(
+            _review_session_id
+            if _review_session_id is not None
+            else getattr(self, "session_id", None) or ""
+        )
+        if automatic:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
+        if automatic:
+            from agent import review_admission
+            if review_profile_key is None:
+                review_profile_key = review_admission.current_profile_key()
+            if blocked := review_admission.foreground_block_reason(
+                self, spawning_turn_token, review_profile_key, review_session_id
+            ):
+                logger.info(
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id), blocked,
+                )
+                return
+
+            from agent.background_review import review_prompt_for_scope
+            budgets = review_admission.review_budgets(
+                task_cfg, self, review_prompt_for_scope(self, review_memory, review_skills),
+            )
+            if budgets.unfunded:
+                # The fixed request parts alone exceed what one request may carry: no automatic
+                # review can ever run on this surface — a configuration problem, warned not INFO.
+                logger.warning(
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id),
+                    review_admission.REASON_OVERHEAD_EXCEEDS_BUDGET,
+                )
+                return
+            messages_snapshot, replay_reason = review_admission.bounded_replay_history(
+                messages_snapshot, budgets.replay,
+            )
+            if replay_reason:
+                if not messages_snapshot:
+                    logger.info(
+                        "Background review skipped (owner=%s): %s",
+                        review_admission.owner_tag(review_profile_key, review_session_id),
+                        replay_reason,
+                    )
+                    return
+                logger.info(
+                    "Background review replay bounded (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id),
+                    replay_reason,
+                )
 
         # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
         # alias the live history's nested tool_calls/content.
@@ -774,16 +853,26 @@ class AIAgent(
         from agent.turn_finalizer import _clone_background_review_messages
         kwargs = dict(messages_snapshot=_clone_background_review_messages(messages_snapshot),
                       review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg,
-                      explicit=explicit)
-        if focus is None and not explicit and _review_should_defer(self, task_cfg):
+                      explicit=explicit, _spawning_turn_token=spawning_turn_token,
+                      _review_profile_key=review_profile_key,
+                      _review_session_id=review_session_id)
+        if automatic and _review_should_defer(self, task_cfg):
             from agent.review_idle_queue import QUEUE
-            QUEUE.enqueue(self, _review_queue_key(self), kwargs)
+            QUEUE.enqueue(
+                self,
+                _review_queue_key(self, review_profile_key, review_session_id),
+                kwargs,
+            )
             return
         self._spawn_background_review_now(**kwargs)
 
     def _spawn_background_review_now(self, messages_snapshot: list[dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
-                                     task_cfg: Optional[dict[str, Any]] = None, _requeue_attempts: int = 0,
+                                     task_cfg: Optional[dict[str, Any]] = None,
+                                     _spawning_turn_token: Optional[int] = None,
+                                     _review_profile_key: Optional[str] = None,
+                                     _review_session_id: Optional[str] = None,
+                                     _requeue_attempts: int = 0, _idle_queue_origin: bool = False,
                                      explicit: bool = False) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -793,26 +882,122 @@ class AIAgent(
         memory operation set. A deferred review preempted by a live turn is requeued (bounded)
         rather than lost.
         """
+        from agent import review_admission
         from agent.background_review import (
             finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
         )
         from tools.thread_context import propagate_context_to_thread
 
-        review_run = prepare_background_review_run(self)
+        automatic = focus is None and not explicit
+        if _review_session_id is None:
+            _review_session_id = str(getattr(self, "session_id", None) or "")
+        if (
+            _idle_queue_origin
+            and str(getattr(self, "session_id", None) or "") != _review_session_id
+        ):
+            logger.info(
+                "Deferred background review dropped (owner=%s, reason=%s)",
+                review_admission.owner_tag(
+                    *_review_queue_key(self, _review_profile_key, _review_session_id)
+                ),
+                review_admission.REASON_STALE_OWNER,
+            )
+            return
+        admission_gate = admission_lock = foreground_admission_lock = live_turn_gate = None
+        if automatic:
+            if _review_profile_key is None:
+                _review_profile_key = review_admission.current_profile_key()
+            admission_gate = lambda: review_admission.foreground_block_reason(
+                self, _spawning_turn_token, _review_profile_key, _review_session_id
+            )
+            live_turn_gate = lambda: review_admission.live_turn_block_reason(
+                _review_session_id, _spawning_turn_token, _review_profile_key
+            )
+            admission_lock = getattr(self, "followup_pending_lock", None)
+            foreground_admission_lock = review_admission.admission_lock()
+
+        review_run = prepare_background_review_run(
+            self,
+            admission_gate=admission_gate,
+            admission_lock=admission_lock,
+            foreground_admission_lock=foreground_admission_lock,
+            followup_cancellable=automatic,
+            session_id=_review_session_id,
+            profile_key=_review_profile_key,
+            live_turn_gate=live_turn_gate,
+        )
         if review_run is None:
+            # The canonical (profile, session) slot is occupied by a live review. An explicit
+            # /refine must not be reported as started; an automatic spawn logs the decision
+            # (an idle-queue dispatch requeues instead, which logs its own line).
+            if explicit:
+                raise RuntimeError("a review is already running for this conversation")
+            if not _idle_queue_origin:
+                logger.info(
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(
+                        *_review_queue_key(self, _review_profile_key, _review_session_id)
+                    ),
+                    review_admission.REASON_REVIEW_SLOT_BUSY,
+                )
+                return
+            self._requeue_deferred_review(dict(
+                messages_snapshot=messages_snapshot,
+                review_memory=review_memory,
+                review_skills=review_skills,
+                focus=focus,
+                task_cfg=task_cfg,
+                _spawning_turn_token=_spawning_turn_token,
+                _review_profile_key=_review_profile_key,
+                _review_session_id=_review_session_id,
+                _requeue_attempts=_requeue_attempts + 1,
+                _idle_queue_origin=_idle_queue_origin,
+                explicit=explicit,
+            ))
             return
         try:
+            # Close the check-before-prepare race. Once the run token is installed, a new
+            # foreground turn can cancel it; this second check catches a turn that arrived
+            # between the early admission gate and ``prepare_background_review_run``.
+            if automatic:
+                if blocked := review_admission.foreground_block_reason(
+                    self,
+                    _spawning_turn_token,
+                    _review_profile_key,
+                    _review_session_id,
+                ):
+                    logger.info(
+                        "Background review skipped after prepare (owner=%s): %s",
+                        review_admission.owner_tag(_review_profile_key, _review_session_id),
+                        blocked,
+                    )
+                    finish_background_review_run(self, review_run)
+                    self._requeue_deferred_review(dict(
+                        messages_snapshot=messages_snapshot, review_memory=review_memory,
+                        review_skills=review_skills, focus=focus, task_cfg=task_cfg,
+                        _spawning_turn_token=_spawning_turn_token,
+                        _review_profile_key=_review_profile_key,
+                        _review_session_id=_review_session_id,
+                        _requeue_attempts=_requeue_attempts + 1,
+                        _idle_queue_origin=_idle_queue_origin, explicit=explicit,
+                    ))
+                    return
+
             target, _prompt = spawn_background_review_thread(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                 focus=focus, task_cfg=task_cfg, review_run=review_run, explicit=explicit,
+                review_session_id=_review_session_id,
             )
 
             def _target_with_requeue() -> None:
                 target()
                 self._maybe_requeue_preempted_review(review_run, dict(
                     messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
-                    focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
-                    explicit=explicit))
+                    focus=focus, task_cfg=task_cfg, _spawning_turn_token=_spawning_turn_token,
+                    _review_profile_key=_review_profile_key,
+                    _review_session_id=_review_session_id,
+                    _requeue_attempts=_requeue_attempts + 1,
+                    _idle_queue_origin=_idle_queue_origin, explicit=explicit))
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
@@ -823,24 +1008,69 @@ class AIAgent(
 
     _REVIEW_REQUEUE_MAX_ATTEMPTS = 3
 
+    def _requeue_deferred_review(self, kwargs, *, drop_reason: Optional[str] = None) -> None:
+        """Re-enqueue only an idle-queue dispatch, with a fresh age and a bounded retry count.
+        ``drop_reason`` logs that same dispatch as dropped instead of requeuing it."""
+        if (
+            not kwargs.get("_idle_queue_origin")
+            or kwargs.get("explicit")
+            or kwargs.get("focus") is not None
+        ):
+            return
+        from agent import review_admission
+
+        queue_key = _review_queue_key(
+            self, kwargs.get("_review_profile_key"), kwargs.get("_review_session_id")
+        )
+        if drop_reason is not None:
+            logger.info(
+                "Preempted background review dropped (owner=%s, reason=%s)",
+                review_admission.owner_tag(*queue_key),
+                drop_reason,
+            )
+            return
+        if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
+            logger.info(
+                "Preempted background review dropped (owner=%s, reason=%s, requeues=%d)",
+                review_admission.owner_tag(*queue_key),
+                review_admission.REASON_REQUEUE_CAP,
+                self._REVIEW_REQUEUE_MAX_ATTEMPTS,
+            )
+            return
+        try:
+            from agent.review_idle_queue import QUEUE
+
+            QUEUE.enqueue(
+                self,
+                queue_key,
+                dict(kwargs),
+                replace_existing=False,
+                reason=review_admission.REASON_PREEMPTED_REQUEUED,
+            )
+        except Exception:  # deferred review persistence is best-effort
+            logger.debug("Preempted-review requeue failed", exc_info=True)
+
     def _maybe_requeue_preempted_review(self, review_run, kwargs) -> None:
         """Requeue a deferred-mode review that a live turn cancelled.
 
         Only for automatic reviews on the managed local runtime; bounded attempts stop a busy box cycling
-        forever.
+        forever. A run its durable lease stopped (a transcript rewrite, a turn in another process, a
+        lost row) is dropped instead: the captured snapshot no longer describes the transcript.
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+            if not review_run.cancel_requested.is_set():
                 return
-            if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
-                logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
-                return
-            if not _review_should_defer(self, kwargs.get("task_cfg")):
-                return
-            from agent.review_idle_queue import QUEUE
-            # kwargs carries the incremented _requeue_attempts through the queue so the cap survives.
-            QUEUE.enqueue(self, _review_queue_key(self), dict(kwargs))
+            from agent import review_admission
+
+            self._requeue_deferred_review(
+                kwargs,
+                drop_reason=(
+                    review_admission.REASON_DROPPED_AFTER_LEASE_YIELD
+                    if getattr(review_run, "lease_yield_reason", None)
+                    else None
+                ),
+            )
         except Exception:
             logger.debug("Preempted-review requeue failed", exc_info=True)
 

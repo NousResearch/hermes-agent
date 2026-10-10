@@ -102,16 +102,30 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
+    @staticmethod
+    def _apply_followup_queue_mutation(adapter: Any, session_key: str, mutation) -> bool:
+        """Use the adapter's review-admission fence when available; minimal test/legacy adapters
+        retain the exact queue behavior without pretending to expose that contract."""
+        apply_mutation = getattr(type(adapter), "apply_followup_queue_mutation", None)
+        if callable(apply_mutation):
+            return bool(apply_mutation(adapter, session_key, mutation))
+        return bool(mutation())
+
     def _enqueue_fifo(self, session_key: str, queued_event: MessageEvent, adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
-        if session_key in pending_slot:
-            self._session_state(session_key).conversation.queued_events.append(queued_event)
-        else:
-            pending_slot[session_key] = queued_event
-        queued_event._gateway_accepted = True
+
+        def _enqueue() -> bool:
+            if session_key in pending_slot:
+                self._session_state(session_key).conversation.queued_events.append(queued_event)
+            else:
+                pending_slot[session_key] = queued_event
+            return True
+
+        if self._apply_followup_queue_mutation(adapter, session_key, _enqueue):
+            queued_event._gateway_accepted = True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional[MessageEvent]
@@ -121,15 +135,53 @@ class GatewayBusySessionMixin:
         ``pending_event`` None → the overflow head becomes the pending event; otherwise the head is
         staged into the slot for the NEXT recursion. Returns the (possibly updated) pending_event.
         """
-        overflow = self._overflow_queue(session_key)
-        if not overflow:
-            return pending_event
-        if pending_event is None:
-            return overflow.pop(0)
-        if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = overflow.pop(0)
-        # else: no adapter — leave the head in place so we don't silently drop it.
-        return pending_event
+        promoted = [pending_event]
+
+        def _promote() -> bool:
+            overflow = self._overflow_queue(session_key)
+            if not overflow:
+                return False
+            if promoted[0] is None:
+                promoted[0] = overflow.pop(0)
+                return True
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict):
+                return False
+            pending_slot[session_key] = overflow.pop(0)
+            return True
+
+        self._apply_followup_queue_mutation(adapter, session_key, _promote)
+        return promoted[0]
+
+    def _restore_dequeued_event(
+        self, session_key: str, adapter: Any, pending_event: "MessageEvent"
+    ) -> None:
+        """Put a just-dequeued event back at the head of the queue (a leftover /steer runs first).
+
+        A slot the promotion already re-staged moves to the overflow head so arrival order holds.
+        The write is an accepted follow-up like any other — it IS the turn after the steer — so it
+        publishes through the admission fence: a review that sampled the slot empty between the
+        dequeue and this restore is fenced here, never left to run beside the restored turn.
+        """
+
+        def _queue_head_insert(event: "MessageEvent") -> None:
+            overflow = self._overflow_queue(session_key)
+            if overflow is None:
+                overflow = self._session_state(session_key).conversation.queued_events
+            overflow.insert(0, event)
+
+        def _restore() -> bool:
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict):
+                _queue_head_insert(pending_event)
+                return True
+            promoted = pending_slot.get(session_key)
+            if promoted is not None:
+                _queue_head_insert(promoted)
+            pending_slot[session_key] = pending_event
+            return True
+
+        self._apply_followup_queue_mutation(adapter, session_key, _restore)
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -138,29 +190,57 @@ class GatewayBusySessionMixin:
             depth += 1
         return depth
 
-    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
+    def _rescue_orphaned_overflow(
+        self,
+        session_key: str,
+        adapter: Any,
+        incoming_event: Optional[MessageEvent] = None,
+    ) -> Optional[MessageEvent]:
         """Pop the oldest orphaned FIFO overflow event for an idle session (None if nothing to rescue).
 
         ``queued_events`` drains only at the post-turn promotion site; a busy window ending without
         it (early exit, exception/interrupt/generation-bump) orphans the overflow. On a NEW event for
         a NON-busy session the oldest orphan runs as THIS turn, the next is staged into the slot so
-        arrival order holds, and the caller enqueues the incoming event behind it. The returned
-        event is REMOVED from both stores, else the post-turn dequeue would run it twice.
+        arrival order holds, and the incoming event is published behind it in the same admission
+        transaction. The returned event is REMOVED from both stores, else the post-turn dequeue
+        would run it twice.
 
         See #28503.
         """
         try:
-            overflow = self._overflow_queue(session_key)
-            if not overflow:
+            rescued = []
+            remaining = []
+
+            def _rescue_and_stage() -> bool:
+                overflow = self._overflow_queue(session_key)
+                pending_slot = getattr(adapter, "_pending_messages", None)
+                if not overflow or not isinstance(pending_slot, dict):
+                    return False
+                if pending_slot.get(session_key):
+                    return False  # slot occupied (busy) — promotion owns this
+                # Stage the slot BEFORE popping the head. A prior turn's review probes the live
+                # slot/overflow through an admission state that was popped when the session went
+                # idle, so it is not serialised against this lock and must never observe both
+                # empty. Keeping the slot occupied also makes the drain promote in order and
+                # routes a mid-chain arrival to overflow instead of jumping the queue.
+                next_slot = overflow[1] if len(overflow) > 1 else incoming_event
+                if next_slot is not None:
+                    pending_slot[session_key] = next_slot
+                rescued.append(overflow.pop(0))
+                if overflow:
+                    overflow.pop(0)  # the orphan just staged into the slot
+                    if incoming_event is not None:
+                        overflow.append(incoming_event)
+                remaining.append(overflow)
+                return True
+
+            self._apply_followup_queue_mutation(
+                adapter, session_key, _rescue_and_stage
+            )
+            if not rescued:
                 return None
-            pending_slot = getattr(adapter, "_pending_messages", None)
-            if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
-                return None  # slot occupied (busy) or no slot storage — promotion owns this
-            head = overflow.pop(0)
-            # Keep the slot occupied so the drain promotes in order and a mid-chain arrival routes
-            # to overflow instead of jumping the queue (same invariant as _promote_queued_event).
-            if overflow:
-                pending_slot[session_key] = overflow.pop(0)
+            head = rescued[0]
+            overflow = remaining[0]
             logger.warning(
                 "Rescued orphaned FIFO overflow event for idle session "
                 "%s — it was queued during a busy window but the post-turn "
@@ -184,20 +264,25 @@ class GatewayBusySessionMixin:
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
-        removed = 0
-        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if isinstance(pending_slot, dict):
-            pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
-                pending_slot.pop(session_key, None)
-                removed += 1
+        removed = [0]
 
-        overflow = self._overflow_queue(session_key)
-        if overflow:
-            kept = [e for e in overflow if not self._is_goal_continuation_event(e)]
-            removed += len(overflow) - len(kept)
-            self._peek_session_state(session_key).conversation.queued_events = kept
-        return removed
+        def _clear() -> bool:
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending_slot, dict):
+                pending_event = pending_slot.get(session_key)
+                if self._is_goal_continuation_event(pending_event):
+                    pending_slot.pop(session_key, None)
+                    removed[0] += 1
+
+            overflow = self._overflow_queue(session_key)
+            if overflow:
+                kept = [e for e in overflow if not self._is_goal_continuation_event(e)]
+                removed[0] += len(overflow) - len(kept)
+                overflow[:] = kept
+            return removed[0] > 0
+
+        self._apply_followup_queue_mutation(adapter, session_key, _clear)
+        return removed[0]
 
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
@@ -380,38 +465,47 @@ class GatewayBusySessionMixin:
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
-        # #28503 — Previously this called ``merge_pending_message_event`` with the default
-        # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
-        # messages arrived in ``busy_input_mode: queue``.
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
-            and getattr(existing, "allow_gateway_control", True)
-            == getattr(event, "allow_gateway_control", True)
-            and all(
-                (getattr(existing, "metadata", None) or {}).get(key)
-                == (getattr(event, "metadata", None) or {}).get(key)
-                for key in self._SECURITY_METADATA_KEYS
+
+        def _merge_media_head() -> bool:
+            # #28503 — consecutive text events stay distinct FIFO turns; only compatible media
+            # contexts merge into the head slot.
+            existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+            same_security_context = existing is not None and (
+                getattr(existing, "internal", False) == getattr(event, "internal", False)
+                and getattr(existing, "allow_gateway_control", True)
+                == getattr(event, "allow_gateway_control", True)
+                and all(
+                    (getattr(existing, "metadata", None) or {}).get(key)
+                    == (getattr(event, "metadata", None) or {}).get(key)
+                    for key in self._SECURITY_METADATA_KEYS
+                )
             )
-        )
-        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
-        # head slot. Every other media follow-up — voice, audio, video, document — is an
-        # independent message and takes its own FIFO turn like text does; merging on *any*
-        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
-        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
-        merge_types = {
-            getattr(existing, "message_type", None),
-            getattr(event, "message_type", None),
-        }
-        if (
-            same_security_context
-            and MessageType.PHOTO in merge_types
-            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
-        ):
+            # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
+            # head slot. Every other media follow-up — voice, audio, video, document — is an
+            # independent message and takes its own FIFO turn like text does; merging on *any*
+            # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
+            # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+            merge_types = {
+                getattr(existing, "message_type", None),
+                getattr(event, "message_type", None),
+            }
+            if not (
+                same_security_context
+                and MessageType.PHOTO in merge_types
+                and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
+            ):
+                return False
             merge_pending_message_event(
-                adapter._pending_messages, session_key, event,
+                adapter._pending_messages,
+                session_key,
+                event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            return True
+
+        if self._apply_followup_queue_mutation(
+            adapter, session_key, _merge_media_head
+        ):
             event._gateway_accepted = True
             return
 

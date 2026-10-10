@@ -981,6 +981,7 @@ prompt_caching:
 #     enabled: true            # false = skip automatic forks (/refine still works)
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
+#     max_replay_tokens: 120000  # replay ceiling of an automatic review: default AND hard cap, lower-only
 
 # =============================================================================
 # Persistent Memory

@@ -19,8 +19,6 @@ profile's environ opt-in) while unscoped single-profile deployments keep the
 legacy ``os.environ`` behavior.
 """
 
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -223,38 +221,26 @@ class TestStartupValidatorScope:
 
 class TestDirectSendScope:
     @staticmethod
-    def _fake_httpx(captured):
-        class _Resp:
-            status_code = 500
+    def _recording_client(captured):
+        class QQApiClient:
+            def __init__(self, app_id, client_secret, log_tag="QQBot"):
+                captured.append({"appId": app_id, "clientSecret": client_secret})
 
-            @staticmethod
-            def json():
-                return {}
+            def setup(self, http_client):
+                return None
 
-        class _AsyncClient:
-            def __init__(self, *args, **kwargs):
-                pass
+            async def send_text(self, *args, **kwargs):
+                return {"id": "m-1"}
 
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-            async def post(self, url, **kwargs):
-                captured.append(kwargs.get("json") or {})
-                return _Resp()
-
-        module = types.ModuleType("httpx")
-        module.AsyncClient = _AsyncClient
-        return module
+        return QQApiClient
 
     @pytest.mark.asyncio
     async def test_scoped_credentials_win_over_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
         captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        monkeypatch.setattr(
+            "qqbot_agent_sdk.QQApiClient", self._recording_client(captured))
         monkeypatch.setenv("QQ_APP_ID", "global-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "global-secret")
         ss.set_multiplex_active(True)
@@ -267,19 +253,20 @@ class TestDirectSendScope:
             )
         finally:
             ss.reset_secret_scope(tok)
-        assert captured, "token request never issued"
+        assert captured, "QQ client never constructed"
         assert captured[0]["appId"] == "profileA-app"
         assert captured[0]["clientSecret"] == "profileA-secret"
 
     @pytest.mark.asyncio
     async def test_unscoped_falls_back_to_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 
         captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        monkeypatch.setattr(
+            "qqbot_agent_sdk.QQApiClient", self._recording_client(captured))
         monkeypatch.setenv("QQ_APP_ID", "env-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "env-secret")
         await _send_qqbot(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
-        assert captured, "token request never issued"
+        assert captured, "QQ client never constructed"
         assert captured[0]["appId"] == "env-app"
         assert captured[0]["clientSecret"] == "env-secret"

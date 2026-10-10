@@ -3326,8 +3326,6 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
                                "MSGraph webhook: aiohttp not installed"),
     Platform.BLUEBUBBLES: ("bluebubbles", "BlueBubblesAdapter", "check_bluebubbles_requirements",
                            "BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured"),
-    Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
-                     "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
     Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
                        "Yuanbao: websockets not installed. Run: pip install websockets")}
 

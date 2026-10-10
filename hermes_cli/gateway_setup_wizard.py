@@ -82,28 +82,6 @@ _PLATFORMS = [
         ],
     },
     {
-        "key": "qqbot", "label": "QQ Bot", "emoji": "🐧", "token_var": "QQ_APP_ID",
-        "setup_instructions": [
-            "1. Register a QQ Bot application at q.qq.com",
-            "2. Note your App ID and App Secret from the application page",
-            "3. Enable the required intents (C2C, Group, Guild messages)",
-            "4. Configure sandbox or publish the bot",
-        ],
-        "vars": [
-            {"name": "QQ_APP_ID", "prompt": "QQ Bot App ID", "password": False,
-             "help": "Your QQ Bot App ID from q.qq.com."},
-            {"name": "QQ_CLIENT_SECRET", "prompt": "QQ Bot App Secret", "password": True,
-             "help": "Your QQ Bot App Secret from q.qq.com."},
-            {"name": "QQ_ALLOWED_USERS",
-             "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)",
-             "password": False, "is_allowlist": True,
-             "help": "Optional — restrict DM access to specific user OpenIDs."},
-            {"name": "QQBOT_HOME_CHANNEL",
-             "prompt": "Home channel (user/group OpenID for cron delivery, or empty)", "password": False,
-             "help": "OpenID to deliver cron results and notifications to."},
-        ],
-    },
-    {
         "key": "yuanbao", "label": "Yuanbao", "emoji": "💎", "token_var": "YUANBAO_APP_ID",
         "setup_instructions": [
             "1. Download the Yuanbao app from https://yuanbao.tencent.com/",
@@ -515,85 +493,6 @@ def _setup_weixin():
         _gw().print_info(f"  User ID: {user_id}")
 
 
-def _setup_qqbot():
-    """Interactive setup for QQ Bot — scan-to-configure or manual credentials."""
-    _print_setup_header("🐧 QQ Bot")
-
-    if not _confirm_reconfigure("QQ Bot", "QQ_APP_ID", "QQ_CLIENT_SECRET"):
-        return
-
-    print()
-    method_choices = ["Scan QR code to add bot automatically (recommended)", "Enter existing App ID and App Secret manually"]
-    credentials = None
-    if _gw().prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0) == 0:
-        try:
-            from gateway.platforms.qqbot import qr_register
-            credentials = qr_register()
-        except KeyboardInterrupt:
-            print()
-            _gw().print_warning("  QQ Bot setup cancelled.")
-            return
-        if not credentials:
-            _gw().print_info("  QR setup did not complete. Continuing with manual input.")
-
-    if not credentials:
-        print()
-        _gw()._print_info_lines(
-            "  Go to https://q.qq.com to register a QQ Bot application.",
-            "  Note your App ID and App Secret from the application page.",
-        )
-        print()
-        app_id = _gw().prompt("  App ID", password=False)
-        if not app_id:
-            _gw().print_warning("  Skipped — QQ Bot won't work without an App ID.")
-            return
-        app_secret = _gw().prompt("  App Secret", password=True)
-        if not app_secret:
-            _gw().print_warning("  Skipped — QQ Bot won't work without an App Secret.")
-            return
-        credentials = {"app_id": app_id.strip(), "client_secret": app_secret.strip(), "user_openid": ""}
-
-    _gw().save_env_value("QQ_APP_ID", credentials["app_id"])
-    _gw().save_env_value("QQ_CLIENT_SECRET", credentials["client_secret"])
-
-    user_openid = credentials.get("user_openid", "")
-
-    print()
-    access_choices = ["Use DM pairing approval (recommended)", "Allow all direct messages", "Only allow listed user OpenIDs"]
-    access_idx = _gw().prompt_choice("  How should direct messages be authorized?", access_choices, 0)
-    if access_idx == 0:
-        _gw().save_env_value("QQ_ALLOW_ALL_USERS", "false")
-        allowed = ""
-        if user_openid:
-            print()
-            if _gw().prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
-                allowed = user_openid
-                _gw().print_success(f"  Allow list set to {user_openid}")
-        _gw().save_env_value("QQ_ALLOWED_USERS", allowed)
-        _gw().print_success("  DM pairing enabled.")
-        _gw().print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
-    elif access_idx == 1:
-        _save_env_values(QQ_ALLOW_ALL_USERS="true", QQ_ALLOWED_USERS="")
-        _gw().print_warning("  Open DM access enabled for QQ Bot.")
-    else:
-        allowlist = _prompt_csv("  Allowed user OpenIDs (comma-separated)", user_openid or "")
-        _save_env_values(QQ_ALLOW_ALL_USERS="false", QQ_ALLOWED_USERS=allowlist)
-        _gw().print_success("  Allowlist saved.")
-
-    print()
-    if user_openid:
-        _offer_home_channel("QQBOT_HOME_CHANNEL", user_openid, "your QQ user ID")
-    else:
-        home_channel = _gw().prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
-        if home_channel:
-            _gw().save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
-            _gw().print_success(f"  Home channel set to {home_channel.strip()}")
-
-    print()
-    _gw().print_success("🐧 QQ Bot configured!")
-    _gw().print_info(f"  App ID: {credentials['app_id']}")
-
-
 def _signal_line_input(prompt_text: str) -> str | None:
     """``line_input`` for the Signal wizard; None (after printing the cancel line) on EOF/Ctrl+C."""
     try:
@@ -706,7 +605,6 @@ def _builtin_setup_fn(key: str):
         "webhooks": _gw().setup_platforms._setup_webhooks,
         "signal": _setup_signal,
         "weixin": _setup_weixin,
-        "qqbot": _setup_qqbot,
     }.get(key)
 
 

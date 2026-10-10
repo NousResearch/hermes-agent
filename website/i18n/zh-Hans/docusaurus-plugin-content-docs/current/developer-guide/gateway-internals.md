@@ -163,6 +163,7 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── irc/adapter.py          # IRC（作用域锁的标准示例）
+├── qqbot/                  # QQ Bot（腾讯 QQ，通过官方 API v2）
 └── …                       # google_chat、ntfy、photon、raft、simplex 等
 
 gateway/platforms/                  # 核心 base 与旧的直接适配器
@@ -170,7 +171,6 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 ├── signal.py            # Signal（通过 signal-cli REST API）
 ├── weixin.py            # 微信（个人版，通过 iLink Bot API）
 ├── bluebubbles.py       # Apple iMessage（通过 BlueBubbles macOS 服务端）
-├── qqbot/               # QQ Bot（腾讯 QQ，通过官方 API v2，子包）
 ├── yuanbao.py           # 元宝（腾讯）私信/群组适配器
 ├── msgraph_webhook.py   # Microsoft Graph 变更通知 webhook（Teams、Outlook 等）
 ├── webhook.py           # 入站/出站 webhook 适配器

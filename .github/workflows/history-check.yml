@@ -10,8 +10,11 @@ name: History Check
 # second root, and ~1500 files' worth of `git blame` history collapsed
 # onto that single commit.
 #
-# This check catches the failure mode by requiring `git merge-base` between
-# the PR head and main to be non-empty.
+# This check catches the failure mode two ways: `git merge-base` between the
+# PR head and main must be non-empty, and every root commit of the PR head
+# must already be part of main's history.  The second condition covers a PR
+# that merged an unrelated branch into a main-descended head: merge-base is
+# satisfied there, but the foreign root would still graft into main.
 
 on:
   workflow_call:
@@ -36,12 +39,37 @@ jobs:
 
       - id: merge-base-check
         name: Reject PRs with no common ancestor on main
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # The checkout above materializes the pull_request *merge* ref,
+          # whose first parent is always main's tip, so `merge-base
+          # origin/main HEAD` can never be empty against it: checking HEAD
+          # makes this step pass unconditionally.  The check must run against
+          # the PR's own head.  refs/pull/<n>/head lives on this repo for
+          # fork PRs too, so no checkout of the head repository is needed.
+          # (Same refspec idiom as lint.yml's pr-head fetch.)
+          # Transient transport failures get a bounded retry; a head that is
+          # still unfetchable after three attempts fails the check red rather
+          # than emitting a verdict it has no evidence for.
+          FETCHED=""
+          for attempt in 1 2 3; do
+            if git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"; then
+              FETCHED=1
+              break
+            fi
+            [ "$attempt" -lt 3 ] && { echo "Fetch attempt ${attempt} failed; retrying."; sleep 2; }
+          done
+          if [ -z "$FETCHED" ]; then
+            echo "::error::Could not fetch refs/pull/${PR_NUMBER}/head after 3 attempts; the check cannot run without the PR head."
+            exit 1
+          fi
+
           # `git merge-base` exits non-zero AND prints nothing when the two
           # commits share no ancestor.  We check both conditions explicitly
           # so the failure message is clear regardless of which signal fires
           # first.
-          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+          if ! BASE=$(git merge-base origin/main origin/pr-head 2>/dev/null) || [ -z "$BASE" ]; then
             STATUS='[{"source":"unrelated histories","results":[{"kind":"action_required","title":"Unrelated histories","summary":"This PR has no common ancestor with main.","detail":"","how_to_fix":"Rebase your changes onto current main:\n```\ngit fetch origin main\ngit checkout -b fix-branch origin/main\n# re-apply your changes (cherry-pick, copy files, etc.)\ngit push -f origin fix-branch\n```\n"}]}]'
             echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
             echo "review_status=${STATUS}" > review-status.json
@@ -63,6 +91,35 @@ jobs:
             echo "  git checkout -b fix-branch origin/main"
             echo "  # re-apply your changes (cherry-pick, copy files, etc.)"
             echo "  git push -f origin fix-branch"
+            exit 1
+          fi
+
+          # A shared ancestor is not enough by itself: a main-descended head
+          # that merged an unrelated branch satisfies merge-base while still
+          # dragging a foreign root into main.  Require every root of the PR
+          # head to already live inside main's history.
+          # Assign first: a rev-list failure inside a `for ... $(...)` would
+          # not propagate under `set -e`, while a failed assignment does.
+          PR_ROOTS=$(git rev-list --max-parents=0 origin/pr-head)
+          EXTRA_ROOTS=""
+          for root in $PR_ROOTS; do
+            git merge-base --is-ancestor "$root" origin/main || EXTRA_ROOTS="${EXTRA_ROOTS}${root} "
+          done
+          if [ -n "$EXTRA_ROOTS" ]; then
+            STATUS='[{"source":"unrelated histories","results":[{"kind":"action_required","title":"Unrelated history merged into this PR","summary":"This PR head contains a root commit that is not part of main history.","detail":"","how_to_fix":"Rebase your changes onto current main without the unrelated branch:\n```\ngit fetch origin main\ngit rebase --onto origin/main <first-commit-of-your-work>\n```\n"}]}]'
+            echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${STATUS}" > review-status.json
+            echo ""
+            echo "::error::This PR head introduces a root commit outside main's history:${EXTRA_ROOTS}"
+            echo ""
+            echo "The branch shares an ancestor with main but also merged an"
+            echo "unrelated branch, so landing it would graft that foreign root"
+            echo "into main and re-root blame for every file it carries, the"
+            echo "same damage PR #25045 did."
+            echo ""
+            echo "To fix, rebuild the branch without the unrelated merge:"
+            echo "  git fetch origin main"
+            echo "  git rebase --onto origin/main <first-commit-of-your-work>"
             exit 1
           fi
           echo "::notice::Common ancestor with main: $BASE"

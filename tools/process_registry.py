@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -1871,7 +1871,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         requeue: list[dict] = []
         # delegation.surface_child_process_notifications, read at most once per drain
         # and only when an sa- event shows up.
-        from tools.process_registry_notifications import is_child_process_notification, should_surface_notification
         surface_child: bool | None = None
         while not self.completion_queue.empty():
             try:

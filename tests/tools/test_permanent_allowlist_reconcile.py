@@ -134,3 +134,40 @@ def test_a_caller_that_passes_a_smaller_set_does_not_remove(fake_config):
     approval.save_permanent_allowlist({"ls *"})          # tries to drop docker *
 
     assert "docker *" in fake_config["command_allowlist"]
+
+
+# ── a routed profile (multiplex HERMES_HOME override) ─────────────────
+
+
+def test_a_routed_profile_does_not_resurrect_an_entry_revoked_on_disk(tmp_path, monkeypatch):
+    """A routed profile loads its allowlist lazily on first check, not via
+    load_permanent_allowlist(); that load must set the baseline too."""
+    import hermes_cli.config as hc
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch, routed = tmp_path / "launch", tmp_path / "routed"
+    launch.mkdir()
+    routed.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+
+    def write(allowlist):
+        (routed / "config.yaml").write_text(f"command_allowlist: {allowlist!r}\n")
+        hc._LOAD_CONFIG_CACHE.clear()
+
+    monkeypatch.setattr(approval, "_permanent_approved_by_home", {})
+    monkeypatch.setattr(approval, "_permanent_baseline_by_home", {})
+    write(["git status"])
+    token = set_hermes_home_override(str(routed))
+    try:
+        assert approval.is_approved("s", "git status")    # lazily loaded, honoured
+        write([])                                          # operator revokes it
+        approval.approve_permanent("docker *")
+        approval.save_permanent_allowlist(approval._permanent_set())
+        hc._LOAD_CONFIG_CACHE.clear()
+        on_disk = hc.load_config_readonly().get("command_allowlist")
+        still_approved = approval.is_approved("s", "git status")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert on_disk == ["docker *"], "a revoked standing approval came back on the next save"
+    assert not still_approved

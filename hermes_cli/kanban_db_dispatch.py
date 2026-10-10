@@ -25,7 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_db_worker_exit import _EXIT_TRAILER_RE, worker_log_exit
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -259,30 +259,6 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
 
 # Sanity cap on honouring a worker-reported quota reset, so a bogus far-future value cannot park a card.
 _MAX_RESET_HOLD_SECONDS = 7 * 24 * 3600
-
-_EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)(?: reset_at=(\d+))?\s*$", re.MULTILINE,
-)
-
-
-def _worker_log_exit(task_id: str, board: Optional[str] = None) -> "tuple[Optional[int], Optional[int]]":
-    """``(exit code, reset_at)`` from the trailer the worker CLI wrote to its own log; ``(None, None)`` when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None, None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    if not matches:
-        return None, None
-    code, reset_at = matches[-1]
-    return int(code), int(reset_at) if reset_at else None
-
 
 def reap_worker_zombies() -> list[int]:
     """Reap exited workers without blocking; returns reaped PIDs. POSIX reaps
@@ -1086,7 +1062,7 @@ def _classify_dead_worker_exit(
     kind, code = _classify_worker_exit(pid)
     reset_at = None
     if task_id and (kind == "unknown" or kind == "rate_limited"):
-        logged, reset_at = _worker_log_exit(task_id, board=board)
+        logged, reset_at = worker_log_exit(task_id, board=board)
         if kind == "unknown" and logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":

@@ -5,7 +5,7 @@ part into a ``[screenshot]`` line. Any turn whose history is reloaded from the D
 builds a fresh agent per request) therefore sent the model a placeholder instead of the image the
 user asked about one message earlier. This module closes that gap without putting base64 in the DB:
 
-* **write** — when a user row is flushed, its images (``data:`` or remote URLs) are written once to
+* **write** — when a user row is flushed, its ``data:`` images are written once to
   ``<HERMES_HOME>/image_store/<sha256>.<ext>`` and the row's ``message_uid`` gets a reference file
   ``image_store/refs/<message_uid>.json`` (session id, row timestamp, ordered refs). The DB row and
   every transcript API stay text-only.
@@ -40,7 +40,7 @@ DEFAULT_REPLAY_RECENT_IMAGES = 3
 SCREENSHOT_MARKER = "[screenshot]"  # what session_persistence._durable_content writes per image part
 OLDER_IMAGE_TEXT = "[image sent earlier, no longer attached]"
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}  # the parts _durable_content turns into markers
-_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.*)$", re.S)
+_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.*)$", re.DOTALL)
 _EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp",
         "image/heic": "heic", "image/heif": "heif", "image/avif": "avif", "image/bmp": "bmp"}
 _UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -96,7 +96,9 @@ def _part_url(part: dict[str, Any]) -> tuple[str, Optional[str]]:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)  # a late flush must never recreate a deleted named profile
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
@@ -104,26 +106,26 @@ def _write_private(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _store_part(root: Path, part: dict[str, Any]) -> Optional[dict[str, Any]]:
+def _store_part(root: Path, part: dict[str, Any]) -> dict[str, Any]:
+    """The ref for one image part; ``{"pruned": True}`` holds the marker position of one not replayed.
+
+    Only bytes we hold are replayed: a remote URL is re-fetched by the provider on every request, so
+    an expired signed URL or a deleted file would turn every later turn into a 400."""
     url, detail = _part_url(part)
-    ref: dict[str, Any]
     m = _DATA_URL_RE.match(url)
-    if m:
-        try:
-            raw = base64.b64decode(m.group(2), validate=False)
-        except (binascii.Error, ValueError):
-            return None
-        if not raw:
-            return None
-        mime = m.group(1).lower()
-        name = f"{hashlib.sha256(raw).hexdigest()}.{_EXT.get(mime, 'bin')}"
-        if not (root / name).exists():
-            _write_private(root / name, raw)
-        ref = {"file": name, "mime": mime}
-    elif url.startswith(("http://", "https://")):
-        ref = {"url": url}
-    else:
-        return None
+    if not m:
+        return {"pruned": True}
+    try:
+        raw = base64.b64decode(m.group(2), validate=False)
+    except (binascii.Error, ValueError):
+        return {"pruned": True}
+    if not raw:
+        return {"pruned": True}
+    mime = m.group(1).lower()
+    name = f"{hashlib.sha256(raw).hexdigest()}.{_EXT.get(mime, 'bin')}"
+    if not (root / name).exists():
+        _write_private(root / name, raw)
+    ref: dict[str, Any] = {"file": name, "mime": mime}
     if detail:
         ref["detail"] = detail
     return ref
@@ -240,9 +242,9 @@ def persist_message_images(msg: dict[str, Any], session_id: Optional[str] = None
         sidecar = _sidecar_path(root, uid)
         if sidecar.exists():  # re-flush of a message already stored
             return _live_ref_count(_read_sidecar(sidecar) or {"refs": []})
-        refs = [r for r in (_store_part(root, p) for p in content
-                            if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES) if r]
-        if not refs:
+        # One ref per image part, in order: refs map to the row's markers by position.
+        refs = [_store_part(root, p) for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES]
+        if not _live_ref_count({"refs": refs}):
             return 0
         stamp = float(ts) if isinstance(ts, (int, float)) else time.time()
         _write_sidecar(sidecar, {"session_id": session_id, "ts": stamp, "refs": refs})
@@ -251,7 +253,7 @@ def persist_message_images(msg: dict[str, Any], session_id: Optional[str] = None
             same.sort(key=lambda e: e[1].get("ts") or 0.0, reverse=True)
             if _enforce_window(same, keep):
                 remove_orphan_files(root)
-        return len(refs)
+        return _live_ref_count({"refs": refs})
     except Exception:
         logger.warning("image_store: could not store the images of a user message", exc_info=True)
         return 0
@@ -360,8 +362,6 @@ def _ref_to_part(ref: dict[str, Any], root: Path) -> Optional[dict[str, Any]]:
         except OSError:
             return None
         url = f"data:{ref.get('mime') or 'image/jpeg'};base64,{base64.b64encode(raw).decode('ascii')}"
-    elif isinstance(ref.get("url"), str) and ref["url"]:
-        url = ref["url"]
     else:
         return None
     image_url: dict[str, Any] = {"url": url}

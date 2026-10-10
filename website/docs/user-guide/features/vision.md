@@ -256,5 +256,5 @@ vision:
 - The **N most recent** images of the conversation are sent again as image parts, byte-identical to the turn that first sent them, so the provider's prompt cache stays valid. Older ones read `[image sent earlier, no longer attached]`. The request changes only when a newer image pushes one out of the window, at which point the cached prefix is rebuilt once from that message on.
 - Images are stored under `~/.hermes/image_store/` (per profile; one file per distinct image, readable only by your user) with a small reference file per message. The database and the session messages API stay text only.
 - Each session keeps only its N newest images. Deleting or pruning a session removes its images; the gateway's state.db housekeeping (at startup and hourly) removes images whose message is gone, for example after compaction. Setting `0` stops storing and replaying, and the next sweep deletes what was stored.
-- Remote image URLs are kept as URLs, not downloaded.
+- Images sent as remote URLs are not replayed (the provider would fetch them again on every later request, and an expired or deleted URL would fail the turn); they read like an older image.
 

@@ -115,6 +115,32 @@ def test_marker_without_a_stored_image_reads_as_an_older_image(home):
     assert pairs[0][1]["content"] == f"old message\n{image_store.OLDER_IMAGE_TEXT}"
 
 
+def test_only_stored_bytes_replay_and_each_image_keeps_its_marker(home):
+    # A remote URL is re-fetched by the provider on every request (an expired signed URL 400s the
+    # turn); an undecodable part stores nothing. Neither may shift later images onto earlier markers.
+    live = {"role": "user", "content": [
+        {"type": "text", "text": "compare"},
+        {"type": "image_url", "image_url": {"url": "https://cdn.example/signed.png?X-Amz-Expires=60"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+        {"type": "image_url", "image_url": {"url": _data_url(b"third")}},
+    ]}
+    assert image_store.persist_message_images(live) == 1
+    pairs = _pairs([_stored_row(live)])
+    assert image_store.rehydrate_wire_images(pairs, keep_recent=3) == 1
+    older = {"type": "text", "text": image_store.OLDER_IMAGE_TEXT}
+    assert pairs[0][1]["content"] == [live["content"][0], older, older, live["content"][3]]
+
+
+def test_a_late_flush_never_recreates_a_deleted_profile(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    (root / "profiles" / ".deleted").mkdir(parents=True)
+    (root / "profiles" / ".deleted" / "gone").touch()  # what `hermes profile delete` leaves behind
+    gone = root / "profiles" / "gone"
+    monkeypatch.setenv("HERMES_HOME", str(gone))
+    assert image_store.persist_message_images(_user("late", b"img"), session_id="S", keep=3) == 0
+    assert not gone.exists()
+
+
 def test_each_session_keeps_only_its_newest_images(home, db):
     uids = [_add(db, "S1", f"s1-{i}".encode(), 1000 + i) for i in range(5)]
     other = _add(db, "S2", b"s2-0", 900)  # older than all of S1, other session: untouched

@@ -1,7 +1,7 @@
 # Design System: IBM
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `IBM Plex Sans` | **Mono:** `IBM Plex Mono`
@@ -15,21 +15,21 @@
 
 ## 1. Visual Theme & Atmosphere
 
-IBM's website is the digital embodiment of enterprise authority built on the Carbon Design System — a design language so methodically structured it reads like an engineering specification rendered as a webpage. The page operates on a stark duality: a bright white (`#ffffff`) canvas with near-black (`#161616`) text, punctuated by a single, unwavering accent — IBM Blue 60 (`#0f62fe`). This isn't playful tech-startup minimalism; it's corporate precision distilled into pixels. Every element exists within Carbon's rigid 2x grid, every color maps to a semantic token, every spacing value snaps to the 8px base unit.
+IBM's website is the digital embodiment of enterprise authority built on the Carbon Design System: a design language so methodically structured it reads like an engineering specification rendered as a webpage. The page operates on a stark duality: a bright white (`#ffffff`) canvas with near-black (`#161616`) text, punctuated by a single, unwavering accent. IBM Blue 60 (`#0f62fe`). This isn't playful tech-startup minimalism; it's corporate precision distilled into pixels. Every element exists within Carbon's rigid 2x grid, every color maps to a semantic token, every spacing value snaps to the 8px base unit.
 
-The IBM Plex type family is the system's backbone. IBM Plex Sans at light weight (300) for display headlines creates an unexpectedly airy, almost delicate quality at large sizes — a deliberate counterpoint to IBM's corporate gravity. At body sizes, regular weight (400) with 0.16px letter-spacing on 14px captions introduces the meticulous micro-tracking that makes Carbon text feel engineered rather than designed. IBM Plex Mono serves code, data, and technical labels, completing the family trinity alongside the rarely-surfaced IBM Plex Serif.
+The IBM Plex type family is the system's backbone. IBM Plex Sans at light weight (300) for display headlines creates an unexpectedly airy, almost delicate quality at large sizes: a deliberate counterpoint to IBM's corporate gravity. At body sizes, regular weight (400) with 0.16px letter-spacing on 14px captions introduces the meticulous micro-tracking that makes Carbon text feel engineered rather than designed. IBM Plex Mono serves code, data, and technical labels, completing the family trinity alongside the rarely-surfaced IBM Plex Serif.
 
-What defines IBM's visual identity beyond monochrome-plus-blue is the reliance on Carbon's component token system. Every interactive state maps to a CSS custom property prefixed with `--cds-` (Carbon Design System). Buttons don't have hardcoded colors; they reference `--cds-button-primary`, `--cds-button-primary-hover`, `--cds-button-primary-active`. This tokenized architecture means the entire visual layer is a thin skin over a deeply systematic foundation — the design equivalent of a well-typed API.
+What defines IBM's visual identity beyond monochrome-plus-blue is the reliance on Carbon's component token system. Every interactive state maps to a CSS custom property prefixed with `--cds-` (Carbon Design System). Buttons don't have hardcoded colors; they reference `--cds-button-primary`, `--cds-button-primary-hover`, `--cds-button-primary-active`. This tokenized architecture means the entire visual layer is a thin skin over a deeply systematic foundation: the design equivalent of a well-typed API.
 
 **Key Characteristics:**
-- IBM Plex Sans at weight 300 (Light) for display — corporate gravitas through typographic restraint
+- IBM Plex Sans at weight 300 (Light) for display: corporate gravitas through typographic restraint
 - IBM Plex Mono for code and technical content with consistent 0.16px letter-spacing at small sizes
-- Single accent color: IBM Blue 60 (`#0f62fe`) — every interactive element, every CTA, every link
+- Single accent color: IBM Blue 60 (`#0f62fe`), every interactive element, every CTA, every link
 - Carbon token system (`--cds-*`) driving all semantic colors, enabling theme-switching at the variable level
-- 8px spacing grid with strict adherence — no arbitrary values, everything aligns
-- Flat, borderless cards on `#f4f4f4` Gray 10 surface — depth through background-color layering, not shadows
-- Bottom-border inputs (not boxed) — the signature Carbon form pattern
-- 0px border-radius on primary buttons — unapologetically rectangular, no softening
+- 8px spacing grid with strict adherence: no arbitrary values, everything aligns
+- Flat, borderless cards on `#f4f4f4` Gray 10 surface: depth through background-color layering, not shadows
+- Bottom-border inputs (not boxed): the signature Carbon form pattern
+- 0px border-radius on primary buttons: unapologetically rectangular, no softening
 
 ## 2. Color Palette & Roles
 
@@ -51,12 +51,12 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 - **Gray 10 Hover** (`#e8e8e8`): Hover state for Gray 10 surfaces.
 
 ### Interactive
-- **Blue 60** (`#0f62fe`): Primary interactive — buttons, links, focus. `--cds-link-primary`, `--cds-button-primary`.
+- **Blue 60** (`#0f62fe`): Primary interactive, buttons, links, focus. `--cds-link-primary`, `--cds-button-primary`.
 - **Blue 70** (`#0043ce`): Link hover state. `--cds-link-primary-hover`.
 - **Blue 80** (`#002d9c`): Active/pressed state for blue elements.
 - **Blue 10** (`#edf5ff`): Blue tint surface, selected row background.
-- **Focus Blue** (`#0f62fe`): `--cds-focus` — 2px inset border on focused elements.
-- **Focus Inset** (`#ffffff`): `--cds-focus-inset` — white inner ring for focus on dark backgrounds.
+- **Focus Blue** (`#0f62fe`): `--cds-focus`, 2px inset border on focused elements.
+- **Focus Inset** (`#ffffff`): `--cds-focus-inset`, white inner ring for focus on dark backgrounds.
 
 ### Support & Status
 - **Red 60** (`#da1e28`): Error, danger. `--cds-support-error`.
@@ -79,7 +79,7 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 - **Primary**: `IBM Plex Sans`, with fallbacks: `Helvetica Neue, Arial, sans-serif`
 - **Monospace**: `IBM Plex Mono`, with fallbacks: `Menlo, Courier, monospace`
 - **Serif** (limited use): `IBM Plex Serif`, for editorial/expressive contexts
-- **Icon Font**: `ibm_icons` — proprietary icon glyphs at 20px
+- **Icon Font**: `ibm_icons`, proprietary icon glyphs at 20px
 
 ### Hierarchy
 
@@ -102,8 +102,8 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 | Mono Display | IBM Plex Mono | 42px (2.63rem) | 400 (Regular) | 1.19 (50px) | 0 | Hero mono decorative |
 
 ### Principles
-- **Light weight at display sizes**: Carbon's expressive type set uses weight 300 (Light) at 42px+. This creates a distinctive tension — the content speaks with corporate authority while the letterforms whisper with typographic lightness.
-- **Micro-tracking at small sizes**: 0.16px letter-spacing at 14px and 0.32px at 12px. These seemingly negligible values are Carbon's secret weapon for readability at compact sizes — they open up the tight IBM Plex letterforms just enough.
+- **Light weight at display sizes**: Carbon's expressive type set uses weight 300 (Light) at 42px+. This creates a distinctive tension, the content speaks with corporate authority while the letterforms whisper with typographic lightness.
+- **Micro-tracking at small sizes**: 0.16px letter-spacing at 14px and 0.32px at 12px. These seemingly negligible values are Carbon's secret weapon for readability at compact sizes, they open up the tight IBM Plex letterforms just enough.
 - **Three functional weights**: 300 (display/expressive), 400 (body/reading), 600 (emphasis/UI labels). Weight 700 is intentionally absent from the production type scale.
 - **Productive vs. Expressive**: Productive sets use tighter line-heights (1.29) for dense UI. Expressive sets breathe more (1.40-1.50) for marketing and editorial content.
 
@@ -114,9 +114,9 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 **Primary Button (Blue)**
 - Background: `#0f62fe` (Blue 60) → `--cds-button-primary`
 - Text: `#ffffff` (White)
-- Padding: 14px 63px 14px 15px (asymmetric — room for trailing icon)
+- Padding: 14px 63px 14px 15px (asymmetric, room for trailing icon)
 - Border: 1px solid transparent
-- Border-radius: 0px (sharp rectangle — the Carbon signature)
+- Border-radius: 0px (sharp rectangle, the Carbon signature)
 - Height: 48px (default), 40px (compact), 64px (expressive)
 - Hover: `#0353e9` (Blue 60 Hover) → `--cds-button-primary-hover`
 - Active: `#002d9c` (Blue 80) → `--cds-button-primary-active`
@@ -150,28 +150,28 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 
 ### Cards & Containers
 - Background: `#ffffff` on white theme, `#f4f4f4` (Gray 10) for elevated cards
-- Border: none (flat design — no border or shadow on most cards)
+- Border: none (flat design, no border or shadow on most cards)
 - Border-radius: 0px (matching the rectangular button aesthetic)
 - Hover: background shifts to `#e8e8e8` (Gray 10 Hover) for clickable cards
 - Content padding: 16px
 - Separation: background-color layering (white → gray 10 → white) rather than shadows
 
 ### Inputs & Forms
-- Background: `#f4f4f4` (Gray 10) — `--cds-field`
+- Background: `#f4f4f4` (Gray 10), `--cds-field`
 - Text: `#161616` (Gray 100)
 - Padding: 0px 16px (horizontal only)
 - Height: 40px (default), 48px (large)
-- Border: none on sides/top — `2px solid transparent` bottom
+- Border: none on sides/top, `2px solid transparent` bottom
 - Bottom-border active: `2px solid #161616` (Gray 100)
-- Focus: `2px solid #0f62fe` (Blue 60) bottom-border — `--cds-focus`
+- Focus: `2px solid #0f62fe` (Blue 60) bottom-border, `--cds-focus`
 - Error: `2px solid #da1e28` (Red 60) bottom-border
 - Label: 12px IBM Plex Sans, 0.32px letter-spacing, Gray 70
 - Helper text: 12px, Gray 60
 - Placeholder: Gray 60 (`#6f6f6f`)
-- Border-radius: 0px (top) — inputs are sharp-cornered
+- Border-radius: 0px (top), inputs are sharp-cornered
 
 ### Navigation
-- Background: `#161616` (Gray 100) — full-width dark masthead
+- Background: `#161616` (Gray 100), full-width dark masthead
 - Height: 48px
 - Logo: IBM 8-bar logo, white on dark, left-aligned
 - Links: 14px IBM Plex Sans, weight 400, `#c6c6c6` (Gray 30) default
@@ -199,13 +199,13 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 - Background: `#f4f4f4` or `#ffffff`
 - Full-width bottom-border or background-shift hover
 - Arrow icon bottom-right on hover
-- No shadow — flatness is the identity
+- No shadow: flatness is the identity
 
 **Tag / Label**
 - Background: contextual color at 10% opacity (e.g., Blue 10, Red 10)
 - Text: corresponding 60-grade color
 - Padding: 4px 8px
-- Border-radius: 24px (pill — exception to the 0px rule)
+- Border-radius: 24px (pill, exception to the 0px rule)
 - Font: 12px weight 400
 
 **Notification Banner**
@@ -232,14 +232,14 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 - Full-bleed sections alternate with contained content
 
 ### Whitespace Philosophy
-- **Functional density**: Carbon favors productive density over expansive whitespace. Sections are tightly packed compared to consumer design systems — this reflects IBM's enterprise DNA.
+- **Functional density**: Carbon favors productive density over expansive whitespace. Sections are tightly packed compared to consumer design systems, this reflects IBM's enterprise DNA.
 - **Background-color zoning**: Instead of massive padding between sections, IBM uses alternating background colors (white → gray 10 → white) to create visual separation with minimal vertical space.
 - **Consistent 48px rhythm**: Major section transitions use 48px vertical spacing. Hero sections may use 80px–96px.
 
 ### Border Radius Scale
-- **0px**: Primary buttons, inputs, tiles, cards — the dominant treatment. Carbon is fundamentally rectangular.
+- **0px**: Primary buttons, inputs, tiles, cards, the dominant treatment. Carbon is fundamentally rectangular.
 - **2px**: Occasionally on small interactive elements (tags)
-- **24px**: Tags/labels (pill shape — the sole rounded exception)
+- **24px**: Tags/labels (pill shape, the sole rounded exception)
 - **50%**: Avatar circles, icon containers
 
 ## 6. Depth & Elevation
@@ -254,29 +254,29 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 | Focus | `2px solid #0f62fe` inset + `1px solid #ffffff` | Keyboard focus ring |
 | Bottom-border | `2px solid #161616` on bottom edge | Active input, active tab indicator |
 
-**Shadow Philosophy**: Carbon is deliberately shadow-averse. IBM achieves depth primarily through background-color layering — stacking surfaces of progressively darker grays rather than adding box-shadows. This creates a flat, print-inspired aesthetic where hierarchy is communicated through color value, not simulated light. Shadows are reserved exclusively for floating elements (dropdowns, tooltips, modals) where the element genuinely overlaps content. This restraint gives the rare shadow meaningful impact — when something floats in Carbon, it matters.
+**Shadow Philosophy**: Carbon is deliberately shadow-averse. IBM achieves depth primarily through background-color layering, stacking surfaces of progressively darker grays rather than adding box-shadows. This creates a flat, print-inspired aesthetic where hierarchy is communicated through color value, not simulated light. Shadows are reserved exclusively for floating elements (dropdowns, tooltips, modals) where the element genuinely overlaps content. This restraint gives the rare shadow meaningful impact: when something floats in Carbon, it matters.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use IBM Plex Sans at weight 300 for display sizes (42px+) — the lightness is intentional
+- Use IBM Plex Sans at weight 300 for display sizes (42px+): the lightness is intentional
 - Apply 0.16px letter-spacing on 14px body text and 0.32px on 12px captions
-- Use 0px border-radius on buttons, inputs, cards, and tiles — rectangles are the system
+- Use 0px border-radius on buttons, inputs, cards, and tiles: rectangles are the system
 - Reference `--cds-*` token names when implementing (e.g., `--cds-button-primary`, `--cds-text-primary`)
 - Use background-color layering (white → gray 10 → gray 20) for depth instead of shadows
 - Use bottom-border (not box) for input field indicators
 - Maintain the 48px default button height and asymmetric padding for icon accommodation
-- Apply Blue 60 (`#0f62fe`) as the sole accent — one blue to rule them all
+- Apply Blue 60 (`#0f62fe`) as the sole accent: one blue to rule them all
 
 ### Don't
-- Don't round button corners — 0px radius is the Carbon identity
-- Don't use shadows on cards or tiles — flatness is the point
-- Don't introduce additional accent colors — IBM's system is monochromatic + blue
-- Don't use weight 700 (Bold) — the scale stops at 600 (Semibold)
-- Don't add letter-spacing to display-size text — tracking is only for 14px and below
-- Don't box inputs with full borders — Carbon inputs use bottom-border only
-- Don't use gradient backgrounds — IBM's surfaces are flat, solid colors
-- Don't deviate from the 8px spacing grid — every value should be divisible by 8 (with 2px and 4px for micro-adjustments)
+- Don't round button corners: 0px radius is the Carbon identity
+- Don't use shadows on cards or tiles: flatness is the point
+- Don't introduce additional accent colors: IBM's system is monochromatic + blue
+- Don't use weight 700 (Bold): the scale stops at 600 (Semibold)
+- Don't add letter-spacing to display-size text: tracking is only for 14px and below
+- Don't box inputs with full borders: Carbon inputs use bottom-border only
+- Don't use gradient backgrounds. IBM's surfaces are flat, solid colors
+- Don't deviate from the 8px spacing grid: every value should be divisible by 8 (with 2px and 4px for micro-adjustments)
 
 ## 8. Responsive Behavior
 
@@ -335,10 +335,10 @@ What defines IBM's visual identity beyond monochrome-plus-blue is the reliance o
 - "Build a tag component: Blue 10 (#edf5ff) background, Blue 60 (#0f62fe) text, 4px 8px padding, 24px border-radius, 12px IBM Plex Sans weight 400."
 
 ### Iteration Guide
-1. Always use 0px border-radius on buttons, inputs, and cards — this is non-negotiable in Carbon
-2. Letter-spacing only at small sizes: 0.16px at 14px, 0.32px at 12px — never on display text
-3. Three weights: 300 (display), 400 (body), 600 (emphasis) — no bold
-4. Blue 60 is the only accent color — do not introduce secondary accent hues
+1. Always use 0px border-radius on buttons, inputs, and cards: this is non-negotiable in Carbon
+2. Letter-spacing only at small sizes: 0.16px at 14px, 0.32px at 12px, never on display text
+3. Three weights: 300 (display), 400 (body), 600 (emphasis), no bold
+4. Blue 60 is the only accent color: do not introduce secondary accent hues
 5. Depth comes from background-color layering (white → #f4f4f4 → #e0e0e0), not shadows
 6. Inputs have bottom-border only, never fully boxed
 7. Use `--cds-` prefix for token naming to stay Carbon-compatible

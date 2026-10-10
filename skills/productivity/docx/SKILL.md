@@ -19,7 +19,7 @@ python-docx via small CLIs. It handles text, styles, lists, tables,
 images, headers/footers, `{{token}}` templating, tracked changes
 (list/accept/reject), comments (list/add/delete), TOC and page-number
 fields, and package health checks. It does not render documents itself
-(PDF needs LibreOffice — see Converting to PDF) or edit legacy `.doc`.
+(PDF needs LibreOffice: see Converting to PDF) or edit legacy `.doc`.
 
 ## When to Use
 
@@ -39,7 +39,7 @@ fields, and package health checks. It does not render documents itself
 - Python 3.10+ with `python-docx` installed:
   `pip install python-docx` (import name is `docx`; lxml comes with it).
 - Comments `add` uses the native API on python-docx >= 1.2 and an XML
-  fallback on older versions — both are automatic.
+  fallback on older versions: both are automatic.
 - For image blocks: the image files must exist locally (PNG/JPEG).
 
 ## How to Run
@@ -90,7 +90,7 @@ python scripts/docx_validate.py out.docx
    `scripts/docx_create.py`. The spec supports: `page` (size + margins in
    mm), `header`/`footer` strings, `footer_page_numbers` (adds a
    "Page X of Y" field footer), `styles` (custom paragraph styles with
-   font, size, bold/italic, hex `color`), and `blocks` — `heading`
+   font, size, bold/italic, hex `color`), and `blocks`: `heading`
    (level 1-9), `paragraph` (either `text` or a `runs` list where each run
    may set `bold`/`italic`/`underline`), `bullet_list`, `numbered_list`,
    `table` (`header` row rendered bold, `rows`, optional built-in table
@@ -108,7 +108,7 @@ python scripts/docx_validate.py out.docx
    the original; omit it to edit in place. Paragraph indices for
    `insert`/`delete`/`style`/`toc` refer to `--structure`/`--text` body
    order. Run `normalize` first on documents that came out of heavy Word
-   editing — it merges adjacent runs with identical formatting so later
+   editing: it merges adjacent runs with identical formatting so later
    find-replace matches reliably.
 4. **Review revisions.** `docx_revisions.py list` reports every `w:ins`
    and `w:del` (id, author, date, affected text) anywhere in body,
@@ -139,7 +139,7 @@ soffice --headless --convert-to pdf --outdir outdir/ file.docx
 
 Check availability first (`command -v soffice || command -v
 libreoffice`). If neither exists, tell the user PDF conversion is
-unavailable in this environment rather than improvising — python-docx
+unavailable in this environment rather than improvising: python-docx
 cannot render PDFs, and layout fidelity requires a real renderer.
 
 ## Pitfalls
@@ -151,7 +151,7 @@ cannot render PDFs, and layout fidelity requires a real renderer.
 - **Revision coverage.** `docx_revisions.py` resolves run-level
   insertions and deletions (the overwhelming majority). Paragraph-mark
   and table-row revisions, format-change records, and moves are detected
-  by `--revisions` but not auto-resolved — see
+  by `--revisions` but not auto-resolved: see
   `references/revisions-and-comments.md` and hand those to Word.
 - **Comment threading.** Replies and "resolved" status live in
   `commentsExtended.xml`, which this skill ignores; comments it adds are
@@ -164,7 +164,7 @@ cannot render PDFs, and layout fidelity requires a real renderer.
 - **Validation is a health check, not schema validation.**
   `docx_validate.py` verifies the zip, required parts, relationship
   targets, image magic bytes, and referenced styles. It is NOT XSD
-  validation — a file can pass and still contain XML Word dislikes.
+  validation: a file can pass and still contain XML Word dislikes.
 - **Style names must exist.** Applying a style that isn't defined in the
   document raises `KeyError`. Built-ins like `Heading 1`, `List Bullet`,
   `List Number`, `Table Grid` exist in the default template; custom
@@ -190,7 +190,7 @@ cannot render PDFs, and layout fidelity requires a real renderer.
   `docx_comments.py list` should reflect the change and `--text` output
   must be unchanged.
 - `docx_validate.py out.docx` exits 0 with `"ok": true` on a healthy
-  package — run it after any revision/comment/field manipulation.
+  package: run it after any revision/comment/field manipulation.
 - For templates run with `--strict`, or check `unfilled_tokens == []`.
 - Structure checks: `--structure` should show the expected heading
   outline and table shapes; `--styles` confirms custom styles applied.

@@ -92,7 +92,7 @@ manim -ql --resolution 1080,1080 script.py Scene  # 1:1 square
 6. Production render at `-qh`
 7. Re-stitch + add audio
 
-## manim.cfg — Project Configuration
+## manim.cfg: Project Configuration
 
 Create `manim.cfg` in the project directory for per-project defaults:
 
@@ -111,7 +111,7 @@ tex_template_file = custom_template.tex
 
 This eliminates repetitive CLI flags and `self.camera.background_color` in every scene.
 
-## Sections — Chapter Markers
+## Sections: Chapter Markers
 
 Mark sections within a scene for organized output:
 
@@ -129,7 +129,7 @@ class LongVideo(Scene):
 ```
 
 Render individual sections: `manim --save_sections script.py LongVideo`
-This outputs separate video files per section — useful for long videos where you want to re-render only one part.
+This outputs separate video files per section: useful for long videos where you want to re-render only one part.
 
 ## manim-voiceover Plugin (Recommended for Narrated Videos)
 
@@ -168,10 +168,10 @@ class NarratedScene(VoiceoverScene):
 
 ### Key Features
 
-- `tracker.duration` — total voiceover duration in seconds
-- `tracker.time_until_bookmark("mark1")` — sync specific animations to specific words
+- `tracker.duration`: total voiceover duration in seconds
+- `tracker.time_until_bookmark("mark1")`: sync specific animations to specific words
 - Auto-generates subtitle `.srt` files
-- Caches audio locally — re-renders don't re-generate TTS
+- Caches audio locally: re-renders don't re-generate TTS
 - Works with: ElevenLabs, Azure, Google TTS, pyttsx3 (offline), and custom services
 
 ### Bookmarks for Precise Sync

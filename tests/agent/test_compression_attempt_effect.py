@@ -277,6 +277,22 @@ def test_blocked_record_never_carries_the_cooldown_seconds(caplog):
     assert "917" not in json.dumps(record)
 
 
+def test_overflow_blocked_record_names_the_guard_that_blocked_not_the_bypassed_cooldown(caplog):
+    from agent.conversation_compression_telemetry import _emit_blocked_attempt_telemetry
+
+    compressor = SimpleNamespace(
+        _compression_block_reason=lambda: "cooldown:42", _structural_no_op_backoff_until=time.monotonic() + 60,
+    )
+    agent = SimpleNamespace(context_compressor=compressor, session_id="s", _compression_attempt_id="a")
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None, bypass_cooldown=True)
+        compressor._structural_no_op_backoff_until = 0.0
+        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None, bypass_cooldown=True)
+
+    assert [r["failure_class"] for r in _attempt_records(caplog)] == ["blocked:structural_backoff", "blocked:ineffective"]
+
+
 def _abort_on_stale_snapshot(agent):
     compress_context(
         agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool",

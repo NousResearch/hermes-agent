@@ -4158,7 +4158,9 @@ def compress_context(
     # All automatic entrypoints honor compressor cooldown/breaker state; hygiene's
     # fresh AIAgent loads the persisted streak via bind_session_state() first.
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
-        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed)
+        _emit_blocked_attempt_telemetry(
+            agent, attempt.started_at, approx_tokens, attempt.seed, bypass_cooldown=bypass_cooldown,
+        )
         return messages, _existing_system_prompt(agent, system_message)
 
     _pre_msg_count = len(messages)
@@ -4228,7 +4230,9 @@ def compress_context(
     # re-read breaker state under the lock, not the bind_session_state() snapshot.
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown, include_cooldown=False):
         lease.release()
-        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed)
+        _emit_blocked_attempt_telemetry(
+            agent, attempt.started_at, approx_tokens, attempt.seed, bypass_cooldown=bypass_cooldown,
+        )
         return messages, _existing_system_prompt(agent, system_message)
 
     # Interrupts/redirects must not tear a summary in half. Use the explicit stop

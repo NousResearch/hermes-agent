@@ -181,17 +181,25 @@ def _emit_bypassed_attempt_telemetry(
 
 
 def _emit_blocked_attempt_telemetry(
-    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None = None,
+    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None = None, *,
+    bypass_cooldown: bool = False,
 ) -> None:
     """Record an automatic attempt the breaker gate refused. The class keeps only the guard's name
-    (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds."""
+    (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds.
+    ``bypass_cooldown`` (overflow recovery) means the gate ignored the cooldown, so it cannot be the blocker."""
+    compressor = getattr(agent, "context_compressor", None)
     reason = None
     try:
-        reason_fn = getattr(getattr(agent, "context_compressor", None), "_compression_block_reason", None)
+        reason_fn = getattr(compressor, "_compression_block_reason", None)
         reason = reason_fn() if callable(reason_fn) else None
     except Exception:
         logger.debug("compression block-reason read failed", exc_info=True)
     guard = reason.split(":", 1)[0] if isinstance(reason, str) and reason else "unknown"
+    if guard == "cooldown" and bypass_cooldown:
+        # _compression_block_reason checks the cooldown first; name the guard that actually blocked.
+        backoff_until = getattr(compressor, "_structural_no_op_backoff_until", 0)
+        guard = "structural_backoff" if isinstance(backoff_until, (int, float)) and backoff_until > time.monotonic() \
+            else "ineffective"
     _emit_bypassed_attempt_telemetry(
         agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens,
         attempt_seed=attempt_seed,

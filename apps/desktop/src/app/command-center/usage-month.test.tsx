@@ -11,6 +11,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { enCommandCenter as cc } from '@/i18n/en_command_center'
+import { relativeTime } from '@/lib/time'
 import { $usageMonth } from '@/store/usage-month'
 import type { UsageMonthProvider } from '@/types/hermes'
 
@@ -87,6 +88,42 @@ describe('UsageMonthSection', () => {
       expect(setUsageBudget).toHaveBeenCalledWith({ monthly_tokens: 500_000_000, provider: 'xiaomi' })
     )
     await waitFor(() => expect(getUsageMonth).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows the money left with how old the figure is', async () => {
+    const fetchedAt = new Date(Date.now() - 3 * 60_000).toISOString()
+    getUsageMonth.mockResolvedValue(
+      month([
+        {
+          ...xiaomi,
+          balance: {
+            amounts: [{ amount: 7.21, currency: 'USD', label: 'Credits balance' }],
+            fetched_at: fetchedAt,
+            state: 'ready'
+          },
+          provider: 'openrouter'
+        }
+      ])
+    )
+    render(<UsageMonthSection />)
+
+    const usd = new Intl.NumberFormat(undefined, { currency: 'USD', style: 'currency' }).format(7.21)
+    await screen.findByText(cc.balanceLeft(usd, relativeTime(Date.parse(fetchedAt))))
+  })
+
+  it('never turns an unknown or missing balance into an amount', async () => {
+    getUsageMonth.mockResolvedValue(
+      month([
+        { ...xiaomi, balance: { state: 'unknown' }, provider: 'deepseek' },
+        { ...xiaomi, balance: null },
+        { ...xiaomi, provider: 'older-backend' }
+      ])
+    )
+    render(<UsageMonthSection />)
+
+    await screen.findByText(cc.balanceUnknown)
+    expect(screen.getAllByText(cc.balanceUnavailable)).toHaveLength(1)
+    expect(screen.queryByText(/\$0/)).toBeNull()
   })
 
   it('says what it is loading and for how long', () => {

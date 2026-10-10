@@ -1008,7 +1008,20 @@ export interface UsageMonthProvider {
   /** Sessions with tokens but no known price: never render their cost as $0. */
   unpriced_sessions: number
   budget: null | UsageBudget
+  /** Money left on the account. `null`: the provider has no balance to report. Absent: a backend
+   *  older than balances, so say nothing. */
+  balance?: null | UsageBalance
 }
+
+export interface UsageBalanceAmount {
+  label: string
+  amount: number
+  /** ISO 4217, upper-case. */
+  currency: string
+}
+
+/** `unknown`: the provider reports a balance but nothing fresh is known; never shown as an amount. */
+export type UsageBalance = { amounts: UsageBalanceAmount[]; fetched_at: string; state: 'ready' } | { state: 'unknown' }
 
 export interface UsageMonthResponse {
   month: string

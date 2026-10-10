@@ -17,6 +17,10 @@ export interface CommandCenterTranslations {
   budgetSaveFailed: (error: string) => string
   loadingMonth: (seconds: number) => string
   noUsageThisMonth: string
+  /** Money left on the provider account, beside its month row. */
+  balanceLeft: (amounts: string, age: string) => string
+  balanceUnknown: string
+  balanceUnavailable: string
   close: string
   paletteTitle: string
   back: string

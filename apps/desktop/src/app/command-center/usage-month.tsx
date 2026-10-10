@@ -9,6 +9,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { setUsageBudget } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $usageMonth, $usageMonthState, refreshUsageMonth } from '@/store/usage-month'
 import type { UsageBudget, UsageBudgetUpdate, UsageMonthProvider } from '@/types/hermes'
@@ -77,6 +78,7 @@ function ProviderUsageRow({ row }: { row: UsageMonthProvider }): ReactElement {
           {row.estimated_cost > 0 ? <span>{cc.spentKnown(usd.format(row.estimated_cost))}</span> : null}
         </span>
       </div>
+      <BalanceLine balance={row.balance} />
       {row.budget ? <BudgetMeter budget={row.budget} /> : null}
       <div className="flex items-center justify-between gap-3">
         <span className={captionClass}>
@@ -90,6 +92,31 @@ function ProviderUsageRow({ row }: { row: UsageMonthProvider }): ReactElement {
       </div>
       {editing ? <BudgetEditor budget={row.budget} onDone={() => setEditing(false)} provider={row.provider} /> : null}
     </div>
+  )
+}
+
+/** Money left on the account with the figure's age; otherwise an honest "unknown" or "no balance API",
+ *  never an amount. A backend older than balances sends nothing, and the row says nothing. */
+function BalanceLine({ balance }: { balance: UsageMonthProvider['balance'] }): null | ReactElement {
+  const { t } = useI18n()
+  const cc = t.commandCenter
+
+  if (balance === undefined) {
+    return null
+  }
+
+  if (balance === null || balance.state === 'unknown') {
+    return <span className={captionClass}>{balance ? cc.balanceUnknown : cc.balanceUnavailable}</span>
+  }
+
+  const amounts = balance.amounts
+    .map(({ amount, currency }) => new Intl.NumberFormat(undefined, { currency, style: 'currency' }).format(amount))
+    .join(' · ')
+
+  return (
+    <span className={cn(captionClass, 'tabular-nums')}>
+      {cc.balanceLeft(amounts, relativeTime(Date.parse(balance.fetched_at)))}
+    </span>
   )
 }
 

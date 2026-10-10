@@ -62,7 +62,14 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
+    # Require an auth/oauth phrase to end in a failure-oriented word. The
+    # optional middle word covers messages such as "auth token expired",
+    # "auth header missing", and "OAuth refresh failed" without reopening the
+    # old bare ``auth`` stem that matched source paths such as ``auth.go``.
+    r"(?:auth|oauth)(?:[\s_\-]+(?:token|header|credentials|refresh|session))?"
+    r"[\s_\-]+(?:error|failed|failure|denied|reject(?:ed|ion)?|expired|required|missing|invalid)|"
+    r"credentials[\s_\-]+(?:error|failed|failure|denied|reject(?:ed|ion)?|expired|required|missing|invalid)|"
+    r"authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
     r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"

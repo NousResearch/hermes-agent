@@ -1128,6 +1128,25 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert "PASS" in result.stdout
 
 
+def test_bulk_complete_sends_completion_summary():
+    """The bulk "Complete" button must ask for a summary and send it with the bulk request.
+    The backend refuses to mark a card done with no result, so without it every card fails.
+    Runs the real applyBulk from the shipped bundle with stubbed dependencies, like the
+    touch-drag probe above.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_bulk_complete_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
 # Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
 

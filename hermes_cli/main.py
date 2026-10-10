@@ -2647,9 +2647,8 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     _sync_bundled_skills_quietly()
 
     # Bridge terminal.* config into TERMINAL_* env for THIS process, like the
-    # CLI (cli.py env_mappings) and gateway (_terminal_env_map) do. The
-    # dashboard/serve backend runs agents in-process (tui_gateway.ws →
-    # server._make_agent) and ticks cron itself when desktop-spawned; without
+    # CLI and gateway do. The dashboard/serve backend runs agents in-process
+    # (tui_gateway.ws → server._make_agent) and ticks cron itself when desktop-spawned; without
     # this those consumers saw an unset TERMINAL_ENV and ran every command on
     # the host even under `terminal.backend: docker` (#63141, #54449).
     try:

@@ -93,6 +93,30 @@ def admit_attachments(attachments, *, admitted=None):
     return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
 
 
+def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload):
+    """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
+    under a fresh disposable staging name, so its captured path differs from the committed one.
+    Retry identity is the committed bytes, not that name: when this exact identity already holds
+    the same digests and sizes in the same order, the committed references stand in for the fresh
+    capture (whose now-unowned copy is collected) and the admission digest decides the rest, so
+    changed bytes or any other changed field still conflict."""
+    fresh = payload.get('native_text_v1', {}).get('media')
+    if not fresh:
+        return payload
+    with db._read_ctx() as conn:
+        row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
+                           'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
+    committed = json.loads(row[1]).get('native_text_v1', {}).get('media') if row is not None else None
+    if not committed or [(r['sha256'], r['size']) for r in committed] != [(r['sha256'], r['size']) for r in fresh]:
+        return payload
+    if row[0] != 'terminal':
+        # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).
+        restore_native_media(committed)
+    kept = {reference['path'] for reference in committed}
+    release_unheld_media(db, [reference for reference in fresh if reference['path'] not in kept], retain_history=False)
+    return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+
+
 def _attachment_hashes(paths):
     hashes = []
     for path in paths:

@@ -289,10 +289,12 @@ class SessionAuthority:
         ref = self.register(source)
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
+        request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        from gateway.session_ingress_media import reconcile_native_retry
+        payload = reconcile_native_retry(self.db, principal_id='messaging:' + identity, session_id=ref.session_id,
+                                         request_id=request_id, payload=payload)
         row = admit_session_input(self.db, epoch=self.epoch, principal_id='messaging:' + identity,
-                                  session_id=ref.session_id,
-                                  request_id=str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex),
-                                  payload=payload)
+                                  session_id=ref.session_id, request_id=request_id, payload=payload)
         event._gateway_accepted = True
         self._publish_pending(ref)
         self._schedule(ref)

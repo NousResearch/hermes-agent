@@ -201,7 +201,8 @@ def handle_api_interrupt(
         final_response = REPETITION_LOOP_INTERRUPTED
     elif _partial:
         append_message(messages, {
-            "role": "assistant", "content": _partial, "display_metadata": {"interrupted": True},
+            "role": "assistant", "content": _partial, "finish_reason": "interrupted",
+            "display_metadata": {"interrupted": True},
         })
         final_response = _partial
     else:

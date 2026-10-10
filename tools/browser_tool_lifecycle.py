@@ -165,6 +165,8 @@ def _cleanup_inactive_browser_sessions():
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
                 _update_session_activity(task_id)
                 continue
+            if _screen_keeps_shared_browser(task_id, current_time):
+                continue
         elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
@@ -187,6 +189,26 @@ def _cleanup_inactive_browser_sessions():
                 _bt.logger.error("Force-reap of browser session %s failed: %s", task_id, reap_exc)
             finally:
                 _forget_session_tracking(task_id, activity=False)
+
+
+def _screen_keeps_shared_browser(task_id: str, now: float) -> bool:
+    """The shared headed browser lives as long as the Bot Screen it is drawn on would.
+
+    The takeover flow is: the bot hits a login, says so, and ends its turn; the human opens the screen
+    minutes later. The lease is still the agent's in between, so ``_human_holds_shared_browser`` does not
+    apply, and the default inactivity timeout (120 s) closed the page before the human arrived: they found
+    an empty desktop. While the screen is up, the screen's own idle stop (``bot_desktop.idle_stop_minutes``,
+    30 min by default) is the clock; once it stops, or past that window, the janitor reaps as before.
+    """
+    with _bt._cleanup_lock:
+        session_info = _bt._active_sessions.get(task_id)
+        last = _bt._session_last_activity.get(task_id, now)
+    if not session_info or not _session._shares_bot_desktop_browser(session_info):
+        return False
+    from tools.bot_desktop import runtime as _bd_runtime
+    if not _bd_runtime.published_env().get("DISPLAY"):
+        return False
+    return now - last < _bd_runtime.idle_stop_seconds()
 
 
 def _human_holds_shared_browser(task_id: str) -> bool:

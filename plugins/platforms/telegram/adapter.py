@@ -177,10 +177,12 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video"}
 
+from gateway.ingress_observer import IngressEpoch
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ingress import fetched_fields, observed_fields
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from plugins.platforms.telegram.telegram_platform_events import normalize_message_edited_event, normalize_reaction_event
@@ -526,6 +528,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     HELD_INBOUND_MAX = 64  # inbound events held across a disconnect window; oldest dropped first
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _ingress_epoch: Optional[IngressEpoch] = None  # this connection's gateway_ingress_observer epoch
     # send() can race a disconnect blip; failing "Not connected" (retryable=False) parks the answer in the
     # delivery ledger until next boot, so wait briefly for _bot (or a replacement adapter) instead.
     _RECONNECT_WAIT_SECONDS = 15.0
@@ -1730,6 +1733,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if isinstance(envelope, dict) and envelope.get("ok") is True and "result" in envelope:
             if self._record_polling_progress(generation):
                 self._record_updates_received(envelope.get("result"))
+                if self._ingress_epoch is not None:
+                    self._ingress_epoch.emit("fetched", generation, fetched_fields, envelope["result"])
 
     def _record_updates_received(self, result) -> None:
         """Count updates Telegram handed us on the getUpdates wire (#102260). Only reached for the
@@ -2743,8 +2748,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 self._post_connect_task = None
 
     async def _on_platform_update(self, update, context) -> None:
-        """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
-        stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
+        """Catch-all PTB handler (group 99): emits the ingress observer's ``observed`` event, then fires
+        ``gateway_platform_event`` with a stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
+        if self._ingress_epoch is not None:
+            self._ingress_epoch.emit("observed", self._polling_generation, observed_fields, self, update)
         # Admission counts dispatch before any preparation can stop this group. Retain
         # accounting for callers outside that Application boundary (#102260).
         admission = getattr(self, "_update_admission", None)
@@ -3106,6 +3113,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
+            if self._ingress_epoch is not None:
+                self._ingress_epoch.close()  # reconnected without disconnect(): that epoch never ends cleanly
+            self._ingress_epoch = IngressEpoch("telegram", self.config.token.partition(":")[0])
+            self._ingress_epoch.emit("start", self._polling_generation)
             from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
@@ -3338,24 +3349,30 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
+        steps_clean = True
         if self._app:
             try:
                 # Bounded: a CLOSE-WAIT socket can wedge updater.stop() forever; fall through on timeout.
                 if self._app.updater and self._app.updater.running:
                     try:
-                        await self._await_disconnect_step(self._app.updater.stop(), _UPDATER_STOP_TIMEOUT, "updater.stop()")
+                        steps_clean = await self._await_disconnect_step(self._app.updater.stop(), _UPDATER_STOP_TIMEOUT, "updater.stop()")
                     except Exception as stop_error:
+                        steps_clean = False
                         logger.warning(
                             "[%s] updater.stop() failed during disconnect: %s", self.name, _redact_telegram_error_text(stop_error))
                 # app.stop()/shutdown() can also block on a half-dead httpx pool.
                 # Detach-on-timeout so disconnect always returns (#80598).
                 if self._app.running:
-                    await self._await_disconnect_step(self._app.stop(), _DISCONNECT_STEP_TIMEOUT, "app.stop()")
-                await self._await_disconnect_step(self._app.shutdown(), _DISCONNECT_STEP_TIMEOUT, "app.shutdown()")
+                    steps_clean &= await self._await_disconnect_step(self._app.stop(), _DISCONNECT_STEP_TIMEOUT, "app.stop()")
+                steps_clean &= await self._await_disconnect_step(self._app.shutdown(), _DISCONNECT_STEP_TIMEOUT, "app.shutdown()")
             except Exception as e:
+                steps_clean = False
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
         self._app = None
         self._bot = None
+        # Only after the stop steps returned; an abandoned step marks the end unclean.
+        if self._ingress_epoch is not None:
+            self._ingress_epoch.end(self._polling_generation, steps_clean)
         # Land the last completed receipts before a replacement adapter reads them.
         flush = getattr(self, "_update_receipt_flush", None)
         if flush is not None and not flush.done():

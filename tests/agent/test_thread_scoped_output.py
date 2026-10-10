@@ -14,6 +14,8 @@ import threading
 import time
 
 import agent.thread_scoped_output as thread_output
+import pytest
+from agent.process_bootstrap import _SafeWriter, _install_safe_stdio
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -165,4 +167,83 @@ def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
         assert "must-stay-silenced" not in redirected.getvalue()
     finally:
         release.set()
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+class _BrokenPipe(io.StringIO):
+    """A stdout whose writes fail the way a closed pipe does."""
+
+    def write(self, _data):
+        raise OSError(5, "Input/output error")
+
+    def flush(self):
+        raise OSError(5, "Input/output error")
+
+
+def _close_sinks():
+    """Release the /dev/null sinks this test made silence install."""
+    for sink in list(thread_output._sinks.values()):
+        with contextlib.suppress(Exception):
+            sink.close()
+
+
+@pytest.mark.parametrize("safe_first", [True, False])
+def test_repeated_installs_keep_the_proxy_live_and_output_flowing(monkeypatch, safe_first):
+    """``_install_safe_stdio`` runs on every agent build and again per subagent.
+
+    It must not wrap the thread-scoped routing proxy. A wrapped proxy is no longer
+    adopted by ``_ensure_installed``, so each later build+silence cycle stacks two more
+    layers on the stdout chain; past the interpreter's recursion limit the proxy's own
+    ``_forward`` swallows the RecursionError and console output silently stops arriving.
+    """
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {}, raising=False)
+    monkeypatch.setattr(thread_output, "_routing_states", {}, raising=False)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    cycles = sys.getrecursionlimit()  # measured: output stops after 332 cycles at 1000
+    try:
+        real, real_err = io.StringIO(), io.StringIO()
+        sys.stdout, sys.stderr = real, real_err
+        if safe_first:
+            _install_safe_stdio()
+        with thread_scoped_silence():
+            pass
+        routed, routed_err = sys.stdout, sys.stderr
+        for _ in range(cycles):
+            _install_safe_stdio()
+            with thread_scoped_silence():
+                print("silenced")
+
+        assert sys.stdout is routed, "the routing proxy is no longer the live stdout"
+        assert sys.stderr is routed_err, "the routing proxy is no longer the live stderr"
+        print("kept")
+        print("kept-err", file=sys.stderr)
+        assert "silenced" not in real.getvalue()
+        assert real.getvalue().count("kept") == 1, "console output stopped reaching the terminal"
+        assert real_err.getvalue().count("kept-err") == 1
+    finally:
+        _close_sinks()
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+@pytest.mark.parametrize("safe_first", [True, False])
+def test_a_dead_pipe_never_raises_through_print(monkeypatch, safe_first):
+    """A broken pipe must be swallowed before and after the proxy is installed."""
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {}, raising=False)
+    monkeypatch.setattr(thread_output, "_routing_states", {}, raising=False)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = _BrokenPipe(), io.StringIO()
+        if safe_first:
+            _install_safe_stdio()
+        with thread_scoped_silence():
+            pass
+        for _ in range(3):
+            _install_safe_stdio()
+        print("must not raise")
+        sys.stdout.write("still must not raise\n")
+        sys.stdout.flush()
+    finally:
+        _close_sinks()
         sys.stdout, sys.stderr = original_stdout, original_stderr

@@ -4,6 +4,7 @@
 Type inference per cell (disable with --no-infer):
   int, float, bool ("true"/"false", case-insensitive), ISO date
   (YYYY-MM-DD) and ISO datetime; everything else stays a string.
+  Non-finite numeric text stays a string because XLSX cannot store it as a number.
 
 Styling applied by default (disable with --plain):
   bold header row with a light fill, frozen top row, autofilter over the
@@ -21,6 +22,7 @@ import csv
 import json
 import sys
 from datetime import date, datetime
+from math import isfinite
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -39,7 +41,10 @@ def infer(text):
         return low == "true"
     for caster in (int, float):
         try:
-            return caster(text)
+            value = caster(text)
+            if isinstance(value, float) and not isfinite(value):
+                return text
+            return value
         except ValueError:
             pass
     for parser in (date.fromisoformat, datetime.fromisoformat):

@@ -307,6 +307,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
+    'session.stop': () => {
+      const event = new CustomEvent('hermes:stop-active-run', { cancelable: true })
+      window.dispatchEvent(event)
+
+      return !event.defaultPrevented
+    },
     'session.new': () => {
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create

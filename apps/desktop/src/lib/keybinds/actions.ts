@@ -119,6 +119,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
   // stays; users who liked ⇧N can rebind it in the panel.
   { id: 'session.new', category: 'session', defaults: ['mod+n'] },
+  // Ctrl+C stops the active turn without claiming copy when no turn is running.
+  { id: 'session.stop', category: 'session', defaults: ['ctrl+c'], editableTargetPolicy: 'modified', passthrough: true },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd

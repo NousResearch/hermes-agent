@@ -1518,7 +1518,9 @@ def _run_no_agent_job(
     job: dict, job_id: str, job_name: str, cancel_event,
 ) -> tuple[bool, str, str, Optional[str]]:
     """no_agent short-circuit — the script IS the job (no AIAgent, no tokens). stdout → delivered
-    verbatim; empty stdout or wakeAgent=false → silent success; non-zero exit/timeout → error alert.
+    verbatim; empty stdout, ``wakeAgent=false``, or a ``NO_WORK`` begin-line → silent success;
+    non-zero exit/timeout → error alert. A no_agent job whose begin-line is the NO_WORK gate
+    is not delivered verbatim (openclaw#112371 / hermes#68809).
     """
     # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
     # reload never runs for no_agent jobs. Does not override existing values.
@@ -1557,9 +1559,9 @@ def _run_no_agent_job(
         )
         return False, f"{header}**Status:** script failed\n\n{output}\n", alert, output
 
-    # wakeAgent=false is a silent signal, same as empty stdout.
+    # wakeAgent=false or a leading NO_WORK token is a silent signal, same as empty stdout.
     if not _parse_wake_gate(output):
-        logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
+        logger.info("Job '%s' (no_agent): wake gate not set — silent run", job_id)
         return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
 
     if not output.strip():
@@ -4402,7 +4404,7 @@ from cron.scheduler_script import (
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _parse_wake_gate,
+    _parse_wake_gate, _stdout_signals_no_work,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

@@ -39,6 +39,10 @@ class LiveSession:
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Held by the FIFO claim and by compress across its summarization (which runs outside
+    # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
+    # under a compression that is still preparing its replacement transcript.
+    claim_gate: asyncio.Lock = field(default_factory=asyncio.Lock)
     # admission id -> its started claim, from the moment the settlement worker starts the terminal
     # write until the completion frame is published. The write runs outside ``event_stream.lock``
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
@@ -638,7 +642,7 @@ class SessionAuthority:
 
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.
-        async with live.mutation_lock:
+        async with live.claim_gate, live.mutation_lock:
             pending = list_session_admissions(self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')

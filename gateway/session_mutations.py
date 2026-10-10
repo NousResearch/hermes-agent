@@ -5,6 +5,7 @@ transactions. Local reset prepares its replacement in the receipt transaction;
 branch/compress/model still require their own prepared runtime publication.
 """
 import asyncio
+from contextlib import nullcontext
 
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
@@ -80,14 +81,21 @@ async def _owned_mutation(authority, actor, ref, params):
         return await _mutate_session(authority, actor, ref, params)
     # Prepared policy/route publication is inseparable from its durable commit
     # for admission and claim: neither may observe a half-published policy.
-    async with live.mutation_lock:
-        result = await _mutate_session(authority, actor, ref, params)
+    if params.get('operation') == 'compress':
+        # The summarization (an LLM call) runs outside the session gate, so a submit or metadata
+        # edit is not parked behind it; the commit is revision/generation-fenced against anything
+        # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
+        async with live.claim_gate:
+            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
+    else:
+        async with live.mutation_lock:
+            result = await _mutate_session(authority, actor, ref, params)
     if params.get('operation') in {'model', 'compress', 'reset'}:
         authority._schedule(ref)
     return result
 
 
-async def _mutate_session(authority, actor, ref, params):
+async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
@@ -147,31 +155,32 @@ async def _mutate_session(authority, actor, ref, params):
                 # ``--preview`` is a read-only report and a guarded model target awaits the user's
                 # confirmation: no receipt, no publication, no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
-    if prepared is not None and 'snapshot' not in prepared:
-        # Exact retry: the durable receipt is the result. Never re-prepare (compress
-        # would summarize again); the runtime repairs below still run, because the
-        # first attempt may have committed and then failed before publishing them.
-        result = prepared
-    else:
-        # The receipt transaction is synchronous SQLite: run it off the event loop so a large
-        # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
-        result = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
-            principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
-            expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
-            operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
-            _authorize_write=authorize_write if cold_history or operation == 'import' else None)
-    # Post-commit projections are idempotent reads of the committed receipt, so exact
-    # retries repeat them (like delete's retirement); only the one-shot event is fenced.
-    current = authority.db.get_session(ref.session_id)
-    owns_projection = current is not None and (
-        current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
-    if operation not in {'model', 'reset', 'compress', 'rewind'} or owns_projection:
-        _project_committed(authority, ref, operation, result)
-    if live is not None:
-        if operation == 'rewind' and owns_projection:
-            authority.runner._evict_cached_agent(live.route)
-        if applied:
-            live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+    async with commit_lock or nullcontext():
+        if prepared is not None and 'snapshot' not in prepared:
+            # Exact retry: the durable receipt is the result. Never re-prepare (compress
+            # would summarize again); the runtime repairs below still run, because the
+            # first attempt may have committed and then failed before publishing them.
+            result = prepared
+        else:
+            # The receipt transaction is synchronous SQLite: run it off the event loop so a large
+            # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
+            result = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
+                principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
+                expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
+                operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
+                _authorize_write=authorize_write if cold_history or operation == 'import' else None)
+        # Post-commit projections are idempotent reads of the committed receipt, so exact
+        # retries repeat them (like delete's retirement); only the one-shot event is fenced.
+        current = authority.db.get_session(ref.session_id)
+        owns_projection = current is not None and (
+            current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
+        if operation not in {'model', 'reset', 'compress', 'rewind'} or owns_projection:
+            _project_committed(authority, ref, operation, result)
+        if live is not None:
+            if operation == 'rewind' and owns_projection:
+                authority.runner._evict_cached_agent(live.route)
+            if applied:
+                live.event_stream.publish(ref.session_id, result, event_type='session.updated')
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
         # retired-media owner check is a messages-table pass (exact retries repeat it too).

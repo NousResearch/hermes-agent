@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable
 
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+
 from agent import relay_runtime
 from agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
@@ -35,6 +37,12 @@ _RUNTIME_LOCK = threading.RLock()
 _ABORTED = {"failed": True, "turn_exit_reason": "system_aborted"}
 # The store latch allows one snapshot per 24h; re-reading it hourly keeps task starts cheap.
 _SNAPSHOT_RECHECK_NS = 3_600 * 1_000_000_000
+
+# A wedged native Relay call inside a metrics hook must never stall the path it
+# instruments: delegation returns a child's result only after these hooks, so an
+# unbounded call holds the parent's wait for its whole budget. Mirrors the
+# runtime's own _SCOPE_OP_TIMEOUT bound for lifecycle ops.
+_NATIVE_OP_TIMEOUT = 10.0
 
 
 def _text(event: dict[str, Any], key: str) -> str:
@@ -377,7 +385,26 @@ class _Runtime:
     def _run_in_task(
         self, task: _TaskRun, callback: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Any:
-        return task.context.copy().run(self._with_scope_stack, callback, *args, **kwargs)
+        context = task.context.copy()
+        invoke = lambda: context.run(self._with_scope_stack, callback, *args, **kwargs)  # noqa: E731
+        try:
+            future = relay_runtime._scope_op_executor().submit(invoke)
+        except RuntimeError:
+            # Interpreter shutdown: the executor refuses futures; still bounded so a
+            # wedged call cannot block exit (same fallback the runtime itself uses).
+            return relay_runtime._run_on_daemon_thread(
+                invoke,
+                name="hermes-shared-metrics-scope-op",
+                timeout=_NATIVE_OP_TIMEOUT,
+            )
+        try:
+            return future.result(timeout=_NATIVE_OP_TIMEOUT)
+        except FuturesTimeoutError as exc:
+            raise TimeoutError(
+                "Shared-metrics Relay scope op exceeded "
+                f"{_NATIVE_OP_TIMEOUT}s; abandoning the native call so the "
+                "instrumented path can continue — the span for this op is lost"
+            ) from exc
 
     def _with_scope_stack(self, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         self.relay.get_scope_stack()
@@ -689,7 +716,9 @@ class _Runtime:
         """Run under the task context when the call belongs to a task, else the session."""
         if task is not None:
             return self._run_in_task(task, callback, *args, **kwargs)
-        return self.host.run_in_session(session.relay_session, callback, *args, **kwargs)
+        return self.host.run_in_session(
+            session.relay_session, callback, *args, **kwargs, timeout=_NATIVE_OP_TIMEOUT
+        )
 
     def _schedule_flush_and_export(self, failure_message: str) -> None:
         """Schedule the process-wide Relay flush without blocking the finishing turn.

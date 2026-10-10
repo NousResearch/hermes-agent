@@ -3553,8 +3553,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             except Exception as exc:
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
                 return messages, 0
-            # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
-            # See #98450.
+            # Shared post-commit stamp site with in-place commit and micro-compaction sync (#98450).
             stamp_db_persisted_markers(pruned_msgs)
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         # Reclamation just ran: let a future lockout warn again.

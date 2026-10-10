@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_session_defaults import SESSION_DEFAULTS
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -56,17 +58,7 @@ DEFAULT_CONFIG = {
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
     # 0/null disables.
     "max_live_sessions": 16,
-    "session": {
-        # Per-terminal `hermes -c`: each CLI session writes a breadcrumb under
-        # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
-        # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
-        "terminal_continue": True,
-        # Optional sub-contexts inside one session.  When enabled, Hermes asks the main
-        # response to classify each turn, persists the label, and loads only the active
-        # topic on the next turn.  No auxiliary model call is made.  Off by default so
-        # existing sessions keep their historical all-message context unless opted in.
-        "topic_segmentation": {"enabled": False},
-    },
+    "session": SESSION_DEFAULTS,
     # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
     # text). "hermes-home" (default) keeps <profile home>/attachments — the dir
     # container backends bind-mount, so @file: refs resolve in the sandbox (#76577).

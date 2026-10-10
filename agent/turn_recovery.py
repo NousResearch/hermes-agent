@@ -441,12 +441,15 @@ def _refresh_credentials_after_401(
     return False
 
 
-def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
+def _is_codex_token_expired(agent: Any, api_error: Exception, classified: Any) -> bool:
     """401 ``token_expired`` from the Codex backend (#88510). It rejects a stale replayed
     ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
     in again" while a fresh session on the same bearer works. The caller treats it like
     ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
-    if getattr(api_error, "status_code", None) != 401:
+    # A provider-owned policy refusal must not be replayed as a stale-reasoning repair.
+    if (getattr(agent, "provider", None) == "openai-chatgpt"
+            or classified.reason == FailoverReason.provider_policy_blocked
+            or getattr(api_error, "status_code", None) != 401):
         return False
     reason = agent._extract_api_error_context(api_error).get("reason")
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
@@ -686,7 +689,7 @@ def recover_after_classification(
     # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
     # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
     # one extra round-trip and then takes the credential path below as before.
-    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(
+    if _is_codex_token_expired(agent, api_error, classified) and _recover_stale_codex_reasoning(
         agent, _retry, messages, api_messages
     ):
         return True, False

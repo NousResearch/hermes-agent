@@ -1563,6 +1563,11 @@ class _CodexCompletionsAdapter:
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         issuer_kind = resp_kwargs.pop("_issuer_kind", None)
         issuer_model = str(resp_kwargs.get("model") or model)
+        is_chatgpt = getattr(self._client, "_hermes_aux_effective_provider", "") == "openai-chatgpt"
+        if is_chatgpt:
+            from agent.chatgpt_responses import prepare_chatgpt_request, validate_chatgpt_base_url
+            validate_chatgpt_base_url(self._client.base_url)
+            resp_kwargs = prepare_chatgpt_request(resp_kwargs)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1571,6 +1576,10 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            if is_chatgpt:
+                from hermes_cli.auth_chatgpt import assert_active_access_token
+                assert_active_access_token(getattr(self._client, "api_key", ""),
+                                           credential_id=getattr(self._client, "_hermes_aux_credential_id", None))
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1581,10 +1590,13 @@ class _CodexCompletionsAdapter:
                 # Some Codex-compatible hosts accept ``stream=True`` but return a completed
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
+                    if is_chatgpt:
+                        raise RuntimeError("ChatGPT auxiliary Responses requires a response.completed stream event")
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=issuer_model, on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=guard.on_event,
+                        **({"require_completed": True} if is_chatgpt else {}),
                     )
             finally:
                 guard.release_stream(event_stream)
@@ -1602,6 +1614,9 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc
+            from agent.chatgpt_responses import recheck_chatgpt_auth_error
+            recheck_chatgpt_auth_error(exc, self._client, getattr(self._client, "_hermes_aux_credential_id", None),
+                                      enabled=is_chatgpt)
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
@@ -3332,11 +3347,15 @@ def _exc_http_status(exc: Exception) -> Any:
     return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
 
 
-def _is_transient_transport_error(exc: Exception) -> bool:
+def _is_transient_transport_error(exc: Exception, provider: str = "", *, model: str = "", base_url: str = "") -> bool:
     """One-off transport blip worth retrying on the SAME provider: connection/stream-close errors plus pure 5xx/408.
 
     Deliberately narrow: payment/auth/rate-limit errors switch provider, refresh creds, or rotate the pool.
     """
+    from agent.auxiliary_error_policy import provider_error_verdict
+    verdict = provider_error_verdict(exc, provider, model=model, base_url=base_url) if provider else None
+    if verdict is not None:
+        return verdict.retryable and verdict.reason.value in {"server_error", "timeout", "connection_error"}
     if _is_connection_error(exc):
         return True
     status = _exc_http_status(exc)
@@ -3361,7 +3380,7 @@ def _transient_retry_count() -> int:
 def _is_auth_error(exc: Exception) -> bool:
     """Auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
-    if status == 401:
+    if status == 401 or getattr(exc, "code", None) in {"chatgpt_token_rotated", "token_expired"}:
         return True
     err_lower = str(exc).lower()
     if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
@@ -3892,12 +3911,13 @@ _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
 }
 
 
-def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") -> bool:
+def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "", credential_id: str | None = None) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
-        return False
+        from agent.auxiliary_plugin_oauth import refresh_plugin_oauth_credentials
+        refresher = lambda: refresh_plugin_oauth_credentials(normalized, failed_api_key, credential_id)
     try:
         if not (refresher(failed_api_key) if normalized == "anthropic" else refresher()):
             return False
@@ -5248,30 +5268,6 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
-def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
-    """Registered profile's own client for an ``api_key`` aux route, or ``None``.
-
-    Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
-    and the ``external_process`` branch below: a profile whose wire protocol is not
-    OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
-    A profile that raises is logged and skipped — a third-party plugin can only fail to
-    provide a client, never take the auxiliary resolution down."""
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider)
-    except Exception:
-        return None
-    if profile is None:
-        return None
-    try:
-        return profile.create_client(**client_kwargs)
-    except Exception:
-        logger.warning("resolve_provider_client: provider profile %r failed to create an "
-                       "auxiliary client; falling back to the standard client path",
-                       provider, exc_info=True)
-        return None
-
-
 def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: Callable) -> _ResolveResult:
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
@@ -5307,6 +5303,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
     # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    from agent.auxiliary_client_registry import _api_key_profile_supplied_client
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
@@ -7771,13 +7768,17 @@ def _ladder_credential_rungs(
 ):
     """OAuth credential refresh + same-provider retry, then credential-pool rotation.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
+    from agent.auxiliary_error_policy import require_provider_recovery
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
+    effective_provider = _effective_provider_for_client(client, resolved_provider)
     auth_refresh_provider = _auth_refresh_provider_for_route(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})
+        from agent.auxiliary_error_policy import plugin_refresh_kwargs
+        refresh_kwargs.update(plugin_refresh_kwargs(client, auth_refresh_provider))
         if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                 # The stale client is cached under the route label (e.g. "auto"), not the
@@ -7796,6 +7797,7 @@ def _ladder_credential_rungs(
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
             # instead, since the provider-fallback rung only acts on ``_FALLBACK_REASONS``.
+    require_provider_recovery(first_err, effective_provider, model=route.final_model or route.resolved_model or "", base_url=route.base_info)
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
@@ -7812,6 +7814,7 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
+        require_provider_recovery(recovery_err, effective_provider, model=route.final_model or route.resolved_model or "", base_url=route.base_info)
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
@@ -7819,6 +7822,7 @@ def _ladder_credential_rungs(
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model))), None
             except Exception as retry2_err:
+                require_provider_recovery(retry2_err, effective_provider, model=route.final_model or route.resolved_model or "", base_url=route.base_info)
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
@@ -7961,6 +7965,9 @@ def _aux_recovery_ladder(
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    from agent.auxiliary_error_policy import require_provider_recovery
+    effective_provider = _effective_provider_for_client(client, resolved_provider)
+    require_provider_recovery(first_err, effective_provider, model=final_model or "", base_url=base_info)
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
@@ -7977,6 +7984,7 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
+    require_provider_recovery(first_err, effective_provider, fallback=True, model=final_model or "", base_url=base_info)
     resp = yield from _ladder_provider_fallback(first_err, route)
     if resp is not None:
         return resp
@@ -8136,18 +8144,6 @@ def _plan_aux_call(
     return req, retry_kwargs, candidate_kwargs
 
 
-def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -> bool:
-    """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
-    tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
-    to fallback."""
-    if not _is_transient_transport_error(exc):
-        return False
-    if _should_skip_same_provider_retry(task, exc):
-        logger.info("Auxiliary %s%s: timeout on the critical path; "
-                    "skipping same-provider retry and falling back: %s", task, tag, exc)
-        return False
-    return True
-
 
 def _ladder_step_call(
     step: _LadderStep, req: _PreparedAuxRequest, retry_kwargs: dict[str, Any], candidate_kwargs: dict[str, Any],
@@ -8188,6 +8184,7 @@ def _call_llm_impl(
     overrides task config; timeout=None reads auxiliary.{task}.timeout; extra_headers override
     client defaults. stream=True returns the raw SDK stream (caller consumes/falls back)
     instead of a validated response. RuntimeError if no provider is configured."""
+    from agent.auxiliary_error_policy import _should_retry_same_provider
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
         task, async_mode=False, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
@@ -8238,7 +8235,7 @@ def _call_llm_impl(
         try:
             return _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
-            if not _should_retry_same_provider(task, transient_err, ""):
+            if not _should_retry_same_provider(task, transient_err, "", request_provider, model=req.final_model or "", base_url=req.base_info):
                 raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
@@ -8251,7 +8248,7 @@ def _call_llm_impl(
                 try:
                     return _primary()
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if not _is_transient_transport_error(retry_transient, request_provider, model=req.final_model or "", base_url=req.base_info):
                         raise
                     _last_transient = retry_transient
             raise _last_transient
@@ -8370,6 +8367,7 @@ async def _async_call_llm_impl(
 ) -> Any:
     """Centralized asynchronous LLM call; see call_llm() for full documentation.
     No per-request header / api_mode override on the async entry point."""
+    from agent.auxiliary_error_policy import _should_retry_same_provider
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
         task, async_mode=True, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
@@ -8396,7 +8394,7 @@ async def _async_call_llm_impl(
             return await _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
-            if not _should_retry_same_provider(task, transient_err, " (async)"):
+            if not _should_retry_same_provider(task, transient_err, " (async)", request_provider, model=req.final_model or "", base_url=req.base_info):
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)

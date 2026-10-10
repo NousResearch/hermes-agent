@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
+from hermes_cli import models_pricing
+
 if TYPE_CHECKING:
     from typing import TypeGuard
 
@@ -201,16 +203,6 @@ _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 # ---------------------------------------------------------------------------
 
 
-def _zero_priced(pricing: Any, keys: tuple[str, str], default: str) -> bool:
-    """True when both pricing fields parse to 0 (missing fields read as ``default``)."""
-    if not isinstance(pricing, dict):
-        return False
-    try:
-        return all(float(pricing.get(k, default)) == 0 for k in keys)
-    except (TypeError, ValueError):
-        return False
-
-
 def _is_subscription_billed(entry: Any) -> bool:
     """The gateway bills this catalog row to a subscription the account holds, not to credits."""
     return isinstance(entry, dict) and entry.get("billing_mode") == "subscription"
@@ -220,7 +212,7 @@ def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
     """Return True if *model_id* costs no credits: zero-cost prompt AND completion pricing, or a row
     the gateway bills to a subscription."""
     entry = pricing.get(model_id)
-    return bool(entry) and (_is_subscription_billed(entry) or _zero_priced(entry, ("prompt", "completion"), "1"))
+    return bool(entry) and (_is_subscription_billed(entry) or models_pricing._zero_priced(entry, ("prompt", "completion"), "1"))
 
 
 def partition_nous_models_by_tier(
@@ -587,7 +579,7 @@ def get_default_model_for_provider(provider: str) -> str:
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
-    return _zero_priced(pricing, ("prompt", "completion"), "0")
+    return models_pricing._zero_priced(pricing, ("prompt", "completion"), "0")
 
 
 def _openrouter_model_supports_tools(item: Any) -> bool:
@@ -741,7 +733,7 @@ def get_curated_nous_model_ids() -> list[str]:
 
 
 def _ai_gateway_model_is_free(pricing: Any) -> bool:
-    return _zero_priced(pricing, ("input", "output"), "0")
+    return models_pricing._zero_priced(pricing, ("input", "output"), "0")
 
 
 def fetch_ai_gateway_models(
@@ -1653,7 +1645,7 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
-    """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
+    """Generic live fetch for a registered API-key, pooled OAuth, or process provider.
 
     Live results are merged with the curated list so models the live endpoint omits still appear:
     curated-first by default so the newest curated models lead when the live API lags;
@@ -1668,8 +1660,6 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     # external_process providers (ACP agent CLIs) have no api_key/base_url credentials: the
     # profile's fetch_models drives its own subprocess (kwargs are ignored per the base contract).
-    # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
-    # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
         try:
             live = profile.fetch_models()
@@ -1679,6 +1669,13 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
         # `hermes model` offer one list: live ids plus any pinned id the probe omitted.
         return merge_profile_catalog(normalized, profile, list(live) if live else None)
+    if profile.auth_type in {"oauth_external", "oauth_device_code"}:
+        from agent.credential_pool import load_pool
+        entry = load_pool(normalized).select()
+        return probe_profile_catalog(
+            normalized, profile, entry.runtime_api_key if entry else None,
+            (entry.runtime_base_url if entry else "") or profile.base_url or None,
+        )
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)

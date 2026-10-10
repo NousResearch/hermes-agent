@@ -565,6 +565,8 @@ def _print_oauth_heal_notices() -> None:
 
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if dispatch_plugin_auth("remove", args, provider):
+        return
     target = getattr(args, "target", None)
     target = getattr(args, "index", None) if target is None else target
     pool = load_pool(provider)

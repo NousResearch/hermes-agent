@@ -17,6 +17,16 @@ from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
 
 
+def _zero_priced(pricing: Any, keys: tuple[str, str], default: str) -> bool:
+    """True when both pricing fields parse to 0 (missing fields read as ``default``)."""
+    if not isinstance(pricing, dict):
+        return False
+    try:
+        return all(float(pricing.get(k, default)) == 0 for k in keys)
+    except (TypeError, ValueError):
+        return False
+
+
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
 # (profile key, provider) → endpoint cache key last fetched, so cached_only reads find the right entry.

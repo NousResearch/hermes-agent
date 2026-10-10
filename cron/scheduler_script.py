@@ -480,6 +480,14 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        for key in _CRON_SCRIPT_ENV_KEYS:
+            env.pop(key, None)
+        cron_env = _CRON_SCRIPT_ENV_CONTEXT.get()
+        if cron_env:
+            for key in _CRON_SCRIPT_ENV_KEYS:
+                value = cron_env.get(key)
+                if value is not None:
+                    env[key] = str(value)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -550,6 +558,41 @@ def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.
     return thread
 
 
+def _cron_script_env(job: dict) -> dict[str, str]:
+    """Forward ``job['last_dispatch']`` or return ``{}`` when it is not provenance."""
+    dispatch = job.get("last_dispatch")
+    if not isinstance(dispatch, dict):
+        return {}
+    scheduled_at = dispatch.get("scheduled_at")
+    dispatched_at = dispatch.get("dispatched_at")
+    if not scheduled_at or not dispatched_at:
+        return {}
+    env = {
+        "HERMES_CRON_JOB_ID": str(job.get("id") or ""),
+        "HERMES_CRON_SCHEDULED_AT": str(scheduled_at),
+        "HERMES_CRON_STARTED_AT": str(dispatched_at),
+    }
+    lateness = dispatch.get("lateness_seconds")
+    if lateness is not None:
+        env["HERMES_CRON_LATENESS_SECONDS"] = str(lateness)
+    kind = dispatch.get("kind")
+    if kind:
+        env["HERMES_CRON_DISPATCH_KIND"] = str(kind)
+    return env
+
+
+_CRON_SCRIPT_ENV_KEYS = (
+    "HERMES_CRON_JOB_ID",
+    "HERMES_CRON_SCHEDULED_AT",
+    "HERMES_CRON_STARTED_AT",
+    "HERMES_CRON_LATENESS_SECONDS",
+    "HERMES_CRON_DISPATCH_KIND",
+)
+_CRON_SCRIPT_ENV_CONTEXT: contextvars.ContextVar[Optional[dict[str, str]]] = (
+    contextvars.ContextVar("cron_script_env", default=None)
+)
+
+
 def _run_job_script_with_claim_heartbeat(
     job: dict, script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
@@ -559,8 +602,12 @@ def _run_job_script_with_claim_heartbeat(
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
     def run() -> tuple[bool, str]:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
-                               interpreter=job.get("interpreter"))
+        token = _CRON_SCRIPT_ENV_CONTEXT.set(_cron_script_env(job) or None)
+        try:
+            return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                                   interpreter=job.get("interpreter"))
+        finally:
+            _CRON_SCRIPT_ENV_CONTEXT.reset(token)
 
     schedule = job.get("schedule")
     claim = job.get("run_claim")

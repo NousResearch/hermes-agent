@@ -198,6 +198,8 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # The agent drives this server, whatever entry point launched Hermes: agent/estop.py refuses it.
+    env["HERMES_AGENT"] = os.environ.get("HERMES_AGENT") or "true"
     if user_env:
         env.update(user_env)
     from agent.delegation_context import delegated_child_subprocess_env

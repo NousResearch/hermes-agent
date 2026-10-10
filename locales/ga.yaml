@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (cúis: {reason})"
     already_paused: "⏸️ Tá Hermes ar sos cheana féin{suffix}. Úsáid `/pause off` chun atosú."
     paused: "⏸️ Ar sos{suffix}. Tá obair nua cron/kanban/gateway ar fionraí; críochnaíonn obair atá ar siúl mar is gnách. Úsáid `/pause off` chun atosú."
+    refused: "🚫 Ní féidir an stad éigeandála a athrú as seo. Is féidir le hoibreoir `hermes {command}` a rith i dteirminéal ar óstach Hermes."
   queue:
     usage: "Úsáid: /queue <leid>"
     queued: "Curtha i scuaine don chéad seal eile."

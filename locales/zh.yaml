@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " （原因：{reason}）"
     already_paused: "⏸️ Hermes 已处于暂停状态{suffix}。用 `/pause off` 恢复。"
     paused: "⏸️ 已暂停{suffix}。新的定时任务/看板/网关任务将被搁置；进行中的任务正常完成。用 `/pause off` 恢复。"
+    refused: "🚫 无法从这里更改紧急停止。操作员可以在 Hermes 主机的终端中运行 `hermes {command}`。"
   queue:
     usage: "用法：/queue <提示词>"
     queued: "已排队至下一回合。"

@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " (이유: {reason})"
     already_paused: "⏸️ Hermes는 이미 일시 중지되어 있어요{suffix}. 재개하려면 `/pause off`를 사용하세요."
     paused: "⏸️ 일시 중지됨{suffix}. 새 크론/칸반/게이트웨이 작업은 보류되고, 진행 중인 작업은 정상적으로 끝나요. 재개하려면 `/pause off`를 사용하세요."
+    refused: "🚫 여기서는 긴급 정지를 변경할 수 없습니다. 운영자가 Hermes 호스트의 터미널에서 `hermes {command}`를 실행할 수 있습니다."
   queue:
     usage: "사용법: /queue <prompt>"
     queued: "다음 턴 대기열에 추가했어요."

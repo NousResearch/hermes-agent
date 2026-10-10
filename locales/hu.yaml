@@ -753,6 +753,7 @@ gateway:
     reason_suffix: " (ok: {reason})"
     already_paused: "⏸️ A Hermes már szünetel{suffix}. Folytatás: `/pause off`."
     paused: "⏸️ Szüneteltetve{suffix}. Az új cron-/kanban-/átjárómunka várakozik; a folyamatban lévő munka rendesen befejeződik. Folytatás: `/pause off`."
+    refused: "🚫 A vészleállítás innen nem módosítható. Egy üzemeltető futtathatja a `hermes {command}` parancsot egy terminálban a Hermes gazdagépen."
   queue:
     usage: "Használat: /queue <prompt>"
     queued: "Sorba állítva a következő körre."

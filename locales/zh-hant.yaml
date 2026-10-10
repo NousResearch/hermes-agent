@@ -743,6 +743,7 @@ gateway:
     reason_suffix: " （原因：{reason}）"
     already_paused: "⏸️ Hermes 已處於暫停狀態{suffix}。使用 `/pause off` 恢復。"
     paused: "⏸️ 已暫停{suffix}。新的排程／kanban／閘道工作將暫緩；進行中的工作會正常完成。使用 `/pause off` 恢復。"
+    refused: "🚫 無法從這裡變更緊急停止。操作員可以在 Hermes 主機的終端機中執行 `hermes {command}`。"
   queue:
     usage: "用法：/queue <prompt>"
     queued: "已排入下一輪佇列。"

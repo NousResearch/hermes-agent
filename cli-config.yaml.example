@@ -567,6 +567,10 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+#   # `/pause` and `/pause off` from people in chat engage and lift the
+#   # global emergency stop. Set false to accept it only from `hermes pause` /
+#   # `hermes resume` in a terminal. Agents are refused either way.
+#   estop_chat_control: true
 
 # =============================================================================
 # LSP Diagnostics (post-write lint for write_file / patch)

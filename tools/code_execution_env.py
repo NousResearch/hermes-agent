@@ -121,6 +121,8 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Agent-started by definition, whatever entry point launched Hermes: agent/estop.py refuses it.
+    child_env["HERMES_AGENT"] = os.environ.get("HERMES_AGENT") or "true"
     # Force UTF-8 stdio and default file encoding: on Windows sys.stdout is bound to the console
     # code page (cp1252) and print("→") raises; harmless under a C/POSIX locale (containers).
     child_env["PYTHONIOENCODING"] = "utf-8"

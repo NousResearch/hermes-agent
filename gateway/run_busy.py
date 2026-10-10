@@ -994,15 +994,32 @@ class GatewayBusySessionMixin:
         lets slash commands through while paused so messaging-only operators are never locked out)."""
         from agent import estop
         args = (event.get_command_args() or "").strip()
-        if args.lower() in {"off", "resume", "stop", "disengage"}:
-            if estop.disengage():
-                return t("gateway.pause.resumed")
-            return t("gateway.pause.not_paused")
+        lift = args.lower() in {"off", "resume", "stop", "disengage"}
+        # Only a person may stop or restart the fleet from chat: never an internal event, a bot or a
+        # webhook payload (agent/estop.py refuses agents everywhere else). A refusal is the reply,
+        # never an exception escaping the command handler.
+        refused = t("gateway.pause.refused", command="resume" if lift else "pause")
+        from tools.approval_context import _UNATTENDED_APPROVAL_PLATFORMS
+        platform = getattr(getattr(event.source, "platform", None), "value", None)
+        automated = ("an internal event" if event.internal else "a bot" if getattr(event.source, "is_bot", False)
+                     else f"the {platform} platform" if platform in _UNATTENDED_APPROVAL_PLATFORMS else None)
+        if automated:
+            logger.warning("ESTOP /pause refused: sent by %s", automated)
+            return refused
+        if lift:
+            try:
+                lifted = estop.disengage(from_chat=True)
+            except estop.EstopRefused:
+                return refused
+            return t("gateway.pause.resumed") if lifted else t("gateway.pause.not_paused")
         state = estop.get_state()
         if state is not None and not args:
             suffix = t("gateway.pause.reason_suffix", reason=state.get("reason")) if state.get("reason") else ""
             return t("gateway.pause.already_paused", suffix=suffix)
-        estop.engage(reason=args or None)
+        try:
+            estop.engage(reason=args or None, from_chat=True)
+        except estop.EstopRefused:
+            return refused
         suffix = t("gateway.pause.reason_suffix", reason=args) if args else ""
         return t("gateway.pause.paused", suffix=suffix)
 

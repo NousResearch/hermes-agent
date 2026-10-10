@@ -2832,7 +2832,7 @@ discord:
 
 ## Security
 
-Secret redaction and the website blocklist:
+Secret redaction, the website blocklist and chat control of the emergency stop:
 
 ```yaml
 security:
@@ -2841,9 +2841,11 @@ security:
     enabled: false
     domains: []
     shared_files: []
+  estop_chat_control: true       # /pause and /pause off from people in chat (on by default)
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `estop_chat_control` — when `true` (default), a person the gateway admits can engage and lift the global emergency stop with `/pause` and `/pause off` (bots, internal events, webhooks and the API server never can). Set `false` to accept the stop only from `hermes pause`/`hermes resume` in a terminal; a `false` in the root config also binds every profile. Agents are refused either way; see [Emergency stop](security.md#emergency-stop).
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 

@@ -107,3 +107,37 @@ def test_model_override_fast_path_clears_stale_notice():
         model, runtime = runner._resolve_session_agent_runtime(session_key="test-session-key")
     assert (model, runtime["provider"]) == ("claude-sonnet-5", "anthropic")
     assert runner._pre_agent_fallback_notice is None
+
+
+def test_unresolvable_channel_override_provider_does_not_abort_the_turn():
+    """A static `channel_overrides` provider that cannot be resolved must run this turn on the default
+    route with the one-shot notice, not return the pre-agent auth-failure envelope with api_calls=0
+    (#123509 — the session /model block's contract, applied to the static override path)."""
+    from gateway.config import ChannelOverride
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = _runner_with_real_runtime_resolution()
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
+        message="hi", history=[], session_id="sid", session_key="test-session-key", user_config={},
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+    default_runtime = {"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "k", "base_url": "u"}
+
+    with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
+         patch("gateway.run._resolve_runtime_agent_kwargs", return_value=dict(default_runtime)), \
+         patch("gateway.run._resolve_runtime_agent_kwargs_for_provider",
+               side_effect=AuthError("codex_rate_limited: credentials are still valid")), \
+         patch("gateway.run._get_channel_override",
+               return_value=ChannelOverride(model="gpt-6-luna-900k", provider="openai-codex")):
+        result = TurnRunner(runner, ctx).run_sync()
+
+    # RED before the fix: the resolver raised, so run_sync returned the ⚠️ auth-failure envelope
+    # (api_calls=0) and no agent was ever built.
+    assert result["final_response"] == "ok"
+    agent = ctx.agent_holder[0]
+    assert _RecordingAgent.built_kwargs["model"] == "claude-sonnet-5"
+    notice = agent._pending_fallback_notice
+    assert "openai-codex/gpt-6-luna-900k" in notice and "anthropic/claude-sonnet-5" in notice
+    assert "openai-codex" not in str(_RecordingAgent.built_kwargs.get("provider"))

@@ -870,6 +870,7 @@ gateway:
     already_paused: "⏸️ Hermes est déjà en pause{suffix}. Utilisez `/pause off` pour reprendre."
     paused: "⏸️ En pause{suffix}. Le nouveau travail cron/kanban/gateway est suspendu ; le travail en cours se termine normalement. Utilisez `/pause off` pour reprendre."
   queue:
+    full: "La file d’attente est pleine. Ce message n’a pas été mis en file. Attendez qu’un tour en file se termine, puis renvoyez-le."
     usage: "Usage : /queue <prompt>"
     queued: "Mis en file pour le prochain tour."
     queued_depth: " ({depth} en file)"

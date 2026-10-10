@@ -279,9 +279,12 @@ def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT
     For inline call sites (e.g. a ``[Name]`` turn prefix) where JSON-quoting would visibly change
     rendering. Embedded newlines are the injection vector (a display name masquerading as a new
     markdown section); collapsing them keeps a normal value byte-identical, a hostile one inert.
+    Bracket characters are stripped for the same delimiter-class reason (#127053): the call sites
+    wrap the value in ``[...]`` (or sit beside trusted bracketed spans), so a name holding ``]``
+    could close that structure early or forge bracketed sections of its own.
     """
     text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
-    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text)
+    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text if ch not in "[]")
     text = " ".join(text.split())
     if max_chars and len(text) > max_chars:
         text = text[: max_chars - 3] + "..."

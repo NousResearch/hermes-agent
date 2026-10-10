@@ -278,6 +278,14 @@ def cleanup_all_environments():
 
     # Also clean any orphaned directories
     for path in _scratch_paths():
+        # hermes-overlays is not orphaned scratch: it holds the persistent-filesystem
+        # state SingularityEnvironment.cleanup() deliberately survives and registers in
+        # the cross-process snapshot store ($HERMES_HOME/singularity_snapshots.json). The
+        # hermes-* glob matches it by name, and this sweep runs at every process exit —
+        # rmtree here would wipe another running process's overlay (gateway/cron/CLI
+        # share the same scratch root, e.g. /scratch/$USER/hermes-agent on HPC).
+        if Path(path).name == "hermes-overlays":
+            continue
         with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)

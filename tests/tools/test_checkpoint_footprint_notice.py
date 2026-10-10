@@ -29,8 +29,13 @@ def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     _write_config(enabled=True, cap_mb=1)
     assert CheckpointManager(enabled=True, max_total_size_mb=1).ensure_checkpoint(str(work), "seed")
 
+    def unexpected_git(*args, **kwargs):
+        raise AssertionError("A storage notice must not inspect commit history")
+
+    monkeypatch.setattr("tools.checkpoint_maintenance._run_git", unexpected_git)
     notice = checkpoint_footprint_notice()
     assert notice
+    assert "1 project(s)" in notice
 
     _write_config(enabled=True, cap_mb=500)  # under the cap: no nag for a healthy store
     assert checkpoint_footprint_notice() is None

@@ -1147,6 +1147,14 @@ export const esOverrides = {
       themeDesc: 'Paletas solo para escritorio. Se aplican sobre el modo seleccionado.',
       themeSearchPlaceholder: 'Busca en tus temas o en el VS Code Marketplace…',
       themeProfileNote: profile => `Guardado para el perfil ${profile}; cada perfil conserva su propio tema.`,
+      themeSharedNote: 'Compartido entre todos los perfiles y gateways: elígelo una vez y te acompaña en todas partes.',
+      themeScopeTitle: 'Alcance del tema',
+      themeScopePerProfile: 'Por perfil',
+      themeScopeShared: 'Compartido',
+      themeScopePerProfileDesc:
+        'Cada perfil y gateway recuerda su propio tema y modo claro/oscuro, así que cambiar de perfil cambia el aspecto.',
+      themeScopeSharedDesc:
+        'Un solo tema y modo claro/oscuro para toda la app, en todos los perfiles y gateways. El resto de Apariencia ya es compartido.',
       installTitle: 'Instalar desde VS Code',
       installDesc:
         'Pega un ID de extensión de Marketplace (por ejemplo, dracula-theme.theme-dracula) para convertir su tema de color en una paleta de escritorio.',

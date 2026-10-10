@@ -680,6 +680,14 @@ export const ruOverrides = {
       themeTitle: 'Тема',
       themeDesc: 'Только палитры для приложения. Выбранный режим применяется поверх.',
       themeProfileNote: profile => `Сохранено для профиля ${profile} — у каждого профиля своя тема.`,
+      themeSharedNote: 'Общая для всех профилей и шлюзов — выберите один раз, и она будет везде.',
+      themeScopeTitle: 'Область темы',
+      themeScopePerProfile: 'Для профиля',
+      themeScopeShared: 'Общая',
+      themeScopePerProfileDesc:
+        'Каждый профиль и шлюз запоминает свою тему и светлый/тёмный режим, поэтому смена профиля меняет внешний вид.',
+      themeScopeSharedDesc:
+        'Одна тема и светлый/тёмный режим для всего приложения, на каждом профиле и шлюзе. Остальные настройки оформления и так общие.',
       installTitle: 'Установить из VS Code',
       installDesc:
         'Вставьте id расширения с Marketplace (напр. dracula-theme.theme-dracula), чтобы преобразовать его цветовую тему в палитру приложения.',

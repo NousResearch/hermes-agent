@@ -299,6 +299,24 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
   )
 }
 
+function shouldPreserveConfiguredOnNotReady(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // A background (never explicitly requested) readiness round may never
+  // downgrade a previously verified configured state when the probes answered
+  // CONFIDENTLY and in AGREEMENT that nothing is configured. After a renderer
+  // force reload the round can run against the local/pooled backend instead of
+  // the configured remote one (#123339): a genuinely wrong backend has no
+  // configured record, so its checks agree on "unconfigured" — which the
+  // renderer cannot tell apart from a genuinely empty backend. When the checks
+  // instead DISAGREE (setup.status still reports configured credentials while
+  // runtime resolution fails) or the round lands inside the boot hydration
+  // window, the other preserve guards own the verdict and the disagreement
+  // stays visible. Genuine credential loss still surfaces through explicit
+  // request paths (submit-time gate, status/session error events, manual
+  // open), which set requested=true and keep downgrading.
+  return runtime.source === 'runtime_check' && !runtime.ready && !runtime.checksDisagree &&
+    state.configured === true && !state.requested
+}
+
 function notifyReady(provider: string) {
   notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
 }
@@ -805,6 +823,24 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
           'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
       })
     }
+
+    return false
+  }
+
+  if (shouldPreserveConfiguredOnNotReady(runtime, state)) {
+    // The probes answered, but their confident "unconfigured" agreement may
+    // name the wrong backend: after a renderer force reload the round can run
+    // against the local/pooled backend instead of the configured remote one
+    // (#123339). Don't downgrade the verified state on it. Surface a
+    // non-blocking notification with a stable id so repeated calls dedup
+    // instead of stacking toasts.
+    notify({
+      id: 'runtime-not-ready',
+      kind: 'info',
+      title: 'Runtime not ready',
+      message:
+        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+    })
 
     return false
   }

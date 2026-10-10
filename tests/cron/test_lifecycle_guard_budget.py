@@ -125,6 +125,28 @@ def test_cumulative_text_budget_bounds_recursive_scan(monkeypatch, tmp_path):
     assert guard("bash a.sh;bash b.sh", cwd=cwd) is True
 
 
+def test_referenced_read_is_capped_at_remaining_budget(monkeypatch, tmp_path):
+    """A file bigger than what the walk can still afford is never read whole:
+    the read helper receives the remaining budget as its cap."""
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 64)
+    (tmp_path / "big.sh").write_text("echo " + "x" * 200 + "\n", encoding="utf-8")
+
+    caps: list = []
+    original = lifecycle_guard._read_referenced_script
+
+    def spy(path, *, max_bytes=None, allow_nul_free_magic_text=False):
+        caps.append(max_bytes)
+        return original(
+            path,
+            max_bytes=max_bytes,
+            allow_nul_free_magic_text=allow_nul_free_magic_text,
+        )
+
+    monkeypatch.setattr(lifecycle_guard, "_read_referenced_script", spy)
+
+    root = "bash big.sh"
+    assert guard(root, cwd=str(tmp_path)) is True
+    assert caps == [64 - len(root)]
 
 
 def test_remote_script_sanitizer_honours_remaining_budget():

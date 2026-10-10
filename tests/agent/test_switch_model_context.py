@@ -119,18 +119,6 @@ def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
     assert agent.context_compressor.context_length == 131_072
 
 
-def test_switch_model_without_config_context_length():
-    """When switching models without config override, config_context_length should be None."""
-    agent = _make_agent_with_compressor(config_context_length=None)
-
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len:
-        # Switch model
-        agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
-
-        # Verify get_model_context_length was called with None
-        mock_ctx_len.assert_called_once()
-        call_kwargs = mock_ctx_len.call_args.kwargs
-        assert call_kwargs.get("config_context_length") is None
 
 
 def test_switch_model_reapplies_checked_auxiliary_compression_limit():

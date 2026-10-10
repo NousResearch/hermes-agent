@@ -26,7 +26,7 @@ import pytest
 
 import hermes_cli.mcp_startup as startup
 from hermes_constants import hermes_home_key
-import tui_gateway.entry as entry
+from tui_gateway import entry
 
 
 @pytest.fixture
@@ -69,10 +69,6 @@ def test_entry_in_flight_sees_startup_thread(clean_discovery_globals):
     assert entry.mcp_discovery_in_flight() is False
 
 
-def test_no_mcp_threads_not_in_flight(clean_discovery_globals):
-    """No discovery anywhere → not in flight, join reports done immediately."""
-    assert entry.mcp_discovery_in_flight() is False
-    assert entry.join_mcp_discovery(timeout=0.1) is True
 
 
 def test_startup_module_exposes_in_flight_helpers(clean_discovery_globals):

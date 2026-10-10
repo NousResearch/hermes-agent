@@ -216,7 +216,7 @@ def vercel_sdk(monkeypatch):
 @pytest.fixture()
 def vercel_module(vercel_sdk, monkeypatch):
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
     monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
@@ -524,6 +524,25 @@ class TestExecute:
         assert kwargs["cwd"] == "/vercel/sandbox"
 
 
+    def test_payload_stdin_is_staged_byte_exact_not_in_argv(self, make_env):
+        env = make_env()
+        sandbox = env._sandbox
+        raw = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        writes_before = len(sandbox.write_files_calls)
+
+        handle = env._run_bash("cat > /tmp/out", stdin_data=raw.decode("utf-8", "surrogateescape"))
+
+        assert handle.wait(timeout=2) == 0
+        (staged,) = sandbox.write_files_calls[writes_before]
+        assert staged["content"] == raw
+        assert staged["mode"] == 0o600
+        cmd, args, _ = sandbox.run_command_calls[-1]
+        assert cmd == "bash" and args[0] == "-c"
+        assert args[1].startswith(f"exec 0< {staged['path']} || exit $?\n")
+        assert args[1].endswith("\ncat > /tmp/out")
+        assert "AAAAAAAAAAAAAAAA" not in " ".join(args)
+
+
 class TestSnapshotPersistence:
     def test_create_restores_from_saved_snapshot(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
@@ -626,3 +645,27 @@ class TestCleanup:
 
         assert len(sandbox.snapshot_calls) == 1
         assert sandbox.closed == 1
+
+
+class TestImageSelection:
+    def test_image_by_default_runtime_only_when_pinned_and_neither_on_restore(
+        self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
+    ):
+        """Vercel deprecated runtimes and rejects runtime+image together and runtime with a snapshot
+        source, so: fresh sandbox -> image only; legacy runtime pin -> runtime only; restore -> neither."""
+        from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
+
+        make_env(runtime=None)
+        make_env(runtime=None, image="vercel/sandbox/python:3.14")
+        make_env(runtime="node22", image="vercel/sandbox/python:3.14")
+        fresh, custom, pinned = vercel_sdk.create_kwargs[-3:]
+        assert (fresh["image"], fresh["runtime"]) == (DEFAULT_VERCEL_IMAGE, None)
+        assert (custom["image"], custom["runtime"]) == ("vercel/sandbox/python:3.14", None)
+        assert (pinned["image"], pinned["runtime"]) == (None, "node22")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        vercel_module._store_snapshot("task-123", "snap_saved")
+        make_env(runtime="node22")
+        restore = vercel_sdk.create_kwargs[-1]
+        assert restore["source"]["snapshot_id"] == "snap_saved"
+        assert "runtime" not in restore and "image" not in restore

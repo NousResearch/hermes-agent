@@ -18,6 +18,28 @@ import {
 
 import { useComposerSurfaceId } from './composer/scope'
 
+// Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`.
+const cssEscape = (value: string): string => {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+
+  return value.replace(/[^a-zA-Z0-9_:-]/g, ch => `\\${ch}`)
+}
+
+// The pending-approval stack renders once per pane, tagged with the owning
+// session so a split view can't jump one pane's arrow into a sibling's
+// approval. `nearest` keeps this a minimal scroll within the transcript's own
+// scroll container instead of an unqualified scrollIntoView, which would also
+// nudge any overflow-hidden ancestor's programmatic scroll offset.
+function findSessionApprovalStack(sessionId: string | null): HTMLElement | null {
+  if (!sessionId) {
+    return null
+  }
+
+  return document.querySelector<HTMLElement>(`[data-approval-stack][data-session-id="${cssEscape(sessionId)}"]`)
+}
+
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
  * clearing the out-of-flow status stack via the same measured-height CSS vars
@@ -27,8 +49,10 @@ import { useComposerSurfaceId } from './composer/scope'
  * away from the bottom, with an animated count of messages below the viewport.
  * Clicking re-arms sticky-bottom and pins the viewport.
  *
- * While approvals are pending, relabel this control to lead back to the
- * transcript-owned stack using the existing scroll path.
+ * While an approval is pending, relabel this control and, instead of jumping
+ * to the transcript's true bottom (which can overshoot a mid-transcript
+ * approval once newer content lands below it), scroll directly to the
+ * session's own approval stack.
  *
  * Enter/exit motion lives in styles.css under `.thread-jump-button` — a
  * directional scale (contract in from 1.1, contract out to 0.9) keyed off
@@ -86,6 +110,15 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       data-state={state}
       onClick={() => {
         triggerHaptic('selection')
+
+        const approvalStack = visibleApproval ? findSessionApprovalStack(request?.sessionId ?? null) : null
+
+        if (approvalStack) {
+          approvalStack.scrollIntoView({ block: 'nearest' })
+
+          return
+        }
+
         requestScrollToBottom(scrollSessionId)
       }}
       style={{

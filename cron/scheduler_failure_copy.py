@@ -19,7 +19,7 @@ def cron_output_dir_display(job_id: str) -> str:
     return f"{display_hermes_home()}/cron/output/{job_id}/"
 
 
-_HTTP_STATUS_IN_TEXT = re.compile(r"(?:\bHTTP\b|\bError code\b|\bstatus(?: code)?\b)\W{0,3}(\b[45]\d\d\b)", re.I)
+_HTTP_STATUS_IN_TEXT = re.compile(r"(?:\bHTTP\b|\bError code\b|\bstatus(?: code)?\b)\W{0,3}(\b[45]\d\d\b)", re.IGNORECASE)
 _LEADING_EXC_TYPE = re.compile(r"^(?:[\w.]+\.)?([A-Z]\w*(?:Error|Timeout|Exception))\s*:")
 
 
@@ -77,6 +77,10 @@ _PROVIDER_FAILURE_ACTION["payload_too_large"] = _PROVIDER_FAILURE_ACTION["contex
 _PROVIDER_FAILURE_ACTION["content_policy_blocked"] = (
     "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another "
     "model with `hermes cron edit {job_id} --model <name>`."
+)
+_PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
+    "Retrying won't help: check the account's status and data/privacy settings with the provider, "
+    "or pin another model with `hermes cron edit {job_id} --model <name>`."
 )
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 

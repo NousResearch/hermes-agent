@@ -3,11 +3,11 @@
 //
 // Usage:
 //   node scripts/stage-native-deps.mjs                # host platform/arch
-//   node scripts/stage-native-deps.mjs win32 arm64     # explicit target
+//   node scripts/stage-native-deps.mjs --platform win32 --arch arm64
+//   node scripts/stage-native-deps.mjs --source REPO --out NATIVE_NODE_MODULES
 //
-// Also exported as `stageNodePty({ platform, arch })` for use from
-// before-pack.mjs, where electron-builder gives you the real per-target
-// platform/arch during multi-arch builds.
+// Preparation owns acquisition and helper compilation. beforePack only copies
+// the admitted per-target tree.
 
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -21,11 +21,17 @@ import {
   readdirSync,
   readFileSync,
   rmdirSync,
+  rmSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
+import { recordNativeInputs } from './prepared-native-deps.mjs'
+import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
+import { buildHudModifierMonitor, hudModifierBinaryRelativePath } from './build-hud-modifier-monitor.mjs'
+import { parseArgs } from 'node:util'
+import { productOutput, withProduct, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
@@ -121,9 +127,9 @@ function patchUnixTerminalAsarPaths(destRoot) {
  * Locate node-pty's package root via real module resolution, so this
  * works whether it's hoisted to a workspace root or local to this app.
  */
-function resolveNodePtyRoot() {
+function resolveNodePtyRoot(appRoot = projectRoot) {
   const pkgJsonPath = require.resolve('node-pty/package.json', {
-    paths: [projectRoot]
+    paths: [appRoot]
   })
   return dirname(pkgJsonPath)
 }
@@ -301,7 +307,7 @@ function validateStagedBinaries(destRoot, targetPlatform) {
  *      modules; build on the target platform or provide a prebuild).
  * 4. Validate every staged `.node` file's binary platform matches the target.
  */
-export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
+export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch, appRoot = projectRoot } = {}) {
   const hostMatch = platform === process.platform && arch === process.arch
 
   removeDirSync(destRoot)
@@ -378,7 +384,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
         `running electron-rebuild (target arch: ${arch})...`
     )
     const rebuildArgs = [
-      '../../node_modules/.bin/electron-rebuild',
+      join(dirname(workspaceTool(resolve(appRoot, '../..'), 'apps/desktop', '@electron/rebuild')), 'cli.js'),
       '-f',
       '-w',
       'node-pty',
@@ -386,7 +392,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
       arch
     ]
     const result = spawnSync(process.execPath, rebuildArgs, {
-      cwd: projectRoot,
+      cwd: appRoot,
       stdio: 'inherit'
     })
     if (result.status !== 0) {
@@ -407,10 +413,11 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   return destRoot
 }
 
-export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  const srcRoot = resolveNodePtyRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
-  return stageNodePtyInto(srcRoot, destRoot, { platform, arch })
+export function stageNodePty({ platform = process.platform, arch = process.arch, source = resolve(projectRoot, '../..'), out = join(source, 'apps/desktop/dist/node_modules') } = {}) {
+  const appRoot = join(source, 'apps/desktop')
+  const srcRoot = resolveNodePtyRoot(appRoot)
+  const destRoot = join(out, 'node-pty')
+  return stageNodePtyInto(srcRoot, destRoot, { platform, arch, appRoot })
 }
 
 // ─── get-windows (read_window_below tool) ────────────────────────────
@@ -470,7 +477,7 @@ export function openWindowsSync() {
 }
 `
 
-function resolveGetWindowsRoot() {
+function resolveGetWindowsRoot(appRoot = projectRoot) {
   // get-windows is an optionalDependency (its node-pre-gyp install script has
   // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
   // `npm ci` can skip it entirely on those targets). Return null when it is
@@ -479,7 +486,7 @@ function resolveGetWindowsRoot() {
     // get-windows' exports map doesn't expose ./package.json; resolve the entry
     // (index.js sits at the package root) and take its directory.
     const entryPath = require.resolve('get-windows', {
-      paths: [projectRoot]
+      paths: [appRoot]
     })
     return dirname(entryPath)
   } catch {
@@ -691,12 +698,14 @@ export function stageGetWindows(
   {
     platform = process.platform,
     arch = process.arch,
-    resolveRoot = resolveGetWindowsRoot,
+    source = resolve(projectRoot, '../..'),
+    out = join(source, 'apps/desktop/dist/node_modules'),
+    resolveRoot = () => resolveGetWindowsRoot(join(source, 'apps/desktop')),
     findHalfInstalledDir = findHalfInstalledGetWindowsDir
   } = {}
 ) {
   const srcRoot = resolveRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
+  const destRoot = join(out, 'get-windows')
 
   if (!srcRoot) {
     // npm may omit an optional dependency whose install script fails, or an in-place
@@ -718,9 +727,62 @@ export function stageGetWindows(
   return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, install })
 }
 
-// Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
+/**
+ * Whether ``out`` holds every native piece a build on THIS host can stage for the target.
+ * Cross-target packs never build helpers and win32-arm64 has no get-windows prebuild, so neither
+ * counts as missing: nothing a host fix could add.
+ * @param {string} out @param {string} platform @param {string} arch @returns {boolean}
+ */
+export function nativeTreeComplete(out, platform, arch) {
+  const native = platform === process.platform && (platform !== 'linux' || arch === process.arch)
+  const required = ['get-windows/lib/windows.js']
+  if (platform === 'darwin') required.push('get-windows/main')
+  if (platform === 'win32' && arch !== 'arm64') required.push('get-windows/lib/binding')
+  if (native && ['darwin', 'linux', 'win32'].includes(platform)) {
+    required.push(hudModifierBinaryRelativePath(platform, arch))
+  }
+  return required.every(relative => existsSync(join(out, relative))) && nodePtyComplete(join(out, 'node-pty'), platform)
+}
+
+// node-pty loads pty.node from the first of these that has one (lib/utils.js loadNativeModule), and
+// on macOS spawns through the spawn-helper beside it (lib/unixTerminal.js): a layout with the
+// binding but not the helper loads fine and fails on the first terminal.
+function nodePtyComplete(pty, platform) {
+  const layout = ['build/Release', 'build/Debug', ...readdirSafe(join(pty, 'prebuilds')).map(name => `prebuilds/${name}`)]
+    .find(dir => existsSync(join(pty, dir, 'pty.node')))
+  return !!layout && (platform !== 'darwin' || existsSync(join(pty, layout, 'spawn-helper')))
+}
+
+function readdirSafe(dir) {
+  try { return readdirSync(dir).sort() } catch { return [] }
+}
+
+/**
+ * Preparation may rebuild/download native bindings; compilation only consumes them.
+ * @param {{ source: string, out: string, platform?: string, arch?: string, nativeToolchain?: string }} inputs
+ * @returns {Promise<{out: string}>}
+ */
+export async function prepareDesktopNativeDependencies({ source, out, platform = process.platform, arch = process.arch, nativeToolchain }) {
+  ;({ source, out } = productOutput(source, out, ['node_modules', 'apps/desktop/node_modules', 'apps/desktop/src', 'apps/desktop/electron']))
+  rmSync(`${out}.prepared.json`, { force: true })
+  await withProduct(out, async product => {
+    stageNodePty({ source, out: product, platform, arch })
+    stageGetWindows({ source, out: product, platform, arch })
+    buildCommandScreenshotMonitor({ source, distDir: product, platform })
+    buildHudModifierMonitor({ source, distDir: product, platform, arch })
+  }, { source })
+  // Each component fails soft (no get-windows or its win32 binding, no X11 toolchain). Judge the
+  // staged tree, not each builder's return shape: a tree missing a piece this host could produce
+  // is degraded, and build.mjs restages it on every build, so fixing the host repairs the next update.
+  recordNativeInputs({ source, out, platform, arch, nativeToolchain, degraded: !nativeTreeComplete(out, platform, arch) })
+  return { out }
+}
+
 if (isMain(import.meta.url)) {
-  const [platform, arch] = process.argv.slice(2)
-  stageNodePty({ platform, arch })
-  stageGetWindows({ platform, arch })
+  const { values } = parseArgs({ options: {
+    source: { type: 'string', default: resolve(projectRoot, '../..') },
+    out: { type: 'string' }, platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: process.arch },
+    'native-toolchain': { type: 'string' },
+  } })
+  await prepareDesktopNativeDependencies({ ...values, nativeToolchain: values['native-toolchain'], out: values.out || join(values.source, 'apps/desktop/build/native-deps') })
 }

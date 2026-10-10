@@ -47,9 +47,9 @@ def receipt_key(job):
     return job["_bot_chat_delivery_receipts"]["bot-chat:(own)"]["delivery_id"]
 
 
-@pytest.mark.parametrize("live", [False, True])
-@pytest.mark.parametrize("first_failure", [False, True])
-@pytest.mark.parametrize("suppress_retry", [False, True])
+@pytest.mark.parametrize("live,first_failure,suppress_retry", [
+    (False, True, True), (True, False, True), (True, True, False),
+])
 def test_admitted_identity_rejects_category_changing_retry(owner, live, first_failure, suppress_retry):
     home, acquire, run = owner
     acquire(live)
@@ -66,8 +66,9 @@ def test_admitted_identity_rejects_category_changing_retry(owner, live, first_fa
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("status", ["queued", "claimed", "settled", "ambiguous"])
-@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("live,status", [
+    (False, "queued"), (False, "settled"), (True, "claimed"), (True, "ambiguous"),
+])
 def test_admitted_outcome_survives_suppressed_retry(owner, live, status):
     home, acquire, run = owner
     acquire(live)

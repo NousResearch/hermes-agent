@@ -57,7 +57,6 @@ hermes plugins disable disk-cleanup
 |---|---|---|
 | `disk-cleanup` | hook + 斜杠命令 | 自动追踪临时文件并在会话结束时清理 |
 | `observability/langfuse` | hook | 将轮次 / LLM 调用 / 工具追踪到 [Langfuse](https://langfuse.com) |
-| `spotify` | 后端（7 个工具） | 原生 Spotify 播放、队列、搜索、播放列表、专辑、曲库 |
 | `google_meet` | 独立插件 | 加入 Meet 通话、实时字幕转录、可选实时双工音频 |
 | `image_gen/openai` | 图像后端 | OpenAI `gpt-image-2` 图像生成后端（FAL 的替代方案） |
 | `image_gen/openai-codex` | 图像后端 | 通过 Codex OAuth 使用 OpenAI 图像生成 |
@@ -124,11 +123,23 @@ hermes plugins disable disk-cleanup
 **设置：**
 
 ```bash
-pip install langfuse
-hermes plugins enable observability/langfuse
+hermes tools  # → Langfuse Observability → Cloud 或 Self-Hosted
 ```
 
-或在交互式 `hermes plugins` UI 中勾选复选框。然后将凭据写入 `~/.hermes/.env`：
+向导收集凭据，按需通过 PM 准备已声明的 `langfuse` extra，并启用插件。
+完成后重启 Hermes；准备失败时通过 `hermes tools` 重试，不要直接 pip 安装到选中的环境。
+
+源码检出的手动设置：先按照 [PM 开发流程](../../reference/package-management.md#developer-workflow)
+激活目标检出并选择正确的 Hermes 数据目录，然后执行：
+
+```bash
+python -c "import pm; pm.sync_venv(['langfuse'], explicit=True)"
+source ./activate
+python hermes plugins enable observability/langfuse
+```
+
+PowerShell 使用 `. .\activate.ps1` 激活。将凭据写入活动数据目录的 `.env`
+（`$HERMES_HOME/.env`，通常为 `~/.hermes/.env`）：
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -261,7 +272,7 @@ agent 会启动会议加入流程，在通话进行时将转录内容流式传�
 
 以下情况适合将插件纳入内置：
 
-- 没有可选依赖项（或它们已经是 `pip install .[all]` 的依赖）
+- 没有可选依赖项（或已包含在声明的 `all` extra 中）
 - 该行为对大多数用户有益，且是默认启用、需要主动关闭的
 - 逻辑与生命周期 hook 紧密结合，否则 agent 需要记住手动调用
 - 在不扩展模型可见工具接口的前提下补充核心能力

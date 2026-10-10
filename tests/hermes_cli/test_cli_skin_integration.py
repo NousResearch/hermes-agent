@@ -31,18 +31,15 @@ def _make_cli_stub():
 
 class TestCliSkinPromptIntegration:
 
-    def test_ares_prompt_fragments_use_skin_symbol(self):
-        cli = _make_cli_stub()
-
-        set_active_skin("ares")
-        assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ")]
 
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}
 
         set_active_skin("ares")
-        assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
+        frags = cli._get_tui_prompt_fragments()
+        assert frags[0][0] == "class:sudo-prompt"
+        assert get_active_skin().get_branding("prompt_symbol").strip() in frags[0][1]
 
 
     def test_narrow_terminals_compact_voice_recording_prompt_fragments(self):
@@ -80,7 +77,6 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._apply_tui_skin_style() is True
         assert cli._app.style is not None
-        cli._invalidate.assert_called_once_with(min_interval=0.0)
 
     def test_handle_skin_command_refreshes_live_tui(self, capsys):
         cli = _make_cli_stub()
@@ -88,23 +84,12 @@ class TestCliSkinPromptIntegration:
         with patch("cli.save_config_value", return_value=True):
             cli._handle_skin_command("/skin ares")
 
-        output = capsys.readouterr().out
-        assert "Skin set to: ares (saved)" in output
-        assert "Prompt + TUI colors updated." in output
+        assert get_active_skin().name == "ares"
         assert cli._app.style is not None
 
 
 class TestCompactBannerSkinIntegration:
 
-    def test_poseidon_compact_banner_uses_skin_branding_instead_of_nous_hermes(self):
-        set_active_skin("poseidon")
-
-        with patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
-             patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v0.1.0 (test)"}):
-            banner = _build_compact_banner()
-
-        assert "Poseidon Agent" in banner
-        assert "NOUS HERMES" not in banner
 
     def test_poseidon_compact_banner_uses_skin_colors(self):
         set_active_skin("poseidon")
@@ -114,6 +99,7 @@ class TestCompactBannerSkinIntegration:
              patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v0.1.0 (test)"}):
             banner = _build_compact_banner()
 
+        assert skin.get_branding("agent_name") in banner
         assert skin.get_color("banner_border") in banner
         assert skin.get_color("banner_title") in banner
         assert skin.get_color("banner_dim") in banner

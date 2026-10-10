@@ -21,6 +21,10 @@ SEARCH_PRUNE_DIR_NAMES = frozenset({
     # Generated/build output.
     "build", "dist", "target", "out", "coverage",
     ".next", ".turbo", ".parcel-cache", ".nuxt", ".svelte-kit",
+    # Archived trees: stale copies of projects that used to be live workspaces
+    # (~/.hermes/skills/.archive/ holds dozens of retired skills, each of which
+    # can carry an AGENTS.md — #76902).
+    ".archive",
     # Python and package-manager caches.
     "__pycache__", ".cache", ".Trash", ".tox", ".nox", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".npm", ".yarn", ".pnpm-store",

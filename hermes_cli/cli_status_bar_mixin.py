@@ -12,6 +12,7 @@ import shutil
 import threading
 import time
 
+from agent.i18n import t
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
@@ -51,7 +52,7 @@ class CLIStatusBarMixin:
             return "class:status-bar-bad"
         return _threshold_style(percent_used, ((50, "warn"),), "good")
 
-    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> "tuple[float, str] | None":
+    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> tuple[float, str] | None:
         """Return (cache_pct, label) or None without cache data. Prefers the baseline-delta pct
         from ``_get_status_bar_snapshot`` (resets on model switch / compression, so it reflects
         the *current* cache regime); falls back to the session-lifetime ratio."""
@@ -90,10 +91,10 @@ class CLIStatusBarMixin:
                 return ""
             mode = app.vi_state.input_mode
             if mode in (InputMode.INSERT, InputMode.INSERT_MULTIPLE):
-                return "INSERT"
+                return t("cli.status_bar.vim_insert")
             if mode == InputMode.REPLACE:
-                return "REPLACE"
-            return "NORMAL"
+                return t("cli.status_bar.vim_replace")
+            return t("cli.status_bar.vim_normal")
         except Exception:
             return ""
 
@@ -116,11 +117,11 @@ class CLIStatusBarMixin:
             return f" — {format_battery(reading)}" if reading.available else f" — {no_battery}"
 
         if arg in ("status", "show"):
-            state = "on" if self._battery_visible else "off"
-            detail = _detail("no battery detected on this machine")
+            state = t("cli.shared.label_on") if self._battery_visible else t("cli.shared.label_off")
+            detail = _detail(t("cli.status_bar.battery_none"))
             if reading is not None and reading.available:
-                detail = f" — currently {format_battery(reading)}"
-            self._console_print(f"  Battery indicator {state}{detail}")
+                detail = t("cli.status_bar.battery_currently", reading=format_battery(reading))
+            self._console_print(f"  {t('cli.status_bar.battery_state', state=state, detail=detail)}")
             return
 
         if arg in ("on", "true", "yes"):
@@ -130,17 +131,17 @@ class CLIStatusBarMixin:
         elif arg in ("", "toggle"):
             target = not self._battery_visible
         else:
-            self._console_print("  Usage: /battery [on|off|status]")
+            self._console_print(f"  {t('cli.status_bar.battery_usage')}")
             return
 
         self._battery_visible = target
         save_config_value("display.battery", target)
         if target:
             self._console_print(
-                f"  Battery indicator on{_detail('no battery detected, so nothing will show here')}"
+                f"  {t('cli.status_bar.battery_on', detail=_detail(t('cli.status_bar.battery_none_nothing_shown')))}"
             )
         else:
-            self._console_print("  Battery indicator off")
+            self._console_print(f"  {t('cli.status_bar.battery_off')}")
 
     @staticmethod
     def _compression_count_style(count: int) -> str:
@@ -168,13 +169,15 @@ class CLIStatusBarMixin:
         minutes, seconds = int(remaining // 60), int(remaining % 60)
         days, hours = int(days), int(hours)
         if days > 0:
-            time_str = f"{days}d {hours}h {minutes}m"
+            time_str = t("cli.shared.duration_dhm", days=days, hours=hours, minutes=minutes)
         elif hours > 0:
-            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+            time_str = (t("cli.shared.duration_hms", hours=hours, minutes=minutes, seconds=seconds) if seconds
+                        else t("cli.shared.duration_hm", hours=hours, minutes=minutes))
         elif minutes > 0:
-            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+            time_str = (t("cli.shared.duration_ms", minutes=minutes, seconds=seconds) if seconds
+                        else t("cli.shared.duration_m", minutes=minutes))
         else:
-            time_str = f"{int(elapsed)}s"
+            time_str = t("cli.shared.duration_s", seconds=int(elapsed))
         return f"{'⏱' if live else '⏲'} {time_str}"
 
     @staticmethod
@@ -186,11 +189,11 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
-    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+    def _get_status_bar_snapshot(self) -> dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
-        model_name = (getattr(agent, "model", None) or self.model or "unknown")
+        model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
         # Friendly display: reverse-alias from config ``model_aliases:`` first (turns long
         # Palantir RIDs into the user's short name), else slash/length truncation.
         model_short = _reverse_alias_for_display(model_name)
@@ -199,8 +202,7 @@ class CLIStatusBarMixin:
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
             from hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
+        model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
@@ -329,6 +331,8 @@ class CLIStatusBarMixin:
             except Exception:
                 pass
             context_length = max(0, getattr(compressor, "context_length", 0) or 0)
+            if context_length:
+                context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             from agent.context_pin import is_context_pinned
@@ -393,9 +397,9 @@ class CLIStatusBarMixin:
         except Exception:
             avg_lat = avg_vel = None
         snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None
-        snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
+        snapshot["avg_latency_label"] = t("cli.status_bar.latency_label", value=f"{avg_lat:.1f}") if avg_lat is not None else ""
         snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
-        snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+        snapshot["avg_velocity_label"] = t("cli.status_bar.velocity_label", value=f"{avg_vel:.0f}") if avg_vel is not None else ""
         return snapshot
 
     def _get_status_bar_session_title(self) -> str:
@@ -451,7 +455,7 @@ class CLIStatusBarMixin:
         return "".join(out).rstrip() + "..."
 
     @classmethod
-    def _status_title_badge(cls, title: str, width: int) -> "tuple[str, int] | None":
+    def _status_title_badge(cls, title: str, width: int) -> tuple[str, int] | None:
         """(badge, left_width) for the far-right session-title badge, or None when it
         doesn't fit (no title / bar narrower than 24 cells)."""
         title = str(title or "").strip()
@@ -565,9 +569,10 @@ class CLIStatusBarMixin:
             elapsed = time.monotonic() - t0
             # Fixed-width timers (01m05s / " 5.2s") avoid status-line wrap jitter on repaint.
             if elapsed >= 60:
-                elapsed_str = f"{int(elapsed // 60):02d}m{int(elapsed % 60):02d}s"
+                elapsed_str = t("cli.shared.duration_ms_compact",
+                                minutes=f"{int(elapsed // 60):02d}", seconds=f"{int(elapsed % 60):02d}")
             else:
-                elapsed_str = f"{elapsed:5.1f}s"
+                elapsed_str = t("cli.shared.duration_s", seconds=f"{elapsed:5.1f}")
             return f"  {txt}  ({elapsed_str} · {flow})" if flow else f"  {txt}  ({elapsed_str})"
         return f"  {txt}  ({flow})" if flow else f"  {txt}"
 
@@ -824,7 +829,7 @@ class CLIStatusBarMixin:
         except (OSError, ValueError):
             pass
 
-    def _pet_view(self) -> "tuple[str, bool] | None":
+    def _pet_view(self) -> tuple[str, bool] | None:
         """(state, is_kitty) for the current frame, or None when no pet shows."""
         with self._pet_lock:
             if not self._pet_enabled or self._pet_renderer is None:
@@ -962,27 +967,28 @@ class CLIStatusBarMixin:
         label = self._voice_record_key_label()
         if self._voice_recording:
             if compact:
-                return [("class:voice-status-recording", " ● REC ")]
-            return [("class:voice-status-recording", f" ● REC  {label} to stop ")]
+                return [("class:voice-status-recording", f" {t('cli.status_bar.voice_rec')} ")]
+            return [("class:voice-status-recording", f" {t('cli.status_bar.voice_rec_stop_hint', shortcut=label)} ")]
         if self._voice_processing:
-            return [("class:voice-status", " ◉ STT " if compact else " ◉ Transcribing... ")]
+            return [("class:voice-status",
+                     f" {t('cli.status_bar.voice_stt')} " if compact else f" {t('cli.status_bar.voice_transcribing')} ")]
         if compact:
             return [("class:voice-status", f" 🎤 {label} ")]
-        tts = " | TTS on" if self._voice_tts else ""
-        cont = " | Continuous" if self._voice_continuous else ""
-        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
+        tts = t("cli.status_bar.voice_tts_on") if self._voice_tts else ""
+        cont = t("cli.status_bar.voice_continuous") if self._voice_continuous else ""
+        return [("class:voice-status", f" {t('cli.status_bar.voice_mode_hint', tts=tts, cont=cont, shortcut=label)} ")]
 
     # ── status bar rendering ──────────────────────────────────────────────────
 
     @staticmethod
-    def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:
+    def _status_bar_goal_segment(snapshot: dict[str, Any]) -> str:
         """``⊙ goal 3/20`` while a goal is active, else ``""`` (paused/done goals already
         print their own glyph lines in the thread)."""
         if not snapshot.get("goal_active"):
             return ""
         used = snapshot.get("goal_turns_used") or 0
         max_turns = snapshot.get("goal_max_turns") or 0
-        return f"⊙ goal {used}/{max_turns}" if max_turns else "⊙ goal"
+        return t("cli.status_bar.goal_turns", used=used, max=max_turns) if max_turns else t("cli.status_bar.goal")
 
     def _get_status_bar_field_set(self) -> Optional[frozenset]:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
@@ -1050,10 +1056,10 @@ class CLIStatusBarMixin:
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    pin = " pinned" if snapshot.get("context_pinned") else ""
+                    pin = t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned") else ""
                     context_label = f"{mark}{ctx_used}/{ctx_total}{pin}"
                 else:
-                    context_label = "ctx --"
+                    context_label = t("cli.status_bar.ctx_unknown")
                 segs.append([(_DIM, context_label)])
             if _ok("context_pct"):
                 bar_style = self._status_bar_context_style(percent)
@@ -1091,7 +1097,7 @@ class CLIStatusBarMixin:
         if focus_label:
             add("focus", _STRONG, focus_label)
         if yolo_active:
-            add("yolo", "class:status-bar-yolo", "⚠ YOLO")
+            add("yolo", "class:status-bar-yolo", t("cli.status_bar.yolo_badge"))
         if wide:
             # Session token total (Σ) — opt-in only via an explicit fields list.
             total_tokens = snapshot.get("session_total_tokens", 0)
@@ -1182,11 +1188,11 @@ class CLIStatusBarMixin:
     def _fmt_stash_age(stashed_at: float) -> str:
         secs = int(time.monotonic() - stashed_at)
         if secs < 10:
-            return "just now"
+            return t("cli.shared.just_now")
         if secs < 90:
-            return f"{secs}s ago"
+            return t("cli.shared.ago_seconds", seconds=secs)
         mins = secs // 60
-        return f"{mins} min ago" if mins < 60 else f"{mins // 60}h ago"
+        return t("cli.shared.ago_minutes", minutes=mins) if mins < 60 else t("cli.shared.ago_hours", hours=mins // 60)
 
     def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
         """prompt_toolkit fragments for the stash panel box. Every horizontal measurement uses
@@ -1196,10 +1202,11 @@ class CLIStatusBarMixin:
         W = max(12, min(width - 4, 80))
 
         n = len(stash_list)
-        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
+        hdr_key = "cli.status_bar.stash_header_one" if n == 1 else "cli.status_bar.stash_header_other"
+        hdr_prefix_str = f"╭─ {t(hdr_key, count=n)} "
         HDR_SUFFIX = " Ctrl+S ─╮"
         FTR_PREFIX = "╰"
-        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+        FTR_SUFFIX = f" {t('cli.status_bar.stash_footer')} ─╯"
 
         # On narrow terminals the full hint text is wider than the box: drop to compact
         # affordances rather than letting the frame bleed past the right edge.
@@ -1207,7 +1214,7 @@ class CLIStatusBarMixin:
             hdr_prefix_str = f"╭─ 📌 {n} "
             HDR_SUFFIX = "─╮"
         if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
-            FTR_SUFFIX = " ↑↓ ⏎ D Esc ─╯"
+            FTR_SUFFIX = f" {t('cli.status_bar.stash_footer_compact')} ─╯"
         if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
             FTR_SUFFIX = "─╯"
 

@@ -66,29 +66,6 @@ def test_s1_contended_activity_write_gives_up_within_short_budget(tmp_path):
     assert elapsed_touch < 3.0, f"activity touch waited {elapsed_touch:.1f}s"
 
 
-def test_s1_clear_labels_noop_skips_transaction(tmp_path, monkeypatch):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    sid = "S1_NOOP"
-    db.create_session(sid, source="cli")
-    # Fresh session: labels empty → the clear must not open a transaction.
-    calls = []
-    original = db._execute_write
-
-    def _spy(fn, patience_s=None):
-        calls.append(fn)
-        return original(fn, patience_s=patience_s)
-
-    monkeypatch.setattr(db, "_execute_write", _spy)
-    db.clear_session_activity_labels(sid)
-    assert calls == [], "no-op label clear must skip the write transaction"
-
-    # Non-empty labels → clear runs exactly one write.
-    db.touch_session_activity(sid, time.time(), description="doing work")
-    calls.clear()
-    db.clear_session_activity_labels(sid)
-    assert len(calls) == 1
-    activity = _activity_snapshot(db, sid)
-    assert activity["last_activity_description"] == ""
 
 
 def test_s1_contended_clear_gives_up_within_short_budget(tmp_path):

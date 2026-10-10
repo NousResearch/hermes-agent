@@ -48,7 +48,7 @@ The full set of keys:
 | `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
-| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Mirrors `cron_mode`. |
+| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -80,7 +80,7 @@ The `/yolo` command is a **toggle** — each use flips the mode on or off:
   ⚠ YOLO mode OFF — dangerous commands will require approval.
 ```
 
-YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+YOLO mode is available in both CLI and gateway sessions. `/yolo` applies only to the session it was typed in. It is saved with the session, so it survives a restart: a messaging chat keeps it across gateway restarts, and the TUI and the Desktop app keep it when you reopen or resume the session. On a messaging platform, `/new` and `/resume` start the next conversation with approvals back on.
 
 When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
 
@@ -286,8 +286,7 @@ dangerous-pattern rule key such as `script execution via heredoc` (the key shown
 in the approval prompt). Rule keys are honored on every surface, including
 unattended ones: a cron job, `hermes chat -q` run or webhook session under
 `cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
-detected rule key is in `command_allowlist`, while Tirith content-security
-findings on the same command continue to block it.
+detected rule key is in `command_allowlist`.
 
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
@@ -400,7 +399,7 @@ Unset the variable to restore unrestricted writes (subject to the protected-path
 
 ### Cron and other Hermes state
 
-Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
+Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob_manage` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
 
 :::note Defense-in-depth, not a hard boundary
 Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
@@ -563,7 +562,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 ```yaml
 terminal:
   backend: docker
-  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_image: "nousresearch/hermes-sandbox:desktop"
   docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)
@@ -694,7 +693,7 @@ With the switch off Hermes never reads or refreshes those files: the `claude_cod
 - Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
-- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms. Such a name is refused when declared, and a declared name that a platform adapter claims later (a plugin adapter registering after the skill loaded) stops being forwarded from then on
 
 ## MCP Credential Handling
 
@@ -802,34 +801,24 @@ or `::/0`) is ignored with a warning rather than widening the guard. On a host w
 browser provider, the declared sentinel also stops counting as private for
 `browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
 
-### Tirith Pre-Exec Security Scanning
+### Content-Level Command Checks
 
-Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
+The dangerous-command detector also flags two content-level shapes that a
+destructive-verb list misses:
 
-- Homograph URL spoofing (internationalized domain attacks)
-- Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
-- Terminal injection attacks
+- A `curl`/`wget` request body that carries a secret: a secret-named variable
+  (`-d "k=$OPENAI_API_KEY"`) or a credential file (`-F file=@.env`,
+  `-T ~/.ssh/id_rsa`, `--post-file=/etc/passwd`), or a credential file piped into
+  an uploading `curl`/`wget`. An `Authorization` header is ordinary API use and
+  is not flagged.
+- Invisible or bidirectional Unicode control characters (zero-width spaces,
+  right-to-left overrides, isolates), which make the command you approve differ
+  from the one that runs. Emoji joiner sequences are not flagged.
 
-Tirith auto-installs from GitHub releases on first use with SHA-256 checksum verification (and cosign provenance verification if cosign is available).
+Both go through the normal approval flow like every other dangerous pattern.
 
-```yaml
-# In ~/.hermes/config.yaml
-security:
-  tirith_enabled: true       # Enable/disable tirith scanning (default: true)
-  tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
-  tirith_timeout: 5          # Subprocess timeout in seconds
-  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
-```
-
-When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
-
-Three consecutive operational failures (spawn error, timeout, crash) suspend scanning for five minutes so a broken binary cannot stall every command; after that window one command re-probes tirith, and any completed scan (allow, warn or block) resumes normal scanning. A probe that fails again re-arms the five-minute window.
-
-Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
-
-Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
-
-Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
+Earlier releases bundled the external tirith scanner here. It was removed;
+upgrading drops the `security.tirith_*` settings and enables nothing in its place.
 
 ### Context File Injection Protection
 
@@ -906,6 +895,49 @@ TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
 
 The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.
 
+## TLS certificate trust
+
+Hermes initializes the platform verifier through `truststore`. Windows uses
+its certificate store, macOS uses its system trust services, and Linux uses
+the OpenSSL system trust paths. If initialization fails, Hermes logs the
+failure and falls back to OpenSSL defaults.
+
+For a corporate TLS proxy, install its root through your organization's
+operating-system trust procedure. Hermes' provider resolver no longer selects
+trust through `HERMES_CA_BUNDLE` or the old CA-environment-variable ladder.
+Sandboxed subprocesses can have their own separate CA configuration.
+
+The former startup certificate guard is gone with it: Hermes no longer
+validates `HERMES_CA_BUNDLE` / `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` /
+`CURL_CA_BUNDLE` at launch, so there is no `SSLConfigurationError` and the
+`HERMES_SKIP_SSL_GUARD` escape hatch has no effect. `HERMES_CA_BUNDLE` is
+still honoured by the Nous Portal login flow only (`hermes login`, or its
+`--ca-bundle` flag); the standard `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` variables
+are still read by the plain `requests`/`urllib` calls some tools make (and by
+`pip`, `uv`, `curl`, Node), so a stale path in one of them now fails at the
+call that uses it rather than at startup. Fix or unset the variable there.
+
+A custom provider can declare `ssl_ca_cert` for its endpoint. That bundle
+replaces platform trust for chat, model metadata, and model catalog probes.
+A missing file produces a warning and falls back to platform trust.
+`ssl_verify: false` disables certificate verification and is unsafe for
+untrusted networks. Do not use it as a permanent fix for a missing corporate root.
+
+Provider HTTP clients keep proxy configuration separate from certificate
+selection. A stale ambient CA-file path cannot prevent those clients from
+starting. PM index credentials are sent only to their exact HTTPS origin;
+redirects to another origin do not receive them.
+
+## Trusted-by-placement extension points {#trusted-by-placement}
+
+Most third-party code Hermes can run is gated by an explicit allow-list: general plugins need `plugins.enabled`, shell hooks need a first-use approval (or `hooks_auto_accept`), MCP servers are listed in config. One surface is deliberately different:
+
+| Extension point | Loaded from | Loaded when | Opt-in |
+|-----------------|-------------|-------------|--------|
+| [Gateway event hooks](./features/hooks.md#gateway-event-hooks) | `<profile home>/hooks/<name>/` (`HOOK.yaml` + `handler.py`) | Gateway startup (`HookRegistry.discover_and_load()`), per served profile | **Placing the directory.** No `plugins.enabled` entry, no prompt; `HERMES_SAFE_MODE` does not skip it. |
+
+The gateway imports every valid hook directory in-process, with the gateway's own privileges. This is the documented contract (since `3988c3c245f`), not an oversight: the profile home is operator-owned configuration, and anyone who can write into it can already run code as you through `config.yaml` shell hooks or by editing `plugins.enabled`, so a separate consent gate for `hooks/` would add friction without moving the trust boundary. Treat the contents of `~/.hermes/hooks/` like the contents of `config.yaml` — review a `handler.py` before you place it, and include `ls ~/.hermes/hooks/` whenever you audit the rest of the profile home (the directory is not on the [protected-paths denylist](#file-write-safety), so it is ordinary writable state). Full details: [gateway hook trust model](./features/hooks.md#gateway-hook-trust).
+
 ## Supply-chain advisory checking
 
 Hermes ships with a built-in advisory scanner that flags Python packages in the active venv that match a curated catalog of known-compromised versions (supply-chain worms like the May 2026 `mistralai 2.4.6` poisoning). Implementation lives in `hermes_cli/security_advisories.py`.
@@ -928,35 +960,47 @@ The check itself is stdlib-only and runs from one `importlib.metadata.version()`
 
 ### Lazy install of optional dependencies
 
-Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **lazily** on first use rather than eagerly under `hermes-agent[all]`. The implementation lives in `tools/lazy_deps.py`.
+PM manages optional Python features as extras from `pyproject.toml`.
+Source installers select the `all` extra. Native bundles include all extras
+supported by their target. These are different feature sets.
 
-The trade-off this fixes:
+When a backend requests an unavailable extra, `pm.ensure_import("extra-name")`
+uses the same dependency transaction as plugin admission:
 
-- **Fragility.** When one extra's transitive dependency becomes unavailable on PyPI (quarantined for malware, yanked, broken upload), the entire `[all]` resolve would fail and fresh installs would silently fall back to a stripped tier — losing 10+ unrelated extras at once. Lazy install isolates each backend so one poisoned dep can't break unrelated features.
-- **Bloat.** A user who only ever talks to one provider no longer pulls hundreds of packages they will never import.
+1. PM checks platform support and `security.allow_lazy_installs`.
+2. PM prepares a complete environment with the existing extras and enabled plugin requirements.
+3. Without plugin members, it uses the committed lock unchanged. With members, it resolves from the previous selection before a frozen workspace sync.
+4. It validates the candidate before publishing its selection. A failed candidate leaves the previous environment selected.
+5. If the current process uses the previous environment, PM reports that Hermes must restart. It does not replace imported libraries in place.
 
-How it works:
+Shipped source, locks, and signed payloads remain unchanged. Additional tools
+and Python environments use writable storage outside the base artifact.
+Plugin dependencies share the complete environment; they are not isolated
+Python sandboxes. Compatible transitive dependencies can change, but declared
+constraints and exact pins remain binding.
 
-1. A backend module calls `ensure("feature.name")` at the top of its first-import path.
-2. If the deps are missing, `ensure` checks `security.allow_lazy_installs` in `config.yaml` (default `true`) and runs a venv-scoped `pip install` for the allowlisted specs.
-3. If the install fails or the user has disabled lazy installs, the call raises `FeatureUnavailable` with the actual pip stderr and a pointer at `hermes tools`.
-
-Security guarantees enforced by `tools/lazy_deps.py`:
-
-| Guarantee | What it means |
+| Control | Behavior |
 |---|---|
-| Venv-scoped only | Installs target `sys.executable` in the active venv — never the system Python |
-| PyPI by name only | Specs accept `"package>=1.0,<2"` syntax. No `--index-url`, `git+https://`, or file: paths — a malicious `config.yaml` cannot redirect the install |
-| Allowlist | Only specs that appear in the in-tree `LAZY_DEPS` map can be installed via this path. A typo in a feature name does NOT get install-anything semantics |
-| Opt-out | Set `security.allow_lazy_installs: false` to disable runtime installs entirely. Useful for restricted networks or strict security postures |
-| No silent retries | Failures surface as `FeatureUnavailable` — no caching of bad state, no retry storms |
+| Declared extras | The helper accepts project extra names, not arbitrary pip commands. The removed `LAZY_DEPS` feature-name registry is not used. |
+| Verified tools | Managed tool archives have versions and SHA-256 hashes in `pm/lock.json`. |
+| Atomic selection | Preparation and validation precede publication of the new runtime selection. |
+| Failure reporting | Failures raise `pm.InstallError`. PM sync receipts include failed steps and policy refusals. |
+| No automatic plugin removal | A failed dependency union does not silently disable or delete installed plugins. |
 
-To disable runtime installs:
+To disable on-demand installations, run:
 
-```yaml
-# ~/.hermes/config.yaml
-security:
-  allow_lazy_installs: false
+```bash
+hermes config set security.allow_lazy_installs false
 ```
 
-When disabled, backends that need optional deps will tell the user to run the install manually (`pip install …`) or pick a different backend via `hermes tools`.
+Already installed dependencies remain usable. Explicit PM install commands
+are separate from on-demand installation. A bundle's frozen feature list,
+when present with lazy installs disabled, restricts requested Python extra
+names. This setting is not a blanket ban on explicit plugin admission or
+manual package-manager commands. The official Docker image also disables
+on-demand installs through its internal environment policy.
+
+For missing dependencies, use `hermes tools` and `hermes doctor` to identify
+the requirement. Do not run pip against a signed payload or the system Python.
+See [Package management](../reference/package-management.md) for installation
+ownership, diagnostics, and command boundaries.

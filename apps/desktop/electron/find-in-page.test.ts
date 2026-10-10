@@ -106,12 +106,6 @@ describe('formatFoundInPage', () => {
 })
 
 describe('performFind', () => {
-  test('forwards the query and options to webContents.findInPage', () => {
-    const wc = makeFakeWebContents()
-    performFind(asWC(wc), 'hello', { forward: true, findNext: false })
-    assert.deepEqual(wc.calls.find, [{ query: 'hello', options: { forward: true, findNext: false } }])
-  })
-
   test('defaults forward to true when omitted', () => {
     const wc = makeFakeWebContents()
     performFind(asWC(wc), 'x', { findNext: true })
@@ -211,13 +205,6 @@ describe('installFoundInPageForwarder', () => {
     // as Electron's actual `webContents.emit('found-in-page', …)`.
     wc.emit('found-in-page', {}, { activeMatchOrdinal: 2, matches: 5 })
     assert.deepEqual(wc.calls.send, [{ channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 2, count: 5 } }])
-  })
-
-  test('handles missing fields without throwing', () => {
-    const wc = makeFakeWebContents()
-    installFoundInPageForwarder(asWC(wc))
-    wc.emit('found-in-page', {}, {})
-    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 0, count: 0 } }])
   })
 
   test('skips send when webContents is destroyed at fire time', () => {

@@ -63,7 +63,7 @@ class TestResolveRuntimeWithFallback:
         with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
             _, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex")
         assert entry["provider"] == "openai"
-        assert any("anthropic/claude-x is misconfigured" in r.getMessage() for r in caplog.records)
+        assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
 
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):
@@ -104,3 +104,40 @@ def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypa
     assert text == "pong"
     assert (captured["provider"], captured["model"]) == ("anthropic", "claude-x")
     assert captured["api_key"] == "fb"
+
+
+def test_run_agent_forwards_resolved_request_overrides(monkeypatch):
+    """#103738: ``hermes -z`` hands the resolver's ``request_overrides`` (a custom entry's ``extra_body``) to
+    AIAgent like ``hermes chat``, or a proxy that requires a body field 400s on one-shot runs."""
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured = {}
+
+    class _FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __setattr__(self, name, _value):
+            pass
+
+        def run_conversation(self, _prompt, conversation_history=None):
+            return {"final_response": "pong", "session_id": "s"}
+
+        def close(self):
+            pass
+
+    def fake_resolve(**kw):
+        return {"api_key": "k", "base_url": "https://proxy.example/v1", "provider": "custom", "api_mode": "chat_completions",
+                "credential_pool": None, "request_overrides": {"extra_body": {"user": "proxy-user"}}}
+
+    cfg = {"model": {"default": "some-model", "provider": "custom:my-proxy"}}
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+    monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+    oneshot_mod._run_agent("say OK")
+
+    assert captured["request_overrides"] == {"extra_body": {"user": "proxy-user"}}

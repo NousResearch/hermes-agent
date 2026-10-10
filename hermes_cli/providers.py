@@ -20,12 +20,12 @@ class HermesOverlay:
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    extra_env_vars: tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
 
-HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
     "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
@@ -101,7 +101,7 @@ class ProviderDef:
     id: str
     name: str
     transport: str                        # openai_chat | anthropic_messages | codex_responses
-    api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
+    api_key_env_vars: tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
@@ -112,7 +112,7 @@ class ProviderDef:
 
 # -- Aliases: human-friendly / legacy names grouped by canonical (models.dev where possible) id;
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
-_ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
+_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
     "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
@@ -131,27 +131,29 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
-    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
-    "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider,
+    # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
+    "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
-ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
+ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
 
 # -- Display labels for providers not in the models.dev catalog ---------------
 
-_LABEL_OVERRIDES: Dict[str, str] = {
+_LABEL_OVERRIDES: dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
-    "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
+    "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
 # -- Transport → API mode mapping ---------------------------------------------
 
-TRANSPORT_TO_API_MODE: Dict[str, str] = {
+TRANSPORT_TO_API_MODE: dict[str, str] = {
     "openai_chat": "chat_completions", "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses", "bedrock_converse": "bedrock_converse",
 }
@@ -208,22 +210,41 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
                              overlay.base_url_override, "", "hermes")
     # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
     # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
-    # even though the picker lists them. Only profiles with a concrete endpoint resolve here:
-    # placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship an empty base_url and
-    # are completed by config.yaml custom_providers — resolving them would preempt
-    # resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare custom.
+    # even though the picker lists them. Only profiles with a literal or env-configured endpoint
+    # resolve at this rung: placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship
+    # an empty base_url and are completed by config.yaml custom_providers — resolving them would
+    # preempt resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare
+    # custom. Profiles whose endpoint is minted at runtime resolve at the END of
+    # resolve_provider_full, after every user-configured rung.
+    pdef = _plugin_profile_pdef(canonical)
+    if pdef is None or not (pdef.base_url or (pdef.auth_type == "api_key" and pdef.api_key_env_vars and pdef.base_url_env_var)):
+        return None
+    return pdef
+
+
+def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
+    """The registered ``ProviderProfile`` for *name* (or one of its aliases) as a ProviderDef; the
+    id is the profile's canonical name so an alias switch persists and resolves credentials under
+    the same identity as the profile itself. URL-shaped env vars are the endpoint, not the key."""
     try:
         from providers import get_provider_profile as _profile
-        _prof = _profile(canonical)
-        if _prof is not None and (_prof.base_url or "").strip():
-            _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-            return ProviderDef(id=canonical, name=_prof.display_name or _prof.name or canonical,
-                               transport=_api_mode_to_transport.get(_prof.api_mode, "openai_chat"),
-                               api_key_env_vars=tuple(_prof.env_vars or ()), base_url=_prof.base_url or "",
-                               auth_type=_prof.auth_type or "api_key", source="plugin-profile")
+        prof = _profile(name)
     except Exception:
-        pass
-    return None
+        return None
+    if prof is None:
+        return None
+    env_vars = tuple(prof.env_vars or ())
+    url_vars = tuple(v for v in env_vars if v.endswith(("_BASE_URL", "_URL")))
+    key_vars = tuple(v for v in env_vars if v not in url_vars)
+    api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
+    # A mode outside the reverse table is a plugin-registered dialect: keep its name so
+    # ``determine_api_mode`` can check the transport registry instead of degrading it.
+    mode = (prof.api_mode or "").strip()
+    return ProviderDef(id=prof.name, name=prof.display_name or prof.name or name,
+                       transport=api_mode_to_transport.get(mode, mode or "openai_chat"),
+                       api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
+                       base_url_env_var=next(iter(url_vars), ""),
+                       auth_type=prof.auth_type or "api_key", source="plugin-profile")
 
 
 def get_label(provider_id: str) -> str:
@@ -360,7 +381,11 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         return nous_api_mode(model)
     pdef = get_provider(provider)
     if pdef is not None:
-        return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
+        if pdef.transport in TRANSPORT_TO_API_MODE:
+            return TRANSPORT_TO_API_MODE[pdef.transport]
+        # A plugin profile's transport IS its api_mode when a plugin registered that dialect.
+        from agent.transports import registered_api_modes
+        return pdef.transport if pdef.transport in registered_api_modes() else "chat_completions"
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"
@@ -374,13 +399,23 @@ def _user_pdef(pid: str, name: str, base_url: str, key_env: str, transport: str 
                        base_url=base_url, is_aggregator=False, auth_type="api_key", source="user-config")
 
 
-def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
-    """Resolve a provider from the user's config.yaml ``providers:`` section."""
+def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[ProviderDef]:
+    """Resolve a provider from the user's config.yaml ``providers:`` section.
+
+    A ``providers.<name>`` block that carries no endpoint (``api``/``url``/``base_url``) is not a
+    custom-endpoint definition — it is tuning for a BUILT-IN provider of the same name (e.g.
+    ``providers.bedrock: {stale_timeout_seconds: 600}``, the documented path in
+    ``agent/turn_recovery.py`` / ``thinking_timeout_guidance.py``). Resolving it here would shadow
+    the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
+    stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
+    """
     entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
     if not isinstance(entry, dict):
         return None
-    return _user_pdef(name, entry.get("name", "") or name,
-                      entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or "",
+    base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
+    if not base_url:
+        return None
+    return _user_pdef(name, entry.get("name", "") or name, base_url,
                       entry.get("key_env") or entry.get("api_key_env") or "",
                       entry.get("transport", "openai_chat") or "openai_chat")
 
@@ -410,7 +445,7 @@ def custom_provider_aliases(display_name: str, provider_key: str = "") -> frozen
     return frozenset(aliases)
 
 
-def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str, Any]]]) -> Optional[ProviderDef]:
+def resolve_custom_provider(name: str, custom_providers: Optional[list[dict[str, Any]]]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``custom_providers`` list. A stored bare
     ``"custom"`` (corrupt state from a prior model-switch bug) falls back to the first valid entry
     so existing configs self-heal."""
@@ -459,23 +494,44 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     return None
 
 
+# The local llama.cpp runtime's provider id + aliases: ONE definition, shared by the resolver rung
+# below and the picker's Local row (``hermes_cli/inventory.py``) — the two drifting apart is what
+# made the row's own id unresolvable.
+LLAMACPP_PROVIDER_ID = "llamacpp"
+LLAMACPP_ALIASES: tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
+
+
+def _has_staged_local_models() -> bool:
+    """True when GGUFs are staged under the Hermes home's ``models/`` — the model the picker's Local
+    row offers, which the runtime seam serves by booting/attaching a server on selection."""
+    try:
+        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        return bool(staged_model_ids())
+    except Exception:
+        return False
+
+
 def _llamacpp_pdef() -> Optional[ProviderDef]:
     """The llamacpp aliases are a real provider whenever the managed server (or a detected external
-    one) resolves — reachability is the credential. Without this rung model-switch rejected the very
-    provider the Local Models 'Use' flow writes to config."""
+    one) resolves — reachability is the credential — OR a model is staged for the runtime to serve.
+    The picker's Local row is built from staged GGUFs and is deliberately offline-first (selection
+    starts the server through the runtime seam), so requiring a live endpoint before admitting the id
+    made that row offer a provider the resolver rejected ("Unknown provider 'llamacpp'"). Without
+    this rung model-switch rejected the very provider the Local Models 'Use' flow writes to config."""
     try:
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
+        endpoint = resolve_llamacpp_endpoint(config=load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None
-    if not endpoint:
+    if not endpoint and not _has_staged_local_models():
         return None
-    return ProviderDef(id="llamacpp", name="Local", transport="openai_chat", api_key_env_vars=(), base_url=endpoint["base_url"],
-                       source="local-runtime")
+    return ProviderDef(id=LLAMACPP_PROVIDER_ID, name="Local", transport="openai_chat", api_key_env_vars=(),
+                       base_url=(endpoint or {}).get("base_url", ""), source="local-runtime")
 
 
-def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = None,
-                          custom_providers: Optional[List[Dict[str, Any]]] = None) -> Optional[ProviderDef]:
+def resolve_provider_full(name: str, user_providers: Optional[dict[str, Any]] = None,
+                          custom_providers: Optional[list[dict[str, Any]]] = None) -> Optional[ProviderDef]:
     """Full resolution chain: user ``providers.<raw name>`` -> lossy-alias registry id -> built-in
     (models.dev + overlays) -> user providers (canonical, then raw) -> ``custom_providers`` ->
     managed llamacpp -> models.dev directly. User-defined ``providers.<name>`` is tried FIRST on
@@ -493,6 +549,10 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
             return pdef
     pdef = get_provider(canonical)
     if pdef is not None:
+        if pdef.source == "plugin-profile" and user_providers:
+            user_pdef = resolve_user_provider(pdef.id, user_providers)
+            if user_pdef is not None:
+                return user_pdef
         return pdef
     if user_providers:
         for candidate in (canonical, raw):
@@ -502,7 +562,7 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
-    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
+    if raw in LLAMACPP_ALIASES:
         pdef = _llamacpp_pdef()
         if pdef is not None:
             return pdef
@@ -513,4 +573,10 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
                                base_url=mdev_info.api, source="models.dev")
     except Exception:
         pass
-    return None
+    # Plugin profiles whose endpoint is minted at runtime (empty base_url, e.g. a token exchange
+    # that also returns the host) are still real providers: /model --provider, the model picker
+    # and `hermes model` must not reject them as unknown. Last rung, so every user-configured
+    # entry above wins; the bare ``custom`` placeholder is excluded because model-switch completes
+    # it from the current endpoint (see get_provider).
+    pdef = _plugin_profile_pdef(canonical)
+    return pdef if pdef is not None and pdef.id != "custom" else None

@@ -21,7 +21,7 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "session_search", "arguments": {}},
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
-    name, args, error = resolve_underlying_call({"calls": calls})
+    name, _args, error = resolve_underlying_call({"calls": calls})
     assert name is None and "exactly one entry" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
@@ -58,11 +58,10 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
             operation = live.get("current-session", payload["op_id"])
             if operation is not None:
                 apply_answer(operation, json.dumps(
-                    {"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]}))
+                    {"targets": [{"name": t["name"], "status": "skipped"} for t in payload["targets"]]}))
                 operation.settle(SettleReason.all_resolved)
 
         threading.Timer(0.02, respond).start()
-        return None
 
     agent = SimpleNamespace(
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],

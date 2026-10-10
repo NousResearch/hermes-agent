@@ -1,6 +1,7 @@
 """Local owner discovery must fence profile and lease identity."""
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -78,8 +79,14 @@ def test_discovery_refuses_unsupported_owner_without_releasing_lease(tmp_path, m
         assert details.startswith("Details: ")
         assert active_session_registry_snapshot(tmp_path)[0]["lease_id"] == lease.lease_id
         registry = tmp_path / "runtime" / "active_sessions.json"
-        before = registry.read_bytes()
         with monkeypatch.context() as patch:
+            # Our own pid is never probed (#108005), so model a FOREIGN owner whose inspection is denied.
+            from hermes_cli.active_sessions import _read_entries, _write_entries
+            entries = _read_entries(registry)
+            entries[0]["pid"] = os.getpid() + 2**22
+            _write_entries(registry, entries)
+            before = registry.read_bytes()
+
             def denied(pid):
                 raise PermissionError("process inspection denied")
             patch.setattr("gateway.status._pid_exists", denied)

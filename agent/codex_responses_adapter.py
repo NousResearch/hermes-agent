@@ -55,6 +55,80 @@ def _wire_model_identity(model: Any) -> Optional[str]:
 
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 
+
+# api.openai.com model families that accept ``reasoning.context: "all_turns"`` and honour a reasoning blob
+# minted by a sibling variant of the same family (LIVE: gpt-5.4<->5.4-mini, 5.5->5.5-pro, 5.6-luna<->terra,
+# 6-astra<->6.1-sol all rendered the blob). o-series, base gpt-5-mini/nano and gpt-5.1/5.2/5.3-codex 400 on
+# all_turns, so they are deliberately absent; a blob from another family is silently left out (200), so those
+# keep exact-model matching.
+_OPENAI_ALL_TURNS_FAMILIES = ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6")
+
+
+def openai_reasoning_family(model: Any) -> Optional[str]:
+    """``_OPENAI_ALL_TURNS_FAMILIES`` entry ``model`` belongs to (``gpt-6.1-sol`` -> ``gpt-6``), else None."""
+    name = str(model or "").strip().lower()
+    return next((f for f in _OPENAI_ALL_TURNS_FAMILIES if name == f or name.startswith((f + "-", f + "."))), None)
+
+
+def _is_openai_api_issuer(issuer_kind: Any) -> bool:
+    from utils import base_url_hostname
+
+    return isinstance(issuer_kind, str) and issuer_kind.startswith("other:") and (
+        base_url_hostname(issuer_kind[len("other:"):]).lower() == "api.openai.com"
+    )
+
+
+def _model_can_read_blob(issuer_kind: Optional[str], item_model: Any, current_model: Optional[str]) -> bool:
+    """Exact model everywhere; same all_turns family on api.openai.com, which accepts sibling-variant blobs."""
+    if current_model is None or item_model is None or item_model == current_model:
+        return True
+    family = openai_reasoning_family(current_model)
+    return family is not None and family == openai_reasoning_family(item_model) and _is_openai_api_issuer(issuer_kind)
+
+
+# Responses hosts whose models render replayed reasoning from EARLIER user turns by default: xAI (LIVE: input
+# grows by the turn-1 reasoning-token count; behavioural recall) and Meta ("Both modes preserve chain of thought
+# across turns", dev.meta.ai/docs/protocols/responses). api.openai.com qualifies per model family (all_turns).
+_PRIOR_TURN_REASONING_HOSTS = frozenset({"api.x.ai", "api.meta.ai"})
+
+
+def route_reads_prior_turn_reasoning(route: Any) -> bool:
+    """True when earlier-turn ``codex_reasoning_items`` are continuity the model on ``route`` (agent or compressor:
+    ``api_mode``/``provider``/``model``/``base_url``) actually reads, so compaction must keep them. The ChatGPT
+    Codex backend stays False until its ``reasoning.context`` is probed."""
+    from utils import base_url_hostname
+
+    if getattr(route, "api_mode", None) != "codex_responses":
+        return False
+    host = base_url_hostname(str(getattr(route, "base_url", "") or "")).lower()
+    if host == "api.openai.com":
+        return openai_reasoning_family(_wire_model_identity(getattr(route, "model", None))) is not None
+    return host in _PRIOR_TURN_REASONING_HOSTS or getattr(route, "provider", None) in {"xai", "xai-oauth"}
+
+
+def strip_unverified_reasoning_items(
+    messages: Any, *, issuer_kind: Optional[str], issuer_model: Optional[str],
+) -> int:
+    """First ``invalid_encrypted_content`` rung: drop only reasoning items NOT stamped by exactly this issuer AND
+    model (unstamped legacy blobs, sibling-variant blobs) from assistant rows, keeping the session's own
+    continuity. Consumes its own precondition (a second call removes nothing), so recovery cannot loop.
+    Rebinds the filtered list, never mutates a shared one; returns the number of items removed."""
+    removed = 0
+    for msg in messages if isinstance(messages, list) else []:
+        items = msg.get("codex_reasoning_items") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if not isinstance(items, list) or not items:
+            continue
+        kept = [
+            i for i in items if isinstance(i, dict)
+            and _canonical_issuer_kind(i.get("_issuer_kind")) == issuer_kind and i.get("_issuer_model") == issuer_model
+        ]
+        removed += len(items) - len(kept)
+        if kept:
+            msg["codex_reasoning_items"] = kept
+        else:
+            msg.pop("codex_reasoning_items")
+    return removed
+
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
 
@@ -426,10 +500,9 @@ def _replay_reasoning_items(
         foreign_issuer = current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind
         # No model stamp → trust the endpoint stamp. Native compaction checkpoints and reasoning persisted
         # before model stamping carry none; dropping them would erase every existing session's context
-        # once. A wrong guess is caught by the invalid_encrypted_content 400 classifier.
-        foreign_model = (
-            current_issuer_model is not None and item_model is not None and item_model != current_issuer_model
-        )
+        # once. A wrong guess is caught by the invalid_encrypted_content 400 classifier, whose first rung
+        # strips exactly these unverified (unstamped / sibling-family) items.
+        foreign_model = not _model_can_read_blob(current_issuer_kind, item_model, current_issuer_model)
         if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:
                 logger.warning(

@@ -9079,6 +9079,7 @@
    "parallel_tool_calls": true,
    "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
    "reasoning": {
+    "context": "all_turns",
     "effort": "high",
     "summary": "auto"
    },
@@ -9193,6 +9194,7 @@
    "parallel_tool_calls": true,
    "prompt_cache_key": "pck_f6d11aab44ec88459ba6fe2e",
    "reasoning": {
+    "context": "all_turns",
     "effort": "medium",
     "summary": "auto"
    },

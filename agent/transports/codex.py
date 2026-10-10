@@ -569,16 +569,29 @@ def _coerce_timeout(timeout: Any) -> Optional[float]:
     return None
 
 
+def _sends_all_turns(model: Any, params: dict[str, Any]) -> bool:
+    """``reasoning.context: "all_turns"`` goes only to api.openai.com models in the live-verified family
+    table (gpt-5.4/5.5 default to ``current_turn`` and discard replayed earlier-turn blobs without it;
+    o-series and gpt-5.1-5.3 400 on it). Never the ChatGPT Codex backend: acceptance there is unverified."""
+    from agent.codex_responses_adapter import openai_reasoning_family
+
+    return (
+        params.get("is_codex_backend") is not True and _is_openai_api_origin(params.get("base_url"))
+        and openai_reasoning_family(model) is not None
+    )
+
+
 def _reasoning_fields(
     model: str, params: dict[str, Any], *, effort: Any, enabled: bool, replay_encrypted_reasoning: bool,
-    is_xai_responses: bool, is_github_responses: bool,
+    is_xai_responses: bool, is_github_responses: bool, all_turns: bool = False,
 ) -> dict[str, Any]:
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
     xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
     verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
     ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
-    a reasoning model's default effort off (#75227).
+    a reasoning model's default effort off (#75227). ``all_turns`` adds ``context: "all_turns"``
+    so the model renders replayed reasoning from earlier user turns (``_sends_all_turns``).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -601,7 +614,7 @@ def _reasoning_fields(
                 # See #46527.
                 fields["reasoning"] = {**params["github_reasoning_extra"], "summary": "auto"}
         else:
-            fields["reasoning"] = {"effort": effort, "summary": "auto"}
+            fields["reasoning"] = {"effort": effort, "summary": "auto", **({"context": "all_turns"} if all_turns else {})}
             fields["include"] = include
     elif not is_github_responses and not is_xai_responses:
         fields["include"] = []
@@ -621,6 +634,36 @@ class ResponsesApiTransport(ProviderTransport):
     _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
+    # Wire models that 400'd on ``reasoning.context`` this session (the transport is cached per agent).
+    _all_turns_rejected: frozenset = frozenset()
+    _last_sent_all_turns: bool = False
+
+    def reject_all_turns(self, error: Any) -> bool:
+        """400 naming ``reasoning.context``/``all_turns`` on a request that carried the opt-in: omit it for that
+        model for the rest of the session. False otherwise, so it buys at most one retry per model."""
+        text = str(error).lower()
+        if not self._last_sent_all_turns or getattr(error, "status_code", None) not in (400, None) or not (
+            "reasoning.context" in text or "all_turns" in text
+        ):
+            return False
+        self._all_turns_rejected = self._all_turns_rejected | {self._last_issuer_model}
+        self._last_sent_all_turns = False
+        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_issuer_model)
+        return True
+
+    def drop_unverified_replay(self, *message_lists: Any) -> int:
+        """First ``invalid_encrypted_content`` rung: drop the replayed blobs the failing request could not vouch
+        for (not stamped by exactly its endpoint + model), keeping the session's own continuity. Returns the
+        count removed from the first list; 0 means only the route's own blobs were sent."""
+        from agent.codex_responses_adapter import strip_unverified_reasoning_items
+
+        if self._last_issuer_kind is None or self._last_issuer_model is None:
+            return 0
+        removed = [
+            strip_unverified_reasoning_items(msgs, issuer_kind=self._last_issuer_kind, issuer_model=self._last_issuer_model)
+            for msgs in message_lists
+        ]
+        return removed[0] if removed else 0
 
     @property
     def api_mode(self) -> str:
@@ -749,10 +792,14 @@ class ResponsesApiTransport(ProviderTransport):
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 
+        self._last_sent_all_turns = (
+            reasoning_enabled and _sends_all_turns(wire_model, params) and wire_model not in self._all_turns_rejected
+        )
         kwargs.update(_reasoning_fields(
             model, params, effort=reasoning_effort, enabled=reasoning_enabled,
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+            all_turns=self._last_sent_all_turns,
         ))
         # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
         # xAI's /responses rejects unknown top-level fields, same as service_tier below.

@@ -463,7 +463,9 @@ def _recover_stale_codex_reasoning(
     agent: Any, _retry: TurnRetryState, messages: list[dict[str, Any]], api_messages: Any,
 ) -> bool:
     """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
-    persisted ``messages``) and retry once. The first rejection keeps replay on, since blobs the
+    persisted ``messages``) and retry once. The first rung drops only the replayed blobs not stamped by
+    exactly this endpoint+model (it consumes its own precondition, so it cannot loop); a repeat goes on
+    to strip every item. The first full strip keeps replay on, since blobs the
     route mints from now on are sealed with its current key; a repeat rejection means the route
     cannot round-trip its own blobs, so replay is disabled for the session."""
     if (
@@ -479,6 +481,10 @@ def _recover_stale_codex_reasoning(
         )
     ):
         return False
+    transport = agent._get_transport()
+    if transport is not None and (removed := transport.drop_unverified_replay(messages, api_messages)):
+        _vlines(agent, f"⚠️  Encrypted reasoning replay was rejected — dropped {removed} item(s) minted elsewhere, retrying...")
+        return True
     _retry.invalid_encrypted_content_retry_attempted = True
     keep_replay = not getattr(agent, "_codex_reasoning_replay_rejected", False)
     agent._codex_reasoning_replay_rejected = True
@@ -661,6 +667,11 @@ def _clamp_to_affordable_budget(agent: Any, api_error: Exception, classified: An
     return True
 
 
+def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
+    reject = getattr(agent._get_transport(), "reject_all_turns", None)
+    return bool(reject(api_error)) if callable(reject) else False
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
@@ -668,7 +679,7 @@ def recover_after_classification(
 ) -> tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
-    welcome-tier repair → credit-limited 402 output-cap clamp → Nous paid-entitlement refresh →
+    welcome-tier repair → credit-limited 402 output-cap clamp → ``reasoning.context`` opt-out → Nous paid-entitlement refresh →
     Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
     strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
     format-recovery strips.
@@ -676,10 +687,11 @@ def recover_after_classification(
     from agent.conversation_loop import _is_nous_inference_route
 
     # The credit-limited 402 clamp runs before pool rotation, which would bench a credential
-    # that still has credit.
+    # that still has credit. A ``reasoning.context`` 400 is classified reasoning_mandatory, whose rung
+    # would drop the whole reasoning config; omit only the all_turns opt-in, ahead of it.
     if _recover_welcome_tier(agent, classified, _retry) or _clamp_to_affordable_budget(
         agent, api_error, classified, _retry
-    ):
+    ) or (agent.api_mode == "codex_responses" and _reject_all_turns(agent, api_error)):
         return True, False
 
     # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a

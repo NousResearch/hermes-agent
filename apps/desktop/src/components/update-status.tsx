@@ -65,6 +65,8 @@ interface UpdateStatusInput {
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   u: Translations['updates']
+  /** Names the pinned release when a source install is current on stable. */
+  latestRelease?: (version: string) => string
 }
 
 export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
@@ -82,7 +84,7 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   return ordinaryUpdateStatus(input)
 }
 
-function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStatusInput): UpdateStatusView {
+function ordinaryUpdateStatus({ apply, checking, latestRelease, status, target, u }: UpdateStatusInput): UpdateStatusView {
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
@@ -120,9 +122,25 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   }
 
   if (status) {
+    // Stable pins to a release; name it. A checkout ahead of it (forward-only) is newer
+    // than the release, so it keeps the generic line instead of claiming to be on it.
+    const pinned =
+      target === 'client' &&
+      latestRelease &&
+      status.channel === 'stable' &&
+      status.sourceVersion &&
+      !status.aheadOfRelease &&
+      status.targetSha &&
+      status.currentSha === status.targetSha
+
     return {
       applying,
-      line: target === 'backend' ? u.latestBodyBackend : u.latestBody,
+      line:
+        target === 'backend'
+          ? u.latestBodyBackend
+          : pinned
+            ? latestRelease(`v${status.sourceVersion}`)
+            : u.latestBody,
       supported,
       tone: 'idle',
       updateAvailable
@@ -278,7 +296,14 @@ export function UpdateStatusCard({
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
   const [justChecked, setJustChecked] = useState<boolean>(false)
 
-  const view = deriveUpdateStatus({ apply, checking, status, target, u })
+  const view = deriveUpdateStatus({
+    apply,
+    checking,
+    latestRelease: t.settings.about.channel.latestRelease,
+    status,
+    target,
+    u
+  })
 
   const handleCheck = async (): Promise<void> => {
     setJustChecked(false)

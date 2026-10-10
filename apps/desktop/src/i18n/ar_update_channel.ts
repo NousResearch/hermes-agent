@@ -7,5 +7,9 @@ export const arUpdateChannel = {
   stableConfirmBody:
     'سينتقل Hermes إلى أحدث إصدار منشور، وقد يكون أقدم من الكود الذي تشغّله الآن. قد لا تُقرأ البيانات التي كتبها كود أحدث بشكل صحيح، لذا انسخها احتياطيًا أولًا.',
   stableConfirm: 'التبديل إلى المستقر',
-  failed: 'تعذّر تغيير قناة التحديث'
+  failed: 'تعذّر تغيير قناة التحديث',
+  detailsLabel: 'القناة',
+  branch: (b: string) => `الفرع: ${b}`,
+  change: 'تغيير',
+  latestRelease: (v: string) => `أنت على أحدث إصدار مستقر (${v}).`
 }

@@ -290,6 +290,9 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         result.update(channel=channel, targetSha=target, updateAvailable=co.head != target,
                       behind=0 if co.head == target else UPDATE_AVAILABLE_NO_COUNT,
                       sourceVersion=source_target.version, buildId=source_target.build_id)
+        if getattr(source_target, "ahead", False):
+            # Forward-only: the target is this checkout's own HEAD, newer than the release.
+            result["aheadOfRelease"] = True
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target

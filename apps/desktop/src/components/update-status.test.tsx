@@ -43,6 +43,27 @@ function derive(status: DesktopUpdateStatus | null, apply: UpdateApplyState = ID
 }
 
 describe('deriveUpdateStatus', () => {
+  it('names the stable release only when the checkout is on it', () => {
+    const latestRelease = en.settings.about.channel.latestRelease
+    const stable = { supported: true, behind: 0, channel: 'stable', sourceVersion: '0.21.6', targetSha: 'a'.repeat(40) }
+    const on = deriveUpdateStatus({ apply: IDLE_APPLY, checking: false, latestRelease, status: { ...stable, currentSha: 'a'.repeat(40) }, target: 'client', u: en.updates })
+    expect(on.line).toBe('You’re on the latest stable release (v0.21.6).')
+
+    // Ahead of the release (forward-only): the check pins the target to HEAD, so
+    // targetSha === currentSha; aheadOfRelease keeps it from claiming the release.
+    const ahead = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, targetSha: 'b'.repeat(40), currentSha: 'b'.repeat(40), aheadOfRelease: true },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(ahead.line).toBe(en.updates.latestBody)
+    expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
+  })
+
   it('never-checked: idle tone, invites a check', () => {
     const view = derive(null)
 

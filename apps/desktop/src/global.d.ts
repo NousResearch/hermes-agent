@@ -885,6 +885,10 @@ export interface DesktopUpdateStatus {
   channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
+  /** Source stable: the release version the channel resolves to, e.g. `0.21.6`. */
+  sourceVersion?: string
+  /** Source stable, forward-only: this checkout is newer than that release and waits for the next. */
+  aheadOfRelease?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

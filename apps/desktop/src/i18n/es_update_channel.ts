@@ -7,5 +7,9 @@ export const esUpdateChannel = {
   stableConfirmBody:
     'Hermes pasará a la última versión publicada, que puede ser más antigua que el código que usas ahora. Los datos escritos por código más nuevo podrían no leerse bien, así que haz una copia antes.',
   stableConfirm: 'Cambiar a estable',
-  failed: 'No se pudo cambiar el canal de actualizaciones'
+  failed: 'No se pudo cambiar el canal de actualizaciones',
+  detailsLabel: 'Canal',
+  branch: (b: string) => `Rama: ${b}`,
+  change: 'Cambiar',
+  latestRelease: (v: string) => `Tienes la última versión estable (${v}).`
 }

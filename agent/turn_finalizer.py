@@ -551,6 +551,7 @@ def finalize_turn(
     # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).
     if (
         not final_response
+        and _turn_exit_reason != "session_persistence_failed"
         and not interrupted
         and messages
         and isinstance(messages[-1], dict)

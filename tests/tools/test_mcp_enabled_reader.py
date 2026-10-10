@@ -39,3 +39,39 @@ def test_every_reader_agrees_with_the_shared_table(case):
     answers = {name: bool(read({"command": "x", **entry})) for name, read in _readers().items()}
 
     assert answers == dict.fromkeys(answers, case["on"])
+
+
+def _prepared(entry: dict):
+    """A real MCPServerTask after ``_prepare_run`` (stdio: no network, no process)."""
+    import asyncio
+
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_common import _core
+
+    task = MCPServerTask("s")
+    assert asyncio.run(task._prepare_run({"command": "x", **entry})) is True
+    if not (_core._MCP_SAMPLING_TYPES and _core._MCP_ELICITATION_TYPES):
+        pytest.skip("installed mcp SDK lacks sampling/elicitation types")
+    return task
+
+
+@pytest.mark.parametrize("feature", ["sampling", "elicitation"])
+@pytest.mark.parametrize("case", CASES, ids=lambda c: repr(c.get("enabled", "<absent>")))
+def test_feature_enabled_flag_uses_the_same_table(feature, case):
+    """``sampling.enabled`` / ``elicitation.enabled`` read like the server-level key, so the
+    documented ``enabled: false`` for an untrusted server also holds when written as a string."""
+    block = {k: v for k, v in case.items() if k != "on"}
+    task = _prepared({feature: block})
+    assert (getattr(task, f"_{feature}") is not None) == case["on"]
+
+
+@pytest.mark.parametrize("feature", ["sampling", "elicitation"])
+def test_empty_feature_block_uses_defaults(feature):
+    """``sampling:`` with every child commented out loads as ``None``: defaults, not a crash."""
+    assert getattr(_prepared({feature: None}), f"_{feature}") is not None
+
+
+@pytest.mark.parametrize("feature", ["sampling", "elicitation"])
+def test_bare_scalar_feature_block_is_the_flag(feature):
+    assert getattr(_prepared({feature: False}), f"_{feature}") is None
+    assert getattr(_prepared({feature: "off"}), f"_{feature}") is None

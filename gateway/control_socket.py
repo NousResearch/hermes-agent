@@ -407,3 +407,28 @@ def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
     session; only handlers go live."""
     params = {"home": str(profile_home or home)}
     return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)
+
+
+def rotate_gateway_session(home: Path, *, session_key: Optional[str] = None,
+                           platform: Optional[str] = None, chat_id: Optional[Any] = None,
+                           thread_id: Optional[Any] = None, user_id: Optional[Any] = None,
+                           profile: Optional[str] = None,
+                           timeout: float = 8.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to rotate one channel's session now — the programmatic ``/new``,
+    so that channel's conversation starts clean on its next message (an orchestrator that opens work
+    for a chat can then post its hand-off note into a session that does not carry the previous one).
+
+    A channel is named the way the routing index holds it — ``platform`` + ``chat_id``, plus
+    ``thread_id`` for a forum topic / thread and ``user_id`` for a chat isolated per participant, plus
+    ``profile`` when a multiplexed gateway serves that chat through more than one profile — or by
+    ``session_key`` directly for an identity those fields cannot express. Nothing is created: a channel
+    with no live session answers ``{"rotated": false, "reason": "no_session"}``, and an identity
+    matching several sessions answers ``{"rotated": false, "reason": "ambiguous", "candidates": [...]}``.
+
+    Returns the verb's answer, or None when no gateway answers / the gateway predates the verb — the
+    caller then falls back to asking the human for ``/new``."""
+    params = {name: value for name, value in (
+        ("session_key", session_key), ("platform", platform), ("chat_id", chat_id),
+        ("thread_id", thread_id), ("user_id", user_id), ("profile", profile))
+        if value is not None and value != ""}
+    return query_gateway_control(home, "rotate-session", params=params, timeout=timeout)

@@ -285,13 +285,18 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
+def _session_status_method(client: Any) -> tuple[Any, bool]:
+    """Return the status setter and whether it is the Agent Sessions route."""
     if _sdk_supports_agent_sessions():
         method = getattr(client, "agents_sessions_setStatus", None)
         if method is not None:
-            return method
-    return client.assistant_threads_setStatus
+            return method, True
+    return client.assistant_threads_setStatus, False
+
+
+def _agent_sessions_status(status: str) -> str:
+    """Map legacy free-form status text to the Agent Sessions lifecycle values."""
+    return "processing" if status else "active"
 
 
 def _session_title_method(client: Any):
@@ -1010,7 +1015,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
-    # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.
+    # Legacy status accepts text; Agent Sessions maps live phrases to lifecycle values.
     supports_status_text = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack rejects slash commands inside threads; "!" is rewritten to "/" for known commands.
@@ -2715,8 +2720,11 @@ class SlackAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a thread status via assistant.threads.setStatus.
-        Needs assistant:write or chat:write scope; auto-clears on reply."""
+        """Show a thread status via the available Slack session API.
+
+        Agent Sessions maps live text to ``processing`` and needs an explicit
+        ``active`` transition; the legacy route keeps its text and clears on reply.
+        """
         if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
             return
         if not self._app:
@@ -2759,12 +2767,20 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set status through Agent Sessions or legacy Assistant Threads; debug-log failures."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            client = self._get_client(chat_id, team_id=team_id)
+            _set_status, is_agent_sessions = _session_status_method(client)
+            if is_agent_sessions:
+                status = _agent_sessions_status(status)
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            method_name = (
+                "agents.sessions.setStatus"
+                if _sdk_supports_agent_sessions()
+                else "assistant.threads.setStatus"
+            )
+            logger.debug("[Slack] %s %s: %s", method_name, fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

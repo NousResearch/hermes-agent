@@ -248,3 +248,11 @@ Tool calls may execute sequentially or concurrently depending on the tool mix an
 - [Built-in Tools Reference](../reference/tools-reference.md)
 - [Agent Loop Internals](./agent-loop.md)
 - [ACP Internals](./acp-internals.md)
+
+### Terminal execution deadlines
+
+Sequential terminal execution uses the terminal command's own timeout and process cleanup.
+The default generic tool watchdog does not preempt an accepted foreground command;
+`timeouts.tools.sequential_call`, when explicitly set, still bounds that call. Other
+sequential tools and terminal approval preparation inherit the concurrent batch default.
+Human approval waits remain excluded, and user interrupts still poll and stop terminal work.

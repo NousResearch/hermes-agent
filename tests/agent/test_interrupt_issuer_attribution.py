@@ -111,7 +111,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
     agent = _bare_agent()
     agent._touch_activity = lambda *_: None
     batch = SimpleNamespace(authorization_gate=te._ConcurrentToolAuthorizationGate(), executor=None, close=lambda: None)
-    prepared = SimpleNamespace(batch=batch, tids=[], future=concurrent.futures.Future())
+    prepared = SimpleNamespace(batch=batch, tids=[], future=concurrent.futures.Future(), execution_started=threading.Event())
     try:
         # Drive the REAL batch-timeout guard: a prepared terminal call whose worker never settles.
         with (

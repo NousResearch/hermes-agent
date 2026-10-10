@@ -320,7 +320,7 @@ def test_sequential_timeout_stops_abandoned_workers_heartbeat(monkeypatch):
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
     monkeypatch.setattr(te, "_SEQUENTIAL_INTERRUPT_POLL_SECONDS", 0.05)
-    monkeypatch.setattr(te, "_resolve_sequential_tool_timeout", lambda: 0.3)
+    monkeypatch.setattr(te, "_resolve_sequential_tool_timeout", lambda _name=None: 0.3)
     monkeypatch.setattr(te, "_emit_terminal_post_tool_call", lambda agent, **kw: None)
     # The middleware's execution seam: ``_run_with_activity_heartbeat`` around ``execute`` on the worker.
     monkeypatch.setattr(

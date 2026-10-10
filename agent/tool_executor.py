@@ -836,14 +836,17 @@ def _run_agent_tool_execution_middleware(
 _SEQUENTIAL_INTERRUPT_POLL_SECONDS = 1.0
 
 
-def _resolve_sequential_tool_timeout() -> float | None:
+def _resolve_sequential_tool_timeout(function_name: str | None = None) -> float | None:
     """Deadline for one sequential call: ``timeouts.tools.sequential_call``, else the
-    concurrent batch deadline so the two paths can't drift; ``0``/negative disables.
+    concurrent batch deadline for tools without their own execution deadline.
+    Terminal commands own their process timeout; only an explicit sequential setting
+    may cut that wait short. ``0``/negative disables the generic deadline.
     Deliberately NOT ``agent.deadline.run_bounded_sync``: both executors extend the
     deadline while an approval prompt is open, which a fixed deadline can't express."""
     from agent.deadline import resolve_timeout
 
-    return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
+    default = None if function_name == "terminal" else _resolve_concurrent_tool_timeout()
+    return resolve_timeout("tools.sequential_call", default=default)
 
 
 # Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
@@ -864,7 +867,17 @@ def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_
     return _ManagedToolResult(result=result_cls(message), args=ref.args, middleware_trace=ref.trace, blocked=False, dispatched=True)
 
 
-def _poll_sequential_future(agent, future, function_name: str, deadline: float | None, started: float, authorization_gate) -> tuple[str, Any]:
+def _poll_sequential_future(
+    agent,
+    future,
+    function_name: str,
+    deadline: float | None,
+    started: float,
+    authorization_gate,
+    *,
+    execution_started: threading.Event | None = None,
+    execution_timeout_s: float | None = None,
+) -> tuple[str, Any]:
     """Wait for the worker in interrupt-poll slices, extending the deadline by human approval
     wait; returns ``("done", result)``, ``("timeout", None)`` or ``("interrupted", None)``.
     A disabled deadline still polls: this loop is what makes a non-cooperative tool
@@ -872,6 +885,8 @@ def _poll_sequential_future(agent, future, function_name: str, deadline: float |
     _last_heartbeat = 0
     while True:
         wait_slice = _SEQUENTIAL_INTERRUPT_POLL_SECONDS
+        if execution_started is not None and execution_started.is_set():
+            deadline = started + execution_timeout_s if execution_timeout_s is not None else None
         if deadline is not None:
             remaining = deadline + authorization_gate.excluded_seconds() - time.monotonic()
             if remaining <= 0:
@@ -904,12 +919,13 @@ def _run_sequential_tool_execution_middleware(
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
 ) -> _ManagedToolResult:
-    """Run one sequential call on a worker thread under the concurrent executor's deadline.
+    """Run one sequential call on a worker thread under its resolved execution deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
     generic deadline would report ``tool_timeout`` while the prompt is still live. They
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    execution_timeout_s = _resolve_sequential_tool_timeout(function_name) if function_name == "terminal" else timeout_s
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     from agent.terminal_approval_batch import take_prepared_call
@@ -919,6 +935,7 @@ def _run_sequential_tool_execution_middleware(
         executor = prepared.batch.executor
         worker_tid = prepared.tids
         future = prepared.future
+        execution_started = prepared.execution_started
     else:
         authorization_gate = None
     if function_name in _NEVER_PARALLEL_TOOLS:
@@ -929,11 +946,17 @@ def _run_sequential_tool_execution_middleware(
     if prepared is None:
         authorization_gate = _ConcurrentToolAuthorizationGate()
         worker_tid: list[int] = []
+        execution_started = threading.Event()
+
+    def begin_execution(callback=None):
+        if callback is not None:
+            callback()
+            execution_started.set()
 
     def _run() -> _ManagedToolResult:
         with _registered_tool_worker(agent) as tid:
             worker_tid.append(tid)
-            return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
+            return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, begin_execution=begin_execution, **kwargs)
 
     if ref.trace is None:
         ref.trace = []
@@ -944,7 +967,11 @@ def _run_sequential_tool_execution_middleware(
     started = time.monotonic()
     abandoned = False
     try:
-        state, result = _poll_sequential_future(agent, future, function_name, deadline, started, authorization_gate)
+        state, result = _poll_sequential_future(
+            agent, future, function_name, deadline, started, authorization_gate,
+            execution_started=execution_started if function_name == "terminal" else None,
+            execution_timeout_s=execution_timeout_s,
+        )
         if state == "done":
             return result
         if state == "interrupted":

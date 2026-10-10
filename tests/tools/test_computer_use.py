@@ -2047,6 +2047,20 @@ class TestElementTokenAttachment:
         assert args["element_token"] == "s00000001:5"
         assert args["element_index"] == 5
 
+    def test_refused_when_token_only_schema_has_no_token_for_index(self):
+        """A strict token-only schema never accepts the bare `element_index` either, so an index
+        with no token from the latest capture (model reusing an older capture, or a capture that
+        returned no tokens) must be refused locally with an actionable message instead of being
+        sent to the driver for the same opaque `unknown argument element_index` rejection."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {}  # index 5 not in the latest capture's tokens
+        res = backend.click(element=5, button="left")
+        assert res.ok is False
+        assert res.code == "stale_element"
+        assert "5" in res.message and "capture" in res.message
+        backend._session.call_tool.assert_not_called()
+
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a

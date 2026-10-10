@@ -1,14 +1,14 @@
 name: holographic
 title: Holographic
 repo: https://github.com/itpartypattaya/hermes-plugin-holographic
-sha: 97682ec657a99c2caa5590b3c0a87a31e9ff483b
-version: "0.2.0"
-description: "Local fact-store memory provider: SQLite with FTS5 keyword search, trust scores, entity linking and HRR (holographic reduced representation) recall, with no API key, network or model calls. The provider that shipped in-tree as plugins/memory/holographic, with the same provider name, config (plugins.hermes-memory-store) and memory_store.db, so `hermes update` moves existing users onto it. Taken over from Nous Research's handoff copy (NousResearch/hermes-plugin-holographic) and maintained by itpartypattaya; 0.2.0 fixes probe/reason/contradict, non-Latin entity names and the never-written retrieval_count, and stops mirroring built-in memory into facts by default. Disclosure — local only: reads and writes one SQLite file per profile ($HERMES_HOME/memory_store.db unless db_path says otherwise); no network calls, subprocesses, credentials or telemetry; with auto_extract on (off by default) user messages that match preference/decision patterns are stored at session end."
+sha: 1188b0fc79bae464c000eebba7a95c1666cf2108
+version: "0.2.1"
+description: "Local fact-store memory provider: SQLite with FTS5 keyword search, trust scores, entity linking and HRR (holographic reduced representation) recall, with no API key, network or model calls. The provider that shipped in-tree as plugins/memory/holographic, with the same provider name, config (plugins.hermes-memory-store) and memory_store.db, so `hermes update` moves existing users onto it. Taken over from Nous Research's handoff copy (NousResearch/hermes-plugin-holographic) and maintained by itpartypattaya; 0.2.x fixes probe/reason/related/contradict, non-Latin entity names, non-atomic writes and the never-written retrieval_count, honours the provider contract (read-only subagent/cron contexts, hermes_home, mirror metadata), and stops mirroring built-in memory into facts by default. Disclosure — local only: reads and writes one SQLite file per profile ($HERMES_HOME/memory_store.db unless db_path says otherwise); no network calls, subprocesses, credentials or telemetry; with auto_extract on (off by default) user messages that match preference/decision patterns are stored at session end."
 maintainer: itpartypattaya
 tier: community
 category: memory
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/itpartypattaya/hermes-plugin-holographic/blob/97682ec657a99c2caa5590b3c0a87a31e9ff483b/README.md
+docs_url: https://github.com/itpartypattaya/hermes-plugin-holographic/blob/1188b0fc79bae464c000eebba7a95c1666cf2108/README.md
 known_issues:
 - "Keyword search matches exact word forms (no stemming), so recall in inflected languages needs the same word form."
 capabilities:

@@ -132,3 +132,36 @@ it('sidebar edits fall back to the base write only when the backend lacks the fe
     expect(writes).toEqual([])
   }
 })
+
+// N21: an older headless `hermes serve` (SSH remotes) answers an unmatched GET with its own fixed
+// catch-all body, formatted by Electron's httpStatusError. That is the same route verdict.
+it('sidebar edits on an older headless serve fall back to the base write', async () => {
+  const headless = '404: {"error":"Headless backend (hermes serve): web UI disabled \u2014 use `hermes dashboard` for the browser UI."}'
+  const writes: Array<{ method?: string; body?: unknown }> = []
+  vi.mocked(hermesApi).mockReset().mockImplementation(async request => {
+    if (!request.method || request.method === 'GET') { throw new Error(headless) }
+    writes.push(request as never)
+
+    return { ok: true } as never
+  })
+
+  await renameSession('ssh', 'name', 'work')
+  await setSessionArchived('ssh', true, 'work')
+  await setSessionPinnedRemote('ssh', true, 'work')
+  await setSessionUnreadRemote('ssh', false, 'work')
+  await deleteSession('ssh', { connectionId: 'server', profile: 'work' })
+  expect(writes.map(write => [write.method, write.body])).toEqual([
+    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, profile: 'work' }],
+    ['PATCH', { pinned: true, profile: 'work' }], ['PATCH', { unread: false, profile: 'work' }], ['DELETE', undefined]])
+
+  // FastAPI's bare 404 is no route verdict: it keeps the fenced path and writes nothing.
+  writes.length = 0
+  vi.mocked(hermesApi).mockReset().mockImplementation(async request => {
+    if (!request.method || request.method === 'GET') { throw new Error('404: {"detail":"Not Found"}') }
+    writes.push(request as never)
+
+    return { ok: true } as never
+  })
+  await expect(renameSession('ssh', 'name', 'work')).rejects.toThrow('Not Found')
+  expect(writes).toEqual([])
+})

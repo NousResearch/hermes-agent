@@ -38,13 +38,20 @@ export function isMissingRestEndpoint(error: unknown): boolean {
   )
 }
 
-/** Narrow twin of isMissingRestEndpoint for routes with path params: only the
- *  backend's catch-all verdict (or the Electron HTML guard) proves the ROUTE is
- *  absent; a handler's own 404 (unknown session/profile) never matches. */
+/** Narrow twin of isMissingRestEndpoint for routes with path params: only a
+ *  backend catch-all verdict (or the Electron HTML guard) proves the ROUTE is
+ *  absent; a handler's own 404 (unknown session/profile) never matches. Two
+ *  catch-alls exist: `hermes dashboard` answers unmatched `/api/*` with
+ *  "No such API endpoint", and headless `hermes serve` (what Desktop's SSH
+ *  remotes launch) answers every unmatched GET with its fixed "web UI disabled"
+ *  body. A bare `{"detail":"Not Found"}` is not a route verdict. */
 export function isUnroutedRestPath(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
-  return /no such api endpoint|endpoint is likely missing/i.test(message)
+  return (
+    /no such api endpoint|endpoint is likely missing/i.test(message) ||
+    /(?:^\s*|error:\s*)404:.*headless backend \(hermes serve\): web ui disabled/i.test(message)
+  )
 }
 
 /** True when the backend refused a request because it owns the profile and the

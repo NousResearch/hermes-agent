@@ -573,8 +573,11 @@ def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
 
 def salvage_grown_transcript(
     original: list[dict[str, Any]], candidate: list[dict[str, Any]], budget: Optional[int] = None,
+    *, route: Any = None,
 ) -> Optional[list[dict[str, Any]]]:
-    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller."""
+    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller.
+    Never strips reasoning text: the result becomes canonical history that replay reads on every retained turn.
+    ``codex_reasoning_items`` follow ``compress()``'s rule (``route_reads_prior_turn_reasoning(route)``)."""
     if not candidate or not original:
         return None
     if budget is None:
@@ -584,15 +587,10 @@ def salvage_grown_transcript(
 
     out = [dict(msg) if isinstance(msg, dict) else msg for msg in candidate]
     tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and msg.get("role") == "tool"]
-    last_assistant_idx = _last_index_with_role(out, "assistant")
-    salvage_reasoning_keys = _NEWEST_TURN_ONLY_BUDGET_KEYS + ("reasoning_details",)
     keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
     for index, msg in enumerate(out):
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "assistant" and index != last_assistant_idx:
-            for key in salvage_reasoning_keys:
-                msg.pop(key, None)
         if msg.get("role") == "tool" and index not in keep_tools:
             content = msg.get("content")
             if isinstance(content, str) and len(content) > _PRUNE_MIN_CHARS:
@@ -604,7 +602,8 @@ def salvage_grown_transcript(
             and _looks_like_compaction_summary(msg, content)
         ):
             msg["content"] = elide(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
-    _prune_stale_reasoning_replay(out)
+    from agent.codex_responses_adapter import route_reads_prior_turn_reasoning
+    _prune_stale_reasoning_replay(out, keep_prior_turns=route is not None and route_reads_prior_turn_reasoning(route))
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)
     has_user = any(isinstance(message, dict) and message.get("role") == "user" for message in out)

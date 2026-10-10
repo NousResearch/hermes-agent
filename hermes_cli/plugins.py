@@ -788,6 +788,9 @@ class PluginContext:
         if entry_kwargs.get("trusted_inbound") and self.manifest.source != "bundled" and core_ships_platform(name):
             raise self._refuse(f"core platform '{name}' with trusted_inbound (it would waive allowlists and pairing)")
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        # Path-derived key so a ``plugins.disabled`` entry written either way matches at connect
+        # time too (the gate only ever saw the manifest at discovery, #68367).
+        entry_kwargs.setdefault("plugin_key", manifest_key(self.manifest))
         entry = PlatformEntry(
             name=name, label=label, adapter_factory=adapter_factory, check_fn=check_fn,
             validate_config=validate_config, required_env=required_env or [],

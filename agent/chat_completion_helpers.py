@@ -1494,6 +1494,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
+    from agent.reasoning_carriers import shape_wire_carriers
+    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
@@ -1658,6 +1660,11 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     extra = getattr(tool_call, "extra_content", None)
     if extra is not None:
         tc_dict["extra_content"] = _dump_if_model(extra)
+    # Copilot's Gemini 3 variant signs the call inside ``function`` (replayed only to Copilot).
+    from agent.reasoning_carriers import field
+    fn_sig = field(tool_call, "thought_signature") or getattr(tool_call.function, "thought_signature", None)
+    if isinstance(fn_sig, str) and fn_sig:
+        tc_dict["function"]["thought_signature"] = fn_sig
     return tc_dict
 
 
@@ -1753,6 +1760,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                         from agent.conversation_compression import _reset_read_dedup_caches
 
                         _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+
+    from agent.reasoning_carriers import carrier_record
+    if record := carrier_record(assistant_message):
+        # Gemini text-turn signature / Copilot reasoning_opaque+text: top-level for the live
+        # history, a private reasoning_details record for persistence (reasoning_carriers.py).
+        msg.update({k: v for k, v in record.items() if k != "type"})
+        msg["reasoning_details"] = [*msg.get("reasoning_details", ()), record]
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -2769,6 +2783,9 @@ class _ToolCallAccumulator:
                 entry["function"]["name"] = tc_function.name
             if getattr(tc_function, "arguments", None):
                 parts.append(tc_function.arguments)
+            from agent.reasoning_carriers import field
+            if isinstance(fn_sig := field(tc_function, "thought_signature"), str) and fn_sig:
+                entry["thought_signature"] = fn_sig
         extra = getattr(tc_delta, "extra_content", None)
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -3096,6 +3113,8 @@ class _StreamingCall(StreamingWaitMonitor):
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
+        from agent.reasoning_carriers import StreamCarriers
+        carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
@@ -3177,6 +3196,10 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
+            copilot_reasoning = carriers.feed(delta)
+            if reasoning_text is None:
+                reasoning_text = copilot_reasoning
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
@@ -3266,6 +3289,8 @@ class _StreamingCall(StreamingWaitMonitor):
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        if getattr(response, "choices", None):
+            carriers.apply(response.choices[0].message)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
@@ -3340,7 +3365,8 @@ class _StreamingCall(StreamingWaitMonitor):
             mock_tool_calls.append(SimpleNamespace(
                 id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
                 function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments,
-                                         args_repaired=arguments != tc["function"]["arguments"])))
+                                         args_repaired=arguments != tc["function"]["arguments"],
+                                         thought_signature=tc.get("thought_signature"))))
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,

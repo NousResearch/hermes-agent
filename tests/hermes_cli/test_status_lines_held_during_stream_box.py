@@ -99,6 +99,26 @@ def test_interrupted_reply_panel_after_tool_call_boundary(cli_stub, monkeypatch,
     assert bool(printed) is expect_panel, printed
 
 
+def test_current_stream_segment_resets_at_tool_boundary(cli_stub):
+    """Suffix repair must compare the final response with this segment, not earlier interim prose."""
+    from hermes_cli.cli_chat_turn_mixin import _unstreamed_final_suffix
+
+    cli, _ = cli_stub
+    cli._streamed_text_this_turn = ""
+    cli._stream_delta("Looking that up.\n")
+    assert cli._streamed_text_this_segment == "Looking that up.\n"
+
+    cli._stream_delta(None)  # tool-call boundary
+    assert cli._streamed_text_this_segment == ""
+
+    cli._stream_delta("Final prefix")
+    assert cli._streamed_text_this_turn == "Looking that up.\nFinal prefix"
+    assert cli._streamed_text_this_segment == "Final prefix"
+    assert _unstreamed_final_suffix(
+        "Final prefix plus tail", cli._streamed_text_this_segment, {"completed": True},
+    ) == " plus tail"
+
+
 def test_unstreamed_final_reply_after_streamed_segment_still_prints_panel(cli_stub, monkeypatch):
     """#65666 scope: the turn-level streamed record only suppresses the Panel for interrupted results.
     A turn that streamed text A, crossed a tool boundary, then returned an unstreamed final B must

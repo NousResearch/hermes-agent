@@ -726,6 +726,7 @@ gateway:
     reject_goal: "O agente está em execução — use /goal status / pause / clear / wait durante a execução, ou /stop antes de definir um novo objetivo."
     reject_loop: "O agente está em execução — use /loop status / pause / stop durante a execução, ou /stop antes de definir um novo loop."
     draining_maintenance: "⏳ Este agente está sendo drenado para uma ação de manutenção e não está aceitando novos turnos agora. Ele voltará em instantes — reenvie em breve."
+    compressing_retry: "⏳ Esta sessão está comprimindo o contexto, então esta mensagem não foi processada para proteger a transcrição. A compressão normalmente termina em um ou dois minutos — reenvie depois."
     another_turn_running: "⏳ Outro turno ainda está em execução nesta sessão. Para proteger a transcrição, esta mensagem não foi processada. Aguarde o turno ativo terminar e reenvie."
     behavior_queue_short: "enfileira para o próximo turno"
     behavior_queue_long: "As mensagens serão enfileiradas para o próximo turno enquanto o Hermes estiver ocupado."

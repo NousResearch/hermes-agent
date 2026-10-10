@@ -726,6 +726,7 @@ gateway:
     reject_goal: "Ajan çalışıyor — çalışma sırasında /goal status / pause / clear / wait kullanın ya da yeni bir hedef belirlemeden önce /stop kullanın."
     reject_loop: "Ajan çalışıyor — çalışma sırasında /loop status / pause / stop kullanın ya da yeni bir döngü başlatmadan önce /stop kullanın."
     draining_maintenance: "⏳ Bu ajan bir bakım işlemi için boşaltılıyor ve şu anda yeni tur kabul etmiyor. Kısa süre içinde geri dönecek — lütfen biraz sonra yeniden gönderin."
+    compressing_retry: "⏳ Bu oturum bağlam sıkıştırması yapıyor, bu yüzden transkripti korumak için bu mesaj işlenmedi. Sıkıştırma genellikle bir-iki dakika içinde biter — bitince lütfen yeniden gönderin."
     another_turn_running: "⏳ Bu oturumda başka bir tur hâlâ çalışıyor. Transkripti korumak için bu mesaj işlenmedi. Aktif turun bitmesini bekleyin, ardından yeniden gönderin."
     behavior_queue_short: "sonraki tur için sıraya alır"
     behavior_queue_long: "Hermes meşgulken mesajlar sonraki tur için sıraya alınır."

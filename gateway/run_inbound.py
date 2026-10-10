@@ -1337,6 +1337,38 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
                 return t("gateway.busy.draining_maintenance")
 
+        # Compression new-turn gate (#134239): a post-turn compression starts ~0.4 s after
+        # "Turn ended", i.e. while ``_is_session_running`` is already False, so a follow-up
+        # message reaches this fresh-turn path with the guard from #56391 never firing. The
+        # turn it starts reads the pre-rotation history and its own post-turn compression later
+        # commits a snapshot taken before the previous commit — double-compressing the
+        # transcript. The running-agent path already demotes for this; the fresh-turn path
+        # must refuse too. Lock is TTL-leased (~300 s), so a leaked lock can't wedge this.
+        if await self._session_has_compression_in_flight(_quick_key):
+            if is_internal:
+                # A background completion/plugin wake is not user-resendable, so the external
+                # resend notice would silently drop it. Park the exact MessageEvent in the
+                # adapter FIFO instead: the adapter's post-exit drain re-dispatches it, the
+                # identical-event requeue backoff caps that retry rate, and the TTL-leased lock
+                # bounds the deferral — so the event runs once, against the committed
+                # post-compression transcript rather than the pre-rotation one.
+                _defer_adapter = self._delivery_adapter_for(source)
+                if _defer_adapter is None:
+                    logger.error(
+                        "Dropping internal turn for session %s during compression — "
+                        "no delivery adapter to defer it through.",
+                        _quick_key,
+                    )
+                    return None
+                self._enqueue_fifo(_quick_key, event, _defer_adapter)
+                logger.info(
+                    "Deferring internal turn for session %s — context compression in flight.",
+                    _quick_key,
+                )
+                return None
+            logger.info("Refusing new turn for session %s — context compression in flight.", _quick_key)
+            return t("gateway.busy.compressing_retry")
+
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.

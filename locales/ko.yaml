@@ -726,6 +726,7 @@ gateway:
     reject_goal: "에이전트가 실행 중이에요 — 실행 중에는 /goal status / pause / clear / wait를 사용하거나, 새 목표를 설정하기 전에 /stop하세요."
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."
+    compressing_retry: "⏳ 이 세션은 컨텍스트 압축 중이므로 기록을 보호하기 위해 이 메시지는 처리되지 않았어요. 압축은 보통 1~2 분 안에 끝나니 그 후에 다시 보내 주세요."
     another_turn_running: "⏳ 이 세션에서 다른 턴이 아직 실행 중이에요. 대화 기록을 보호하기 위해 이 메시지는 처리하지 않았어요. 활성 턴이 끝난 뒤 다시 보내 주세요."
     behavior_queue_short: "다음 턴 대기열에 추가"
     behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."

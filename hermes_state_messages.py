@@ -1611,8 +1611,9 @@ class SessionMessagesMixin:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            msg.update((col, row[col]) for col in ("finish_reason",) if row[col])  # every role, not just assistant
             if row["role"] == "assistant":
-                msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
+                msg.update((col, row[col]) for col in ("reasoning",) if row[col])
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
                 msg.update(

@@ -17,7 +17,7 @@ import threading
 import time
 from collections import Counter
 from contextvars import copy_context
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
@@ -165,7 +165,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
         return False
     state = load_state()
     last = _parse_iso(state.get("last_run_at"))
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     if last is None:
         try:
             state["last_run_at"] = now.isoformat()
@@ -175,7 +175,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
             logger.debug("Failed to seed curator last_run_at: %s", e)
         return False
     if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        last = last.replace(tzinfo=UTC)
     return (now - last) >= timedelta(hours=get_interval_hours())
 
 
@@ -212,7 +212,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     Returns a counter dict."""
     from tools import skill_usage as _u
 
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
@@ -243,7 +243,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=timezone.utc)
+            anchor = anchor.replace(tzinfo=UTC)
         current = row.get("state", _u.STATE_ACTIVE)
         # use_count == 0 is absence of evidence, not staleness: never archive a
         # never-used skill younger than stale_after_days.
@@ -923,7 +923,7 @@ def run_curator_review(
     *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
     consolidate = get_consolidate() if consolidate is None else consolidate
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
@@ -967,7 +967,7 @@ def run_curator_review(
             # Prune-only run: record it and write a report, but never fork.
             final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
             llm_meta = _llm_meta("skipped (consolidation off)")
-        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        elapsed = (datetime.now(UTC) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
         after_report = _safe_curated_report()

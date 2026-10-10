@@ -58,7 +58,7 @@ def _read_text_with_timeout(
     """
     if timeout is None:
         timeout = _get_context_file_read_timeout()
-    result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+    result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def _reader() -> None:
         try:
@@ -92,8 +92,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
-    if content.startswith("\ufeff"):
-        content = content[1:]
+    content = content.removeprefix("\ufeff")
     findings = _scan_for_threats(content, scope="context")
     if not findings:
         return content
@@ -602,8 +601,9 @@ STEER_CHANNEL_NOTE = (
     "tool results (replayed copies in earlier history are already handled)."
 )
 
-def hud_surface_note(valid_tool_names: "set[str] | None" = None,
-                     deferred_tool_names: "frozenset[str] | set[str]" = frozenset()) -> str:
+
+def hud_surface_note(valid_tool_names: set[str] | None = None,
+                     deferred_tool_names: frozenset[str] | set[str] = frozenset()) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
 
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
@@ -1030,7 +1030,8 @@ def _local_host_hints() -> list[str]:
     # Windows-local terminal runs bash, not PowerShell — without this the model issues PowerShell syntax.
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
-def bot_screen_note(running: bool, display: "str | None", holder: str) -> str:
+
+def bot_screen_note(running: bool, display: str | None, holder: str) -> str:
     """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
     parameterised so the display watcher can stage the same sentence as a per-turn note when a
     screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
@@ -1143,7 +1144,7 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
 
 # Truncation warnings for run_agent to surface. A ContextVar so concurrent gateway prompt builds cannot
 # drain each other's.
-_truncation_warnings: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+_truncation_warnings: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "context_file_truncation_warnings", default=None
 )
 
@@ -1243,8 +1244,8 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 def _skill_should_show(
-    conditions: dict, available_tools: "set[str] | None", available_toolsets: "set[str] | None",
-    session_platform: "str | None" = None,
+    conditions: dict, available_tools: set[str] | None, available_toolsets: set[str] | None,
+    session_platform: str | None = None,
 ) -> bool:
     """False if the skill's conditional activation rules exclude it."""
     # Gateway-channel gate runs regardless of tool info; fails open when the platform is unknown.
@@ -1263,16 +1264,16 @@ def _skill_should_show(
     )
 
 def _plugin_skill_prompt_rows(
-    disabled: "set[str]", available_tools: "set[str] | None", available_toolsets: "set[str] | None",
-    session_platform: "str | None",
-) -> "list[tuple[str, str]]":
+    disabled: set[str], available_tools: set[str] | None, available_toolsets: set[str] | None,
+    session_platform: str | None,
+) -> list[tuple[str, str]]:
     """``(qualified_name, description)`` for every skill registered by an ENABLED plugin
     (``ctx.register_skill``), filtered through the same offer-time gates as on-disk skills.
     Plugin skills live in the plugin-manager registry — never under the profile skills tree —
     so the disk scans above cannot see them; this is their one path into ``<available_skills>``.
     The qualified ``plugin:skill`` name is exactly what ``skill_view`` resolves, and disabling
     or unloading a plugin removes its registry entries, so enablement gating is inherent."""
-    rows: "list[tuple[str, str]]" = []
+    rows: list[tuple[str, str]] = []
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
@@ -1305,8 +1306,8 @@ def _current_session_platform_hint() -> str:
         return ""
 
 def build_skills_system_prompt(
-    available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
-    compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
+    compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
     compact_all_categories: bool = False,
 ) -> str:
     """Compact skill index for the system prompt.
@@ -1375,7 +1376,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
-    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", unloadable: "list[str]" = (),
+    compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
     *, compact_all_categories: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
@@ -1444,8 +1445,8 @@ def _oneshot_prompt_variant() -> bool:
     return is_single_query_session()
 
 def _build_skills_system_prompt_inner(
-    skills_dir: "Path", extra_roots: "list[tuple[int, Path]]", available_tools: "set[str] | None",
-    available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
+    skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
+    available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
     *, compact_all_categories: bool = False,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
@@ -1585,7 +1586,8 @@ def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> li
         offset += len(line)
     return headings[:limit] + (["..."] if len(headings) > limit else [])
 
-def load_soul_md(context_length: Optional[int] = None, home_override: "Path | None" = None) -> Optional[str]:
+
+def load_soul_md(context_length: Optional[int] = None, home_override: Path | None = None) -> Optional[str]:
     """SOUL.md from HERMES_HOME (identity slot #1), or None.
 
     Callers must pass ``skip_soul=True`` to ``build_context_files_prompt`` so it isn't injected twice.
@@ -1776,7 +1778,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
 
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
-    allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
+    allow_install_tree_fallback: bool = False, home_override: Path | None = None,
 ) -> str:
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 

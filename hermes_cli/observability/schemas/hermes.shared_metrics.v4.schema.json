@@ -2729,6 +2729,7 @@
                     "fetch_failed",
                     "fleet_stale",
                     "fleet_unverified",
+                    "gateway_pause_failed",
                     "git_failed",
                     "git_in_progress",
                     "git_index_locked",

@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli import main as hermes_main, update_cmd
 from tests.hermes_cli.test_update_target_identity import git, update_tree
+from datetime import UTC
 
 
 @pytest.mark.parametrize('history,failure,keep', [
@@ -88,7 +89,7 @@ def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
     git(tmp_path, 'init', '-q', '-b', 'main')
     git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'base')
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prefix = 'refs/hermes-update-backups/orphan-main-'
     if mode == 'count':
         refs = [prefix + (now - timedelta(hours=20-i)).strftime('%Y%m%d-%H%M%S') + '-abc'

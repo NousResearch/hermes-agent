@@ -604,7 +604,7 @@ def remember_temperature_rejection(
 
 def _fixed_temperature_for_model(
     model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
-) -> "Optional[float] | object":
+) -> Optional[float] | object:
     """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
     already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
@@ -693,8 +693,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         base_url = base_url.rstrip("/")
         if not base_url:
             return ""
-        if base_url.endswith("/v1"):  # fetch_models_with_pricing appends /v1/models
-            base_url = base_url[:-3]
+        base_url = base_url.removesuffix("/v1")
         # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
         # policy-catalog expiry.
         _nous_kwargs = {}
@@ -2190,7 +2189,8 @@ def _warn_paid_lane_once(model: str) -> None:
         "fallbacks to free models, or auxiliary.openrouter_model to a :free model.", model,
     )
 
-def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str | None = None,
+
+def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
                     explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
@@ -2389,7 +2389,8 @@ def _read_main_model_for_aux() -> str:
         return agg_model or ""
     return model
 
-def _read_main_api_key_if_same_origin(aux_base_url: str) -> Union[str, Callable[[], str]]:
+
+def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], str]:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
@@ -2905,7 +2906,8 @@ def _try_azure_foundry(
         return _maybe_wrap_anthropic(client, final_model, api_key, base_url, runtime_api_mode), final_model
     return client, final_model
 
-def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+
+def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
@@ -4561,7 +4563,7 @@ class _ResolveRequest(NamedTuple):
     async_mode: bool
     raw_codex: bool
     explicit_base_url: Optional[str]
-    explicit_api_key: Optional[Union[str, Callable[[], str]]]
+    explicit_api_key: Optional[str | Callable[[], str]]
     api_mode: Optional[str]
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
@@ -4569,7 +4571,8 @@ class _ResolveRequest(NamedTuple):
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
 
-def _normalize_api_key(raw: Any) -> Union[str, Callable[[], str]]:
+
+def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
     """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
     if callable(raw) and not isinstance(raw, str):
         return raw
@@ -5075,7 +5078,7 @@ _EXPLICIT_PROVIDER_BRANCHES: dict[str, Callable[[_ResolveRequest], _ResolveResul
 
 def resolve_provider_client(
     provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
-    explicit_base_url: str | None = None, explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+    explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
     api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
@@ -6588,7 +6591,7 @@ def _client_streams_internally(client: Any) -> bool:
     return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient, BedrockAuxiliaryClient))
 
 _MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: "tuple[float, str]" = (0.0, "")
+_managed_local_cache: tuple[float, str] = (0.0, "")
 
 def _managed_local_netloc() -> str:
     """host:port of the managed local llama-server ("" when none), read with a short TTL from
@@ -6688,7 +6691,8 @@ def _create_with_progress(
                     task or "call", affordable, exc)
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> "tuple[dict[str, Any], str, float]":
+
+def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
     """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
@@ -6753,7 +6757,7 @@ def _create_with_progress_once(
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: "Optional[tuple[float, Optional[float]]]" = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
@@ -7126,7 +7130,8 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
 )
 
-def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
+
+def _rung(step: _LadderStep, accept: Callable[[Exception], bool]):
     """One ladder rung: perform ``step``; yields ``(response, None)`` on success,
     ``(None, exc)`` when ``accept(exc)`` lets the next rung handle it, else re-raises."""
     try:

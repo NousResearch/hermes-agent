@@ -599,7 +599,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     run.skipped += bool(metrics.skipped_under_target)
                     run.finish()
                 return processed_entry, metrics
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.logger.warning("Timeout processing entry from %s:%s (>%ss)", file_path, entry_idx, self.config.per_trajectory_timeout)
                 async with run.lock:
                     self.aggregate_metrics.trajectories_failed += 1

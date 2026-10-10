@@ -69,7 +69,7 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
         _unlink_quietly(tmp_path)
 
 
-def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> list[bytes]:
+def _drain_chunks(chunk_queue: queue.Queue[Optional[bytes]]) -> list[bytes]:
     """Collect one sentence's PCM chunks up to the ``None`` sentinel."""
     return list(iter(chunk_queue.get, None))
 
@@ -107,7 +107,7 @@ class _SyncSentencePipeline:
 
     def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
         self._stop = stop_event
-        self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(maxsize=max(1, lookahead))
+        self._queue: queue.Queue[Optional[tuple[str, Future]]] = queue.Queue(maxsize=max(1, lookahead))
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-sync-synth")
         self._player = threading.Thread(target=self._drain, name="tts-sync-play", daemon=True)
         self._player.start()
@@ -172,7 +172,7 @@ class _StreamerPlayback:
         # ``streamer.sample_rate`` is only trustworthy after the request answered (#76466).
         self.output_stream = None
         self._use_device = self._device_usable()
-        self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
+        self._audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
         self._prefetch_threads: list[threading.Thread] = []
         self._prefetch_sem = threading.Semaphore(3)
         self._worker = threading.Thread(target=self._playback_worker, daemon=True)
@@ -230,13 +230,13 @@ class _StreamerPlayback:
             logger.warning("Streaming TTS synthesis failed: %s", exc)
             return
         self._prefetch_sem.acquire()
-        chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
+        chunk_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
         self._audio_queue.put(chunk_queue)
         self._prefetch_threads.append(threading.Thread(
             target=self._consume_to_queue, args=(audio_iter, chunk_queue), daemon=True))
         self._prefetch_threads[-1].start()
 
-    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: "queue.Queue[Optional[bytes]]") -> None:
+    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: queue.Queue[Optional[bytes]]) -> None:
         try:
             for chunk in audio_iter:
                 if self.stop_event.is_set():

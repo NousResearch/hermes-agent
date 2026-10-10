@@ -239,13 +239,21 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
+def _session_is_reapable(sid: str, session: dict) -> bool:
+    """Reaper eligibility: the LRU exemptions, and not the sole driver of an active /loop or /heartbeat
+    (closing the session stops the notification poller that fires it, freezing the schedule until a client
+    reattaches). Kept out of ``_sessions_quiescent``: an idle looping session does not block a memory trim."""
+    return _session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
-    if not _session_is_lru_evictable(sid, session):
-        return False
+    """TTL eviction: idle-for-TTL AND older-than-TTL, plus the reap exemptions (the cheap clock check first: the
+    exemptions read the session store, and this runs for every session on each reaper pass)."""
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
-    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+    if (now - last_active) <= _SESSION_TTL_S or (now - created_at) <= _SESSION_TTL_S:
+        return False
+    return _session_is_reapable(sid, session)
 
 
 def _reap_idle_sessions() -> None:
@@ -343,7 +351,7 @@ def _enforce_session_cap() -> None:
     with _sessions_lock:
         if len(_sessions) <= cap:
             return
-        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)]
+        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_reapable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
     for sid, _s in evictable:
@@ -351,7 +359,7 @@ def _enforce_session_cap() -> None:
             if len(_sessions) <= cap:
                 break
         _close_session_by_id(
-            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_lru_evictable(vs, session))
+            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 
 
 def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") -> None:

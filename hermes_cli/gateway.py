@@ -4015,6 +4015,7 @@ from hermes_cli.gateway_launchd import (
     wait_for_launchd_gateway_supervision,
     launchd_status,
 )
+from datetime import UTC
 
 
 # Cached launchd domain — probe once per process invocation.
@@ -4540,7 +4541,7 @@ def _make_exit_diag():
             log_dir = _ghh() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             line = {
-                "ts": _dt.now(_tz.utc).isoformat(), "tag": tag, "pid": os.getpid(),
+                "ts": _dt.now(UTC).isoformat(), "tag": tag, "pid": os.getpid(),
                 "python": sys.version.split()[0], "platform": sys.platform, **extra,
             }
             with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:

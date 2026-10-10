@@ -1544,18 +1544,18 @@ class GatewayNotificationsMixin:
         return claim
 
     def _completion_event_scope(self, evt: dict):
-        """Profile runtime scope of the session a completion event targets (a no-op context when the
-        event is the default profile's or the scope is already installed).
+        """Bind the target session's home for completion classification and durable ledger I/O.
 
-        The pre-flight (``_classify_completion_target`` → ``_session_db``) and every durable-ledger op
-        (``tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
-        The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
-        the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
-        state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
+        These operations read ambient profile scope, including when the target is the default
+        profile of a multiplexed gateway launched from a named profile.
+        """
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
-        if source is None or not getattr(source, "profile", None):
+        if source is None or (
+            not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and not getattr(source, "profile", None)
+        ):
             # No routed profile: the launch profile's own completion. Bind ITS scope once the
             # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
             # launch-profile event (no-op while single-profile).

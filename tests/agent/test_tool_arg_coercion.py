@@ -6,6 +6,7 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
+import json
 from unittest.mock import patch
 
 import model_tools
@@ -247,3 +248,65 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+class TestCoerceNumberLargeIntegers:
+    def test_large_integer_literals_preserve_precision(self):
+        cases = (
+            ("9007199254740993", 9007199254740993),
+            ("12345678901234567", 12345678901234567),
+            ("99999999999999999999", 99999999999999999999),
+            ("-9007199254740993", -9007199254740993),
+        )
+        for raw, expected in cases:
+            for integer_only in (False, True):
+                result = _coerce_number(raw, integer_only=integer_only)
+                assert result == expected
+                assert isinstance(result, int)
+
+        controls = (
+            ("42", 42, 42),
+            ("3.14", 3.14, "3.14"),
+            ("1e3", 1000, 1000),
+            ("42.0", 42, 42),
+            ("inf", "inf", "inf"),
+            ("nan", "nan", "nan"),
+        )
+        for raw, number, integer in controls:
+            assert _coerce_number(raw) == number
+            assert _coerce_number(raw, integer_only=True) == integer
+
+    def test_large_integer_coerced_through_full_tool_args_path(self):
+        from tools.registry import registry
+
+        name = "_precision_probe_tool"
+        for schema_type in ("integer", "number"):
+            schema = {
+                "name": name,
+                "description": "test-only probe",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"chat_id": {"type": schema_type}},
+                },
+            }
+            registry.register(
+                name=name,
+                toolset="_test",
+                schema=schema,
+                handler=lambda args, **kw: json.dumps(args),
+            )
+            try:
+                coerced = coerce_tool_args(name, {"chat_id": "12345678901234567"})
+                assert coerced["chat_id"] == 12345678901234567
+                assert isinstance(coerced["chat_id"], int)
+                for raw, expected in (
+                    ("9007199254740993", 9007199254740993),
+                    ("12345678901234567", 12345678901234567),
+                    ("99999999999999999999", 99999999999999999999),
+                    ("-9007199254740993", -9007199254740993),
+                ):
+                    received = json.loads(model_tools.handle_function_call(name, {"chat_id": raw}))
+                    assert received == {"chat_id": expected}
+                    assert isinstance(received["chat_id"], int)
+            finally:
+                registry.deregister(name)

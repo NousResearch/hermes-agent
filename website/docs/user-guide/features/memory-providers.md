@@ -1,12 +1,17 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — AtMem, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 5 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight and Supermemory) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent supports external memory providers that give the agent persistent,
+cross-session knowledge beyond the built-in MEMORY.md and USER.md. Providers
+such as Honcho, Hindsight and Supermemory are available from the
+[plugin catalog](./plugins.md); externally managed providers such as AtMem use
+their own installer. Only **one** external provider can be active at a time —
+the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -43,6 +48,56 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 Everything Hermes hands a provider (turns, the transcript including tool output, recall queries, session-end and pre-compression transcripts, mirrored memory writes, delegation results and the arguments of the provider's own tools) passes through the same secret scrub as chat-platform and cron delivery first, so a key echoed into tool output is masked before the provider can store it. Like that delivery scrub it applies even with `security.redact_secrets: false`. Credentials with no recognisable shape (an arbitrary password, an opaque token outside a `key=value` or `Bearer` context) are not detected; your local transcript keeps the original text.
 
 ## Available Providers
+
+### AtMem
+
+:::info Externally managed provider
+AtMem installs its Hermes provider and matching local memory service together.
+Use the AtMem installer rather than `hermes plugins install`, so the provider,
+connection credentials, previous-provider snapshot and restore path stay aligned.
+:::
+
+Local governed memory with reviewable admission, source-linked recall, audit
+evidence and reversible activation. AtMem 2.3.8 is qualified with Hermes Agent
+0.21.5.
+
+| | |
+|---|---|
+| **Best for** | Local memory with explicit review, provenance and rollback |
+| **Requires** | Python 3.10 or newer; Hermes Agent 0.21.5 |
+| **Data storage** | Local |
+| **Cost** | Free (Apache-2.0) |
+
+Install AtMem, then connect the current Hermes profile with one command:
+
+```bash
+python -m pip install --upgrade "atmem==2.3.8"
+atmem install hermes --yes
+atmem hermes status --json
+```
+
+The safe default creates an isolated memory scope in shadow mode. It records
+and evaluates memory without injecting AtMem context into model requests. To
+explicitly share an existing AtMem scope, activate recall and run a temporary
+end-to-end verification turn:
+
+```bash
+atmem install hermes --memory shared --activate --verify-turn --yes
+```
+
+The installer records the previous Hermes provider, installs the native
+`atmem` provider under the current `$HERMES_HOME`, and imports supported
+existing memory as reviewable proposals. Restore refuses to overwrite later
+user edits:
+
+```bash
+atmem restore hermes --yes
+```
+
+AtMem 2.3.8 supports local CLI and TUI sessions. Gateway sessions fail closed,
+and Windows uses Hermes's documented WSL route. See the
+[AtMem repository](https://github.com/aetna000/atmem) for architecture,
+verification and upgrade details.
 
 ### Honcho
 
@@ -777,6 +832,7 @@ package command. Restart Hermes after successful dependency preparation.
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **AtMem** (externally managed) | Local | Free | 0 | `atmem install hermes --yes` | Governed admission + source-linked recall + reversible activation |
 | **Honcho** (plugin catalog) | Cloud/Self-hosted | Paid/Free | 5 | `hermes plugins install honcho` | Dialectic user modeling + session-scoped context |
 | **OpenViking** (plugin catalog) | Self-hosted | Free | 6 | `hermes plugins install openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install mem0` | Server-side LLM extraction + self-hosted/OSS modes |
@@ -792,6 +848,7 @@ package command. Restart Hermes after successful dependency preparation.
 Each provider's data is isolated per [profile](../profiles.md):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **AtMem** creates a separate scope for each Hermes profile by default; sharing requires `--memory shared`
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

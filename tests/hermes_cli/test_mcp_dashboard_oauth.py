@@ -1,5 +1,6 @@
 """Dashboard HTTP contract for hosted MCP OAuth."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -85,7 +86,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert flow._callback == ("abc", "expected")
+    assert flow._callback == ("abc", "expected", None)
 
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
@@ -141,3 +142,24 @@ def test_flow_status_does_not_expose_authorization_code():
     assert body["status"] == "approved"
     assert "secret-code" not in response.text
     assert "secret-state" not in response.text
+
+
+def test_cancel_marks_the_flow_terminal_for_a_retrying_worker():
+    """DELETE /flows/{id} is a user cancellation: the worker's next attempt must not re-mint the
+    flow behind the dashboard's back (it would reopen a URL the user just dismissed)."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-cancel-retry",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=first"))
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
+
+    assert _client().delete("/api/mcp/oauth/flows/flow-cancel-retry").json()["ok"] is True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=second"))
+    assert flow.snapshot()["status"] == "error"

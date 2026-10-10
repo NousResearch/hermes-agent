@@ -1,16 +1,26 @@
+import type { FreeTierClaimNudgeResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
+import { gatewayActivationEpoch } from '@/store/gateway'
+import type { FreeTierStatus } from '@/types/hermes'
 
-import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
+import { $freeTierStatus, type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
+import { guidedOnboardingActive } from './onboarding-gate'
+import { onboardingSurfaceActive } from './onboarding-presence'
 
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 
-/** Why a sign-in ended without tokens. Each maps to one ruled screen; anything
- *  the backend does not name (transport failure, `account_busy`) lands on
- *  `error`, which carries the backend's own message when there is one. */
-export type FreeTierSignInFailure = 'error' | 'rejected' | 'retired' | 'superseded' | 'timed_out'
+/** Why a sign-in ended without tokens. Each maps to one ruled screen:
+ *  `busy` (the account service asked for a short wait — a busy account, a
+ *  rate limit, the ops pause), `unreachable` (the service could not be
+ *  reached or errored; a sign-in cannot help until it is back), `unavailable`
+ *  (a terminal refusal: this version, a proof-of-work request, a locked
+ *  session), and the ruled outcomes of the transfer itself. Anything the
+ *  backend does not name lands on `error`, which carries its own message. */
+export type FreeTierSignInFailure =
+  'busy' | 'error' | 'rejected' | 'retired' | 'superseded' | 'timed_out' | 'unavailable' | 'unreachable'
 
 export type FreeTierSignInState =
   | { status: 'already_signed_in' }
@@ -19,8 +29,14 @@ export type FreeTierSignInState =
   // A "please open the dialog" request from an entry point that has no gateway
   // requester of its own. The mounted host picks it up and drives the flow.
   | { status: 'requested' }
+  // The "keep going" offer after a finished task (backend-timed, repeating with
+  // back-off). Unlike `requested` it waits for the user's Sign in before
+  // starting the transfer.
+  | { status: 'offer' }
   | { email: null | string; model: null | string; status: 'completed' }
-  | { kind: FreeTierSignInFailure; message: null | string; status: 'failed' }
+  // `retryAfter`: the seconds the backend asked us to wait before trying
+  // again (0 when it named none); only `busy` screens read it.
+  | { kind: FreeTierSignInFailure; message: null | string; retryAfter: number; status: 'failed' }
   // `minting` is true only when the backend still has to create the free-tier
   // identity (the first `start` does it), which is the one case where the user
   // waits on something worth naming.
@@ -78,9 +94,22 @@ function clearTimers() {
 
 const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
-const fail = (kind: FreeTierSignInFailure, message: null | string = null) => {
+// `requestGateway` keeps one identity across backend switches, so a reply is tied to the active route
+// it was asked under: a late answer from the previous connection or profile must not land on this one.
+export function sameGatewayRoute(): () => boolean {
+  const epoch = gatewayActivationEpoch()
+
+  return () => gatewayActivationEpoch() === epoch
+}
+
+const fail = (kind: FreeTierSignInFailure, message: null | string = null, retryAfter = 0) => {
   clearTimers()
-  set({ kind, message: message?.trim() || null, status: 'failed' })
+  set({
+    kind,
+    message: message?.trim() || null,
+    retryAfter: Math.max(0, Math.round(retryAfter) || 0),
+    status: 'failed'
+  })
 }
 
 /** Every entry point calls this — Settings › Billing, the statusbar chip, the
@@ -91,6 +120,104 @@ export function openFreeTierSignIn() {
   if ($freeTierSignIn.get().status === 'closed') {
     set({ status: 'requested' })
   }
+}
+
+let offerTimer: number | null = null
+let offerTimerFor: FreeTierStatus | null = null
+let offerTimerRoute: () => boolean = () => false
+let offerClaiming = false
+
+function clearOfferTimer() {
+  if (offerTimer !== null) {
+    window.clearTimeout(offerTimer)
+    offerTimer = null
+  }
+}
+
+// Bumped when a turn completes on the free tier. The backend records the finished task before it
+// sends message.complete, so the dialog owner's re-read on this signal learns when the next offer is due.
+export const $freeTierTurnCompleted = atom(0)
+
+export function noteFreeTierTurnComplete() {
+  if ($freeTierStatus.get()?.available) {
+    $freeTierTurnCompleted.set($freeTierTurnCompleted.get() + 1)
+  }
+}
+
+/** Stop a pending offer timer (the dialog owner unmounted). */
+export function stopFreeTierOffer() {
+  clearOfferTimer()
+}
+
+/**
+ * Act on the backend's `nudge_due_in` (it alone decides when the next
+ * offer is due). Later: one timer that re-reads the status, whose fresh answer
+ * comes back through here. Due now: claim it, and only the one caller the
+ * backend says `claimed` opens the offer. Called on every status read and when
+ * guided onboarding leaves the screen; a guarded call simply waits for the next.
+ */
+export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway: FreeTierRequester) {
+  // A re-sync on the same read (an onboarding change) keeps its running timer, so it is not pushed back.
+  if (offerTimer !== null && status === offerTimerFor && offerTimerRoute()) {
+    return
+  }
+
+  clearOfferTimer()
+  const dueIn = status?.available ? (status.nudge_due_in ?? null) : null
+
+  if (dueIn === null) {
+    return
+  }
+
+  if (dueIn > 0) {
+    const isCurrent = sameGatewayRoute()
+    offerTimerFor = status
+    offerTimerRoute = isCurrent
+    offerTimer = window.setTimeout(() => {
+      offerTimer = null
+
+      if (isCurrent()) {
+        void refreshFreeTierStatus(requestGateway, isCurrent)
+      }
+    }, dueIn * 1000)
+
+    return
+  }
+
+  void claimFreeTierOffer(requestGateway)
+}
+
+const offerBlocked = () =>
+  offerClaiming || guidedOnboardingActive() || onboardingSurfaceActive() || $freeTierSignIn.get().status !== 'closed'
+
+async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
+  if (offerBlocked()) {
+    return
+  }
+
+  const isCurrent = sameGatewayRoute()
+  offerClaiming = true
+  let claimed: boolean
+
+  try {
+    claimed = (await requestGateway<FreeTierClaimNudgeResult>('free_tier.claim_nudge'))?.claimed === true
+  } catch {
+    // Not claimed; the next status read tries again. No re-read here, or a failing call would loop.
+    return
+  } finally {
+    offerClaiming = false
+  }
+
+  if (!isCurrent()) {
+    return
+  }
+
+  if (claimed && $freeTierSignIn.get().status === 'closed') {
+    set({ status: 'offer' })
+  }
+
+  // The claim settled the offer either way; re-read so the cached `nudge_due_in` drops.
+  void refreshFreeTierStatus(requestGateway, isCurrent)
 }
 
 /** Close and abandon. Cancels a live device-code session so the backend is not
@@ -108,15 +235,30 @@ export function closeFreeTierSignIn() {
   set({ status: 'closed' })
 }
 
-// The reasons the backend names on a non-approved terminal poll. Anything else
-// (including a bare `account_busy`) falls through to the generic error screen,
-// which shows the backend's own message.
+// The reasons the backend names on a non-approved terminal poll: the transfer's
+// own outcomes, and the account service's `anon_*` verdicts when it was busy,
+// unreachable or refused mid sign-in (`hermes_cli/anon_sign_in.py`). Anything
+// else falls through to the generic error screen, which shows the backend's
+// own message.
 const FAILURE_BY_REASON: Record<string, FreeTierSignInFailure> = {
+  account_busy: 'busy',
   account_not_anonymous: 'retired',
   account_retired: 'retired',
+  anon_account_locked: 'unavailable',
+  anon_gate_closed: 'unavailable',
+  anon_gate_paused: 'busy',
+  anon_pow_required: 'unavailable',
+  anon_rate_limited: 'busy',
+  anon_server_error: 'unreachable',
+  anon_unreachable: 'unreachable',
   superseded: 'superseded',
   timeout: 'timed_out',
   user_declined: 'rejected'
+}
+
+/** The screen a failed poll maps to, exported for the dialog's tests. */
+export function signInFailureKind(reason: null | string | undefined): FreeTierSignInFailure {
+  return FAILURE_BY_REASON[reason ?? ''] ?? 'error'
 }
 
 // Open a sign-in URL through the desktop bridge, falling back to window.open
@@ -245,8 +387,7 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
     clearTimers()
 
     if (result.status !== 'approved') {
-      const kind = FAILURE_BY_REASON[result.reason ?? ''] ?? 'error'
-      fail(kind, result.error_message ?? null)
+      fail(signInFailureKind(result.reason), result.error_message ?? null, Number(result.retry_after) || 0)
 
       return
     }

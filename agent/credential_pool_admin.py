@@ -1,6 +1,7 @@
 """Locked credential-pool administration and target resolution."""
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from typing import Any, Optional, Tuple, TYPE_CHECKING
 
@@ -11,8 +12,14 @@ if TYPE_CHECKING:
 def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
     from agent.credential_pool import _CLEAR_STATUS
 
-    return replace(entry, **_CLEAR_STATUS,
+    # The reset marker lets a live pool in another process tell "reset after my cooldown" from
+    # "never had a status" — both read as bare None on disk (#89415).
+    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None, status_cleared_at=time.time(),
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
+
+
+class CredentialNotSavedError(RuntimeError):
+    """``add_entry`` wrote the pool but the store does not hold the new row."""
 
 
 class CredentialPoolAdminMixin:
@@ -39,7 +46,7 @@ class CredentialPoolAdminMixin:
         with self._lock:
             stale = [
                 e for e in self._entries
-                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
+                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason or e.model_cooldowns
             ]
             if stale:
                 stale_ids = {e.id for e in stale}
@@ -51,18 +58,12 @@ class CredentialPoolAdminMixin:
             return len(stale)
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
-        from agent.credential_pool import persist_pool_entries
-
         with self._lock:
             if index < 1 or index > len(self._entries):
                 return None
             removed = self._entries.pop(index - 1)
             self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            persist_pool_entries(
-                self.provider,
-                [entry.to_dict() for entry in self._entries],
-                removed_ids=[removed.id],
-            )
+            self._persist(removed_ids=[removed.id])
             if self._current_id == removed.id:
                 self._current_id = None
             return removed
@@ -84,7 +85,7 @@ class CredentialPoolAdminMixin:
             self._persist()
             return self._find(lambda e: e.id == credential_id)
 
-    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+    def resolve_target(self, target: Any) -> tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."
@@ -111,21 +112,53 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import _next_priority, write_credential_pool
+        from agent.credential_pool import (
+            _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
+            write_credential_pool,
+        )
+        from hermes_cli import auth as auth_mod
+        from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
-                # ``hermes -p <profile> auth add <single-use provider>``: the
-                # profile claims its OWN credential. Persist only profile-owned
-                # rows — copying the borrowed root grant alongside would fork
-                # its single-use refresh token (#100339). Once the profile owns
-                # rows, the root fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
-                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
+            borrowed_ids = self._borrowed_root_ids
+            # Decided now, not from load_pool()'s snapshot: a profile with no
+            # rows of its own borrows from root even when root has none, and
+            # ``_persist`` would send the new row to the update-only root merge,
+            # which drops it (#103694).
+            profile_borrows = (
+                self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+                and not _profile_owns_pool_provider(self.provider)
+                and _borrowed_single_use_pool_root() is not None
+            )
+            if borrowed_ids or profile_borrows:
+                # ``hermes -p <profile> auth add <single-use provider>``: a fresh
+                # login inside the profile is the profile's OWN credential, so
+                # it goes to the profile store, never to root. Only that row is
+                # written: the rest of this pool is root's (its rows, or its
+                # ``providers.<id>`` login seeded through the fallback), and a
+                # copy would fork that single-use refresh token (#100339). Rows
+                # the profile seeds from its own sources come back on the next
+                # load. Once the profile owns rows, the root fallback for this
+                # provider is shadowed.
+                self._entries = [entry]
+                written = write_credential_pool(
+                    self.provider, [entry.to_dict()],
+                    token_bases=self._persisted_token_pairs,
+                )
+                self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
                 self._borrowed_root_ids = set()
             else:
                 self._persist()
+            # Callers print "Added" on return; a row the store did not keep
+            # must fail loudly instead.
+            if not any(isinstance(row, dict) and row.get("id") == entry.id
+                       for row in auth_mod.read_credential_pool(self.provider)):
+                self._entries = [e for e in self._entries if e.id != entry.id]
+                raise CredentialNotSavedError(
+                    f"The {self.provider} credential was not saved: {auth_mod._auth_file_path()} "
+                    f"does not contain it after the write, so nothing was added. Check that the file "
+                    f"is writable, then run the command again."
+                )
             return entry

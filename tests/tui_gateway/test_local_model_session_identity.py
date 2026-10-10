@@ -21,7 +21,7 @@ def local_route(tmp_path, monkeypatch):
     monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda **kw: route)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
     monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", lambda: {})
+    monkeypatch.setattr("hermes_cli.banner.get_available_skills", dict)
     return route, {"cwd": str(tmp_path), "session_key": "local-identity"}
 
 
@@ -57,6 +57,24 @@ def test_live_local_identity_survives_new_chat_and_resume(local_route):
     assert server._session_info(agent, session)["provider"] == "anthropic"
 
 
+def test_resume_follows_live_managed_port_not_snapshot(local_route):
+    """A llamacpp session that stored last boot's loopback URL must follow the
+    live supervisor after the managed server moves to another port."""
+    route, _session = local_route
+    model = "Local.Model-Q4_K_M"
+    stale = "http://127.0.0.1:51489/v1"
+    row = {"model": model, "model_config": {
+        "model": model, "provider": "llamacpp", "base_url": stale,
+        "api_mode": "chat_completions"}}
+    overrides = server._stored_session_runtime_overrides(row)
+    restored_model, restored = server._resolve_agent_model_runtime(
+        overrides["model_override"], overrides.get("provider_override"))
+    assert restored_model == model
+    assert restored["base_url"] == route["base_url"]
+    assert restored["base_url"] != stale
+    assert restored["api_key"] == route["api_key"]
+
+
 def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkeypatch):
     import json
     from pathlib import Path
@@ -76,7 +94,7 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
     monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", lambda: {})
+    monkeypatch.setattr("hermes_cli.banner.get_available_skills", dict)
     agent = SimpleNamespace(model="same-model", provider="custom", base_url=url,
                             reasoning_config=None, service_tier=None, session_id="profile-identity")
     session = {"cwd": str(tmp_path), "session_key": "profile-identity", "profile_home": str(secondary)}

@@ -31,7 +31,6 @@ class HangingSessionDB:
     def get_compression_tip(self, _session_id):
         self.entered.set()
         self.release.wait()
-        return None
 
     def end_session(self, *_args, **_kwargs):
         return None
@@ -111,7 +110,8 @@ def test_detached_worker_teardown_waits_for_future():
 
         future.set_result({"final_response": "late"})
 
-        finalize.assert_called_once_with(fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker")
+        finalize.assert_called_once_with(fake_db, agent, "detached-worker", "detached worker",
+                                         "cron_detached-worker", workdir=None)
         teardown_agent.assert_called_once_with(agent, "detached-worker")
     assert defer_teardown_to_running_worker(
         future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is False
@@ -132,8 +132,8 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         "next_run_at": "2020-01-01T00:00:00",
         "deliver": "local",
     }
-    sched._parallel_pool = None
-    sched._parallel_pool_max_workers = None
+    sched._parallel_pools.clear()
+    sched._parallel_pool_max_workers.clear()
     sched._running_job_ids.clear()
 
     try:
@@ -159,5 +159,5 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
             assert sched.tick(verbose=False) == 1
     finally:
         release.set()
-        sched._running_job_ids.discard("cleanup-guard-hang")
+        sched._running_job_ids.discard(sched._inflight_key("cleanup-guard-hang"))
         sched._shutdown_parallel_pool()

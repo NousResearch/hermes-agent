@@ -71,6 +71,20 @@ describe('resolveSpeakStreamUrl', () => {
     expect(getConnectionFor).not.toHaveBeenCalled()
   })
 
+  // A Bot on another registered gateway is (its connection, its profile): the
+  // stream must mint against the Bot's OWN connection, never the active one
+  // with the Bot's profile name (two `default` Bots on two gateways).
+  it("dials the speaking session's owner (connection, profile) ahead of the active scope", async () => {
+    setApiRequestConnection('gw-active')
+    setApiRequestProfile('research')
+
+    const url = await resolveSpeakStreamUrl({ connectionId: 'gw-bots', profile: 'bot-adam' })
+
+    expect(url).toContain('profile=bot-adam')
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'gw-bots', profile: 'bot-adam' })
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'gw-bots', profile: 'bot-adam' })
+  })
+
   it('preserves a backend-namespace profile already minted into the ws URL', async () => {
     // SSH remoteProfile aliasing / sharedRemote scoping: the registry mint
     // writes the BACKEND's profile name into the URL. The desktop-side

@@ -3,11 +3,12 @@
 import hashlib
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
 from tools.skills_hub_models import (
-    SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json,
+    SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -64,17 +65,17 @@ class SkillsShSource(SkillSource):
         return self.github.trust_level_for(self._normalize_identifier(identifier))
 
     def _meta(self, canonical: str, *, name: str, description: str, path: str,
-              extra: Optional[Dict[str, Any]] = None) -> SkillMeta:
+              extra: Optional[dict[str, Any]] = None) -> SkillMeta:
         return SkillMeta(
             name=name, description=description, source="skills.sh", identifier=self._wrap_identifier(canonical),
             trust_level=self.github.trust_level_for(canonical), repo="/".join(canonical.split("/", 2)[:2]),
             path=path, extra=extra if extra is not None else {},
         )
 
-    def _urls_for(self, canonical: str, repo: str) -> Dict[str, str]:
+    def _urls_for(self, canonical: str, repo: str) -> dict[str, str]:
         return {"detail_url": f"{self.BASE_URL}/{canonical}", "repo_url": f"https://github.com/{repo}"}
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         if not query.strip():
             # Empty query = bulk catalog dump (build_skills_index.py) — walk the sitemap.
             return self._sitemap_catalog(limit)
@@ -100,6 +101,8 @@ class SkillsShSource(SkillSource):
             bundle = self.github.fetch(github_id) if github_id else None
             if bundle:
                 bundle.source, bundle.identifier = "skills.sh", self._wrap_identifier(canonical)
+                if bundle.name == "skills":  # a generic dir: install under the slug, as the index does
+                    bundle.name = canonical.rstrip("/").rsplit("/", 1)[-1]
                 bundle.metadata.update(self._detail_to_metadata(canonical, detail))
             return bundle or None
 
@@ -115,7 +118,7 @@ class SkillsShSource(SkillSource):
         meta = self._resolve_github_meta(canonical, detail=detail)
         return self._finalize_inspect_meta(meta, canonical, detail) if meta else None
 
-    def _sitemap_catalog(self, limit: int) -> List[SkillMeta]:
+    def _sitemap_catalog(self, limit: int) -> list[SkillMeta]:
         """Enumerate the full catalog via the sitemap (cached for the index TTL —
         ~2 MB of XML). Falls back to ``_featured_skills`` when unreachable/empty."""
         cache_key = "skills_sh_sitemap_v1"
@@ -123,18 +126,34 @@ class SkillsShSource(SkillSource):
         if cached is not None:
             return cached[:limit] if limit > 0 else cached
 
+        # Every hop goes through the hub's guarded GET: the index is a root of trust
+        # that may redirect, and its <loc> entries are remote-party-controlled — a
+        # hostile index could point a sitemap at an internal address.
+        def _xml(url: str, timeout: int) -> Optional[str]:
+            resp = hub()._guarded_http_get(url, timeout=timeout, headers=self._SITEMAP_HEADERS)
+            return resp.text if resp is not None and resp.status_code == 200 else None
+
         # Step 1: sitemap index -> per-skill sitemap URLs.
-        index_xml = _get_text(self.SITEMAP_INDEX_URL, follow_redirects=True, headers=self._SITEMAP_HEADERS)
+        index_xml = _xml(self.SITEMAP_INDEX_URL, 20)
         skill_sitemap_urls = [m.group(1).strip() for m in self._SITEMAP_LOC_RE.finditer(index_xml or "")
                               if "sitemap-skills" in m.group(1)]
         if not skill_sitemap_urls:
             return self._featured_skills(limit)
 
-        # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap.
-        seen, results = set(), []
+        # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap. A shard
+        # ``_xml`` returns None for is a hole, not an empty shard: retry it, and
+        # if it stays dark return the partial slice without publishing it to the cache.
+        seen, results, partial = set(), [], False
         for sitemap_url in skill_sitemap_urls:
-            xml = _get_text(sitemap_url, timeout=30, follow_redirects=True, headers=self._SITEMAP_HEADERS)
-            for loc_match in self._SITEMAP_LOC_RE.finditer(xml or ""):
+            for attempt in range(1, self.CATALOG_PAGE_RETRIES + 1):
+                xml = _xml(sitemap_url, 30)
+                if xml is not None or attempt == self.CATALOG_PAGE_RETRIES:
+                    break
+                time.sleep(min(2 ** attempt, 8))
+            if xml is None:
+                partial = True
+                continue
+            for loc_match in self._SITEMAP_LOC_RE.finditer(xml):
                 m = self._SITEMAP_SKILL_RE.match(loc_match.group(1).strip())
                 if not m:
                     continue
@@ -146,10 +165,11 @@ class SkillsShSource(SkillSource):
                                               path=skill, extra=self._urls_for(canonical, repo)))
         if not results:
             return self._featured_skills(limit)
-        _cache_metas(cache_key, results)
+        if not partial:
+            _cache_metas(cache_key, results)
         return results[:limit] if limit > 0 else results
 
-    def _featured_skills(self, limit: int) -> List[SkillMeta]:
+    def _featured_skills(self, limit: int) -> list[SkillMeta]:
         cache_key = "skills_sh_featured"
         cached = _cached_metas(cache_key)
         if cached is not None:
@@ -241,7 +261,8 @@ class SkillsShSource(SkillSource):
         # One recursive tree lookup before brute-forcing every top-level dir
         # (avoids request bursts on categorized repos like borghei/claude-skills).
         found = (next((f for f in map(_match_in, self._STANDARD_BASE_PATHS) if f), None)
-                 or self.github._find_skill_in_repo_tree(repo, skill_token))
+                 or self.github._find_skill_in_repo_tree(repo, skill_token)
+                 or self.github._find_repo_root_skill(repo))
         if found:
             return found
 
@@ -286,7 +307,7 @@ class SkillsShSource(SkillSource):
         return meta
 
     @classmethod
-    def _matches_skill_tokens(cls, meta: SkillMeta, skill_tokens: List[str]) -> bool:
+    def _matches_skill_tokens(cls, meta: SkillMeta, skill_tokens: list[str]) -> bool:
         candidates = (cls._token_variants(meta.name) | cls._token_variants(meta.path)
                       | cls._token_variants(meta.identifier.split("/", 2)[-1] if meta.identifier else None))
         return any(cls._token_variants(token) & candidates for token in skill_tokens)
@@ -317,7 +338,7 @@ class SkillsShSource(SkillSource):
         value = next((group for group in match.groups() if group), None) if match else None
         return (_strip_html(value).strip() or None) if value is not None else None
 
-    def _detail_to_metadata(self, canonical: str, detail: Optional[dict]) -> Dict[str, Any]:
+    def _detail_to_metadata(self, canonical: str, detail: Optional[dict]) -> dict[str, Any]:
         parts = canonical.split("/", 2)
         metadata = {"detail_url": f"{self.BASE_URL}/{canonical}"}
         if len(parts) >= 2:
@@ -334,8 +355,8 @@ class SkillsShSource(SkillSource):
         return match.group("count") if match else None
 
     @staticmethod
-    def _extract_security_audits(html: str, identifier: str) -> Dict[str, str]:
-        audits: Dict[str, str] = {}
+    def _extract_security_audits(html: str, identifier: str) -> dict[str, str]:
+        audits: dict[str, str] = {}
         for audit in ("agent-trust-hub", "socket", "snyk"):
             idx = html.find(f"/security/{audit}")
             match = re.search(r'(Pass|Warn|Fail)', html[idx:idx + 500], re.IGNORECASE) if idx != -1 else None
@@ -349,7 +370,7 @@ class SkillsShSource(SkillSource):
         return identifier[len(prefix):]
 
     @classmethod
-    def _candidate_identifiers(cls, identifier: str) -> List[str]:
+    def _candidate_identifiers(cls, identifier: str) -> list[str]:
         split = _split_repo_id(identifier)
         if split is None:
             return [identifier]

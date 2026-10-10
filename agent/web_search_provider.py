@@ -27,17 +27,38 @@ def get_provider_env(name: str) -> str:
     delegate children / subprocess runs. Stripped value, or ``""`` when unset.
 
     Falls back to a bare ``os.getenv`` when the config module is unavailable (stripped installs, early
-    import contexts). See #40190.
+    import contexts). See #40190. Never when a profile secret scope is bound: a scoped miss means the
+    served profile has no key, and ``os.environ`` holds the LAUNCH profile's — a routed profile without
+    an Exa/Parallel key must be refused, not search on another profile's key.
     """
     try:
         from hermes_cli.config import get_env_value
 
         val = get_env_value(name)
-    except Exception:  # noqa: BLE001 — config layer optional here
+    except Exception as exc:
+        try:
+            from agent.secret_scope import UnscopedSecretError
+        except ImportError:
+            UnscopedSecretError = ()  # type: ignore[assignment,misc]
+        if isinstance(exc, UnscopedSecretError):
+            raise
         val = None
-    if val is None:
+    scope_bound, multiplex_active = _secret_scope_state()
+    if val is None and multiplex_active and not scope_bound:
+        from agent.secret_scope import UnscopedSecretError
+
+        raise UnscopedSecretError(name, f"get_provider_env({name!r}) called with no active profile scope")
+    if val is None and not scope_bound:
         val = os.getenv(name, "")
     return (val or "").strip()
+
+
+def _secret_scope_state() -> tuple[bool, bool]:
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+    except Exception:
+        return False, False
+    return current_secret_scope() is not None, is_multiplex_active()
 
 
 class WebSearchProvider(ProviderBase):
@@ -65,24 +86,16 @@ class WebSearchProvider(ProviderBase):
         the dispatcher awaits coroutine functions)."""
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a web search. Callers gate on :meth:`supports_search`."""
         raise NotImplementedError(
             f"{self.name} does not support search (override supports_search)"
         )
 
-    def extract(self, urls: List[str], **kwargs: Any) -> Any:
+    def extract(self, urls: list[str], **kwargs: Any) -> Any:
         """Extract content from URLs (callers gate on :meth:`supports_extract`); may be ``async def``.
         Returns ``[{"url", "title", "content", "raw_content", "metadata"?, "error"?}, ...]`` (``error``
         only on per-URL failure). Ignore unknown ``kwargs`` (``format``, ``include_raw``, ``max_chars``)."""
         raise NotImplementedError(
             f"{self.name} does not support extract (override supports_extract)"
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

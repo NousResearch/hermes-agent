@@ -16,8 +16,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from hermes_cli import __version__
 from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
+from hermes_cli.version_info import get_version_info
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_routers._common import http_failure
@@ -32,6 +33,7 @@ _spawn_gateway_restart = late("_spawn_gateway_restart")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 detect_install_method = late("detect_install_method", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway")
 _ACTION_IDS = LateState("_ACTION_IDS", "hermes_cli.web_server_gateway")
 _ACTION_PROCS = LateState("_ACTION_PROCS", "hermes_cli.web_server_gateway")
@@ -51,6 +53,7 @@ _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES = 8 * 1024
 _ACTION_LOG_TAIL_MAX_CHUNK_BYTES = 64 * 1024
 
 _UPDATE_ACTION_COMPLETED_RE = re.compile(r"^=== hermes-update completed ([0-9a-f]{32}) ===$")
+_UPDATE_ACTION_STARTED_RE = re.compile(r"^=== hermes-update started .* ([0-9a-f]{32}) ===$")
 
 _MANAGED_EXTERNALLY_MESSAGE = "Hermes updates are managed outside this dashboard in containerized environments."
 
@@ -81,7 +84,7 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _finish_action(name, exit_code, None)
 
 
-def _tail_lines(path: Path, n: int) -> List[str]:
+def _tail_lines(path: Path, n: int) -> list[str]:
     """Return the last ``n`` lines of ``path`` without loading huge logs."""
     try:
         size = path.stat().st_size
@@ -94,7 +97,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     offset = size
     chunk_size = _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES
     newline_count = 0
-    chunks: List[bytes] = []
+    chunks: list[bytes] = []
     drop_partial_first_line = False
     try:
         with path.open("rb") as handle:
@@ -118,7 +121,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:]
 
 
-def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
+def _durable_completed_update_action_id(lines: list[str]) -> Optional[str]:
     """Latest successful update id from ``update.log`` — the durable record that survives
     the update restarting the dashboard (losing the in-memory ``Popen``/result registries).
     Only a completion marker after the latest start marker counts, so a stale success
@@ -133,6 +136,25 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
             last_completed = index
             completed_action_id = match.group(1)
     return completed_action_id if completed_action_id and last_completed > last_start else None
+
+
+def _latest_spawned_update_action_id(lines: list[str]) -> Optional[str]:
+    """Action id named by the latest ``hermes-update started`` header of THIS dashboard's log."""
+    for line in reversed(lines):
+        if line.startswith("=== hermes-update started "):
+            match = _UPDATE_ACTION_STARTED_RE.fullmatch(line.strip())
+            return match.group(1) if match else None
+    return None
+
+
+def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
+    """Action id of the latest spawn of ``name`` from its sidecar (survives the log's tail
+    bound and rotation). A visible start header wins: a dashboard predating the sidecar wrote
+    only the header, and the newest header IS the latest spawn."""
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        value = (log_dir / f"{name}.action_id").read_text(encoding="utf-8-sig").strip()
+        return value if re.fullmatch(r"[0-9a-f]{32}", value) else None
+    return None
 
 
 @router.post("/api/gateway/restart")
@@ -207,7 +229,7 @@ async def gateway_drain(request: Request):
     }
 
 
-def _update_refused(error: str, message: str, update_command: str) -> Dict[str, Any]:
+def _update_refused(error: str, message: str, update_command: str) -> dict[str, Any]:
     _record_completed_action("hermes-update", message, exit_code=1)
     return {
         "ok": False, "pid": None, "name": "hermes-update", "error": error, "message": message,
@@ -218,9 +240,13 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
 @router.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if is_commit_build(_server_path("PROJECT_ROOT")):
+        return _update_refused("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
+
     if _dashboard_local_update_managed_externally():
         message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
-        return _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")
+        # No runnable command exists here: the outer launcher/image owns updates.
+        return _update_refused("dashboard_update_managed_externally", message, "")
 
     # Shared admission gate: marker-first, then the docker/nix/apt heuristics —
     # one decision with the CLI paths.
@@ -255,7 +281,7 @@ _NON_APPLYABLE_MESSAGES = {
 
 
 @router.get("/api/hermes/update/check")
-async def check_hermes_update(force: bool = False):
+async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
 
     Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'unknown'),
@@ -265,16 +291,28 @@ async def check_hermes_update(force: bool = False):
     non-applyable methods) and, for git installs that are behind, commits
     [{sha, summary, author, at}] (additive; existing consumers ignore it).
     """
+    if is_commit_build(_server_path("PROJECT_ROOT")):
+        return {
+            "install_method": "desktop-app",
+            "current_version": get_version_info().derived_version,
+            "behind": None, "update_available": False, "can_apply": False,
+            "update_command": "", "message": COMMIT_BUILD_UPDATE_MESSAGE,
+        }
+
     if _dashboard_local_update_managed_externally():
         return {
-            "install_method": "managed-runtime", "current_version": __version__, "behind": None,
+            "install_method": "managed-runtime",
+            "current_version": get_version_info().derived_version,
+            "behind": None,
             "update_available": False, "can_apply": False,
-            "update_command": "managed outside dashboard", "message": _MANAGED_EXTERNALLY_MESSAGE,
+            "update_command": "", "message": _MANAGED_EXTERNALLY_MESSAGE,
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))
-    payload: Dict[str, Any] = {
-        "install_method": install_method, "current_version": __version__, "behind": None,
+    payload: dict[str, Any] = {
+        "install_method": install_method,
+        "current_version": get_version_info().derived_version,
+        "behind": None,
         "update_available": False, "can_apply": install_method == "git",
         "update_command": recommended_update_command_for_method(install_method), "message": None,
     }
@@ -283,15 +321,14 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = non_applyable()
         return payload
 
-    # banner.check_for_updates() handles git / nix-revision paths through the GitHub API and
+    # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     try:
-        from hermes_cli.banner import check_for_updates, upstream_commits_behind
+        from hermes_cli.source_check import check_for_updates
 
-        if force:
-            with contextlib.suppress(OSError):
-                (get_hermes_home() / ".update_check").unlink()
-        behind = await asyncio.to_thread(check_for_updates)
+        with _config_profile_scope(profile):
+            status = await asyncio.to_thread(check_for_updates, force=force)
+        behind = status.get("behind")
     except Exception:
         _log.exception("Update check failed")
         behind = None
@@ -305,12 +342,13 @@ async def check_hermes_update(force: bool = False):
         payload["update_available"] = True
         # "What's changed" for the desktop's remote update overlay; best-effort
         # (empty list on any failure).
-        payload["commits"] = await asyncio.to_thread(upstream_commits_behind)
+        payload["commits"] = [{**row, "sha": row["sha"][:7], "at": row["at"] // 1000}
+                              for row in status.get("commits", [])[:20]]
     return payload
 
 
 def _completed_exit_code(
-    result: Optional[Dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[Dict[str, Any]],
+    result: Optional[dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[dict[str, Any]],
 ) -> Optional[int]:
     """Exit code for an action with no live process: in-memory result, else durable evidence."""
     if result is not None:
@@ -318,9 +356,9 @@ def _completed_exit_code(
     if durable_action_id:
         return 0
     if receipt is not None and receipt.get("outcome") in ("success", "partial"):
-        # No in-memory result and no log marker (e.g. log rotated), but the
-        # receipt proves a completed run: report its outcome rather than a
-        # null clients time out on. ``partial`` maps to exit 1 like the CLI.
+        # No in-memory result and no log marker (e.g. log rotated), but THIS
+        # action's receipt proves a completed run: report its outcome rather than
+        # a null clients time out on. ``partial`` maps to exit 1 like the CLI.
         return 0 if receipt["outcome"] == "success" else 1
     return None
 
@@ -337,9 +375,19 @@ async def get_action_status(name: str, lines: int = 200):
     tail = _tail_lines(log_dir / log_file_name, requested_lines)
 
     durable_update_action_id = None
-    update_receipt_summary = None
+    update_receipt_summary = action_receipt_summary = None
     if name == "hermes-update":
-        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_dir / "update.log", 2000))
+        # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
+        # dashboard's profile home: read it where it is written.
+        from hermes_cli.logs import log_file_path
+
+        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_file_path("update"), 2000))
+        spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
+                             or _persisted_action_id(log_dir, name) or _ACTION_IDS.get(name))
+        if durable_update_action_id != spawned_action_id:
+            # The root log is shared by every profile: another profile's (or an older) run's
+            # completion never certifies the action this dashboard started.
+            durable_update_action_id = None
         if durable_update_action_id:
             marker = f"=== hermes-update completed {durable_update_action_id} ==="
             if marker not in tail:
@@ -349,14 +397,17 @@ async def get_action_status(name: str, lines: int = 200):
         # dashboard restarting itself mid-action). Surface it so clients READ
         # the outcome instead of inferring it from liveness probes.
         # See #81193, #87359, #91277.
-        update_receipt_summary = _latest_update_receipt_summary()
+        # The store is root-wide (every profile's runs): show THIS action's receipt when one exists.
+        update_receipt_summary = _latest_update_receipt_summary(spawned_action_id)
+        if spawned_action_id and (update_receipt_summary or {}).get("action_id") == spawned_action_id:
+            action_receipt_summary = update_receipt_summary
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
         result = _ACTION_RESULTS.get(name)
         running = False
         pid = result.get("pid") if result else None
-        exit_code = _completed_exit_code(result, durable_update_action_id, update_receipt_summary)
+        exit_code = _completed_exit_code(result, durable_update_action_id, action_receipt_summary)
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -374,7 +425,7 @@ async def get_action_status(name: str, lines: int = 200):
     return response
 
 
-def _read_latest_receipt() -> Optional[Dict[str, Any]]:
+def _read_latest_receipt() -> Optional[dict[str, Any]]:
     """Latest update receipt, or None on any failure (never raises)."""
     try:
         from hermes_cli.update_receipt import read_latest_receipt
@@ -383,25 +434,36 @@ def _read_latest_receipt() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
-    """Compact summary of the latest receipt (written by EVERY ``hermes update`` run,
-    incl. refused/failed), or None; never raises. Steps/skips stay in the full endpoint.
+def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Compact summary of dashboard action ``action_id``'s receipt when one exists, else of the
+    latest receipt (written by EVERY ``hermes update`` run, incl. refused/failed), or None; never
+    raises. Steps/skips stay in the full endpoint. ``action_id`` names the writer so a client
+    never credits another action's run.
 
     Phase-1 bullet 3 (#91277): the receipt (written by EVERY ``hermes update`` run since #91283, including
     refused and failed ones, with a ``latest.json`` pointer) is the durable success signal the Desktop and
     dashboard should read instead of inferring outcomes from liveness probes across the update's stop/start
     gap (#81193, #87359).
     """
-    receipt = _read_latest_receipt()
+    receipt = None
+    if action_id:
+        from hermes_cli.update_receipt import read_receipt_for_action
+        receipt = read_receipt_for_action(action_id)
+    receipt = receipt or _read_latest_receipt()
     if not receipt:
         return None
     try:
         post = receipt.get("post_update") or {}
         return {
-            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at")},
+            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at", "action_id")},
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),
+            # C3: a committed run is ``success`` even while post-commit steps are owed; carry them
+            # so a client reports the owed step and its remedy instead of plain success.
+            "followups": [{"step": str(f.get("step")), "reason": str(f.get("reason") or "")}
+                          for f in receipt.get("followups") or [] if isinstance(f, dict)],
+            "user_action": receipt.get("user_action") if isinstance(receipt.get("user_action"), dict) else None,
         }
     except Exception:
         return None

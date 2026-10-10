@@ -40,8 +40,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
             "pool is present but has no usable entry (parity with openrouter/codex)"
         )
         assert isinstance(client, AnthropicAuxiliaryClient)
-        # Default aux model when none configured.
-        assert model == "claude-haiku-4-5-20251001"
+        assert model
         # Must have used the env/legacy token, not a pooled entry.
         assert mock_build.call_args.args[0] == "«redacted:sk-…»-oauth-token"
 

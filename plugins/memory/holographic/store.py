@@ -97,7 +97,7 @@ class MemoryStore:
     _shared: dict = {}
     _shared_guard = threading.Lock()
 
-    def __init__(self, db_path: "str | Path | None" = None, default_trust: float = 0.5, hrr_dim: int = 1024) -> None:
+    def __init__(self, db_path: str | Path | None = None, default_trust: float = 0.5, hrr_dim: int = 1024) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
             db_path = str(get_hermes_home() / "memory_store.db")
@@ -129,7 +129,8 @@ class MemoryStore:
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
         if "hrr_vector" not in {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}:
-            self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+            from hermes_cli.sqlite_util import add_column_if_missing
+            add_column_if_missing(self._conn, "facts", "hrr_vector", "hrr_vector BLOB")
         self._conn.commit()
 
     def _one(self, sql: str, params=()):
@@ -261,7 +262,7 @@ class MemoryStore:
                     "updated_at = excluded.updated_at", (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, len(rows)))
 
     @classmethod
-    def release_all_under(cls, directory: "str | Path") -> int:
+    def release_all_under(cls, directory: str | Path) -> int:
         """Force-close every shared connection whose database lives under ``directory``; returns the count.
         close() is refcount-driven, so a live holder (e.g. an agent's provider) keeps a profile's SQLite handle
         open, which on Windows makes rmtree of the profile fail. The directory is going away, so later use by a

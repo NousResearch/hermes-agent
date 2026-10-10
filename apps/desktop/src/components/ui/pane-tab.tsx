@@ -223,7 +223,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
     >
       <span
         className={cn(
-          'block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
+          'block min-w-0 truncate font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
           className
         )}
       >
@@ -305,7 +305,7 @@ export interface PaneStripTool {
  */
 export function PaneStripGlyph({ active, disabled, icon, label, onSelect }: Omit<PaneStripTool, 'id'>) {
   return (
-    <Tip label={label}>
+    <Tip label={label} placement="toolbar">
       <Button
         aria-label={label}
         aria-pressed={active ?? undefined}

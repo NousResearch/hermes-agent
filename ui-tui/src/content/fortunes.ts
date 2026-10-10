@@ -1,27 +1,16 @@
-const FORTUNES = [
-  'you are one clean refactor away from clarity',
-  'a tiny rename today prevents a huge bug tomorrow',
-  'your next commit message will be immaculate',
-  'the edge case you are ignoring is already solved in your head',
-  'minimal diff, maximal calm',
-  'today favors bold deletions over new abstractions',
-  'the right helper is already in your codebase',
-  'you will ship before overthinking catches up',
-  'tests are about to save your future self',
-  'your instincts are correctly suspicious of that one branch'
-]
+import { messages } from '../i18n/runtime.js'
 
-const LEGENDARY = [
-  'legendary drop: one-line fix, first try',
-  'legendary drop: every flaky test passes cleanly',
-  'legendary drop: your diff teaches by itself'
-]
+/** Everyday fortunes, in catalog order, resolved against the active language at call time. */
+export const fortunes = (): string[] => Object.values(messages().content.fortunes)
+
+/** Rare fortunes (every 20th roll). */
+export const legendaryFortunes = (): string[] => Object.values(messages().content.legendaryFortunes)
 
 const hash = (s: string) => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261) >>> 0
 
 const fromScore = (n: number) => {
   const rare = n % 20 === 0
-  const bag = rare ? LEGENDARY : FORTUNES
+  const bag = rare ? legendaryFortunes() : fortunes()
 
   return `${rare ? '🌟' : '🔮'} ${bag[n % bag.length]}`
 }

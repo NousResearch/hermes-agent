@@ -14,17 +14,27 @@ from hermes_cli.auth_constants import httpx
 UPGRADE_START = "Sign in with a Nous account to unlock more models and tools."
 UPGRADE_ALREADY_SIGNED_IN = "Already signed in."
 UPGRADE_DO_NOT_SHARE = "Do not share this code."
-UPGRADE_TIMED_OUT = "Sign-in timed out; run the command again."
-UPGRADE_NOT_COMPLETED = "Sign-in did not complete; run the command again."
+UPGRADE_TIMED_OUT = "That sign-in link has expired. Start again whenever you're ready."
+UPGRADE_NOT_COMPLETED = "Sign-in didn't finish. Try again whenever you're ready."
 UPGRADE_UNAVAILABLE = "The free tier is not available right now; run `hermes auth add nous` to sign in."
 UPGRADE_REASON_COPY = {
-    "user_declined": "Sign-in was rejected in the browser.",
-    "superseded": "A newer sign-in code replaced this one.",
-    "account_retired": "This free-tier identity was already used or expired; a new one is set up on the next start.",
-    "account_not_anonymous": "This free-tier identity was already used or expired; a new one is set up on the next start.",
-    "account_busy": "The transfer could not run; run the command again.",
+    "user_declined": "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
+    "superseded": "A newer sign-in code replaced this one. Use the newest one, or start again.",
+    "account_retired": "Your session ended before the sign-in finished. A new one starts on its own; "
+                       "sign in again whenever you're ready.",
+    "account_not_anonymous": "Your session ended before the sign-in finished. A new one starts on its own; "
+                             "sign in again whenever you're ready.",
+    "account_busy": "Something's still finishing up on your account. Give it a few seconds, then try signing in again.",
 }
 _RETIRED_REASONS = frozenset({"account_retired", "account_not_anonymous"})
+# Reasons a later attempt can succeed at: the desktop offers "try again" after the named wait.
+RETRYABLE_SIGN_IN_REASONS = frozenset({"account_busy"})
+# The account service was busy or unreachable mid sign-in (an ``anon_*`` code from
+# ``anon_auth``): the identity is untouched, so the copy reassures before the way forward.
+UPGRADE_SERVICE_BUSY = ("Signing in couldn't finish because the Nous service is busy. "
+                        "Try again in {wait}. Your session is still here in the meantime.")
+UPGRADE_SERVICE_UNREACHABLE = ("The Nous service couldn't be reached to finish signing you in. "
+                               "Check your internet connection and try again. Your session is still here.")
 
 UPGRADE_NO_DEFAULT_TERMINAL = "No default model is set yet; run `hermes model` to pick one."
 UPGRADE_NO_DEFAULT_CHAT = "No default model is set yet; run /model to pick one."
@@ -37,9 +47,11 @@ LOGIN_STARTING = "Starting sign-in..."
 LOGIN_DM_ONLY = "Sign in from a direct message with Hermes."
 LOGIN_BUSY_ELSEWHERE = "Another sign-in is already running on this Hermes. Try again in a few minutes."
 LOGIN_NOT_ALLOWED = "Only an operator of this Hermes can sign it in."
-FREE_TIER_RATE_LIMIT_CHAT = (
-    "Nous free tier rate limit active \u2014 resets in {reset}. "
-    "Sign in with a Nous account for higher limits: /login.")
+# The card form (a surface with its own sign-in button) and the chat form (names /login).
+FREE_TIER_RATE_LIMIT_CARD = (
+    "You've used up the allowance for chatting without signing in. It refreshes in {reset}. "
+    "Sign in for a bigger allowance, it's free.")
+FREE_TIER_RATE_LIMIT_CHAT = FREE_TIER_RATE_LIMIT_CARD + " To sign in: /login."
 
 
 def format_wait_line(expires_in: int) -> str:
@@ -174,19 +186,41 @@ class Retired(SignInState):
 
 @dataclass(frozen=True)
 class Failed(SignInState):
+    """``reason``: a promotion outcome reason (``account_busy``...), an ``anon_*`` code from the
+    account service (busy, paused, unreachable...), or "" for anything unnamed. ``retry_after``:
+    the wait the service asked for, in seconds (0 when it named none). ``retryable``: whether a
+    later attempt can succeed, so a renderer knows to offer "try again" and when."""
+
     reason: str = ""
     detail: str = ""
+    retry_after: float = 0.0
     kind: ClassVar[str] = "failed"
 
     @property
-    def copy(self) -> str:
-        return UPGRADE_REASON_COPY.get(self.reason, UPGRADE_NOT_COMPLETED)
+    def retryable(self) -> bool:
+        from hermes_cli import anon_auth as _core
+        if self.reason in RETRYABLE_SIGN_IN_REASONS:
+            return True
+        return bool(self.reason.startswith("anon_") and self.reason not in _core.ANON_TERMINAL_CODES)
 
     @property
-    def copy_terminal(self) -> str:
+    def copy(self) -> str:
+        from hermes_cli import anon_auth as _core
         ruled = UPGRADE_REASON_COPY.get(self.reason)
         if ruled:
             return ruled
+        if self.reason in _core.ANON_UNREACHABLE_CODES:
+            return UPGRADE_SERVICE_UNREACHABLE
+        if self.reason in (_core.ANON_RATE_LIMITED, _core.ANON_GATE_PAUSED):
+            return UPGRADE_SERVICE_BUSY.format(wait=_core.friendly_wait(self.retry_after or 60))
+        if self.reason in _core.ANON_FAILURE_COPY:
+            return _core.anon_failure_copy(self.reason, retry_after=self.retry_after)
+        return UPGRADE_NOT_COMPLETED
+
+    @property
+    def copy_terminal(self) -> str:
+        if self.reason and self.copy != UPGRADE_NOT_COMPLETED:
+            return self.copy
         return f"Sign-in failed: {self.detail}" if self.detail else UPGRADE_NOT_COMPLETED
 
 
@@ -216,7 +250,21 @@ class Unavailable(SignInState):
         return f"{UPGRADE_UNAVAILABLE} ({self.detail})" if self.detail else UPGRADE_UNAVAILABLE
 
 
-def _outcome_state(outcome: Dict[str, Any], anon_token: str) -> SignInState:
+def _failed_from_exception(exc: BaseException) -> Failed:
+    """A ``Failed`` that keeps the account service's own verdict: the ``anon_*`` code and wait hint
+    an ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never
+    reaches a chat; ``copy_terminal`` may show it when nothing better is known."""
+    from hermes_cli import anon_auth as _core
+    err = _core.classify_mint_exception(exc)
+    reason = str(err.code or "")
+    if reason == _core.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
+        # An unnamed local failure (a bad CA bundle, a lock timeout): keep today's generic copy
+        # and its terminal detail rather than blaming the service.
+        return Failed(reason="", detail=str(exc))
+    return Failed(reason=reason, detail=str(exc), retry_after=float(err.retry_after or 0.0))
+
+
+def _outcome_state(outcome: dict[str, Any], anon_token: str) -> SignInState:
     """The one reason -> state mapping in the tree, for a promotion that did not complete.
 
     A retiring outcome clears the dead identity here, pinned to the token this attempt started
@@ -292,7 +340,7 @@ def run_sign_in(
     # from: with none on disk there is nothing to promote and the answer is ``Unavailable`` (the boot
     # bootstrap is the only creator, NS-845 Q1.2).
     precondition_state: Optional[SignInState] = None
-    state: Optional[Dict[str, Any]] = None
+    state: Optional[dict[str, Any]] = None
     try:
         with open_scope():
             state = _core.current_nous_state()
@@ -312,8 +360,8 @@ def run_sign_in(
     anon_token = str(state.get("anon_token") or "")
     portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
 
-    outcome: Dict[str, Any] = {}
-    account_state: Optional[Dict[str, Any]] = None
+    outcome: dict[str, Any] = {}
+    account_state: Optional[dict[str, Any]] = None
     try:
         pconfig = PROVIDER_REGISTRY["nous"]
         client_id, scope_str = pconfig.client_id, pconfig.scope
@@ -378,10 +426,13 @@ def run_sign_in(
         yield Retired()
         return
     except TimeoutError as exc:
-        yield TimedOut(detail=str(exc))
+        # The code ran out while the token endpoint kept failing (``_poll_device_token_generic`` sets
+        # the cause): the service was unreachable, not a sign-in left unapproved.
+        outage = exc.__cause__ if isinstance(exc.__cause__, ConnectionError) else None
+        yield _failed_from_exception(outage) if outage else TimedOut(detail=str(exc))
         return
     except Exception as exc:
-        yield Failed(reason="", detail=str(exc))
+        yield _failed_from_exception(exc)
         return
 
     try:

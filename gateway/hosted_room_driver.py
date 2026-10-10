@@ -857,14 +857,3 @@ def prune_published_terminal_tasks(
             f"DELETE FROM hosted_room_driver_tasks WHERE room_id=? AND task_id IN ({','.join('?' * len(candidates))})",
             (room_id, *candidates))
         return max(0, int(deleted.rowcount))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Iterator  # noqa: F401,E402
-from pathlib import Path  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

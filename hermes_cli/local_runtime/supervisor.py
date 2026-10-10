@@ -10,18 +10,22 @@ token, generous budget, reasoning_content scanned); always dial 127.0.0.1 — re
 from __future__ import annotations
 
 from contextlib import suppress
+from functools import lru_cache
 import json
 import logging
+import os
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
+from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +34,10 @@ TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
 _RESIDENT = ("loaded", "ready")
 
-# Chosen once and reused across restarts: sessions persist the resolved base_url, so an ephemeral
-# port would strand every resumed session after each restart. Deliberately NOT 8080 so we never
-# collide with a user's own llama-server/Ollama-adjacent stack.
+# Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
+# every resume path re-resolves llamacpp-alias sessions to the live endpoint (a stale port is
+# recoverable, but a stable one keeps external tooling pointed at the right place). Deliberately NOT
+# 8080 so we never collide with a user's own llama-server/Ollama-adjacent stack.
 _DEFAULT_PORT = 18434
 
 
@@ -64,7 +69,7 @@ def _stable_port() -> int:
     except OSError:
         logger.warning(
             "port %d busy; managed llama-server falling back to an ephemeral "
-            "port — existing sessions may need a model re-pick", _DEFAULT_PORT)
+            "port — resumed sessions follow the live endpoint", _DEFAULT_PORT)
         return _free_port()
 
 
@@ -77,7 +82,7 @@ def _stable_api_key() -> str:
     """
     key_path = runtimes_root() / ".api_key"
     with suppress(OSError):
-        existing = key_path.read_text(encoding="utf-8").strip()
+        existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
             return existing
     key = secrets.token_urlsafe(24)
@@ -90,6 +95,18 @@ def _stable_api_key() -> str:
     return key
 
 
+@lru_cache(maxsize=16)
+def _direct_io_args(executable: Path) -> tuple[str, ...]:
+    """Select the loading option supported by this engine, including older pinned builds."""
+    result = subprocess.run([str(executable), "--help"], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", check=True,
+                            timeout=15, cwd=str(executable.parent))
+    help_text = result.stdout + result.stderr
+    if "--load-mode" in help_text:
+        return ("--load-mode", "dio")
+    return ("-dio",) if "--direct-io" in help_text else ()
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
@@ -99,12 +116,15 @@ class LlamaServerSupervisor:
     # comes back to.
     IDLE_UNLOAD_S = 15 * 60
 
-    def __init__(self, install_dir: Path, models_dir: Path, *,
+    def __init__(self, binary: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
-        self.install_dir = Path(install_dir)
+        # The exact engine binary (PM store path, backend-selected), handed
+        # in by boot — the supervisor never discovers binaries itself: a
+        # legacy-directory scan could resurrect bytes pm did not pin.
+        self.binary = Path(binary)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
         self.port = port or _stable_port()
@@ -113,12 +133,18 @@ class LlamaServerSupervisor:
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
+        self._job = None
         self.primary_model: str | None = None
         self._restarts = 0
         self._stopping = False
+        self._stop_event = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+        self._state: dict | None = None
         self._watchdog: threading.Thread | None = None
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
+        # Launch budget the preset file was last planned against (bootstrap.refit_idle_presets).
+        self._refit_usable: int | None = None
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -146,7 +172,7 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
-        exe = server_binary(self.install_dir)
+        exe = self.binary
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -158,11 +184,11 @@ class LlamaServerSupervisor:
             "--models-autoload",
             "--metrics",          # opt-in flag; supervisor telemetry needs it
             "--slots",            # /slots endpoint is also opt-in; is_idle reads it
-            "--no-webui",
+            "--no-ui",
             "--jinja",
             # Direct I/O on model load bypasses the page cache so a multi-GB load doesn't evict
             # half the OS cache — measured faster on NVMe, and our router bounces reload often.
-            "-dio",
+            *_direct_io_args(exe),
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]
@@ -177,8 +203,8 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc = subprocess.Popen(cmd, stdout=self._log_handle,
-                                     stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+                                             cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -186,22 +212,38 @@ class LlamaServerSupervisor:
         self._write_state()
 
     def start(self, timeout_s: int = 120) -> None:
-        self._stopping = False
-        self._spawn()
+        with self._lifecycle_lock:
+            self._stopping = False
+            self._stop_event.clear()
+            self._spawn()
         self._wait_health(timeout_s)
-        self._write_state()
         self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
         self._watchdog.start()
 
     def _write_state(self) -> None:
+        import os
+        import psutil
+        from gateway.status import get_process_start_time
+        from utils import atomic_json_write
+
+        proc = psutil.Process(self.proc.pid)
+        # create_time stays for runtimes that predate start_time.
+        self._state = {"base_url": self.base_url, "api_key": self.api_key,
+                       "pid": proc.pid, "create_time": proc.create_time(),
+                       "start_time": get_process_start_time(proc.pid),
+                       "executable": proc.exe(), "owner_pid": os.getpid(),
+                       "owner_create_time": psutil.Process().create_time(),
+                       "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"base_url": self.base_url, "api_key": self.api_key,
-                                    "pid": self.proc.pid if self.proc else None}), encoding="utf-8")
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
+        atomic_json_write(path, self._state, mode=0o600)
 
     def _wait_health(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                raise RuntimeError("llama-server startup cancelled")
             if self.proc and self.proc.poll() is not None:
                 raise RuntimeError(f"llama-server exited rc={self.proc.returncode} during startup "
                                    f"(log: {self.log_path})")
@@ -226,28 +268,39 @@ class LlamaServerSupervisor:
                 return
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
-            time.sleep(backoff)
+            if self._stop_event.wait(backoff):
+                return
             self._restarts += 1
             try:
-                self._reap_orphaned_children()
-                self._spawn()
+                with self._lifecycle_lock:
+                    if self._stopping:
+                        return
+                    self._reap_orphaned_children()
+                    self._spawn()
                 self._wait_health(120)
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("llama-server restart failed: %s", exc)
 
     def stop(self) -> None:
-        self._stopping = True
-        state_path().unlink(missing_ok=True)
-        if self.proc and self.proc.poll() is None:
-            self._terminate_tree(self.proc)
-        if self._log_handle:
-            self._log_handle.close()
-            self._log_handle = None
+        with self._lifecycle_lock:
+            self._stopping = True
+            self._stop_event.set()
+            try:
+                if self.proc and self.proc.poll() is None:
+                    self._terminate_tree(self.proc)
+            finally:
+                if self._job is not None:
+                    self._job.close()
+                    self._job = None
+            # Retain state: deleting it could race a replacement publication.
+            if self._log_handle:
+                self._log_handle.close()
+                self._log_handle = None
 
     @staticmethod
-    def _terminate_tree(proc: subprocess.Popen) -> None:
+    def _terminate_tree(proc: subprocess.Popen, *, verified_root: bool = False) -> None:
         """Terminate the router AND its model children.
 
         Each child holds gigabytes of VRAM; terminating only the router (TerminateProcess on
@@ -255,19 +308,30 @@ class LlamaServerSupervisor:
         FIRST (the parent must be alive to walk them), terminate all, escalate to kill.
         """
         children: list = []
-        with suppress(Exception):  # no psutil view; still stop the router
+        timeouts = (subprocess.TimeoutExpired,)
+        with suppress(ImportError):
             import psutil
 
-            children = psutil.Process(proc.pid).children(recursive=True)
-        proc.terminate()
-        for child in children:
-            _quiet(child.terminate)
+            timeouts += (psutil.TimeoutExpired,)
+            if verified_root:
+                # Recovery retains the birth identity; never rebuild it from a PID.
+                children = proc.children(recursive=True)
+                if not proc.is_running():
+                    raise psutil.NoSuchProcess(proc.pid)
+            else:
+                with suppress(psutil.Error):
+                    children = psutil.Process(proc.pid).children(recursive=True)
         try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        for child in children:
-            _quiet(lambda: child.is_running() and child.kill())
+            for child in children:
+                _quiet(child.terminate)
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except timeouts:
+                proc.kill()
+        finally:
+            for child in children:
+                _quiet(lambda: child.is_running() and child.kill())
 
     def _reap_orphaned_children(self) -> None:
         """Kill model children orphaned by a router crash, before respawn.
@@ -276,11 +340,17 @@ class LlamaServerSupervisor:
         llama-server binary whose parent is gone is an orphan of a previous router. Its VRAM must
         come back before the new router loads models next to the ghosts.
         """
+        if self._job is not None:
+            self._job.close()
+            self._job = None
+            return
+        if sys.platform == "win32":
+            return  # Unrecorded processes are not ours merely because the binary matches.
         try:
             import psutil
 
-            exe = str(server_binary(self.install_dir))
-        except Exception:  # noqa: BLE001
+            exe = str(self.binary)
+        except Exception:
             return
         own_pid = self.proc.pid if self.proc is not None else None
         for p in psutil.process_iter(["exe", "ppid"]):
@@ -294,13 +364,19 @@ class LlamaServerSupervisor:
 
     # ── model management (router endpoints) ──────────────────
 
-    def models(self) -> dict:
+    def models(self, timeout_s: int = 30) -> dict:
         """{model_id: status_value} from GET /models."""
         return {m["id"]: m.get("status", {}).get("value", "unknown")
-                for m in self._request("/models").get("data", [])}
+                for m in self._request("/models", timeout_s=timeout_s).get("data", [])}
 
     def load_model(self, model_id: str, timeout_s: int = 600) -> None:
         self._request("/models/load", {"model": model_id}, timeout_s=timeout_s)
+
+    def reload_presets(self) -> None:
+        """Have the router re-read the preset file (GET /models?reload=1). It applies new launch
+        flags to models that aren't loaded and unloads any loaded model whose flags changed, so
+        callers rewrite the file only while nothing is loaded."""
+        self._request("/models?reload=1", timeout_s=10)
 
     def unload_model(self, model_id: str) -> None:
         """Free the child's VRAM now (POST /models/unload; bogus name -> 400). Momentary: never
@@ -311,21 +387,31 @@ class LlamaServerSupervisor:
             try:
                 if self.models().get(model_id) not in (*_RESIDENT, "unloading"):
                     return
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
             time.sleep(0.3)
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
         """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no
-        queued work, tracked per model across calls; a model seen busy resets its clock."""
+        queued work, tracked per model across calls; a model seen busy resets its clock. A
+        failed telemetry probe is neither idle nor busy: the clock is kept, so a flaky probe
+        cannot pin a resident model (and its VRAM) indefinitely."""
         now = time.monotonic() if now is None else now
         unloaded: list[str] = []
         try:
             statuses = self.models()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return unloaded
         for model_id, status in statuses.items():
-            if status not in _RESIDENT or not self.is_idle(model_id):
+            if status not in _RESIDENT:
+                self._idle_since.pop(model_id, None)
+                continue
+            probe = self._probe_idle(model_id)
+            if probe is None:
+                logger.info("idle probe for %s failed; keeping idle clock (idle %ds)", model_id,
+                            int(now - self._idle_since.get(model_id, now)))
+                continue
+            if probe is False:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
@@ -336,7 +422,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 unloaded.append(model_id)
                 logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
 
@@ -350,7 +436,7 @@ class LlamaServerSupervisor:
             msg = resp["choices"][0]["message"]
             blob = (msg.get("content") or "") + " " + (msg.get("reasoning_content") or "")
             return TOUCH_EXPECT in blob.lower()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("touch generation failed for %s: %s", model_id, exc)
             return False
 
@@ -369,6 +455,12 @@ class LlamaServerSupervisor:
         """No processing requests and no busy slots. Router quirk: /slots and /metrics are
         per-child and require ?model= (bare calls 400). With ``model_id`` checks that one child;
         without, every loaded child."""
+        return self._probe_idle(model_id) is True
+
+    def _probe_idle(self, model_id: str | None = None) -> bool | None:
+        """Tri-state idle probe for the sweeper: True = confirmed idle, False = confirmed
+        busy, None = the probe itself failed. The sweeper must never mistake a dead probe
+        for activity — that resets the idle clock and pins the model's VRAM."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
@@ -383,5 +475,5 @@ class LlamaServerSupervisor:
                             and float(line.split()[-1]) != 0.0):
                         return False
             return True
-        except Exception:  # noqa: BLE001
-            return False
+        except Exception:
+            return None

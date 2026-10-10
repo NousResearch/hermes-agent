@@ -39,11 +39,11 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
     Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
     Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
     Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
-    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
     Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
     Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
@@ -105,7 +105,7 @@ def _truthy_token(value: str) -> bool:
     return value.lower() in {"true", "1", "yes", "on"}
 
 
-def _csv_extras(extra: Dict[str, Any], spec) -> None:
+def _csv_extras(extra: dict[str, Any], spec) -> None:
     """``extra[key] = _csv_list(raw)`` for each ``(key, raw)`` whose list is non-empty."""
     for key, raw in spec:
         items = _csv_list(raw)
@@ -132,7 +132,7 @@ def _env_first(envs) -> str:
 _INT = object()  # spec marker: ``int(value)``, silently skipped when malformed
 
 
-def _env_extras(extra: Dict[str, Any], spec, *, strip: bool = False) -> None:
+def _env_extras(extra: dict[str, Any], spec, *, strip: bool = False) -> None:
     """``extra[key] = fn(value)`` for each ``(key, env[, fn])`` whose env value is truthy.
 
     ``strip=True`` strips BEFORE the truthiness check. ``fn=_INT`` parses an int
@@ -264,17 +264,16 @@ def _telegram_fallback_ips(config: GatewayConfig) -> None:
 
 
 def _whatsapp(config: GatewayConfig) -> None:
-    """WhatsApp (Baileys bridge) uses a flag, not credentials; an explicit false overrides YAML."""
+    """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
+    WHATSAPP_ENABLED=true follows the credential contract — it never beats an explicit YAML disable
+    (the dashboard's disable action writes only ``platforms.whatsapp.enabled: false`` and leaves the
+    env flag on disk, #73289)."""
     raw = getenv("WHATSAPP_ENABLED")
-    enabled = is_truthy_value(raw)
     wa_cfg = config.platforms.get(Platform.WHATSAPP)
-    if wa_cfg is None:
-        if enabled:
-            config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
-    elif raw.lower() in {"false", "0", "no"}:
+    if wa_cfg is not None and raw.lower() in {"false", "0", "no"}:
         wa_cfg.enabled = False
-    elif enabled:
-        wa_cfg.enabled = True
+    elif is_truthy_value(raw):
+        _enable_from_env(config, Platform.WHATSAPP)
 
 
 def _slack_home(config: GatewayConfig) -> None:
@@ -316,9 +315,15 @@ def _api_server(config: GatewayConfig) -> None:
 
 
 def _webhook(config: GatewayConfig) -> None:
-    if is_truthy_value(getenv("WEBHOOK_ENABLED")):
-        extra = _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False).extra
-        _env_extras(extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
+    enabled = is_truthy_value(getenv("WEBHOOK_ENABLED"))
+    if not (enabled or Platform.WEBHOOK in config.platforms):
+        return
+    webhook_config = (
+        _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False)
+        if enabled
+        else config.platforms[Platform.WEBHOOK]
+    )
+    _env_extras(webhook_config.extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
 
 
 def _msgraph_webhook(config: GatewayConfig) -> None:
@@ -549,7 +554,6 @@ _ENV_STEPS: tuple = (
         then=_matrix_e2ee,
     ),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
-    _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
     _Cred(
         Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
         fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),

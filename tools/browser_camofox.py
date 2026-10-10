@@ -435,7 +435,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         from tools.browser_mcp_transport import _is_gateway_backend
         if _is_gateway_backend():
             from tools.browser_mcp_transport import mcp_navigate
-            return mcp_navigate(url, timeout_secs=_get_command_timeout())
+            return mcp_navigate(url, timeout_secs=_get_command_timeout(), task_id=task_id)
         browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session, data = _navigate_tab(task_id, browser_url)
         result = {"success": True, "url": data.get("url", browser_url), "title": data.get("title", "")}
@@ -513,7 +513,37 @@ def _mcp_verb_route(suffix: str) -> Optional[str]:
     }.get(suffix)
 
 
-def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[Dict[str, Any]], str]) -> str:
+def _mcp_private_page_guard(task_id: Optional[str], action: str) -> Optional[str]:
+    """Blocked payload for MCP-routed verbs when the CURRENT gateway page is private.
+
+    P1-2 (PR #135861 review): MCP early-returns skipped the _with_tab guard entirely.
+    Mirrors _camofox_private_page_block semantics (same ssrf-gate + fail-open probe),
+    except the page-URL probe rides the MCP transport (raw /tabs is REST-denied on
+    gateways). No local session exists on gateways, so tab resolution is the transport's
+    (registry / latest-tab); the probe targets the same page the verb would touch.
+    """
+    from tools.browser_tool_eval_policy import _eval_ssrf_guard_active, _url_blocked
+    from tools.browser_tool_origin import origin_module as _origin_fn
+    if not _eval_ssrf_guard_active(task_id or "default"):
+        return None
+    try:
+        from tools.browser_mcp_transport import mcp_evaluate
+        raw = mcp_evaluate("window.location.href", task_id=task_id)
+        data = json.loads(raw) if raw.lstrip().startswith("{") else {}
+        current_url = str(data.get("result") or "").strip().strip('"').strip("'")
+        # Only treat an URL-shaped probe result as a page URL — anything else
+        # (error JSON, empty) is fail-open, matching the sibling guards.
+        if current_url.startswith(("http://", "https://")) and _url_blocked(_origin_fn(), current_url):
+            return json.dumps({"success": False, "error": (
+                "Blocked: page URL targets a private or internal address "
+                f"({current_url}). Refusing to {action} on this page in this browser mode.")},
+                ensure_ascii=False)
+    except Exception:
+        pass  # fail-open like sibling guards
+    return None
+
+
+def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[dict[str, Any]], str]) -> str:
     """Require a tab (+ private-page guard when ``guard_action`` is set), then run ``body(session)``;
     any exception becomes a ``tool_error``."""
     try:
@@ -535,11 +565,14 @@ def _tab_action(task_id: Optional[str], guard_action: Optional[str], suffix: str
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
     """Accessibility tree snapshot. ``user_task`` is deprecated and ignored —
     oversized snapshots always truncate-and-store (no LLM summarization)."""
-    # Hosted gateway → MCP transport.
+    # Hosted gateway → MCP transport (guard first — review P1-2).
     route = _mcp_verb_route("snapshot")
     if route:
+        blocked = _mcp_private_page_guard(task_id, "read a page snapshot")
+        if blocked:
+            return blocked
         from tools.browser_mcp_transport import mcp_snapshot
-        return mcp_snapshot()
+        return mcp_snapshot(task_id=task_id)
     def body(session):
         snapshot, refs_count = _fetch_snapshot(session)
         return json.dumps({"success": True, "snapshot": snapshot, "element_count": refs_count})
@@ -549,11 +582,14 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_tas
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click an element by ref via Camofox."""
     clean_ref = ref.lstrip("@")  # our tool convention prefixes refs with @
-    # Hosted gateway → MCP transport.
+    # Hosted gateway → MCP transport (guard first — review P1-2).
     route = _mcp_verb_route("click")
     if route:
+        blocked = _mcp_private_page_guard(task_id, "click on this page")
+        if blocked:
+            return blocked
         from tools.browser_mcp_transport import mcp_click
-        return mcp_click(clean_ref)
+        return mcp_click(clean_ref, task_id=task_id)
     return _tab_action(task_id, "click", "click", {"ref": clean_ref},
                        lambda data: {"success": True, "clicked": clean_ref, "url": data.get("url", "")})
 
@@ -561,11 +597,15 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     """Type text into an element by ref via Camofox."""
     try:
-        # Hosted gateway → MCP transport.
+        # Hosted gateway → MCP transport (guard first — review P1-2; redaction now
+ # lives inside mcp_type — review P1-4).
         route = _mcp_verb_route("type")
         if route:
+            blocked = _mcp_private_page_guard(task_id, "type into this page")
+            if blocked:
+                return blocked
             from tools.browser_mcp_transport import mcp_type
-            return mcp_type(ref, text)
+            return mcp_type(ref, text, task_id=task_id)
         session, blocked = _require_tab(task_id, "type")
         if blocked:
             return blocked
@@ -589,7 +629,7 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
     route = _mcp_verb_route("scroll")
     if route:
         from tools.browser_mcp_transport import mcp_scroll
-        return mcp_scroll(direction)
+        return mcp_scroll(direction, task_id=task_id)
     return _tab_action(task_id, None, "scroll", {"direction": direction},
                        lambda data: {"success": True, "scrolled": direction})
 
@@ -600,7 +640,7 @@ def camofox_back(task_id: Optional[str] = None) -> str:
     route = _mcp_verb_route("back")
     if route:
         from tools.browser_mcp_transport import mcp_back
-        return mcp_back()
+        return mcp_back(task_id=task_id, back_guard=True)
     return _tab_action(task_id, None, "back", {}, lambda data: {"success": True, "url": data.get("url", "")})
 
 
@@ -609,8 +649,11 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
     # Hosted gateway → MCP transport.
     route = _mcp_verb_route("press")
     if route:
+        blocked = _mcp_private_page_guard(task_id, "press keys on this page")
+        if blocked:
+            return blocked
         from tools.browser_mcp_transport import mcp_press
-        return mcp_press(key)
+        return mcp_press(key, task_id=task_id)
     return _tab_action(task_id, "press", "press", {"key": key}, lambda data: {"success": True, "pressed": key})
 
 
@@ -623,7 +666,7 @@ def camofox_close(task_id: Optional[str] = None) -> str:
         if route:
             from tools.browser_mcp_transport import mcp_close
             _drop_session(task_id)
-            return mcp_close()
+            return mcp_close(task_id=task_id)
         session = _drop_session(task_id)
         if session:
             _delete(f"/sessions/{session['user_id']}")
@@ -634,12 +677,15 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox (parsed from the snapshot)."""
-    # Hosted gateway → snapshot via MCP, parse locally.
+    # Hosted gateway → snapshot via MCP, parse locally (guard first — review P1-2).
     route = _mcp_verb_route("snapshot")
     if route:
+        blocked = _mcp_private_page_guard(task_id, "extract page images")
+        if blocked:
+            return blocked
         from tools.browser_mcp_transport import mcp_snapshot
         import json as _json
-        snap_response = _json.loads(mcp_snapshot())
+        snap_response = _json.loads(mcp_snapshot(task_id=task_id))
         if not snap_response.get("success"):
             return _json.dumps(snap_response)
         images = _parse_snapshot_images(snap_response.get("snapshot", ""))
@@ -670,11 +716,16 @@ def _save_screenshot(content: bytes) -> str:
     return screenshot_path
 
 
-def _mcp_vision_flow(question: str, annotate: bool) -> str:
+def _mcp_vision_flow(question: str, annotate: bool, task_id: Optional[str] = None) -> str:
     """Full browser_vision flow for gateway backends: MCP screenshot bytes + aux-LLM
     analysis + redaction. Mirrors the local body() tail without the session plumbing."""
+    # Guard BEFORE the screenshot: the aux-LLM must never be fed a private/internal
+    # page image (review P1-2 — vision observed calling the LLM on a private page).
+    blocked = _mcp_private_page_guard(task_id, "capture and analyze this page")
+    if blocked:
+        return blocked
     from tools.browser_mcp_transport import mcp_screenshot_b64
-    content = mcp_screenshot_b64()
+    content = mcp_screenshot_b64(task_id=task_id)
     if content is None:
         return tool_error("MCP screenshot failed (see gateway log for cause; likely browser "
                           "warm-up after a restart — retry once)", success=False)
@@ -684,7 +735,7 @@ def _mcp_vision_flow(question: str, annotate: bool) -> str:
     if annotate:
         try:
             from tools.browser_mcp_transport import mcp_snapshot
-            snap = json.loads(mcp_snapshot())
+            snap = json.loads(mcp_snapshot(task_id=task_id))
             annotation_context = f"\n\nAccessibility tree (element refs for interaction):\n{(snap.get('snapshot') or '')[:3000]}"
         except Exception:
             pass
@@ -707,7 +758,7 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
     # addressing) — no local session row exists, so _require_tab/_with_tab cannot
     # gate this verb. Duplicate the annotation+LLM tail for the routed path.
     if _mcp_verb_route("screenshot"):
-        return _mcp_vision_flow(question, annotate)
+        return _mcp_vision_flow(question, annotate, task_id=task_id)
 
     def body(session):
         resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))

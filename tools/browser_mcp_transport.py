@@ -17,11 +17,12 @@ so `browser_camofox.py` keeps its external contract (`success`, `snapshot`,
 `element_count`, `url`, ...).
 
 `browser_navigate` creates a NEW server-side tab per call on this transport.
-The hermes session layer tracks the returned tab's identity heuristically:
-the MCP server addresses "the most recently created gateway tab" when
-`tab_id` is omitted, which matches single-session flows (the dominant case:
-cron jobs, one-thing-at-a-time agents). Multi-tab flows should pass explicit
-tab ids — the transport forwards `tab_id` verbatim when a verb supports it.
+The gateway now echoes the created tab id in the navigate payload (``Tab: <id>``
+line, wolverine SEK-MT lineage); the transport records it per hermes task session
+(`_TAB_REGISTRY`) and every verb forwards the recorded `tab_id` explicitly — no
+"most recent tab for the key" implicit targeting, which cross-task interleaves
+could misdeliver. Callers may still pass explicit tab ids, which win over the
+registry.
 """
 
 from __future__ import annotations
@@ -39,6 +40,35 @@ from tools.registry import tool_error
 _MCP_TIMEOUT_DEFAULT = 120  # navigate w/ captcha-solve budget lives under this
 _MCP_PROTOCOL_VERSION = "2026-07-28"
 _REF_RE = re.compile(r"\[([a-zA-Z0-9_]+)\]")
+
+# hermes task session -> gateway tab id. Populated from the navigate payload's
+# ``Tab: <id>`` line; consulted by every verb so calls target the task's own tab
+# instead of the key's most-recent one (session-isolation fix, PR #135861 review P1-1).
+_TAB_REGISTRY: dict[str, str] = {}
+
+
+def _task_key(task_id: Optional[str]) -> str:
+    return task_id or "default"
+
+
+def set_task_tab(task_id: Optional[str], tab_id: str) -> None:
+    """Record the gateway tab a task session owns (after navigate)."""
+    if tab_id:
+        _TAB_REGISTRY[_task_key(task_id)] = tab_id
+
+
+def get_task_tab(task_id: Optional[str], explicit: Optional[str] = None) -> Optional[str]:
+    """Explicit tab id wins; else the task's recorded tab; else None."""
+    if explicit:
+        return explicit
+    return _TAB_REGISTRY.get(_task_key(task_id))
+
+
+def drop_task_tab(task_id: Optional[str]) -> None:
+    _TAB_REGISTRY.pop(_task_key(task_id), None)
+
+
+_TAB_LINE_RE = re.compile(r"^Tab:\s*(\S+)\s*$", re.MULTILINE)
 
 
 def _backend_url() -> str:
@@ -92,9 +122,21 @@ def _log_gateway_resolution_once(gateway: bool) -> None:
         "hosted gateway (MCP transport)" if gateway else "local/community (REST)")
 
 
-def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
+def _call(tool: str, arguments: dict[str, Any], timeout: Optional[int] = None,
+          task_id: Optional[str] = None, tab_id: Optional[str] = None) -> dict[str, Any]:
     """One stateless MCP tools/call. Returns the raw JSON-RPC envelope (parsed)."""
-    url = f"{_backend_url()}/mcp"
+    base = _backend_url()
+    host = base.split("//", 1)[-1].split("/", 1)[0]
+    loopback = host.split(":")[0] in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if not loopback and not base.startswith("https://"):
+        # P2 (PR #135861 review): the bearer key must not cross a non-loopback
+        # network in cleartext. Loopback http stays allowed for local dev/sidecars.
+        raise RuntimeError(
+            f"browser backend URL must be HTTPS for non-loopback endpoints (got {base})")
+    effective_tab = get_task_tab(task_id, tab_id)
+    if effective_tab and effective_tab not in arguments:
+        arguments = {**arguments, "tab_id": effective_tab}
+    url = f"{base}/mcp"
     body = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -128,7 +170,7 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
             "an idle period: retry once, steady-state calls are sub-second"
         ) from None
     if resp.status_code == 401:
-        raise PermissionError(f"browser backend rejected the API key (401) — key expired or revoked")
+        raise PermissionError("browser backend rejected the API key (401) — key expired or revoked")
     resp.raise_for_status()
     raw = resp.text.strip()
     # SSE frame or plain JSON — accept both (gateway content-negotiates).
@@ -144,16 +186,16 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
     return env.get("result", {})
 
 
-def _result_text(result: Dict[str, Any]) -> str:
+def _result_text(result: dict[str, Any]) -> str:
     content = result.get("content") or []
     return content[0].get("text", "") if content else ""
 
 
-def _result_ok(result: Dict[str, Any]) -> bool:
+def _result_ok(result: dict[str, Any]) -> bool:
     return result.get("isError") is not True
 
 
-def _mcp_error(result: Dict[str, Any], fallback: str) -> str:
+def _mcp_error(result: dict[str, Any], fallback: str) -> str:
     return tool_error(_result_text(result) or fallback, success=False)
 
 
@@ -172,14 +214,17 @@ def _extract_snapshot(text: str) -> tuple[str, int]:
 
 # ---- Verb mappings (same return shapes as the REST paths in browser_camofox.py) ----
 
-def mcp_navigate(url: str, timeout_secs: int = 30) -> str:
+def mcp_navigate(url: str, timeout_secs: int = 30, task_id: Optional[str] = None) -> str:
     try:
         result = _call("browser_navigate", {"url": url, "timeout_secs": timeout_secs})
         if not _result_ok(result):
             return _mcp_error(result, "navigate failed")
         text = _result_text(result)
+        tab_match = _TAB_LINE_RE.search(text)
+        if tab_match:
+            set_task_tab(task_id, tab_match.group(1))
         snap, n_refs = _extract_snapshot(text)
-        out: Dict[str, Any] = {"success": True, "url": url, "title": "",
+        out: dict[str, Any] = {"success": True, "url": url, "title": "",
                                "snapshot": snap, "element_count": n_refs}
         status_line = next((l for l in text.splitlines() if l.startswith("Status:")), None)
         if status_line:
@@ -189,9 +234,9 @@ def mcp_navigate(url: str, timeout_secs: int = 30) -> str:
         return tool_error(str(exc), success=False)
 
 
-def mcp_snapshot() -> str:
+def mcp_snapshot(task_id: Optional[str] = None) -> str:
     try:
-        result = _call("browser_snapshot", {})
+        result = _call("browser_snapshot", {}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, "snapshot failed")
         text = _result_text(result)
@@ -201,15 +246,15 @@ def mcp_snapshot() -> str:
         return tool_error(str(exc), success=False)
 
 
-def mcp_click(ref: str) -> str:
+def mcp_click(ref: str, task_id: Optional[str] = None) -> str:
     clean = ref.lstrip("@")
     try:
-        result = _call("browser_click", {"ref": clean, "return_snapshot": True})
+        result = _call("browser_click", {"ref": clean, "return_snapshot": True}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, f"element not found or click failed for ref {clean}")
         text = _result_text(result)
         snap, _ = _extract_snapshot(text)
-        out: Dict[str, Any] = {"success": True, "clicked": clean}
+        out: dict[str, Any] = {"success": True, "clicked": clean}
         if snap:
             out["snapshot"], out["element_count"] = snap, len(set(_REF_RE.findall(snap)))
         return json.dumps(out)
@@ -217,20 +262,27 @@ def mcp_click(ref: str) -> str:
         return tool_error(str(exc), success=False)
 
 
-def mcp_type(ref: str, text: str) -> str:
+def mcp_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     clean = ref.lstrip("@")
+    from agent.display import redact_browser_typed_text_for_display, redact_tool_args_for_display
     try:
-        result = _call("browser_type", {"ref": clean, "text": text, "return_snapshot": False})
+        result = _call("browser_type", {"ref": clean, "text": text, "return_snapshot": False}, task_id=task_id)
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {}).get("text", text)
         if not _result_ok(result):
-            return _mcp_error(result, f"type failed for ref {clean}")
-        return json.dumps({"success": True, "typed": text, "element": clean})
+            err = _mcp_error(result, f"type failed for ref {clean}")
+            # tool_error payloads reach history — redact the echoed text there too.
+            return redact_browser_typed_text_for_display(err, text)
+        # P1-4 (PR #135861 review): never echo the raw typed text back (REST path redacts).
+        return json.dumps(redact_browser_typed_text_for_display(
+            {"success": True, "typed": display_text, "element": clean}, text))
     except (requests.RequestException, RuntimeError, PermissionError, ValueError) as exc:
-        return tool_error(str(exc), success=False)
+        return redact_browser_typed_text_for_display(
+            tool_error(str(exc), success=False), text)
 
 
-def mcp_press(key: str) -> str:
+def mcp_press(key: str, task_id: Optional[str] = None) -> str:
     try:
-        result = _call("browser_press", {"key": key, "return_snapshot": False})
+        result = _call("browser_press", {"key": key, "return_snapshot": False}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, f"press failed for key {key}")
         return json.dumps({"success": True, "pressed": key})
@@ -238,9 +290,9 @@ def mcp_press(key: str) -> str:
         return tool_error(str(exc), success=False)
 
 
-def mcp_scroll(direction: str) -> str:
+def mcp_scroll(direction: str, task_id: Optional[str] = None) -> str:
     try:
-        result = _call("browser_scroll", {"direction": direction, "return_snapshot": False})
+        result = _call("browser_scroll", {"direction": direction, "return_snapshot": False}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, f"scroll failed ({direction})")
         return json.dumps({"success": True, "scrolled": direction})
@@ -248,22 +300,35 @@ def mcp_scroll(direction: str) -> str:
         return tool_error(str(exc), success=False)
 
 
-def mcp_back() -> str:
+def mcp_back(task_id: Optional[str] = None, back_guard: bool = False) -> str:
+    """``back_guard=True`` (browser_tool caller): after back, the result URL passes the
+    same private-address recheck the REST path applies (review parity break — history
+    can land on an intranet/metadata page the navigate preflight never saw)."""
     try:
-        result = _call("browser_back", {"return_snapshot": False})
+        result = _call("browser_back", {"return_snapshot": False}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, "back failed")
         text = _result_text(result)
         # best-effort url extraction from the text payload
         match = re.search(r"https?://\S+", text)
-        return json.dumps({"success": True, "url": match.group(0) if match else ""})
+        url = match.group(0).rstrip(".,;") if match else ""
+        if back_guard:
+            from tools.browser_tool_eval_policy import _url_blocked
+            from tools.browser_tool_origin import origin_module as _origin_fn
+            if url and _url_blocked(_origin_fn(), url):
+                return json.dumps({"success": False, "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({url}). Browser history navigation (back) landed on this address "
+                    "in this browser mode.")}, ensure_ascii=False)
+        return json.dumps({"success": True, "url": url})
     except (requests.RequestException, RuntimeError, PermissionError, ValueError) as exc:
         return tool_error(str(exc), success=False)
 
 
-def mcp_close() -> str:
+def mcp_close(task_id: Optional[str] = None) -> str:
     try:
-        result = _call("browser_close", {})
+        result = _call("browser_close", {}, task_id=task_id)
+        drop_task_tab(task_id)
         if not _result_ok(result):
             return _mcp_error(result, "close failed")
         return json.dumps({"success": True, "closed": True})
@@ -271,12 +336,25 @@ def mcp_close() -> str:
         return json.dumps({"success": True, "closed": True, "warning": str(exc)})
 
 
-def mcp_evaluate(expression: str, timeout_secs: int = 10) -> str:
+def mcp_evaluate(expression: str, timeout_secs: int = 10, task_id: Optional[str] = None,
+                 postprocess: bool = False) -> str:
+    """``postprocess=True`` routes the result through the shared eval postprocessor
+    (post-eval private-URL recheck + forced redaction) — the browser_tool caller uses
+    this; internal guard probes use raw evaluation and must not recurse into guards."""
     try:
-        result = _call("browser_evaluate", {"expression": expression, "timeout_secs": timeout_secs})
+        result = _call("browser_evaluate", {"expression": expression, "timeout_secs": timeout_secs}, task_id=task_id)
         if not _result_ok(result):
             return _mcp_error(result, "evaluate failed")
-        return json.dumps({"success": True, "result": _result_text(result)})
+        raw_text = _result_text(result)
+        try:
+            parsed = json.loads(raw_text) if raw_text.lstrip().startswith(("{", "[", '"')) else raw_text
+        except ValueError:
+            parsed = raw_text
+        out = {"success": True, "result": parsed if isinstance(parsed, str) else json.dumps(parsed)}
+        if postprocess:
+            from tools.browser_tool import _eval_result_or_blocked, _parse_eval_value
+            return _eval_result_or_blocked(task_id or "default", _parse_eval_value(out["result"]), {})
+        return json.dumps(out)
     except (requests.RequestException, RuntimeError, PermissionError, ValueError) as exc:
         return tool_error(str(exc), success=False)
 
@@ -287,9 +365,9 @@ def mcp_screenshot_saves_path() -> bool:
     return True
 
 
-def mcp_screenshot_b64() -> Optional[bytes]:
+def mcp_screenshot_b64(task_id: Optional[str] = None) -> Optional[bytes]:
     try:
-        result = _call("browser_screenshot", {"format": "png"})
+        result = _call("browser_screenshot", {"format": "png"}, task_id=task_id)
         if not _result_ok(result):
             logging.getLogger(__name__).error("mcp_screenshot_b64: backend returned not-ok: %s", str(result)[:300])
             return None

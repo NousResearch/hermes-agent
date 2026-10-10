@@ -670,8 +670,11 @@ def test_background_hermes_path_repair_is_idempotent(child_env, monkeypatch, exi
 def test_hermes_bin_resolution_and_unresolved_noop(child_env, monkeypatch):
     bin_dir = child_env / "bin"
     bin_dir.mkdir()
+    command = bin_dir / ("hermes.exe" if os.name == "nt" else "hermes")
+    command.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    command.chmod(0o755)
     monkeypatch.setattr(local, "_HERMES_BIN_DIR", local._SENTINEL)
-    monkeypatch.setattr(local.shutil, "which", lambda name: str(bin_dir / "hermes") if name == "hermes" else None)
+    monkeypatch.setattr(local.shutil, "which", lambda name: str(command) if name == "hermes" else None)
     assert local._resolve_hermes_bin_dir() == str(bin_dir)
     monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
     assert local._prepend_hermes_bin_dir("/usr/bin") == "/usr/bin"

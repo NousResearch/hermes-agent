@@ -600,12 +600,34 @@ _HERMES_BIN_DIR: str | None | object = _SENTINEL
 _HERMES_BIN_DIR_IS_PAYLOAD = False
 
 
+def _launchable_hermes(directory: str) -> bool:
+    """Exclude the install root's entrypoint, which runs under PATH's Python.
+
+    Venv console scripts and shell shims select the installed runtime instead.
+    """
+    shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+    candidate = os.path.join(directory, shim)
+    if not os.path.isfile(candidate):
+        return False
+    if not os.access(candidate, os.X_OK):
+        return False
+    if _IS_WINDOWS:
+        return True
+    try:
+        with open(candidate, "rb") as fh:
+            first_line = fh.readline(512).decode("utf-8", "replace").strip()
+    except OSError:
+        return False
+    return first_line != "#!/usr/bin/env python3"
+
+
 def _resolve_hermes_bin_dir() -> str | None:
-    """Directory holding the ``hermes`` console-script, or None (cached). A gateway
+    """Directory holding a ``hermes`` that runs as a command, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: a sealed payload's own launcher dir; ``which``; absolute
-    ``sys.argv[0]`` naming a real hermes executable; ``sys.executable``'s dir if it holds
-    the shim."""
+    ``hermes`` exits 127. Prefer a sealed payload's own launcher dir, then a launchable
+    command on PATH, beside ``sys.executable``, or beside absolute ``sys.argv[0]``.
+    Skip the install root's bare Python entrypoint, which can run under system Python
+    and shadow a working shim."""
     global _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
@@ -621,14 +643,15 @@ def _resolve_hermes_bin_dir() -> str | None:
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()
     exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-    shim = "hermes.exe" if _IS_WINDOWS else "hermes"
-    if which:
+    candidate = None
+    # PATH may already contain the install root after an update.
+    if which and _launchable_hermes(os.path.dirname(which)):
         candidate = os.path.dirname(which)
+    elif exe_dir and _launchable_hermes(exe_dir):
+        candidate = exe_dir
     elif (os.path.isabs(argv0) and (base == "hermes" or base.startswith("hermes."))
-            and os.path.isfile(argv0)):
+            and _launchable_hermes(os.path.dirname(argv0))):
         candidate = os.path.dirname(argv0)
-    else:
-        candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
     _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
     _HERMES_BIN_DIR_IS_PAYLOAD = False
     return _HERMES_BIN_DIR

@@ -36,6 +36,16 @@ DESCRIPTOR = {
 }
 
 
+async def _wait_until(predicate, timeout: float = 5.0) -> bool:
+    """Poll ``predicate()`` until it is true or ``timeout`` expires; returns its last value."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return predicate()
+
+
 class _IdleAwareServer:
     """Connector stub: descriptor on hello, acks going_idle, records inbound_acks,
     and can push buffered inbound frames (with bufferId) after handshake."""
@@ -127,7 +137,7 @@ async def test_buffered_inbound_is_acked_after_handler(server):
     await t.connect()
     try:
         await t.handshake()
-        await asyncio.sleep(0.1)
+        assert await _wait_until(lambda: "live" in seen and server.inbound_acks)
         assert "buffered" in seen and "live" in seen
         # Only the buffered (bufferId) delivery was acked.
         assert server.inbound_acks == ["buf-42"]
@@ -164,8 +174,7 @@ async def test_reconnect_redials_after_unexpected_close():
         await t.connect()
         await t.handshake()
         # First connection is dropped server-side; the reconnect loop re-dials.
-        await asyncio.sleep(0.2)
-        assert srv.connections >= 2
+        assert await _wait_until(lambda: srv.connections >= 2)
     finally:
         await t.disconnect()
         srv._server.close()

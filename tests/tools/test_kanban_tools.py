@@ -771,6 +771,51 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
 
+# ---------------------------------------------------------------------------
+# Silent scratch default: the bare-create response must be loud (RED target)
+# ---------------------------------------------------------------------------
+
+def test_bare_create_warns_when_defaulting_to_scratch(worker_env):
+    """kanban_create with NO workspace_kind and no project still lands in a
+    scratch workspace (non-narrowing — legacy behavior preserved), but the
+    response must say so loudly instead of silently:
+
+      - ``workspace_defaulted`` is True (machine-readable flag), and
+      - ``warning`` is a non-empty string naming the scratch fallback.
+
+    Today the fallback is completely silent at create time: the caller only
+    sees the ``workspace_kind="scratch"`` echo (kanban_db.py None-collapse at
+    hermes_cli/kanban_db.py:1305-1306); the dispatcher's once-per-install tip
+    (kanban_db_workspace._maybe_emit_scratch_tip) fires at claim time on
+    someone else's machine. RED: the keys are simply absent from _ok().
+    """
+    from tools import kanban_tools as kt
+    result = json.loads(kt._handle_create(
+        {"title": "bare card", "assignee": "peer"}))
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"        # behavior preserved
+    assert result.get("workspace_defaulted") is True    # RED: key absent today
+    warning = result.get("warning")
+    assert isinstance(warning, str) and warning.strip(), \
+        "bare create must return a human-readable warning"
+    assert "scratch" in warning.lower()
+
+
+def test_explicit_scratch_create_is_not_flagged_as_defaulted(worker_env):
+    """The loud signal must distinguish omitted-vs-explicit (#106342 semantics,
+    ported to the response layer): explicitly asking for scratch is a
+    confirmed choice, not a default, so no ``workspace_defaulted`` flag and no
+    defaulting warning."""
+    from tools import kanban_tools as kt
+    result = json.loads(kt._handle_create(
+        {"title": "explicit card", "assignee": "peer", "workspace_kind": "scratch"}))
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"
+    assert not result.get("workspace_defaulted")
+    warning = result.get("warning") or ""
+    assert "default" not in warning.lower()
+
+
 def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

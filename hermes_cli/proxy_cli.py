@@ -62,6 +62,12 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         ]),
         ("disable", "Turn off the proxy integration", cmd_disable, []),
         ("config", "Print the generated proxy.yaml path", cmd_config, []),
+        ("health", "Check whether the iron-proxy is running and accepting connections", cmd_health, [
+            ("--watch", dict(action="store_true",
+                             help="Poll every second until the proxy is healthy (or Ctrl-C)")),
+            ("--timeout", dict(type=int, default=0, metavar="SECONDS",
+                               help="Exit non-zero if proxy is not healthy within SECONDS (0 = no timeout)")),
+        ]),
     ]
     for name, help_text, func, arguments in commands:
         parser = sub.add_parser(name, help=help_text)
@@ -470,6 +476,69 @@ def format_status_text(*, show_tokens: bool = False) -> str:
     elif bool(proxy_cfg.get("enabled")) and not (status.pid and status.listening):
         lines.extend(["", "Next: run `hermes egress start` before launching Docker sandboxes."])
     return "\n".join(lines)
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    """Check whether iron-proxy is running and accepting connections.
+
+    Exit codes
+    ----------
+    0  proxy is up and listening
+    1  proxy process exists but port is not accepting connections
+    2  proxy is not running or not configured
+    """
+    import time
+
+    console = Console()
+    watch = getattr(args, "watch", False)
+    timeout = getattr(args, "timeout", 0)
+    deadline = (time.monotonic() + timeout) if timeout > 0 else None
+
+    def _check() -> int:
+        status = ip.get_status()
+        # Report the address the daemon actually binds, not a hardcoded
+        # loopback.  On Linux the proxy binds the docker bridge gateway
+        # (e.g. 172.17.0.1) so containers can reach it; probing/printing
+        # 127.0.0.1 there would call a healthy daemon dead.  get_status()
+        # probes _probe_target() for `status.listening`; we surface the
+        # same host here so the reported address matches what was tested.
+        host, _ = ip._probe_target()
+        endpoint = f"{host}:{status.tunnel_port}"
+        if not status.pid:
+            console.print("[red]✗[/red]  iron-proxy is not running")
+            return 2
+        if not status.listening:
+            console.print(
+                f"[yellow]⚠[/yellow]  iron-proxy pid {status.pid} exists "
+                f"but {endpoint} is not accepting connections"
+            )
+            return 1
+        console.print(
+            f"[green]✓[/green]  iron-proxy pid {status.pid} "
+            f"listening on {endpoint}"
+        )
+        return 0
+
+    # A positive --timeout implies polling even without --watch, so the
+    # documented `hermes egress health --timeout 30` waits for the deadline
+    # instead of returning after a single probe.  Reuses the same deadline
+    # and poll loop as --watch below.
+    if not watch and timeout <= 0:
+        return _check()
+
+    # --watch (or a positive --timeout): poll every second until healthy or
+    # the deadline expires
+    try:
+        while True:
+            rc = _check()
+            if rc == 0:
+                return 0
+            if deadline is not None and time.monotonic() >= deadline:
+                return rc
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print()
+        return 2
 
 
 def cmd_status(args: argparse.Namespace) -> int:

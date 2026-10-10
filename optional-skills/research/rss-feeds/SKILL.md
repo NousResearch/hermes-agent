@@ -38,10 +38,10 @@ None. Python 3.10+, network access to the feed host.
 Run through `terminal` with the skill-relative script path:
 
 ```bash
-python3 scripts/feed.py read https://hnrss.org/frontpage --limit 10
-python3 scripts/feed.py read https://simonwillison.net/            # page URL → discovers the feed
-python3 scripts/feed.py read URL --since 2026-09-01 --json          # only newer entries, machine-readable
-python3 scripts/feed.py discover https://example.com/               # list candidate feed URLs
+python scripts/feed.py read https://hnrss.org/frontpage --limit 10
+python scripts/feed.py read https://simonwillison.net/            # page URL → discovers the feed
+python scripts/feed.py read URL --since 2026-09-01 --json          # only newer entries, machine-readable
+python scripts/feed.py discover https://example.com/               # list candidate feed URLs
 ```
 
 ## Quick Reference
@@ -91,6 +91,6 @@ truncated or the first paragraph only.
 
 ## Verification
 
-`python3 scripts/feed.py read https://github.com/NousResearch/hermes-agent/releases.atom
+`python scripts/feed.py read https://github.com/NousResearch/hermes-agent/releases.atom
 --limit 1` prints one entry with a `releases/tag/` link and a `[atom]` format tag;
 `discover https://simonwillison.net/` prints an `/atom/` URL.

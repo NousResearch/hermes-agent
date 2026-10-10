@@ -77,13 +77,13 @@ Path: `scripts/fetch_wikipedia.py`
 
 ```bash
 # Look up a notable entity
-python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Microsoft" --out data/wp.csv
+python SKILL_DIR/scripts/fetch_wikipedia.py --query "Microsoft" --out data/wp.csv
 
 # A specific person
-python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" --out data/wp_bg.csv
+python SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" --out data/wp_bg.csv
 
 # Skip the Wikidata enrichment for speed
-python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Microsoft" --no-wikidata \
+python SKILL_DIR/scripts/fetch_wikipedia.py --query "Microsoft" --no-wikidata \
     --limit 5 --out data/wp.csv
 ```
 

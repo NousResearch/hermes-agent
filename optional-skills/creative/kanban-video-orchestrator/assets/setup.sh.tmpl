@@ -65,7 +65,7 @@ configure_profile() {
     local profile="$1"
     local toolsets_json="$2"     # JSON array string, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array string, e.g. '["ascii-video"]'
-    python3 - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
+    python - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
 """Patch a Hermes profile config.yaml using ruamel.yaml so we don't depend on the
 exact default-config string format. Validates the patch took effect and exits
 non-zero if anything's off."""

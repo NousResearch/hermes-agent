@@ -55,7 +55,7 @@ At least ONE authenticated provider CLI (check in this order):
 Plus:
 
 - A directory of static output to publish (site root or a `dist/`/`build/` folder). If the project needs a build step, run it first and publish the output directory, never the source.
-- For local preview sharing: `cloudflared` (optional — `python3 -m http.server` covers local-only preview).
+- For local preview sharing: `cloudflared` (optional — `python -m http.server` covers local-only preview).
 
 ## How to Run
 
@@ -67,7 +67,7 @@ All commands below run via the `terminal` tool from the site's project directory
 
 | Step | Command |
 |---|---|
-| Local preview | `python3 -m http.server 8080 --directory dist` |
+| Local preview | `python -m http.server 8080 --directory dist` |
 | Shareable preview | `cloudflared tunnel --url http://localhost:8080` |
 | Version a deploy | `git add -A && git commit -m "deploy: <what>" && git tag deploy-YYYYMMDD-HHMM` |
 | GitHub Pages (branch mode) | `git subtree push --prefix dist origin gh-pages` |
@@ -84,7 +84,7 @@ All commands below run via the `terminal` tool from the site's project directory
 Build if needed (`npm run build`, etc.) and identify the output directory. Serve it:
 
 ```bash
-python3 -m http.server 8080 --directory dist
+python -m http.server 8080 --directory dist
 ```
 
 For a shareable preview link (user on another machine, or you want their sign-off before going live), open a quick tunnel in a background `terminal` session:

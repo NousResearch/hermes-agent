@@ -58,11 +58,11 @@ Path: `scripts/fetch_sec_edgar.py`
 
 ```bash
 # By CIK
-python3 SKILL_DIR/scripts/fetch_sec_edgar.py --cik 0000320193 \
+python SKILL_DIR/scripts/fetch_sec_edgar.py --cik 0000320193 \
     --types 10-K,10-Q --out data/edgar_filings.csv
 
 # By company name (resolves to CIK first via name search)
-python3 SKILL_DIR/scripts/fetch_sec_edgar.py --company "APPLE INC" \
+python SKILL_DIR/scripts/fetch_sec_edgar.py --company "APPLE INC" \
     --types 8-K --since 2024-01-01 --out data/edgar_filings.csv
 ```
 

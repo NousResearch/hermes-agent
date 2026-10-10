@@ -18,6 +18,7 @@ import json
 import os
 from types import SimpleNamespace
 
+import psutil
 import pytest
 
 import hermes_cli.update_cmd_fleet as fleet
@@ -134,12 +135,20 @@ def test_units_with_distinct_live_pids_are_each_restarted(monkeypatch):
     assert sorted(restarted) == ["hermes-gateway", "hermes-gateway-coder"]
 
 
-def _host_record(tmp_path, monkeypatch, profiles: list[str]) -> None:
+def _host_record(
+    tmp_path, monkeypatch, profiles: list[str], *, process_started: float = 100.0,
+    cmdline: list[str] | None = None,
+) -> None:
+    pid = 4242
+    process_argv = cmdline or ["python", "-m", "hermes_cli.main", "gateway", "run"]
+    process = SimpleNamespace(create_time=lambda: process_started, cmdline=lambda: process_argv)
+    monkeypatch.setattr(psutil, "Process", lambda candidate: process)
+    monkeypatch.setattr(psutil, "pid_exists", lambda candidate: candidate == pid)
     lock_dir = tmp_path / "gateway-locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
     (lock_dir / "host-gateway.json").write_text(
-        json.dumps({"role": "gateway", "pid": os.getpid(), "profiles": profiles}), encoding="utf-8")
+        json.dumps({"role": "gateway", "pid": pid, "createTime": 100.0, "profiles": profiles}), encoding="utf-8")
 
 
 def test_recovery_restarts_one_host_process_for_all_the_profiles_it_serves(tmp_path, monkeypatch):
@@ -158,6 +167,37 @@ def test_recovery_restarts_one_host_process_for_all_the_profiles_it_serves(tmp_p
     reported = [*result["verified"], *result["relaunch_attempted"], *result["failed"]]
     assert sorted(reported) == ["coder", "default", "writer"], "every requested profile keeps an outcome"
     assert result["covered"] == {"coder": ["default", "writer"]}
+
+
+@pytest.mark.parametrize(("process_started", "cmdline"), [
+    (200.0, ["python", "-m", "hermes_cli.main", "gateway", "run"]),
+    (100.0, ["python", "-c", "print('gateway run')"]),
+], ids=("recycled-pid", "argv-lookalike"))
+def test_recovery_keeps_profiles_separate_without_exact_gateway_identity(
+    tmp_path, monkeypatch, process_started, cmdline,
+):
+    _host_record(
+        tmp_path, monkeypatch, ["coder", "writer"],
+        process_started=process_started, cmdline=cmdline,
+    )
+    argvs: list[list[str]] = []
+    monkeypatch.setattr(recovery.shutil, "which", lambda _name: "/usr/bin/systemctl")
+
+    def fake_run(argv, **kwargs):
+        argvs.append(list(argv))
+        if argv[0].endswith("systemctl"):
+            active = argv[-1] == "hermes-gateway-coder.service"
+            return SimpleNamespace(returncode=0 if active else 3, stdout="active" if active else "inactive")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    result = recovery.restart_profiles(
+        ["coder", "writer"], supervisors={"coder": "systemd", "writer": "launchd"}, run=fake_run,
+    )
+
+    assert len([argv for argv in argvs if argv[-2:] == ["gateway", "restart"]]) == 2
+    assert result["covered"] == {}
+    assert result["verified"] == ["coder"]
+    assert result["relaunch_attempted"] == ["writer"]
 
 
 def test_recovery_keeps_separate_processes_separate(tmp_path, monkeypatch):

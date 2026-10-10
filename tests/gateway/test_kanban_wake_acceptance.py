@@ -7,6 +7,7 @@ from evals.heartbeat_idle_wire import WireAdapter
 from gateway.config import Platform, PlatformConfig
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_pending import release_pending_dispatch
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from gateway.wake import admit_internal_event, deliver_wake
@@ -51,6 +52,7 @@ async def test_push_receipt_requires_real_admission_without_displacing_user(raft
     received = []
 
     async def handler(event):
+        release_pending_dispatch(adapter, key, event, claimed=True)
         received.append(event.text)
         started.set()
         await release.wait()

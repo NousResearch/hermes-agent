@@ -613,6 +613,8 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
+    # Per-turn generation accounting for the gateway footer's ``tps`` field.
+    ("_turn_output_tokens", 0), ("_turn_api_seconds", 0.0),
 )
 
 

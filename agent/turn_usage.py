@@ -187,6 +187,8 @@ def record_response_usage(
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))
+        agent._turn_output_tokens = getattr(agent, "_turn_output_tokens", 0) + int(canonical_usage.output_tokens or 0)
+        agent._turn_api_seconds = getattr(agent, "_turn_api_seconds", 0.0) + float(api_duration)
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:

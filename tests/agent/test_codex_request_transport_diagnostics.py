@@ -141,3 +141,89 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
     assert response.status == "completed" and seen[0] == seen[1]
     (log,) = [r.message for r in caplog.records if "zero-event" in r.message]
     assert "unchanged" in log and "attempt 1/2" in log and re.search(r"serialized_input_bytes=\d+", log)
+
+
+class _EventsThenTransportError:
+    """Stream that yields ``events`` and then fails the read the way a torn connection does."""
+
+    def __init__(self, events, before_error=None):
+        self._events, self._before_error = list(events), before_error
+
+    def __iter__(self):
+        yield from self._events
+        if self._before_error is not None:
+            self._before_error()
+        raise httpx.ReadError("connection closed")
+
+    def close(self):
+        pass
+
+
+def test_mid_stream_transport_failure_is_not_treated_as_zero_event(monkeypatch, tmp_path, caplog):
+    """An attempt that already parsed stream events is not a zero-event attempt: the retry must not
+    spill tool outputs or log a zero-event resend. On an unmanaged stream (no Relay) ``on_chunk``
+    never fires, so the event count has to come from the consumed events themselves."""
+    from tests.agent.test_run_agent_codex_responses import _FakeCreateStream, _build_agent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
+    agent = _build_agent(monkeypatch)
+    seen: list = []
+    completed = [
+        SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(
+            type="message", status="completed", content=[SimpleNamespace(type="output_text", text="ok")])),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            status="completed", usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2), id="r1")),
+    ]
+
+    def _create(**kwargs):
+        seen.append(kwargs.get("input") or (kwargs.get("extra_body") or {}).get("input"))
+        if len(seen) == 1:
+            return _EventsThenTransportError([SimpleNamespace(type="response.created"),
+                                              SimpleNamespace(type="response.in_progress")])
+        return _FakeCreateStream(completed)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+
+    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
+        response = agent._run_codex_stream(_oversized_codex_kwargs(760_396))
+
+    assert response.status == "completed" and len(seen) == 2
+    assert seen[1][2]["output"] == "x" * 760_396  # not spilled: the attempt was not zero-event
+    assert not [r.message for r in caplog.records if "zero-event" in r.message]
+    assert not Path(tmp_path, "cache", "spillover", "call_browser.txt").exists()
+
+
+@pytest.mark.parametrize("stop", ["interrupt", "retired"])
+def test_transport_failure_after_stop_does_not_prune_or_log_resend(monkeypatch, tmp_path, caplog, stop):
+    """A user interrupt (or watchdog retirement) tears the connection down. The retry loop then
+    raises instead of resending, so the zero-event prune must not run and must not log a resend
+    that never happens."""
+    from tests.agent.test_run_agent_codex_responses import _build_agent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
+    agent = _build_agent(monkeypatch)
+    agent._active_codex_stream_request_token = token = object()
+    calls: list = []
+
+    def _stop():
+        if stop == "interrupt":
+            agent._interrupt_requested = True
+        else:
+            agent._active_codex_stream_request_token = None
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        return _EventsThenTransportError([], before_error=_stop)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+
+    expected = InterruptedError if stop == "interrupt" else TimeoutError
+    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
+        with pytest.raises(expected):
+            agent._run_codex_stream(_oversized_codex_kwargs(760_396))
+
+    assert len(calls) == 1 and token is not None
+    assert not [r.message for r in caplog.records if "zero-event" in r.message]
+    assert not Path(tmp_path, "cache", "spillover", "call_browser.txt").exists()

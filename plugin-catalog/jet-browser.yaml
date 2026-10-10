@@ -4,13 +4,13 @@
 # does not update itself, and registers one bounded verification tool.
 name: jet-browser
 repo: https://github.com/masakaai/jet-browser
-sha: "0f10f26403708b3664ee243eee36b45c01271951"
+sha: "1b0b10feb70e52bde844ba4e1cb7c35600af4b35"
 subdir: integrations/hermes
 description: "Verify Jet Browser startup, native input, DOM agreement, and PNG capture inside a network-isolated WPE WebKit container."
 maintainer: IRONICBo
 tier: community
 category: tools
-docs_url: https://github.com/masakaai/jet-browser/tree/0f10f26403708b3664ee243eee36b45c01271951/integrations/hermes
+docs_url: https://github.com/masakaai/jet-browser/tree/1b0b10feb70e52bde844ba4e1cb7c35600af4b35/integrations/hermes
 platforms: [linux]
 known_issues:
   - "Requires Docker with linux/amd64 container support; the first run may pull the pinned image from GHCR."

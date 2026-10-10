@@ -212,6 +212,11 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         content, api_content = durable_user_row_content(agent, msg, content, api_content)
         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
         timestamp = timestamp if ov_timestamp is None else ov_timestamp
+    if role == "user":
+        # The row stays text-only; its images go to the image store, keyed by the message_uid stamped
+        # here, so a turn rebuilt from the DB can re-attach them on the wire.
+        from agent.image_store import persist_message_images
+        persist_message_images(msg, session_id=getattr(agent, "session_id", None), ts=timestamp)
     if api_content == content:
         api_content = None
     # get_messages_as_conversation replays rows through sanitize_context().strip(); capture the sent bytes

@@ -41,7 +41,8 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+    SessionDB — SQLite connections are thread-bound. The stored user images whose message left the
+    DB are swept first, on every run (``agent.image_store``).
 
     Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
@@ -51,6 +52,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
+    from agent.image_store import sweep_store
+    sweep_store()  # stored user images whose message left the DB; not gated by the settings below
     _sess_cfg = (_load_full_config().get("sessions") or {})
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
         return

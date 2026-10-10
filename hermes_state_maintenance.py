@@ -350,6 +350,9 @@ class SessionMaintenanceMixin:
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids:
+            from agent.image_store import purge_deleted_sessions
+            purge_deleted_sessions(self, removed_ids)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

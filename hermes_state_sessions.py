@@ -1747,6 +1747,9 @@ class SessionSessionsMixin:
         deleted = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids:
+            from agent.image_store import purge_deleted_sessions
+            purge_deleted_sessions(self, removed_ids)
         return bool(deleted)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
@@ -1860,6 +1863,9 @@ class SessionSessionsMixin:
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if removed_ids:
+            from agent.image_store import purge_deleted_sessions
+            purge_deleted_sessions(self, removed_ids)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count

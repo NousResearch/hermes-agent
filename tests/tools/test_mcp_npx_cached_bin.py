@@ -34,7 +34,7 @@ def _cache(tmp_path, *, package, deps=None, bin_field, make_bin=True, entry="abc
     )
     bindir = root / "node_modules" / ".bin"
     bindir.mkdir(parents=True, exist_ok=True)
-    name = bin_field if isinstance(bin_field, str) else list(bin_field)[0]
+    name = bin_field if isinstance(bin_field, str) else next(iter(bin_field))
     target = bindir / (os.path.basename(package) if isinstance(bin_field, str) else name)
     if os.name == "nt":
         target = target.with_suffix(".cmd")

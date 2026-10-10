@@ -65,6 +65,7 @@ test.skipIf(!powershell)(
 
     try {
       writeFileSync(script, `${WINDOWS_MARKER_JUDGE_PS}\n${PS_DRIVER}`)
+
       const { stdout } = await execFile(powershell!, [
         '-NoProfile',
         '-ExecutionPolicy',
@@ -73,6 +74,7 @@ test.skipIf(!powershell)(
         script,
         corpusPath
       ])
+
       const verdicts = Object.fromEntries(
         stdout
           .trim()

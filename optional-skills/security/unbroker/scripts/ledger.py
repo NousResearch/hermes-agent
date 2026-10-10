@@ -54,7 +54,7 @@ TRANSITIONS: dict[str, set[str]] = {
 
 
 def now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load(subject_id: str) -> dict:
@@ -116,8 +116,8 @@ VERIFICATION_POLL_DAYS = 1     # how soon to re-poll for an unarrived verificati
 
 
 def _plus_days(days: int, start: str | None = None) -> str:
-    base = _dt.datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc) \
-        if start else _dt.datetime.now(_dt.timezone.utc)
+    base = _dt.datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.UTC) \
+        if start else _dt.datetime.now(_dt.UTC)
     return (base + _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

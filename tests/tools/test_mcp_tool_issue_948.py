@@ -143,7 +143,6 @@ def test_run_stdio_malware_check_does_not_block_event_loop():
 
     def slow_check(_command, _args):
         time.sleep(0.3)  # simulate a slow OSV HTTPS call
-        return None
 
     ticks = {"n": 0}
 

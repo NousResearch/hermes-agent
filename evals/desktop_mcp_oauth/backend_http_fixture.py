@@ -56,7 +56,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         path = urlsplit(self.path).path
         self.server.events.append(["GET", path])
         if path.startswith("/.well-known/oauth-protected-resource"):
@@ -87,7 +87,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
             return self.reply(302, headers={"Location": target})
         self.reply(405 if path == "/mcp" else 404)
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         path = urlsplit(self.path).path
         self.server.events.append(["POST", path])
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -135,7 +135,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
                                     "error": {"code": -32601, "message": "Method not found"}})
         self.reply(200, {"jsonrpc": "2.0", "id": request["id"], "result": results[method]})
 
-    def do_DELETE(self):  # noqa: N802
+    def do_DELETE(self):
         self.reply(200)
 
 
@@ -149,7 +149,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         self.server.callback = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
         self.send_response(200)
         self.end_headers()

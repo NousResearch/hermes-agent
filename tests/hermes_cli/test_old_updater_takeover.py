@@ -34,7 +34,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
         "assert request['windows_resume'] == " + repr(resume) + "\n"
         "assert request['receipt']['update_id'] == 'old-correlation'\n"
         "assert request['plan']['install_method'] == 'git'\n"
-        f"Path(sys.argv[2]).write_text(json.dumps({{'resume_handled': True}}), encoding='utf-8')\n"
+        "Path(sys.argv[2]).write_text(json.dumps({'resume_handled': True}), encoding='utf-8')\n"
         "raise SystemExit(0)\n", encoding="utf-8",
     )
     home = tmp_path / "isolated home 日本 café"

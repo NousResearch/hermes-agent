@@ -144,6 +144,7 @@ test('line 2 moved by the heartbeat inside the run still correlates its result',
   const home = tempHome()
   const now = Math.floor(Date.now() / 1000)
   const started_at = now - 900
+
   const result = {
     ok: false,
     exit_code: 3,

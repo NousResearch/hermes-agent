@@ -17,10 +17,8 @@ import type { ReactNode } from 'react'
  * a name nobody registered — and a malformed one — stays exactly the text it
  * always was. Position used to be the guard too (a directive had to be the
  * whole paragraph), and that cost more than it bought: a model that wrote the
- * directive at the end of its sentence instead of alone under it put raw
- * `::onboarding{step="look"}` in front of the user AND swallowed the card,
- * which on a step whose card is the only way forward stops the conversation
- * dead. So a directive is recognised wherever it starts a word, and the
+ * directive at the end of its sentence instead of alone under it put the raw
+ * directive in front of the user AND swallowed the card. So a directive is recognised wherever it starts a word, and the
  * paragraph around it keeps rendering as prose.
  *
  * Attributes are untrusted model output: plugins validate their own fields.
@@ -106,25 +104,6 @@ function parseAttrs(body: string | undefined): ParsedTranscriptDirective['attrs'
   }
 
   return attrs
-}
-
-/**
- * True when a STILL-STREAMING paragraph should be withheld as a directive in
- * progress. Deltas land ~3 chars at a time, and `::ask{question="Wha` cannot
- * parse until the final `}` lands — exactly the window where raw directive
- * text used to flash. A lone `:` is the same line one delta earlier. The
- * check covers the paragraph-leading case (the authored shape for onboarding
- * cards); a directive a model appends mid-sentence streams as prose until it
- * completes, which reads as ordinary typing rather than leaked markup.
- *
- * Only ever consult this while the message is streaming: a SETTLED paragraph
- * that starts with `::` but doesn't parse is an authoring bug the user should
- * see as text, and callers must keep that behavior.
- */
-export function isDirectiveInProgress(text: string): boolean {
-  const trimmed = text.trimStart()
-
-  return trimmed === ':' || trimmed.startsWith('::')
 }
 
 /**

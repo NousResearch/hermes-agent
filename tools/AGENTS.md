@@ -71,7 +71,7 @@ Rules for tool code:
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
-kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
+kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
 replaces the other browser tools when `browser.backend` is `browser-use`.
@@ -133,7 +133,7 @@ completion by default; with `delegation.independent_completions` it is split int
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
 `async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
 and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
-no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
+no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`, `start_chat`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,

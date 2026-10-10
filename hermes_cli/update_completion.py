@@ -508,7 +508,7 @@ def _finish(request: dict, result_path: Path) -> int:
         if exc.code not in (0, None):
             _report_unbuilt_desktop(request)
             update_receipt.record_followup("completion", f"completion exited {exc.code}")
-    except BaseException as exc:  # noqa: BLE001 — after the commit point nothing fails the update
+    except BaseException as exc:
         _report_unbuilt_desktop(request)
         update_receipt.record_followup("completion", f"{type(exc).__name__}: {exc}")
     finally:

@@ -7,7 +7,7 @@ import agent.file_safety as fs
 
 import pytest
 
-import plugins.memory.retaindb as retaindb
+from plugins.memory import retaindb
 from plugins.memory.retaindb import RetainDBMemoryProvider
 
 
@@ -195,7 +195,7 @@ def test_initialize_falls_back_to_default_base_url(tmp_path, monkeypatch):
     for var in ("RETAINDB_API_KEY", "RETAINDB_BASE_URL", "RETAINDB_PROJECT"):
         monkeypatch.delenv(var, raising=False)
     retaindb_module, captured = _capture_initialized_client(monkeypatch, tmp_path)
-    monkeypatch.setattr(retaindb_module, "_load_retaindb_config", lambda: {})
+    monkeypatch.setattr(retaindb_module, "_load_retaindb_config", dict)
 
     RetainDBMemoryProvider().initialize("sess-1")
 

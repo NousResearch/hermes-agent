@@ -172,7 +172,7 @@ def test_config_gate_off_disables_writes_and_resolution(
     tb.write_breadcrumb("20260815_120000_abc123")
     assert not (hermes_home / "terminal-sessions").exists()
     # Even with a pre-existing breadcrumb, resolution must decline
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "load_config", dict)
     tb.write_breadcrumb("20260815_120000_abc123")
     monkeypatch.setattr(
         config_mod, "load_config", lambda: {"session": {"terminal_continue": False}}

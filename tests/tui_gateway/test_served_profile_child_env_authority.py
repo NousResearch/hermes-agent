@@ -65,7 +65,7 @@ def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monke
     helper child sees B's env, and the browser passthrough resolves B's (absent) key as no key."""
     from tools.browser_tool import _build_browser_env
 
-    a, b = homes
+    _a, b = homes
     token = set_hermes_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)
@@ -85,7 +85,7 @@ def test_real_child_observes_only_the_routed_profile(homes):
     import json
     import subprocess
 
-    a, b = homes
+    _a, b = homes
     token = set_hermes_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)

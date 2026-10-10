@@ -78,7 +78,6 @@ async def test_runner_rejection_does_not_consume_tick_or_overwrite_replacement()
 
     async def replaced(event):
         HeartbeatManager('rejected-test').set('replacement', 120)
-        return None
 
     adapter.set_message_handler(replaced)
     await runner._heartbeat_poll_once(watch)

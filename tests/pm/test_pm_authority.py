@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-import pm.paths as paths
-import pm.registry as registry
+from pm import paths
+from pm import registry
 from pm.lock import Facts, Lockfile
 from pm.store import Store, current_target, tree_digest
 from tests.pm._fixtures import make_tar, served as served
-from tests.pm.test_pm_core import FakeTool, pm_env as core_env  # noqa: F401
+from tests.pm.test_pm_core import FakeTool, pm_env as core_env
 
 
 @pytest.fixture

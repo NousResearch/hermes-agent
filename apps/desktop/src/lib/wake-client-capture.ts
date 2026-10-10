@@ -15,8 +15,9 @@ const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 // getUserMedia resolved but the PCM dead: ended track, halted callbacks, or
 // endless digital zeros. Without a watchdog the ear shows "listening" forever
 // and the gateway detector can never fire.
-/** -60 dBFS: live mic noise floors sit well above this; exact zeros do not. */
-const SILENCE_PEAK = 0.001
+/** Only exact digital zeros mark a dead chain: noise-suppressed and gated mics idle
+ *  near -100 dBFS in a quiet room, below any usable level threshold. */
+const SILENCE_PEAK = 0
 /** ~8 s of digital zeros at 80 ms/frame before the ear is declared deaf. */
 const DEFAULT_SILENCE_FRAMES = 100
 const DEFAULT_STALL_TIMEOUT_MS = 3000
@@ -336,8 +337,8 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
       offset += frameLength
 
       // A dead capture chain delivers endless digital zeros. Live mics never
-      // do — their noise floor sits far above SILENCE_PEAK — so a long run of
-      // zeros means the detector is being fed silence, not speech (#119089).
+      // do, even when noise suppression pushes their floor near -100 dBFS, so
+      // a long run of zeros means the detector is being fed silence (#119089).
       let peak = 0
 
       for (let i = 0; i < frame.length; i++) {
@@ -348,7 +349,7 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
         }
       }
 
-      if (peak < SILENCE_PEAK) {
+      if (peak <= SILENCE_PEAK) {
         silentFrames += 1
 
         if (silentFrames >= silenceFramesThreshold) {

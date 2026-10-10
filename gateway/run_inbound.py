@@ -28,8 +28,8 @@ from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
-    UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
-    unauthorized_owner_hint,
+    UnauthorizedOwnerNotifier, is_served_bot_identity, pairing_code_reply, pairing_profile_arg,
+    pairing_rate_limited_reply, unauthorized_owner_hint,
 )
 from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
@@ -239,6 +239,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                return None
+            if is_served_bot_identity(self, source):
+                # Another profile's bot served by this same gateway (e.g. its home channel is the
+                # owner's account): our own traffic, not a stranger — no notice, code or decline.
+                logger.debug("Ignoring message from served %s bot account %s", source.platform.value, source.user_id)
                 return None
             # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
             # answering one mid-cooldown is outbound traffic.

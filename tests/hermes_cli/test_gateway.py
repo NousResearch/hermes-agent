@@ -1039,6 +1039,54 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
 
 
+@pytest.mark.platforms("windows")
+def test_find_windows_gateway_services_survives_invisible_parent_chain(monkeypatch):
+    """A PID-file-verified gateway can be invisible to this caller's process view: a low-integrity
+    sandboxed updater only sees its own processes (NtQuerySystemInformation is token-filtered), so
+    parents() raises NoSuchProcess for a live gateway (#134880). An unreadable ancestor chain is
+    "no Hermes SCM service above it", so the profile falls through to the ordinary pause path;
+    unrelated inspection errors still abort the update."""
+    import psutil
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
+    profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
+
+    class FakeService:
+        def __init__(self, name, binpath):
+            self._name, self._binpath = name, binpath
+
+        def as_dict(self):
+            return {"name": self._name, "binpath": self._binpath, "pid": 2360, "status": "running"}
+
+    class VanishingParentsProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return float(self.pid)
+
+        def parents(self):
+            raise psutil.NoSuchProcess(self.pid, "hermes.exe")
+
+    sandboxed_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run')],
+        Process=VanishingParentsProcess,
+        AccessDenied=psutil.AccessDenied,
+        NoSuchProcess=psutil.NoSuchProcess,
+        ZombieProcess=psutil.ZombieProcess,
+    )
+    assert gateway.find_windows_gateway_services(psutil_module=sandboxed_psutil, profile_processes=[profile]) == []
+
+    class AccessDeniedParentsProcess(VanishingParentsProcess):
+        def parents(self):
+            raise psutil.AccessDenied(self.pid, "hermes.exe")
+
+    sandboxed_psutil.Process = AccessDeniedParentsProcess
+    with pytest.raises(RuntimeError, match="Could not determine SCM ownership"):
+        gateway.find_windows_gateway_services(psutil_module=sandboxed_psutil, profile_processes=[profile])
+
+
 
 
 

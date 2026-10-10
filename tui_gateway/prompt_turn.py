@@ -308,9 +308,22 @@ def _commit_turn_history(
 
 
 def _result_status(result: dict) -> str:
-    return (
-        "interrupted" if result.get("interrupted")
-        else "error" if result.get("error") else "complete")
+    if result.get("interrupted"):
+        return "interrupted"
+    if result.get("error"):
+        return "error"
+    # Descriptor-only terminal failures (#135958): advisory loop exits such as
+    # ``rebuilt_restart_limit_exceeded`` stamp ``failure_reason``/``failure_retryable`` but
+    # never set ``failed``/``error`` (cron and the kanban breaker key on ``failed``), and with
+    # the completion explainer off the reply slot stays empty. A turn that produced no answer
+    # must not report success — and an explicit ``failed`` without an error string neither.
+    # A non-empty reply (reasoning-only text, max-iteration summary handoff) stays as-is.
+    if result.get("failed") or (
+            result.get("completed") is False
+            and result.get("failure_reason")
+            and not str(result.get("final_response") or "").strip()):
+        return "error"
+    return "complete"
 
 
 def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, str, str | None]:
@@ -324,6 +337,11 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
     # step) rather than the bare provider body.  An empty successful turn still renders as empty.
     if (not raw) and result.get("error") and (result.get("failed") or result.get("partial")):
         raw = turn_error_text(result.get("error"), error_surface)
+    elif status == "error" and not result.get("error") and not str(raw or "").strip():
+        # Descriptor-only failure (advisory restart-limit exit, ``failed`` without an error
+        # string): the slot still gets the plain account + next step instead of an empty
+        # frame the client would paint as a successful empty turn (#135958).
+        raw = turn_error_text(None, error_surface)
     # "Operation interrupted: waiting for model response (…)" is cancellation
     # metadata, not assistant prose (gateway/run.py and ACP suppress it too).
     # "Operation interrupted: waiting for model response (…)" is cancellation metadata, not assistant prose.

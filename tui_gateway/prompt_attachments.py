@@ -181,6 +181,9 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
 def _sanitize_attachment_name(name: str) -> str:
     import re as _re
     candidate = _re.sub(r"[\x00-\x1f]+", "_", Path(str(name or "").strip()).name)
+    # Unicode spaces (macOS screenshots put U+202F before AM/PM) render as ASCII spaces, so a
+    # model retyping the staged path misses the file; stage under the spelling it will type.
+    candidate = _re.sub(r"[^\S\x00-\x1f]", " ", candidate)
     return candidate.strip().strip(".") or "attachment"
 
 

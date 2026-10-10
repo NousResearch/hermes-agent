@@ -128,18 +128,24 @@ def test_refresh_clears_model_cooldowns_on_the_refreshed_entry(monkeypatch):
     monkeypatch.setattr(auth_codex, "CODEX_OAUTH_TOKEN_URL", f"http://127.0.0.1:{server.server_port}/token")
     try:
         from agent.credential_pool import PooledCredential
-        until = time.time() + 3600
+        from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_BENCH_SECONDS
+        now = time.time()
+        window_until = now + 3600  # a per-model 429 rate-limit window
         rows = _rows()
         for row in rows:
-            row["model_cooldowns"] = {"model-a": until}
+            row["model_cooldowns"] = {"model-a": window_until}
+        # the refreshed entry also carries a plan-level entitlement bench, which a token
+        # rotation cannot lift — the next turn would hit the same entitlement 400 (#71970)
+        rows[1]["model_cooldowns"]["model-b"] = now + MODEL_ENTITLEMENT_BENCH_SECONDS
         write_credential_pool(
             "openai-codex", [PooledCredential.from_dict("openai-codex", row).to_dict() for row in rows])
         auth_commands.auth_refresh_command(SimpleNamespace(provider="openai-codex", target="row1"))
         after = {e["id"]: e for e in read_credential_pool("openai-codex")}
-        # The refreshed entry's per-model cooldowns go with the rotation, matching the
-        # command's help text; the untouched sibling keeps its own windows.
-        assert not after["row1"].get("model_cooldowns")
-        assert after["row0"]["model_cooldowns"] == {"model-a": until}
+        # The refreshed entry's rate-limit window goes with the rotation while its entitlement
+        # bench stays (the account's plan did not change); the untouched sibling keeps its
+        # own windows.
+        assert after["row1"]["model_cooldowns"] == {"model-b": now + MODEL_ENTITLEMENT_BENCH_SECONDS}
+        assert after["row0"]["model_cooldowns"] == {"model-a": window_until}
     finally:
         server.shutdown()
         worker.join(timeout=5)

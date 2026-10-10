@@ -556,7 +556,9 @@ def repin_catalog_plugin(
     )
 
     catalog_name = str(sidecar["catalog_name"])
-    entry = get_live_catalog_entry(catalog_name)
+    # An explicit update must check the publisher even inside the listing cache's TTL.
+    # Keep the loader's offline fallback and in-tree precedence rules intact.
+    entry = get_live_catalog_entry(catalog_name, force=True)
     if entry is None:
         raise PluginOperationError(
             f"Plugin '{catalog_name}' is no longer in the catalog — it may have been removed. "

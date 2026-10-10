@@ -1015,6 +1015,10 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
+        # The handler rejected the call before any command ran (``tool_error``: ``error``, no
+        # exit code). Mirrored in ``agent.tool_guardrails.classify_tool_failure``.
+        if exit_code is None and isinstance(data, dict) and data.get("error"):
+            return True, f" [{_trim_error(str(data['error']))}]"
         if exit_code is None or exit_code == 0:
             return False, ""
         if data.get("status") == "degraded":

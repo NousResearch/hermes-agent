@@ -478,3 +478,42 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_terminal_call_rejected_by_its_handler_is_a_failure_on_both_classifiers():
+    """`terminal` rejects some calls before running anything (`tool_error`: `error`, no
+    `exit_code` -- e.g. `notify` on a foreground command). No exit code is not a success:
+    both classifiers must count the rejection, or the retry loop is never warned about."""
+    from agent.display import _detect_tool_failure
+    from tools.terminal_tool import _handle_terminal
+
+    rejected = _handle_terminal({"command": "make audit", "notify": True})
+    assert "exit_code" not in json.loads(rejected), rejected
+    assert classify_tool_failure("terminal", rejected) == (True, " [error]")
+    is_failure, suffix = _detect_tool_failure("terminal", rejected)
+    assert is_failure is True and "notify only applies" in suffix
+
+    started = json.dumps({"output": "Background process started", "exit_code": 0, "error": None})
+    yielded = json.dumps({"output": "", "exit_code": None, "error": None,
+                          "status": "yielded_to_background"})
+    done = json.dumps({"output": "ok", "exit_code": 0, "error": None})
+    for fine in (started, yielded, done):
+        assert classify_tool_failure("terminal", fine) == (False, "")
+        assert _detect_tool_failure("terminal", fine) == (False, "")
+
+    controller = ToolCallGuardrailController()
+    args = {"command": "make audit", "notify": True}
+    codes = [controller.after_call("terminal", args, rejected).code for _ in range(4)]
+    assert "repeated_exact_failure_warning" in codes
+
+
+def test_rejected_terminal_call_does_not_clear_another_tools_failure_streak():
+    """`terminal` is a progress-reset tool: a successful call restarts every counted failure
+    streak. A call that never ran is not progress, so the replay block must still fire."""
+    c = _HARD()
+    nav = {"url": "https://example.test/app"}
+    rejected = json.dumps({"error": "notify only applies to background commands"})
+    for _ in range(5):
+        c.after_call("browser_navigate", nav, '{"error": "timeout"}', failed=True)
+        c.after_call("terminal", {"command": "make audit", "notify": True}, rejected)
+    assert c.before_call("browser_navigate", nav).code == "repeated_exact_failure_block"

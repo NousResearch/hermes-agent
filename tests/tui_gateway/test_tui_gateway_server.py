@@ -10082,6 +10082,24 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert cfg_clamp["display"]["reasoning_full"] is False
     assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
 
+    # #90431: ``off`` is an effort-disable word (parity with config.yaml's unquoted
+    # ``reasoning_effort: off``), NOT the hide alias — the display projection the
+    # words above set (show_reasoning False, thinking collapsed) must survive ``off``
+    # untouched, proving effort and display are independent projections.
+    resp_off = server.handle_request(
+        {
+            "id": "8",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "off"},
+        }
+    )
+    assert resp_off["result"]["value"] == "off"
+    assert agent.reasoning_config == {"enabled": False}
+    assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": False}
+    assert server._sessions["sid"]["show_reasoning"] is False  # untouched by off
+    cfg_off = server._load_cfg()
+    assert cfg_off["display"]["sections"]["thinking"] == "collapsed"  # untouched by off
+
 
 def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -10111,6 +10129,31 @@ def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, mon
         {"id": "2", "method": "config.get", "params": {"session_id": "sid", "key": "reasoning"}}
     )
     assert status["result"]["value"] == "high"
+
+
+def test_config_set_reasoning_off_global_round_trips_to_none(tmp_path, monkeypatch):
+    # `config.set reasoning off` at global scope writes the str 'off' into config.yaml (YAML then
+    # quotes it); the read-back must answer "none" like the unquoted words — the dashboard picker
+    # renders any effort outside its vocabulary as Medium (#90431 read-back half).
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "off", "scope": "global"},
+        }
+    )
+    assert resp["result"]["value"] == "off"
+
+    # Read back cold (no live session), like the dashboard does at startup: the live agent's
+    # reasoning_config would answer "none" from the session branch and hide the file value.
+    status = server.handle_request(
+        {"id": "2", "method": "config.get", "params": {"session_id": "unused", "key": "reasoning"}}
+    )
+    assert status["result"]["value"] == "none"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):

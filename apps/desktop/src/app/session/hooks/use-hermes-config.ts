@@ -50,7 +50,9 @@ function normalizeConfigEffort(value: unknown): string {
 
   const effort = normalize(value)
 
-  return effort === 'false' || effort === 'disabled' ? 'none' : effort
+  // 'off' is what config.set reasoning off --global writes into config.yaml; read it back
+  // disabled like the unquoted words so the picker does not render Medium (#90431).
+  return effort === 'false' || effort === 'disabled' || effort === 'off' ? 'none' : effort
 }
 
 interface HermesConfigOptions {

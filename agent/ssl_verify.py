@@ -168,7 +168,9 @@ def resolve_httpx_verify(
         )
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
-    # proxy environment handling remains enabled.
-    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+    # proxy environment handling remains enabled. Under truststore, hand every
+    # caller the same platform context too: ``verify=True`` makes httpx build a
+    # fresh SSLContext per transport (~30 ms each), three per async client.
+    if _installed or os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
         return _shared_context(None)
     return True

@@ -68,10 +68,8 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # billing reasons keep their own longer cooldown.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
-# Streaming 5xx unmask probe: one non-streaming re-issue per this window. Covers the
-# outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
-# double traffic every attempt, while later turns re-arm automatically.
-_STREAM_5XX_PROBE_WINDOW_S = 60.0
+# Streaming 5xx unmask probe pieces live in the ``_probe`` sibling (file-size ratchet).
+from agent.chat_completion_helpers_probe import _STREAM_5XX_PROBE_WINDOW_S, _probe_401_is_overload_artifact
 
 
 def _context_thread_target(callback):
@@ -3745,8 +3743,10 @@ class _StreamingCall(StreamingWaitMonitor):
             raise  # the outer handler routes user interrupts; never swallow them
         except Exception as probe_err:
             probe_status = _extract_status_code(probe_err)
-            if probe_status is not None and probe_status < 500:
-                # The provider's REAL validation error beats the opaque 5xx.
+            if (probe_status is not None and probe_status < 500
+                    and not _probe_401_is_overload_artifact(probe_err, probe_status)):
+                # The provider's REAL validation error beats the opaque 5xx — unless the 401 is
+                # the probe's own overload artifact; the original 5xx survives then (#136025).
                 logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
                 self.result["error"] = probe_err
                 return True

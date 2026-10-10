@@ -31,10 +31,11 @@ ROLE_USER, ROLE_AGENT = "ROLE_USER", "ROLE_AGENT"
 # A reply starting with this marker is a clarification request -> TASK_STATE_INPUT_REQUIRED (marker stripped).
 INPUT_REQUIRED_MARKER = "[INPUT_REQUIRED]"
 
-# JSON-RPC / A2A error codes. -32001..-32003 are A2A spec-defined; custom errors
+# JSON-RPC / A2A error codes. -32001..-32009 are A2A spec-defined; custom errors
 # live at -32050..-32059 (implementation-defined space, clear of the A2A block).
-ERR_PARSE, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND = -32700, -32602, -32601
+ERR_PARSE, ERR_INVALID_REQUEST, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND = -32700, -32600, -32602, -32601
 ERR_TASK_NOT_FOUND, ERR_TASK_NOT_CANCELABLE = -32001, -32002  # A2A spec: TaskNotFoundError / TaskNotCancelableError
+ERR_VERSION_NOT_SUPPORTED = -32009  # A2A spec: VersionNotSupportedError
 ERR_UNAUTHORIZED, ERR_RATE_LIMITED, ERR_UNTRUSTED_PEER = -32050, -32051, -32052
 
 # Anti-loop: max inbound turns per context. A2A_MAX_PINGPONG_TURNS env, capped at 20.

@@ -1545,6 +1545,35 @@ class TestV1SpecRegressionFixes:
 
         asyncio.run(run())
 
+    def test_spec_error_codes_for_bad_version_and_non_object_request(self, monkeypatch):
+        """Unsupported A2A-Version -> VersionNotSupportedError (-32009); a non-object
+        body -> JSON-RPC Invalid Request (-32600), not Invalid params."""
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        def post_array():
+            try:
+                return _post_json(base + "/", [{"jsonrpc": "2.0", "id": "1", "method": "GetTask"}])
+            except urllib.error.HTTPError as e:
+                return json.loads(e.read().decode())
+
+        async def run():
+            assert await adapter.connect() is True
+            # Negotiation is on Major.Minor: patch numbers are accepted (the unknown task then
+            # yields TaskNotFound), any other Major.Minor is VersionNotSupported.
+            for version, code in (("1.0", -32001), ("1.0.0", -32001), ("1.0.1", -32001),
+                                  ("1.1", -32009), ("2.0.0", -32009), ("0.3", -32009), ("9.9", -32009)):
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "v", "method": "GetTask", "params": {"id": "t"}},
+                    {"A2A-Version": version})
+                assert resp["error"]["code"] == code, version
+            resp = await asyncio.to_thread(post_array)
+            assert resp["error"]["code"] == -32600
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_remote_health_does_not_leak_served_agents_without_auth(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)

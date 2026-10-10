@@ -26,7 +26,7 @@ logger = logging.getLogger("tools.terminal_tool")
 # punctuation; shell metacharacters stay rejected. Unicode is allowed on
 # purpose (e.g. CJK vault paths). Defense-in-depth — the cwd is also
 # shlex-quoted before reaching the shell.
-_WORKDIR_SAFE_ASCII_CHARS = frozenset('/\\:_-.~ +@=,')
+_WORKDIR_SAFE_ASCII_CHARS = frozenset('/\\:_-.~ +@=,()')
 
 
 def _is_safe_workdir_char(ch: str) -> bool:

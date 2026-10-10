@@ -286,8 +286,12 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
 def test_hosted_memory_prefetch_preserves_structured_result(tmp_path, monkeypatch):
     from agent.memory_manager import MemoryManager
     from plugins.memory import load_memory_provider
+    from hermes_cli.config import atomic_config_write
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    config["memory"] = {"prefetch_spill_enabled": True}
+    atomic_config_write(home / "config.yaml", config)
     provider_dir = home / "plugins" / "memprobe"
     provider_dir.mkdir(parents=True)
     (provider_dir / "__init__.py").write_text(

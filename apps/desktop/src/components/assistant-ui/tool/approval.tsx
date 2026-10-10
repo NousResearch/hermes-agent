@@ -356,7 +356,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
-                {copy.alwaysAllowMenu}
+                {allowAlways ? copy.alwaysAllowMenu : copy.moreOptions}
                 <ChevronDown className="size-3" />
               </Button>
             </DropdownMenuTrigger>

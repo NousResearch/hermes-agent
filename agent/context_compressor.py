@@ -3026,11 +3026,11 @@ class ContextCompressor(
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
-    def _compression_block_reason(self) -> str | None:
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
-        for label, until in (
-            ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
-        ):
+    def _compression_block_reason(self, *, ignore_cooldown: bool = False) -> str | None:
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None (a cooldown the
+        gate's ``ignore_cooldown`` bypassed is never the reason)."""
+        cooldown_until = 0.0 if ignore_cooldown else self._summary_failure_cooldown_until
+        for label, until in (("cooldown", cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until)):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_telemetry import (
@@ -1551,24 +1552,30 @@ def context_compression_timed_out(agent: Any) -> bool:
     return getattr(agent, "_last_compression_timed_out", None) is True
 
 
-def _automatic_compression_gate_blocks(agent: Any, bypass_cooldown: bool, *, include_cooldown: bool = True) -> bool:
-    """Refresh durable guards, then evaluate the compressor's automatic breaker gate.
-    ``bypass_cooldown`` ignores the cooldown when the gate accepts ``ignore_cooldown`` (engines predating it get the
-    legacy no-argument call). When blocked, the transient-block signal is published for automatic-path consumers.
-    """
+def _automatic_compression_gate_blocks(
+    agent: Any, bypass_cooldown: bool, *, include_cooldown: bool = True,
+) -> Optional[str]:
+    """Refresh durable guards, then evaluate the automatic breaker gate; return its block reason or None. The gate and
+    the reason both get ``ignore_cooldown`` when ``bypass_cooldown`` and they accept it (older engines get the no-arg
+    call), so a bypassed cooldown is never the reason. When blocked, the transient-block signal is published."""
     compressor = agent.context_compressor
     _refresh_persisted_compression_guards(compressor, include_cooldown=include_cooldown)
     blocked = getattr(type(compressor), "_automatic_compression_blocked", None)
     if not callable(blocked):
-        return False
-    accepts = False
-    if bypass_cooldown:
-        with contextlib.suppress(TypeError, ValueError):
-            accepts = "ignore_cooldown" in inspect.signature(blocked).parameters
-    result = bool(blocked(compressor, ignore_cooldown=True) if accepts else blocked(compressor))
-    if result:
-        _mark_compression_blocked_transient(agent, compressor)
-    return result
+        return None
+    ignore = bypass_cooldown and _accepts_keyword_argument(blocked, "ignore_cooldown")
+    if not (blocked(compressor, ignore_cooldown=True) if ignore else blocked(compressor)):
+        return None
+    reason, reason_fn = None, getattr(compressor, "_compression_block_reason", None)
+    if callable(reason_fn):  # engines predating it name no reason
+        with _swallow('compression block-reason read failed', exc_info=True):
+            reason = (
+                reason_fn(ignore_cooldown=True) if ignore and _accepts_keyword_argument(reason_fn, "ignore_cooldown")
+                else reason_fn()
+            )
+    reason = reason if isinstance(reason, str) and reason else "unknown"
+    _mark_compression_blocked_transient(agent, compressor, reason)
+    return reason
 
 
 def compression_blocked_transiently(agent: Any) -> bool:
@@ -1588,16 +1595,11 @@ def compression_blocked_transiently(agent: Any) -> bool:
     return isinstance(_sig, str) and bool(_sig)
 
 
-def _mark_compression_blocked_transient(agent: Any, compressor: Any) -> None:
+def _mark_compression_blocked_transient(agent: Any, compressor: Any, reason: str) -> None:
     """Publish the transient-block signal when the active guard is transient.
-    Classification comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
+    ``reason`` comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
     transient; ``ineffective`` stays unmarked."""
-    reason_fn = getattr(compressor, "_compression_block_reason", None)
-    reason = None
-    if callable(reason_fn):
-        with _swallow('compression block-reason read failed', exc_info=True):
-            reason = reason_fn()
-    if isinstance(reason, str) and (reason.startswith("cooldown") or reason.startswith("structural_backoff")):
+    if reason.startswith("cooldown") or reason.startswith("structural_backoff"):
         logger.info(
             "Skipping automatic compression re-entry: transient guard "
             "active (%s, session=%s, last failure: %s) — will retry after "
@@ -2765,11 +2767,10 @@ def _sit_out_lock_contention(
                 "⚠ Skipping concurrent compression — another path is already compressing this session. Will retry "
                 "after it finishes."
             )
-    _existing_sp = _existing_system_prompt(agent, system_message)
-    with contextlib.suppress(Exception):
-        if hasattr(agent.context_compressor, "_begin_compression_telemetry"):
-            agent.context_compressor._begin_compression_telemetry(current_tokens=approx_tokens)
-    return _abort_lease(agent, lifecycle, system_message, attempt, "lock_contended", _existing_sp)
+    # The record comes from this attempt's seed: the compressor's telemetry belongs to the lock holder when both
+    # share a compressor, so writing it here would erase the running attempt's record.
+    return _abort_lease(agent, lifecycle, system_message, attempt, "lock_contended", _existing_system_prompt(
+        agent, system_message))
 
 
 def _acquire_compression_lease(
@@ -4169,8 +4170,8 @@ def compress_context(
 
     # All automatic entrypoints honor compressor cooldown/breaker state; hygiene's
     # fresh AIAgent loads the persisted streak via bind_session_state() first.
-    if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
-        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed)
+    if not force and (block_reason := _automatic_compression_gate_blocks(agent, bypass_cooldown)):
+        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed, block_reason)
         return messages, _existing_system_prompt(agent, system_message)
 
     _pre_msg_count = len(messages)
@@ -4238,9 +4239,10 @@ def compress_context(
 
     # Another path may have compacted this session in place since construction;
     # re-read breaker state under the lock, not the bind_session_state() snapshot.
-    if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown, include_cooldown=False):
+    block_reason = None if force else _automatic_compression_gate_blocks(agent, bypass_cooldown, include_cooldown=False)
+    if block_reason:
         lease.release()
-        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed)
+        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed, block_reason)
         return messages, _existing_system_prompt(agent, system_message)
 
     # Interrupts/redirects must not tear a summary in half. Use the explicit stop

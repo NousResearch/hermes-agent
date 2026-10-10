@@ -189,18 +189,12 @@ def _emit_bypassed_attempt_telemetry(
 
 
 def _emit_blocked_attempt_telemetry(
-    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None = None,
+    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None, reason: str,
 ) -> None:
-    """Record an automatic attempt the breaker gate refused. The class keeps only the guard's name
-    (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds."""
-    reason = None
-    try:
-        reason_fn = getattr(getattr(agent, "context_compressor", None), "_compression_block_reason", None)
-        reason = reason_fn() if callable(reason_fn) else None
-    except Exception:
-        logger.debug("compression block-reason read failed", exc_info=True)
-    guard = reason.split(":", 1)[0] if isinstance(reason, str) and reason else "unknown"
+    """Record an automatic attempt the breaker gate refused for ``reason`` (the gate's block reason). The class keeps
+    only the guard's name (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its
+    seconds."""
     _emit_bypassed_attempt_telemetry(
-        agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens,
-        attempt_seed=attempt_seed,
+        agent, started_at, commit_status="blocked", failure_class=f"blocked:{reason.split(':', 1)[0]}",
+        approx_tokens=approx_tokens, attempt_seed=attempt_seed,
     )

@@ -466,9 +466,17 @@ def _rmtree_writable(path: Path) -> None:
     copied files *and* directories (``r-xr-xr-x``). Removing a child requires write permission on its parent
     directory, so the retry handler makes the failing path **and its parent** writable before re-attempting.
     See #34860, #34972.
+
+    The scope guard compares *unresolved* paths via ``os.path.abspath``: that lexically
+    normalizes ``..`` segments (so ``skills/../sibling`` is correctly seen as escaping
+    the skills root, #48200) but does **not** follow symlinks. Using ``Path.resolve()``
+    here would falsely reject legitimate symlinked category layouts where e.g.
+    ``~/.hermes/skills/productivity`` points at an Obsidian-vault sync folder — every
+    dest under it resolves outside ``~/.hermes/skills`` and the guard would abort every
+    bundled-skill update with ``ValueError`` (#78309).
     """
-    target = Path(path).resolve()
-    skills_root = _skills_dir().resolve()
+    target = Path(os.path.abspath(path))
+    skills_root = Path(os.path.abspath(_skills_dir()))
     if skills_root not in target.parents:
         raise ValueError(f"refusing to rmtree {target!r}: not strictly under {skills_root!r} (scope guard — see #48200)")
 

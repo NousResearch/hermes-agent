@@ -77,7 +77,7 @@ export const userMessagesEn = {
         },
         contentPolicyBlocked: {
           title: 'The model provider refused this request (content policy)',
-          hint: 'Rephrase and send again.'
+          hint: 'A blocked pattern in earlier tool results is re-sent every turn — start a new session with /new, or switch with /model.'
         },
         contextOverflow: { title: 'The conversation is too long for this model', hint: 'Run /compress, then /retry.' },
         formatError: {

@@ -469,6 +469,7 @@ CREATE TABLE IF NOT EXISTS messages (
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
+    media_content TEXT,
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
@@ -721,6 +722,10 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+-- Transcript-media bookkeeping (hermes_state_media) runs on every transcript write: the in-txn
+-- retired-row clear and the post-commit reference sweep must never scan a million-row table.
+CREATE INDEX IF NOT EXISTS idx_messages_media
+    ON messages(active) WHERE media_content IS NOT NULL;
 -- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
 CREATE INDEX IF NOT EXISTS idx_messages_session_uid
     ON messages(session_id, message_uid) WHERE active = 1;

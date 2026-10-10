@@ -21,6 +21,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -193,6 +194,15 @@ class SessionProfileRepairMixin:
             tool_pin = _stored(session["tool_names"]) if session["tool_names"] else None
             messages = [dict(r) for r in conn.execute(
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,))]
+            from hermes_state_media import restore_media_content
+            for message in messages:
+                if message.get("media_content"):
+                    # Strict: a move that silently flattened an image would then delete the only copy.
+                    try:
+                        message["_media_payload"] = restore_media_content(
+                            self.db_path, message["media_content"], message["content"], strict=True)
+                    except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+                        message["_media_error"] = f"{type(exc).__name__}: {exc}"
             usage = [dict(r) for r in conn.execute(
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
@@ -209,6 +219,20 @@ class SessionProfileRepairMixin:
         name, since it is the one this profile's clients resolve by title."""
         session = dict(payload["session"])
         session_id = session["id"]
+        # Copy image bytes into this store before the write lock and before the source deletes them.
+        from hermes_state_media import prepare_media_content
+        messages = []
+        for message in payload.get("messages") or []:
+            message = dict(message)
+            if message.get("media_content"):
+                if "_media_error" in message:
+                    raise OSError(f"transcript media unavailable in the source store: {message['_media_error']}")
+                _, message["media_content"] = prepare_media_content(
+                    self.db_path, message.pop("_media_payload"),
+                    display=json.loads(message["media_content"]).get("display", False))
+                if message["media_content"] is None:
+                    raise OSError("Cannot copy transcript media into destination store")
+            messages.append(message)
 
         def _do(conn) -> str:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
@@ -226,7 +250,7 @@ class SessionProfileRepairMixin:
                 # A pin hash means nothing in this store: re-store the pin, or drop an unresolvable ref.
                 session["tool_names"] = self._store_system_prompt(conn, payload.get("tool_pin"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
-            for message in payload.get("messages") or []:
+            for message in messages:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
@@ -253,7 +277,7 @@ class SessionProfileRepairMixin:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
-        return bool(self._execute_write(_do))
+        return bool(self._execute_write(_do, sweep_media=True))
 
     # ── routing index ─────────────────────────────────────────────────────────
 

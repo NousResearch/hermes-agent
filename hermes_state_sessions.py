@@ -1744,7 +1744,7 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.append(session_id)
             return True
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, sweep_media=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
@@ -1776,7 +1776,7 @@ class SessionSessionsMixin:
             if cursor.rowcount > 0:
                 self._delete_unreferenced_system_prompts(conn)
             return cursor.rowcount > 0
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, sweep_media=True)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
@@ -1857,7 +1857,7 @@ class SessionSessionsMixin:
             # the dashboard toast should say "3 deleted" when the user selected
             # 3 rows, however many physical links those rows had.
             return len(existing)
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, sweep_media=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -1895,7 +1895,7 @@ class SessionSessionsMixin:
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, sweep_media=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

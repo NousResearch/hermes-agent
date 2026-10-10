@@ -171,7 +171,8 @@ def resolve_and_repair_transcript_batch(
             # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
             # from live content with a content-only CAS and never adopt the blank row onto the live dict.
             wrote = conn.execute(
-                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content IS ?",
+                # The filled text replaces the row's content, so an old image reference must not outlive it.
+                "UPDATE messages SET content = ?, media_content = NULL WHERE id = ? AND session_id = ? AND content IS ?",
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
             ).rowcount > 0
         else:

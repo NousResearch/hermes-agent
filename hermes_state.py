@@ -994,6 +994,7 @@ class SessionDB(
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
+        *, sweep_media: bool = False,
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
@@ -1033,6 +1034,8 @@ class SessionDB(
                     try:
                         fn_started = True
                         result = fn(self._conn)
+                        from hermes_state_media import clear_inactive_media
+                        clear_inactive_media(self._conn, enabled=sweep_media)
                         self._conn.commit()
                     except BaseException:
                         try:
@@ -1040,6 +1043,8 @@ class SessionDB(
                         except Exception:
                             pass
                         raise
+                from hermes_state_media import try_sweep_transcript_media
+                try_sweep_transcript_media(self, enabled=sweep_media)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1119,7 +1124,8 @@ class SessionDB(
             (conn.executemany if many else conn.execute)(sql, params)
         self._execute_write(_do, patience_s=patience_s)
 
-    def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
+    def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None,
+                        sweep_media: bool = False) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
         (``SELECT changes()`` when the driver reports None / negative)."""
         def _do(conn):
@@ -1127,7 +1133,7 @@ class SessionDB(
             if rowcount is None or rowcount < 0:
                 rowcount = conn.execute("SELECT changes()").fetchone()[0]
             return rowcount
-        return self._execute_write(_do, patience_s=patience_s)
+        return self._execute_write(_do, patience_s=patience_s, sweep_media=sweep_media)
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
@@ -1623,7 +1629,7 @@ class SessionDB(
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
         "_compressed_summary, timestamp, token_count, active, api_content, display_kind, display_metadata, message_uid, "
-        "absorbed_message_uids, tool_call_uids, tool_call_uid"
+        "absorbed_message_uids, tool_call_uids, tool_call_uid, media_content"
     )
 
     # ── Meta key/value (scheduler bookkeeping) ──

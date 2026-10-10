@@ -288,7 +288,7 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
+    "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args", "credential_pool")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -325,7 +325,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
     return {
-        **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
+        **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "requested_provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool")}
 
@@ -2281,7 +2281,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route_provider = _clean_request_string(route_cfg.get("provider"))
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
-        current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+        current_provider = _clean_request_string(runtime_kwargs.get("requested_provider") or runtime_kwargs.get("provider"))
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.
@@ -2290,7 +2290,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             model = resolve_effective_model(session_override, None, model)
             self._apply_provider_runtime(
                 runtime_kwargs,
-                _clean_request_string(session_override.get("provider")) or current_provider,
+                _clean_request_string(session_override.get("requested_provider")) or _clean_request_string(session_override.get("provider")) or current_provider,
                 target_model=model)
             _apply_runtime_agent_overrides(runtime_kwargs, session_override)
             if route or request_model or request_provider:
@@ -2982,8 +2982,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_db_unavailable() -> web.Response:
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
-    @staticmethod
-    def _session_response(session: dict[str, Any]) -> dict[str, Any]:
+    def _get_active_subagents_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        if not session_id:
+            return []
+        active = []
+        try:
+            from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+            with _active_subagents_lock:
+                for sid, rec in _active_subagents.items():
+                    owner_sid = str(rec.get("owner_agent_session_id") or rec.get("owner_session_id") or "")
+                    if owner_sid == session_id:
+                        started = rec.get("started_at")
+                        active.append({
+                            "subagent_id": rec.get("subagent_id", sid),
+                            "parent_id": rec.get("parent_id"),
+                            "depth": rec.get("depth", 0),
+                            "goal": rec.get("goal", ""),
+                            "model": rec.get("model", ""),
+                            "status": rec.get("status", "running"),
+                            "last_tool": rec.get("last_tool"),
+                            "tool_count": rec.get("tool_count", 0),
+                            "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
+                        })
+        except Exception as e:
+            logger.debug("Failed to query live subagents for session %s: %s", session_id, e)
+        return active
+
+    def _session_response(self, session: dict[str, Any]) -> dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
             "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
@@ -3015,6 +3040,81 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             isinstance(model_config, dict)
             and model_config.get("_delegate_from") is not None
         )
+
+        session_id = str(session.get("id") or "")
+        active_subagents = self._get_active_subagents_for_session(session_id)
+        has_async = False
+        try:
+            from tools.async_delegation import has_live_for_session
+            has_async = has_live_for_session(session_key=session_id, origin_ui_session_id=session_id, parent_session_id=session_id)
+        except Exception as e:
+            logger.debug("Failed to check async delegations for session %s: %s", session_id, e)
+        has_active_subagents = bool(active_subagents or has_async)
+
+        active_run = None
+        if session_id and hasattr(self, "_run_statuses"):
+            for r_id, r_info in list(self._run_statuses.items()):
+                if str(r_info.get("session_id") or "") == session_id and r_info.get("status") in {"queued", "running", "waiting_for_approval"}:
+                    active_run = (r_id, r_info)
+                    break
+        if active_run:
+            r_id, r_info = active_run
+            payload["is_generating"] = True
+            payload["active_run_id"] = r_id
+            payload["tool_status"] = r_info.get("tool_status") or "Ассистент думает над задачей..."
+            payload["current_tool"] = r_info.get("current_tool")
+        else:
+            is_gen = False
+            tool_status = None
+            current_tool = None
+            runner = getattr(self, "gateway_runner", None)
+            if runner:
+                adapters_to_check = list(getattr(runner, "adapters", {}).values())
+                prof_adapters = getattr(runner, "_profile_adapters", {})
+                if isinstance(prof_adapters, dict):
+                    for p_dict in prof_adapters.values():
+                        if isinstance(p_dict, dict):
+                            adapters_to_check.extend(p_dict.values())
+                chat_id_val = str(session.get("chat_id") or "")
+                for ad in adapters_to_check:
+                    active_sess = getattr(ad, "_active_sessions", {})
+                    if not isinstance(active_sess, dict):
+                        continue
+                    for sk, guard in active_sess.items():
+                        sk_str = str(sk)
+                        is_match = False
+                        if session_id and (sk_str == session_id or sk_str.endswith(f":{session_id}")):
+                            is_match = True
+                        elif chat_id_val and (sk_str == chat_id_val or sk_str.endswith(f":{chat_id_val}")):
+                            is_match = True
+                        elif session.get("gateway_session_key") and sk_str == str(session.get("gateway_session_key")):
+                            is_match = True
+
+                        if is_match:
+                            is_gen = True
+                            tool_status = (getattr(ad, "_last_status", {}) or {}).get(sk) or "Ассистент думает над задачей..."
+                            break
+                    if is_gen:
+                        break
+            if not is_gen and has_active_subagents:
+                is_gen = True
+                if active_subagents and active_subagents[0].get("last_tool"):
+                    tool_status = f"Подзадача выполняет {active_subagents[0]['last_tool']}..."
+                elif active_subagents:
+                    tool_status = f"Выполняются подзадачи ({len(active_subagents)} в работе)..."
+                else:
+                    tool_status = "Выполняется фоновая подзадача..."
+                current_tool = "delegate_task"
+
+            payload["is_generating"] = is_gen
+            payload["active_run_id"] = None
+            payload["tool_status"] = tool_status
+            payload["current_tool"] = current_tool
+
+        payload["has_active_subagents"] = has_active_subagents
+        payload["active_subagents_count"] = len(active_subagents)
+        payload["active_subagents"] = active_subagents
+        payload["subagents"] = active_subagents
         return payload
 
     @staticmethod
@@ -3071,6 +3171,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
+        exclude_sources_raw = request.query.get("exclude_sources")
+        exclude_sources = [s.strip() for s in exclude_sources_raw.split(",") if s.strip()] if exclude_sources_raw else None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
         # Exact-title lookup (`hermes peer dm` -> canonical "Bot Chat"). include_hidden is honored
         # ONLY with a title filter: a blanket hidden listing stays off this client surface.
@@ -3082,7 +3184,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # include_pinned back-fills pins past the recency window; search_query pushes the
             # title needle into SQL (substring) so a hidden/old row is found, exact match below.
             rows = await asyncio.to_thread(
-                db.list_sessions_rich, source=source, limit=limit, offset=offset,
+                db.list_sessions_rich, source=source, exclude_sources=exclude_sources, limit=limit, offset=offset,
                 include_children=include_children, order_by_last_active=True, include_pinned=True,
                 search_query=title_filter, include_hidden=include_hidden)
             if title_filter:
@@ -3647,6 +3749,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+                self._set_run_status(run_id, "running", tool_status="Ассистент думает над задачей...", current_tool="_thinking")
+            elif event_type in {"subagent.start", "subagent.tool", "subagent.thinking", "subagent.progress", "subagent.complete"}:
+                subagent_id = kwargs.get("subagent_id")
+                goal = kwargs.get("goal") or preview or ""
+                last_tool = tool_name or kwargs.get("tool_name")
+                
+                events.enqueue(event_type, {
+                    "message_id": message_id,
+                    "subagent_id": subagent_id,
+                    "goal": goal,
+                    "tool_name": last_tool,
+                    "preview": preview,
+                    "status": kwargs.get("status", "running"),
+                    "tool_count": kwargs.get("tool_count", 0),
+                    "depth": kwargs.get("depth", 0),
+                    "args": args,
+                })
+                
+                if event_type == "subagent.start":
+                    friendly_status = f"Подзадача: {goal[:50]}..." if goal else "Запуск подзадачи..."
+                    self._set_run_status(run_id, "running", tool_status=friendly_status, current_tool="delegate_task")
+                elif event_type == "subagent.tool":
+                    friendly_status = f"Подзадача вызывает {last_tool}..." if last_tool else "Подзадача выполняет инструмент..."
+                    self._set_run_status(run_id, "running", tool_status=friendly_status, current_tool=last_tool)
+                elif event_type == "subagent.complete":
+                    friendly_status = "Подзадача завершена"
+                    self._set_run_status(run_id, "running", tool_status=friendly_status, current_tool="delegate_task")
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 event_name = (
                     "tool.failed"

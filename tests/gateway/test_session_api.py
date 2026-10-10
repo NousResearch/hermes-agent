@@ -167,6 +167,26 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_respects_exclude_sources(adapter, session_db):
+    """GET /api/sessions?exclude_sources=cron,subagent filters out specified sources."""
+    session_db.create_session("s_user", "api_server")
+    session_db.create_session("s_cron", "cron")
+    session_db.create_session("s_subagent", "subagent")
+    session_db.create_session("s_telegram", "telegram")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions?exclude_sources=cron,subagent")
+        assert resp.status == 200
+        data = await resp.json()
+        ids = {s["id"] for s in data["data"]}
+        assert "s_user" in ids
+        assert "s_telegram" in ids
+        assert "s_cron" not in ids
+        assert "s_subagent" not in ids
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, session_db, monkeypatch):
     """Canonical Bot Chat recovery must not run SQLite work in the HTTP loop."""
     session_id = session_db.create_session("archived-bot-chat", "gateway_botmode")

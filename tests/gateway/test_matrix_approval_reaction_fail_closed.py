@@ -64,7 +64,8 @@ def _stub_mautrix():
 
 _stub_mautrix()
 
-from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,6 @@ def _make_adapter(allowed_user_ids=None):
     adapter._allowed_user_ids = set(allowed_user_ids) if allowed_user_ids else set()
     adapter._approval_reaction_map = {"✅": "once", "❎": "deny"}
     adapter._approval_prompts_by_event = {}
-    adapter._approval_prompt_by_session = {}
     adapter._processed_events = deque(maxlen=512)
     adapter._processed_events_set = set()
     return adapter
@@ -99,6 +99,7 @@ def _make_prompt(chat_id="!testroom:matrix.org"):
         session_key="session-abc",
         chat_id=chat_id,
         message_id="$prompt-event-1",
+        approval_id="approval-1",
     )
 
 
@@ -111,6 +112,7 @@ def _run(adapter, event):
 
     fake_approval = types.ModuleType("tools.approval")
     fake_approval.resolve_gateway_approval = lambda session_key, choice: 1
+    setattr(fake_approval, "consume_gateway_approval_outcome", lambda session_key, approval_id: None)
     with patch.dict(sys.modules, {"tools.approval": fake_approval}):
         asyncio.run(adapter._on_reaction(event))
 

@@ -279,6 +279,77 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "explicit",
         }
 
+    def test_explicit_matrix_room_target(self):
+        """deliver: 'matrix:!room:server.org' parses room ID correctly."""
+        job = {"deliver": "matrix:!HLOQ:matrix.org"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "!HLOQ:matrix.org",
+            "thread_id": None,
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_room_with_thread(self):
+        """deliver: 'matrix:!room:server.org/$evt' splits room and thread."""
+        job = {"deliver": "matrix:!HLOQ:matrix.org/$thread-evt"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "!HLOQ:matrix.org",
+            "thread_id": "$thread-evt",
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_alias_with_thread(self):
+        """deliver: 'matrix:#alias:server.org/$evt' threads via alias."""
+        job = {"deliver": "matrix:#general:matrix.org/$thread-evt"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "#general:matrix.org",
+            "thread_id": "$thread-evt",
+            "_resolved_from": "explicit",
+        }
+
+    def test_explicit_matrix_user_dm(self):
+        """deliver: 'matrix:@user:server.org' resolves an MXID DM target."""
+        job = {"deliver": "matrix:@hermes:matrix.org"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "@hermes:matrix.org",
+            "thread_id": None,
+            "_resolved_from": "explicit",
+        }
+
+    @pytest.mark.parametrize(
+        ("platform", "home", "cron_thread", "expected_thread"),
+        [
+            ("slack", "U0123456789", None, None),
+            ("yuanbao", "123456", None, None),
+            ("telegram", "-1001234567890:17", "42", "42"),
+            ("matrix", "!room123:example.org/$thread-root", None, None),
+        ],
+    )
+    def test_home_channel_reaches_delivery_as_configured(
+        self, monkeypatch, platform, home, cron_thread, expected_thread
+    ):
+        """Cron passes the configured home chat ID on unchanged. The adapter or sender owns its
+        syntax (a Slack user ID opens a DM, and a Matrix suffix names a thread), and
+        ``TELEGRAM_CRON_THREAD_ID`` keeps precedence for Telegram (#24409)."""
+        from cron import scheduler_delivery
+
+        monkeypatch.setattr(scheduler_delivery, "_get_home_target_chat_id", lambda name: home)
+        monkeypatch.setattr(scheduler_delivery, "_get_config_home_channel", lambda name: None)
+        for name in ("SLACK_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL", "MATRIX_HOME_ROOM"):
+            monkeypatch.delenv(f"{name}_THREAD_ID", raising=False)
+        if cron_thread:
+            monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", cron_thread)
+
+        assert _resolve_delivery_target({"deliver": platform}) == {
+            "platform": platform,
+            "chat_id": home,
+            "thread_id": expected_thread,
+            "_resolved_from": "home",
+        }
+
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 
@@ -1668,10 +1739,11 @@ class TestSendMediaViaAdapter:
     @staticmethod
     def _run_with_loop(adapter, chat_id, media_files, metadata, job):
         """Helper: run _send_media_via_adapter with immediate scheduling."""
+        import asyncio
         from concurrent.futures import Future
 
         def fake_run_coro(coro, _loop):
-            coro.close()
+            asyncio.run(coro)
             completed = Future()
             completed.set_result(MagicMock(success=True))
             return completed
@@ -1803,7 +1875,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         import time
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         events = []
 
         async def slow_send(chat_id, content, **_kw):
@@ -1819,6 +1892,9 @@ class TestDeliverResultTimeoutCancelsFuture:
             time.sleep(0.6)
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
@@ -1829,7 +1905,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         import time
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         loop.call_soon_threadsafe(time.sleep, 0.8)  # wedge the running loop past the 0.3s wait
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=MagicMock(success=True))
@@ -1838,6 +1915,9 @@ class TestDeliverResultTimeoutCancelsFuture:
             time.sleep(0.8)  # the loop un-wedges: the abandoned send must still never go out
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         assert result is None, f"standalone should have delivered, got {result!r}"
         standalone_send.assert_awaited_once()
         adapter.send.assert_not_awaited()
@@ -1852,7 +1932,8 @@ class TestDeliverResultPartialSplitDelivery:
         from gateway.platforms.base import SendResult
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         adapter = MagicMock()
         adapter.splits_long_messages = True
         adapter.send = AsyncMock(return_value=SendResult(
@@ -1871,6 +1952,9 @@ class TestDeliverResultPartialSplitDelivery:
                 result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         adapter.send.assert_awaited_once()
         standalone_send.assert_not_awaited()
         assert result and "delivered 2 of 5 chunks" in result, result
@@ -1959,16 +2043,14 @@ class TestDeliverOriginUnresolvableIsLocal:
         job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
         assert self._deliver(job, monkeypatch) is None
 
-class TestSendMediaTimeoutCancelsFuture:
-    """Same orphan-coroutine guarantee for _send_media_via_adapter's
-    future.result(timeout=30) call. If this times out mid-batch, the
-    in-flight coroutine must be cancelled before the next file is tried.
-    """
+class TestSendMediaTimeoutWithdrawsDispatch:
+    """An unstarted upload is withdrawn without stopping the remaining batch."""
 
-    def test_media_send_timeout_cancels_future_and_continues(self, tmp_path, monkeypatch):
-        """End-to-end: _send_media_via_adapter with a future whose .result()
-        raises TimeoutError. Assert cancel() fires and the loop proceeds
-        to the next file rather than hanging or crashing."""
+    def test_media_send_timeout_withdraws_unstarted_dispatch_and_continues(
+        self, tmp_path, monkeypatch
+    ):
+        """A confirmation timeout permits fallback only before upload execution."""
+        import asyncio
         from concurrent.futures import Future
 
         adapter = MagicMock()
@@ -1977,14 +2059,7 @@ class TestSendMediaTimeoutCancelsFuture:
 
         # First file: future that times out. Second file: future that resolves OK.
         timeout_future = Future()
-        timeout_cancel_calls = []
-        original_cancel = timeout_future.cancel
-
-        def tracking_cancel():
-            timeout_cancel_calls.append(True)
-            return original_cancel()
-
-        timeout_future.cancel = tracking_cancel
+        timeout_future.cancel = MagicMock(wraps=timeout_future.cancel)
         timeout_future.result = MagicMock(side_effect=TimeoutError("timed out"))
 
         ok_future = Future()
@@ -1993,8 +2068,12 @@ class TestSendMediaTimeoutCancelsFuture:
         futures_iter = iter([timeout_future, ok_future])
 
         def fake_run_coro(coro, _loop):
-            coro.close()
-            return next(futures_iter)
+            future = next(futures_iter)
+            if future is timeout_future:
+                coro.close()
+            else:
+                asyncio.run(coro)
+            return future
 
         root = tmp_path / "media-cache"
         slow = root / "slow.png"
@@ -2007,19 +2086,22 @@ class TestSendMediaTimeoutCancelsFuture:
             (root,),
         )
         media_files = [
-            (str(slow), False),   # times out
-            (str(fast), False),   # succeeds
+            (str(slow), False),  # times out
+            (str(fast), False),  # succeeds
         ]
 
         loop = MagicMock()
         job = {"id": "media-timeout"}
 
+        in_flight = []
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             # Should not raise — the except Exception clause swallows the timeout
-            _send_media_via_adapter(adapter, "chat-1", media_files, None, loop, job)
+            _send_media_via_adapter(
+                adapter, "chat-1", media_files, None, loop, job, in_flight=in_flight
+            )
 
-        # 1. The timed-out future was cancelled (the bug fix)
-        assert timeout_cancel_calls == [True], "future.cancel() must fire on TimeoutError"
+        timeout_future.cancel.assert_not_called()
+        assert in_flight == []
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
@@ -2085,7 +2167,7 @@ class TestCronDeliveryMirror:
         turn (with a [Cron delivery: ...] label), NOT assistant — an
         assistant-role mirror lands as assistant->assistant after the agent's
         last turn and breaks strict alternation on non-Anthropic providers."""
-        from cron.scheduler_delivery import _maybe_mirror_cron_delivery
+        from cron.scheduler_delivery_continuation import _maybe_mirror_cron_delivery
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
             _maybe_mirror_cron_delivery(
@@ -2139,9 +2221,11 @@ class TestCronDeliveryMirror:
     def test_seed_thread_session_creates_session_and_mirrors(self):
         """Seeding a freshly-opened thread creates the thread-keyed session via
         the adapter's live store and appends the brief via mirror_to_session."""
-        from cron.scheduler_delivery import _seed_cron_thread_session
+        from cron.scheduler_delivery_continuation import _seed_cron_thread_session
+        from gateway.config import GatewayConfig
 
         store = MagicMock()
+        store.config = GatewayConfig()
         adapter = MagicMock()
         adapter._session_store = store
 
@@ -2223,7 +2307,7 @@ class TestCronContinuableSurfaceInChannel:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("cron.scheduler_delivery._open_continuable_cron_thread") as open_thread_mock, \
+             patch("cron.scheduler_delivery_continuation._open_continuable_cron_thread") as open_thread_mock, \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
             _deliver_result(
@@ -2268,7 +2352,7 @@ class TestCronContinuableSurfaceInChannel:
         """The whole point: the flat session the seed CREATES must be keyed
         identically to what a plain inbound channel reply resolves to. Assert
         the invariant directly via build_session_key, not just call args."""
-        from cron.scheduler_delivery import _seed_cron_channel_session
+        from cron.scheduler_delivery_continuation import _seed_cron_channel_session
         from gateway.session import build_session_key, SessionSource
         from gateway.config import Platform
 
@@ -2313,7 +2397,7 @@ class TestCronContinuableSurfaceInChannel:
         from cron.scheduler import _deliver_result
 
         adapter = self._slack_adapter(supports_inchannel=True)
-        with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:
+        with patch("cron.scheduler_delivery_continuation._seed_cron_channel_session", return_value=True) as seed_mock:
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False,
@@ -2349,7 +2433,7 @@ class TestCronContinuableSurfaceInChannel:
             "thread_id": "1787188000.000100",
         }
         with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
-             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:
+             patch("cron.scheduler_delivery_continuation._seed_cron_channel_session", return_value=True) as seed_mock:
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False, origin=origin_with_thread,
@@ -2389,7 +2473,7 @@ class TestCronContinuableSurfaceInChannel:
             "scope_id": "T0AAAA111",
         }
         with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
-             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True):
+             patch("cron.scheduler_delivery_continuation._seed_cron_channel_session", return_value=True):
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False, origin=scoped_origin,
@@ -2415,7 +2499,7 @@ class TestCronContinuableSurfaceInChannel:
 
         adapter = self._slack_adapter(supports_inchannel=True)
         with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
-             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True):
+             patch("cron.scheduler_delivery_continuation._seed_cron_channel_session", return_value=True):
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False,
@@ -2445,7 +2529,7 @@ class TestCronContinuableSurfaceInChannel:
         assert not callable(
             getattr(adapter, "supports_inchannel_continuable_for_platform", None)
         )
-        with patch("cron.scheduler_delivery._seed_cron_channel_session") as seed_mock:
+        with patch("cron.scheduler_delivery_continuation._seed_cron_channel_session") as seed_mock:
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False,
@@ -2467,7 +2551,7 @@ class TestCronContinuableSurfaceInChannel:
         mixed user_ids) find_session_by_origin's multi-candidate bail-out
         returned None, silently dropping the brief. The seed must mirror into
         the EXACT session row it just created, no rediscovery."""
-        from cron.scheduler_delivery import _seed_cron_channel_session
+        from cron.scheduler_delivery_continuation import _seed_cron_channel_session
 
         store = MagicMock()
         created = MagicMock()
@@ -2493,8 +2577,8 @@ class TestCronContinuableSurfaceInChannel:
         never seeded, so the agent had no idea about its own brief. The flat
         delivery's message_id must anchor a companion thread-surface seed."""
         adapter = self._slack_adapter(supports_inchannel=True)
-        with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True), \
-             patch("cron.scheduler_delivery._seed_cron_thread_session") as thread_seed_mock:
+        with patch("cron.scheduler_delivery_continuation._seed_cron_channel_session", return_value=True), \
+             patch("cron.scheduler_delivery_continuation._seed_cron_thread_session") as thread_seed_mock:
             self._run_inchannel_delivery(
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False,
@@ -2541,7 +2625,13 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             fail_future.result.side_effect = ConnectionError("SMTP connection refused")
             ok_future = MagicMock()
             ok_future.result.return_value = {"success": True}
-            mock_pool.submit.side_effect = [fail_future, ok_future]
+            futures = iter((fail_future, ok_future))
+
+            def submit(_callback, _runner, coroutine):
+                coroutine.close()
+                return next(futures)
+
+            mock_pool.submit.side_effect = submit
 
             result = _deliver_result(job, "Report content")
 
@@ -2570,7 +2660,12 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
             fail_future = MagicMock()
             fail_future.result.side_effect = ConnectionError("connection refused")
-            mock_pool.submit.return_value = fail_future
+
+            def submit(_callback, _runner, coroutine):
+                coroutine.close()
+                return fail_future
+
+            mock_pool.submit.side_effect = submit
 
             result = _deliver_result(job, "Report content")
 

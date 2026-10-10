@@ -30,7 +30,7 @@ Design under test:
 import pytest
 
 from cron.scheduler import _deliver_result, _resolve_delivery_targets
-from cron.scheduler_delivery import _target_mirror_eligible
+from cron.scheduler_delivery_continuation import _target_mirror_eligible
 
 
 @pytest.fixture(autouse=True)
@@ -273,7 +273,7 @@ class TestInChannelSeedUserIdGuard:
     an orphan session. DM targets are safe (key has no user_id)."""
 
     def test_seed_requires_dm_or_user_id(self):
-        from cron.scheduler_delivery import _inchannel_seed_allowed
+        from cron.scheduler_delivery_continuation import _inchannel_seed_allowed
 
         # DM-shaped chat, no user_id: allowed (DM keys don't embed user).
         assert _inchannel_seed_allowed(is_dm=True, user_id=None)

@@ -159,3 +159,9 @@ survives only as three inert stubs that already-running pre-removal updaters imp
 `tests/plugins/`. Load through real discovery with a temp `HERMES_HOME`; assert behaviour (tool
 registered, hook fired with expected kwargs), not counts. Opt-in telemetry rule applies to plugins
 too: no attribution tag ships by default.
+
+Matrix inbound event construction and server-time conversion are defined in
+`platforms/matrix/inbound_events.py`; callers use the adapter mixin.
+
+Matrix outbound upload payloads and encryption are defined in
+`platforms/matrix/media_upload.py`; the adapter includes its media mixin.

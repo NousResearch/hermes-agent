@@ -2,8 +2,14 @@
 
 import asyncio
 import os
+import json
+import re
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from gateway.config import PlatformConfig
 
 # ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
 # (``plugins/platforms/<x>/adapter.py::_standalone_send``) in #41112. Keep
@@ -11,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from plugins.platforms.dingtalk.adapter import (
     _standalone_send as _dingtalk_standalone_send,
 )
-from plugins.platforms.matrix.adapter import (
-    _standalone_send as _matrix_standalone_send,
+from plugins.platforms.matrix.standalone import (
+    standalone_send as _matrix_standalone_send,
 )
 
 
@@ -24,9 +30,8 @@ async def _send_dingtalk(extra, chat_id, message):
 
 
 async def _send_matrix(token, extra, chat_id, message):
-    """Pre-migration ``(token, extra, chat_id, message)`` shim around the matrix
-    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
-    pconfig = SimpleNamespace(token=token, extra=extra or {})
+    """Send through the Matrix plugin with the supplied credentials and settings."""
+    pconfig = PlatformConfig(token=token, extra=extra or {})
     return await _matrix_standalone_send(pconfig, chat_id, message)
 
 # ``_send_mattermost`` moved into the mattermost plugin
@@ -122,8 +127,22 @@ class TestSendMatrix:
     def test_success(self):
         resp = _make_aiohttp_resp(200, json_data={"event_id": "$abc123"})
         session_ctx, session = _make_aiohttp_session(resp)
+        state = MagicMock()
+        state.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(
+            404, json_data={"errcode": "M_NOT_FOUND"},
+        ))
+        state.__aexit__ = AsyncMock(return_value=False)
+        sent = MagicMock()
+        sent.__aenter__ = AsyncMock(return_value=resp)
+        sent.__aexit__ = AsyncMock(return_value=False)
+        membership = MagicMock()
+        membership.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(
+            200, json_data={"joined": {"@bot:example.com": {}, "@alice:example.com": {}, "@bob:example.com": {}}},
+        ))
+        membership.__aexit__ = AsyncMock(return_value=False)
+        session.request = MagicMock(side_effect=[state, membership, sent, membership])
 
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+        with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session, \
              patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
             extra = {"homeserver": "https://matrix.example.com"}
             result = asyncio.run(_send_matrix("syt_tok", extra, "!room:example.com", "hello matrix"))
@@ -133,41 +152,86 @@ class TestSendMatrix:
             "platform": "matrix",
             "chat_id": "!room:example.com",
             "message_id": "$abc123",
+            "thread_id": None,
+            "chat_type": "group",
         }
-        session.put.assert_called_once()
-        call_kwargs = session.put.call_args
-        url = call_kwargs[0][0]
+        assert [call.args[0] for call in session.request.call_args_list] == ["GET", "GET", "PUT", "GET"]
+        call_kwargs = session.request.call_args_list[2]
+        url = call_kwargs[0][1]
         assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/%21room%3Aexample.com/send/m.room.message/")
-        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
+        assert client_session.call_args.kwargs["headers"] == {"Authorization": "Bearer syt_tok"}
         payload = call_kwargs[1]["json"]
         assert payload["msgtype"] == "m.text"
         assert payload["body"] == "hello matrix"
 
+    def test_standalone_markdown_html_is_sanitized(self):
+        resp = _make_aiohttp_resp(200, json_data={"event_id": "$safe"})
+        session_ctx, session = _make_aiohttp_session(resp)
+        members = _make_aiohttp_resp(200, json_data={
+            "joined": {"@bot:example.com": {}, "@alice:example.com": {}, "@bob:example.com": {}},
+        })
+        responses = iter((
+            _make_aiohttp_resp(404, json_data={"errcode": "M_NOT_FOUND"}),
+            members, resp, members,
+        ))
+
+        def request(method, url, **kwargs):
+            context = MagicMock()
+            context.__aenter__ = AsyncMock(return_value=next(responses))
+            context.__aexit__ = AsyncMock(return_value=False)
+            return context
+
+        session.request = MagicMock(side_effect=request)
+        message = (
+            "safe <details open onclick=\"alert(1)\"><summary>more</summary>"
+            "<script>alert(2)</script></details>"
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            result = asyncio.run(
+                _send_matrix(
+                    "tok",
+                    {"homeserver": "https://matrix.example.com"},
+                    "!room:example.com",
+                    message,
+                )
+            )
+
+        assert result["success"] is True
+        payload = session.request.call_args_list[2].kwargs["json"]
+        assert payload["msgtype"] == "m.text"
+        assert payload["format"] == "org.matrix.custom.html"
+        assert "<details>" in payload["formatted_body"]
+        assert "<summary>more</summary>" in payload["formatted_body"]
+        assert "<script" not in payload["formatted_body"]
+        assert "alert(" not in payload["formatted_body"]
+        assert " onclick=" not in payload["formatted_body"]
 
     def test_txn_id_is_unique_across_calls(self):
         """Each call should generate a distinct transaction ID in the URL."""
         txn_ids = []
 
-        def capture(*args, **kwargs):
-            url = args[0]
-            txn_ids.append(url.rsplit("/", 1)[-1])
+        def capture(method, url, **kwargs):
             ctx = MagicMock()
-            ctx.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(200, json_data={"event_id": "$x"}))
+            if method == "GET":
+                response = _make_aiohttp_resp(404, json_data={"errcode": "M_NOT_FOUND"})
+            else:
+                txn_ids.append(url.rsplit("/", 1)[-1])
+                response = _make_aiohttp_resp(200, json_data={"event_id": "$x"})
+            ctx.__aenter__ = AsyncMock(return_value=response)
             ctx.__aexit__ = AsyncMock(return_value=False)
             return ctx
 
         session = MagicMock()
-        session.put = capture
+        session.request = capture
         session_ctx = MagicMock()
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=False)
 
         extra = {"homeserver": "https://matrix.example.com"}
 
-        import time
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             asyncio.run(_send_matrix("tok", extra, "!r:example.com", "first"))
-        time.sleep(0.002)
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             asyncio.run(_send_matrix("tok", extra, "!r:example.com", "second"))
 
@@ -246,3 +310,43 @@ class TestSendDingtalk:
         assert result["success"] is True
         call_kwargs = client.post.await_args
         assert "access_token=env" in call_kwargs[0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["expanded-html", "unicode-chunks", "thread-boundary", "escaped-controls"])
+async def test_standalone_transport_payloads_fit_the_matrix_event_limit(monkeypatch, case):
+    from plugins.platforms.matrix.standalone import _HTTPDelivery, _MatrixAPIError
+
+    payloads = []
+
+    async def request(self, method, path, **kwargs):
+        if path.endswith("/state/m.room.encryption"):
+            raise _MatrixAPIError(404, {"errcode": "M_NOT_FOUND"})
+        if path.endswith("/joined_members"):
+            return {"joined": {"@bot:server": {}, "@user:server": {}, "@other:server": {}}}
+        payloads.append(kwargs["json"])
+        return {"event_id": "$sent"}
+
+    monkeypatch.setattr(_HTTPDelivery, "request", request)
+    message = {"expanded-html": "safe", "unicode-chunks": "🧪" * 16000,
+               "thread-boundary": "&" * 7484, "escaped-controls": "\0" * 8000}[case]
+    thread_id = "$" + "t" * 200 if case == "thread-boundary" else "$root"
+    if case == "expanded-html":
+        monkeypatch.setattr("markdown.markdown", lambda *_args, **_kwargs: "<p>" + "x" * 45000 + "</p>")
+    delivery = _HTTPDelivery(None, "https://matrix.test")
+    await delivery.send("!room:server", message, thread_id=thread_id)
+
+    assert payloads
+    bodies = [re.sub(r" \(\d+/\d+\)$", "", payload["body"]) for payload in payloads]
+    assert "".join(bodies) == message
+    assert all(len(json.dumps(payload).encode("utf-8")) <= 45000
+               for payload in payloads)
+    assert [payload["m.relates_to"] for payload in payloads] == [{
+        "rel_type": "m.thread", "event_id": thread_id, "is_falling_back": True,
+        "m.in_reply_to": {"event_id": thread_id},
+    }] * len(payloads)
+    if case == "expanded-html":
+        assert payloads == [{"msgtype": "m.text", "body": "safe", "m.relates_to": {
+            "rel_type": "m.thread", "event_id": thread_id, "is_falling_back": True,
+            "m.in_reply_to": {"event_id": thread_id},
+        }}]

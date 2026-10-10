@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from concurrent.futures import Future
-from typing import Any, Coroutine, Optional
+from enum import Enum
+from typing import Any, Callable, Coroutine, Optional
 
 
 _DEFAULT_LOGGER = logging.getLogger(__name__)
@@ -38,6 +40,76 @@ def safe_schedule_threadsafe(
             coro.close()
         log.log(log_level, "%s: %s", log_message, exc)
         return None
+
+
+class _DispatchState(Enum):
+    PENDING = "pending"
+    STARTED = "started"
+    WITHDRAWN = "withdrawn"
+
+
+class _DispatchClaim:
+    def __init__(self, coro: Coroutine[Any, Any, Any]) -> None:
+        self._coro = coro
+        self._lock = threading.Lock()
+        self._state = _DispatchState.PENDING
+
+    def withdraw(self) -> bool:
+        with self._lock:
+            if self._state is not _DispatchState.PENDING:
+                return False
+            self._state = _DispatchState.WITHDRAWN
+            self._coro.close()
+            return True
+
+    def close_if_cancelled(self, future: Future) -> None:
+        if future.cancelled():
+            self.withdraw()
+
+    async def run(self) -> Any:
+        with self._lock:
+            if self._state is not _DispatchState.PENDING:
+                return None
+            self._state = _DispatchState.STARTED
+        return await self._coro
+
+
+class WithdrawableDispatch:
+    """A cross-thread coroutine dispatch that can be withdrawn until execution starts.
+
+    A ``run_coroutine_threadsafe`` future remains pending while its coroutine runs,
+    so ``Future.cancel()`` can interrupt a send that has already started. A separate
+    claim makes execution and withdrawal mutually exclusive. Withdrawal closes the
+    inner coroutine immediately, even if the loop never runs the wrapper.
+    """
+
+    def __init__(self, future: Future, claim: _DispatchClaim) -> None:
+        self._future = future
+        self._claim = claim
+
+    @classmethod
+    def schedule(
+        cls, coro: Coroutine[Any, Any, Any], loop: Optional[asyncio.AbstractEventLoop], **kwargs: Any,
+    ) -> Optional["WithdrawableDispatch"]:
+        """Schedule the coroutine, or close it and return None if scheduling fails."""
+        claim = _DispatchClaim(coro)
+        future = safe_schedule_threadsafe(claim.run(), loop, **kwargs)
+        if future is None:
+            claim.withdraw()
+            return None
+        future.add_done_callback(claim.close_if_cancelled)
+        return cls(future, claim)
+
+    def result(self, timeout: Optional[float] = None) -> Any:
+        return self._future.result(timeout=timeout)
+
+    def add_done_callback(self, callback: Callable[[Future], Any]) -> None:
+        """Observe the eventual result without cancelling a started dispatch."""
+        self._future.add_done_callback(callback)
+
+    def withdraw(self) -> bool:
+        """Close an unstarted coroutine; return False after execution has started."""
+        return self._claim.withdraw()
 
 
 def consume_detached_task_result(task: asyncio.Future[Any]) -> None:

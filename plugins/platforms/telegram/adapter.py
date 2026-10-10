@@ -4928,6 +4928,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
         success = False
+        proc = None
         try:
             # A user script under HERMES_HOME the agent can write: scrubbed like cron and quick-command scripts.
             from tools.environments.local import build_subprocess_env
@@ -4951,6 +4952,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception as exc:
             label = t("platform.telegram.gmail_triage.error", verb=verb, error=str(exc))
             logger.error("[%s] gmail-triage callback exception: verb=%s arg=%s err=%s", self.name, verb, arg, exc, exc_info=True)
+        finally:
+            if proc is not None and proc.returncode is None:
+                # wait_for() only cancels communicate(): the script would keep running and could still send/archive
+                # the email after the button reported a timeout. Kill it before answering.
+                from agent.deadline import kill_process_tree
+                await asyncio.to_thread(kill_process_tree, proc.pid)
         await query.answer(text=label[:_TOAST_LIMIT])
         if not success:
             return

@@ -726,9 +726,10 @@ _ACTION_HANDLERS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, canonical_name=None) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
+    _post = None
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -753,13 +754,21 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         # archive primitive instead of permanent rmtree so a misjudged consolidation can be undone (#29912).
         # Foreground, user-directed deletes keep their existing hard-delete semantics.
         from tools.skill_provenance import is_background_review
+        # Telemetry keys on the skill's canonical frontmatter name — the same key
+        # skill_view bumps — so a `category/name` address cannot split one skill
+        # into two .usage.json records (#136130). Writers resolve from the
+        # post-mutation copy (a patch may rename); delete needs the caller's
+        # pre-mutation capture because the SKILL.md is already gone.
+        key = canonical_name or name
+        if action != "delete" and _post is not None:
+            key = _read_frontmatter_name(_post["path"] / "SKILL.md") or key
         if action == "create":
-            record_created(name, agent_created=is_background_review(),
+            record_created(key, agent_created=is_background_review(),
                            task_id=task_id, session_id=session_id)
         elif action in {"patch", "edit", "write_file", "remove_file"}:
-            bump_patch(name, action=action, task_id=task_id, session_id=session_id)
+            bump_patch(key, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
-            forget(name)
+            forget(key)
 
 
 def skill_manage(
@@ -797,9 +806,12 @@ def skill_manage(
         # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
         # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
         _ledger_before = None
+        _canonical_name: str | None = None
         with suppress(Exception):
             from tools import skill_ledger as _ledger
             _pre = _find_skill(name)
+            if _pre is not None:  # pre-mutation: SKILL.md is still on disk (delete removes it)
+                _canonical_name = _read_frontmatter_name(_pre["path"] / "SKILL.md")
             _ledger_before = _ledger.capture_before(
                 _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
         handler = _ACTION_HANDLERS.get(action, lambda a: _err(
@@ -810,7 +822,8 @@ def skill_manage(
         if result.get("success"):
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+                task_id=task_id, session_id=session_id, ledger_before=_ledger_before,
+                canonical_name=_canonical_name)
     return json.dumps(result, ensure_ascii=False)
 
 

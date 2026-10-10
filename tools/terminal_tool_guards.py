@@ -141,6 +141,52 @@ def _foreground_background_guidance(command: str) -> str | None:
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 
+# Foreground polling loops in messaging-gateway turns. A loop whose body sleeps >= this many
+# seconds is a wait, not work; in a chat session it keeps the conversation deaf for the whole wait.
+POLL_LOOP_MIN_SLEEP_S = 30
+
+_POLL_LOOP_KEYWORD_RE = re.compile(r"(?:^|[;&|(\n{]|\b(?:do|then|else)\s)\s*(?:for|while|until)\b")
+_POLL_SLEEP_RE = re.compile(
+    r"(?:^|[;&|(\n{]|\b(?:then|do|else|command|builtin)\s+|/(?:usr/)?bin/)"
+    r"\s*sleep\s+(\d+(?:\.\d+)?)\s*([smhd]?)\b",
+    re.IGNORECASE,
+)
+_POLL_SLEEP_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+# `watch CMD` repeats until interrupted. Anchored at command position so `gh run watch`,
+# `npm run watch` and `--watch` don't match.
+_WATCH_COMMAND_RE = re.compile(r"(?:^|[;&|(\n{]|\b(?:do|then|else|exec|command)\s)\s*(?:/usr/bin/)?watch\s")
+
+
+def _gateway_polling_loop_guidance(command: str) -> str | None:
+    """Refusal text for a foreground polling loop (``for/while/until`` + ``sleep >= 30s``, or
+    ``watch``), else None. Only consulted for messaging-gateway turns. Quoted spans are stripped
+    first so data (a commit message) cannot trip it. A behavioral guardrail, not a sandbox: the
+    messaging-gateway foreground cap is the backstop for shapes it cannot see (a script file,
+    ``bash -c "..."``, a python sleep loop)."""
+    if not command:
+        return None
+    unquoted = _strip_quotes(command)
+    literal = None
+    if _WATCH_COMMAND_RE.search(unquoted):
+        literal = "watch"
+    elif _POLL_LOOP_KEYWORD_RE.search(unquoted):
+        for m in _POLL_SLEEP_RE.finditer(unquoted):
+            if float(m.group(1)) * _POLL_SLEEP_UNITS[m.group(2).lower()] >= POLL_LOOP_MIN_SLEEP_S:
+                literal = f"sleep {m.group(1)}{m.group(2)} inside a for/while/until loop"
+                break
+    if literal is None:
+        return None
+    return (
+        f"Refused: foreground polling loop ({literal}) in a messaging-gateway session. While a "
+        f"foreground tool call runs, this chat cannot answer new messages, so an hour-long poll "
+        f"leaves the user unanswered for an hour. Instead: (1) for a one-shot status check, run "
+        f"the check once without the loop and end the turn; (2) to wait on a long job, start the "
+        f"job itself with background=true and notify_on_complete=true (or watch_patterns for the "
+        f"line you are waiting for), then end the turn; you will be notified; (3) for waits "
+        f"longer than ~10 minutes, hand the work to a cron job or a kanban task."
+    )
+
+
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:
     """Best-effort script read: host filesystem first, then a bounded
     ``env.execute('head -c ... < path')`` for remote backends. Binary content

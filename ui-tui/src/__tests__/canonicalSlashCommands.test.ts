@@ -163,3 +163,28 @@ it('/status reads through the gateway; /save, /bg and /btw refuse instead of cal
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
 })
+
+it('/stop is session-scoped; process-global /agents pause, /reload-mcp and /reload refuse on the shared gateway', async () => {
+  const { request, slash, sys } = harness()
+
+  for (const cmd of ['/stop', '/agents pause', '/reload-mcp now', '/reload']) {
+    slash(cmd)
+  }
+
+  await flush()
+
+  // dokterdok N2: a sessionless process.stop was the owner-wide kill_all.
+  expect(request).toHaveBeenCalledWith('process.stop', { session_id: 'owner' })
+
+  const methods = request.mock.calls.map(([method]) => method)
+
+  for (const method of ['delegation.pause', 'reload.mcp', 'reload.env']) {
+    expect(methods).not.toContain(method)
+  }
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  for (const name of ['agents pause', 'reload-mcp', 'reload']) {
+    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
+  }
+})

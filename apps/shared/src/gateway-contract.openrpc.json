@@ -2510,7 +2510,7 @@
     },
     {
       "name": "process.stop",
-      "summary": "Kill every background process in the registry (``/stop``), answering the count killed.",
+      "summary": "``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a standalone sidecar kills every process it holds. Answers the count killed.",
       "params": [
         {
           "name": "params",

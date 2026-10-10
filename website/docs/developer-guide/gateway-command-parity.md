@@ -25,15 +25,15 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
-| `/agents` (/tasks) | refused | refused: not available yet | sidecar: delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
+| `/agents` (/tasks) | refused | refused: not available yet | refused: not available yet | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
 | `/approvals` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
 | `/approve` | refused | approval.respond (prompt id) | slash.exec: refused | unavailable: messaging | refused | messaging-only |
 | `/battery` | refused | refused: not available yet | config.set; sidecar: system.battery | slash.exec: refused | refused | client-local (cli_only) |
-| `/bg` | refused | refused: not available yet | canonical route | action: background | refused |  |
+| `/bg` | refused | refused: not available yet | refused: not available yet | action: background | refused |  |
 | `/blueprint` (/bp) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/branch` (/fork) | refused | session.mutate branch | canonical route | action: branch | ACP fork_session |  |
 | `/browser` | refused | refused: not available yet | sidecar: browser.manage | action: browser | refused | client-local (cli_only) |
-| `/btw` | refused | refused: not available yet | canonical route | action: btw | refused |  |
+| `/btw` | refused | refused: not available yet | refused: not available yet | action: btw | refused |  |
 | `/bundles` | read | slash.exec | slash.exec | slash.exec | refused |  |
 | `/busy` | refused | refused: not available yet | canonical route | unavailable: terminal | refused | port: per-session setting |
 | `/clear` | refused | session.create | local | action: new | refused | client-local (cli_only) |
@@ -90,15 +90,15 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/reasoning` | refused | refused: not available yet | config.get, config.set | action: reasoning | refused | port: per-session setting |
 | `/redraw` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/refine` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/reload` | refused | refused: not available yet | sidecar: reload.env | unavailable: terminal | refused | client-local (cli_only) |
-| `/reload-mcp` (/reload_mcp) | refused | refused: not available yet | sidecar: reload.mcp | unavailable: advanced | refused |  |
+| `/reload` | refused | refused: not available yet | refused: not available yet | unavailable: terminal | refused | client-local (cli_only) |
+| `/reload-mcp` (/reload_mcp) | refused | refused: not available yet | refused: not available yet | unavailable: advanced | refused |  |
 | `/reload-skills` (/reload_skills) | refused | refused: not available yet | commands.catalog; sidecar: skills.reload | unavailable: advanced | refused |  |
 | `/restart` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | messaging-only |
 | `/resume` | refused | refused: not available yet | local | picker: session | refused | switches the messaging chat's session; local clients resume by id |
 | `/retry` | refused | session.mutate rewind + resubmit | canonical route | slash.exec: refused | refused |  |
 | `/review` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/rollback` | refused | refused: not available yet | sidecar: rollback.diff, rollback.list, rollback.restore | slash.exec: refused | refused | restores filesystem checkpoints |
-| `/save` | refused | refused: not available yet | canonical route | slash.exec: refused | refused | writes an export file on the gateway host |
+| `/save` | refused | refused: not available yet | refused: not available yet | slash.exec: refused | refused | writes an export file on the gateway host |
 | `/sessions` | refused | refused: not available yet | local | picker: session | refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
 | `/sethome` (/set-home) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | messaging-only |
 | `/skills` | refused | refused: not available yet | slash.exec; sidecar: skills.manage | slash.exec: refused | refused | write-approval queue; `/skills approve\|approval` write |
@@ -108,7 +108,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/status` | read | slash.exec | canonical route | slash.exec (rpc fallback) | refused |  |
 | `/statusbar` (/sb) | refused | refused: not available yet | config.set | unavailable: terminal | refused | client-local (cli_only) |
 | `/steer` (/s) | refused | refused: not available yet | canonical route | slash.exec: refused | refused |  |
-| `/stop` | refused | session.interrupt | sidecar: process.stop | action: stop | refused |  |
+| `/stop` | refused | session.interrupt | canonical route | action: stop | refused |  |
 | `/subgoal` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
 | `/subscription` (/upgrade) | refused | refused: not available yet | sidecar: subscription.state | slash.exec: refused | refused | client-local (cli_only) |
 | `/suggestions` (/suggest) | read (bare only) | slash.exec | slash.exec | slash.exec | refused |  |

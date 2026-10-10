@@ -1,7 +1,9 @@
-"""Read-only Desktop/Ink projections of existing owner state.
+"""Desktop/Ink projections of existing owner state, plus the session-scoped process stop.
 
-No legacy server, manager construction, process recovery, or execution on reads.
+No legacy server, manager construction, process recovery, or execution on reads. ``process.stop``
+is the one write: it stops exactly the processes ``process.list`` projects for the session.
 """
+import asyncio
 from functools import partial
 import sys
 
@@ -21,7 +23,8 @@ def handlers(connection):
         'session.control.read': 'control', 'process.list': 'processes',
         'subagent.list': 'subagents', 'subagent.tail': 'tail',
     }.items()}, 'approval.pending': partial(approvals, connection),
-        'approval.received': partial(approvals, connection, ack=True)}
+        'approval.received': partial(approvals, connection, ack=True),
+        'process.stop': partial(stop_processes, connection)}
 
 
 async def approvals(connection, ref, params, *, ack=False):
@@ -62,27 +65,69 @@ async def read(connection, ref, params, *, kind):
     authorize(connection, ref, params, 'session:read')
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
-        target = physical_target(authority, ref)
-        store = authority.runner.session_store
-        with store._lock:
-            entry = store._entries.get(live.route)
-            if entry is None or entry.session_id != target:
-                raise RuntimeStoreError('stale_generation')
+        _require_current_route(authority, ref)
         if kind == 'control':
             return {'control': control_snapshot(authority, ref)}
-        # Process-local registries cannot describe another interpreter's live
-        # objects. Never turn that missing authority into a successful empty list.
-        from gateway.session_managed_worker import managed_policy
-        if managed_policy(authority, ref) is not None:
-            raise RuntimeStoreError('unsupported_projection')
-        agent = authority.agent(ref)
-        records = subagent_records(agent)
+        agent, records = _owner_objects(authority, ref)
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
                                   for record in records], 'delegations': []}
         if kind == 'tail':
             return subagent_tail(records, params['subagent_id'])
         return {'processes': process_snapshot(authority, ref, agent, records)}
+
+
+async def stop_processes(connection, ref, params):
+    """Ink ``/stop``: kill the background processes this session owns (what ``process.list``
+    shows), never the registry-wide ``kill_all`` the legacy sidecar ran, which on the shared owner
+    reached every chat, Desktop window and served profile (dokterdok N2). An explicit stop, so a
+    ``persist_on_release`` job of THIS session is still reached (#41225)."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:control')
+    live = authority.sessions[ref.session_id]
+    with live.event_stream.lock:
+        _require_current_route(authority, ref)
+        agent, records = _owner_objects(authority, ref)
+        module = sys.modules.get('tools.process_registry')
+        if module is None:  # nothing ever registered a process in this interpreter
+            return {'killed': 0}
+        registry = module.process_registry
+        keys, owners = _ownership(authority, ref, agent, records)
+        with registry._lock:
+            targets = [p.id for p in _owned_locked(registry, keys, owners)
+                       if not p.exited or p._scope_stop_pending]
+
+    def kill():
+        results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
+        return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
+                   for r in results)
+    return {'killed': await asyncio.to_thread(kill) if targets else 0}
+
+
+def _require_current_route(authority, ref):
+    """The route still serves this conversation (a reused route must not lend its objects)."""
+    live = authority.sessions[ref.session_id]
+    target = physical_target(authority, ref)
+    store = authority.runner.session_store
+    with store._lock:
+        entry = store._entries.get(live.route)
+        if entry is None or entry.session_id != target:
+            raise RuntimeStoreError('stale_generation')
+
+
+def _owner_objects(authority, ref):
+    """``(agent, subagent records)`` of this in-process session. Process-local registries cannot
+    describe (or stop) another interpreter's live objects: a managed worker is refused rather than
+    answered with an empty success."""
+    from gateway.session_managed_worker import managed_policy
+    if managed_policy(authority, ref) is not None:
+        raise RuntimeStoreError('unsupported_projection')
+    agent = authority.agent(ref)
+    return agent, subagent_records(agent)
 
 
 def physical_target(authority, ref):
@@ -151,24 +196,34 @@ def subagent_tail(records, subagent_id):
     return {**result, 'available': True, 'text': text, 'truncated': size > _TAIL_BYTES}
 
 
-def process_snapshot(authority, ref, agent, records):
-    module = sys.modules.get('tools.process_registry')
-    if module is None:
-        return []
-    registry = module.process_registry
-    route = authority.sessions[ref.session_id].route
+def _ownership(authority, ref, agent, records):
+    """``(routing keys, owners)`` a registry process must match to belong to this session: its
+    routing key AND an owner among the session, its agent and its subagents."""
     target = physical_target(authority, ref)
-    owners = {target}
+    keys, owners = {authority.sessions[ref.session_id].route, target}, {target}
     if agent is not None:
         owners.add(getattr(agent, 'session_id', None))
     owners.update(r.get('subagent_id') for r in records)
     owners.discard(None)
     owners.discard('')
-    # list_sessions refreshes recovered processes (and writes checkpoints).
-    # Read the current objects directly, keeping ownership and output together.
+    return keys, owners
+
+
+def _owned_locked(registry, keys, owners):
+    """Matching process objects; the caller holds ``registry._lock``. Read directly:
+    ``list_sessions`` refreshes recovered processes and writes checkpoints."""
+    return [p for p in (*registry._running.values(), *registry._finished.values())
+            if p.session_key in keys and (p.owner_task_id or p.task_id) in owners]
+
+
+def process_snapshot(authority, ref, agent, records):
+    module = sys.modules.get('tools.process_registry')
+    if module is None:
+        return []
+    registry = module.process_registry
+    keys, owners = _ownership(authority, ref, agent, records)
+    # Keep ownership and output together.
     with registry._lock:
-        processes = [p for p in (*registry._running.values(), *registry._finished.values())
-                     if p.session_key in {route, target} and (p.owner_task_id or p.task_id) in owners]
         return [{'session_id': p.id, 'command': p.command[:200],
                  'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,
-                 'output_tail': p.output_buffer[-4000:]} for p in processes]
+                 'output_tail': p.output_buffer[-4000:]} for p in _owned_locked(registry, keys, owners)]

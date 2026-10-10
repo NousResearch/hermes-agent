@@ -5834,7 +5834,7 @@ export interface RpcMethods {
   'process.kill': { params: ProcessKillParams; result: ProcessKillResult }
   /** Background processes owned by the caller's session (desktop status stack poll). */
   'process.list': { params: ProcessListParams; result: ProcessListResult }
-  /** Kill every background process in the registry (``/stop``), answering the count killed. */
+  /** ``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a standalone sidecar kills every process it holds. Answers the count killed. */
   'process.stop': { params: ProcessStopParams; result: ProcessStopResult }
   /** Editor Save: apply any subset of a profile's sections and report each one. */
   'profiles.configure': { params: ProfilesConfigureParams; result: ProfilesConfigureResult }

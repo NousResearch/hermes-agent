@@ -785,6 +785,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const togglePause = () =>
     guardLive(() => {
+      // The spawn gate is process-global: on the shared owner it would pause every chat.
+      if (gw.isCanonical) {
+        return setFlash(messages().canonical.controls.notAvailable('agents pause'))
+      }
+
       gw.request<DelegationPauseResponse>('delegation.pause', { paused: !delegation.paused })
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)

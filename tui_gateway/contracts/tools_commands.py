@@ -61,7 +61,8 @@ class ProcessStopResult(Result):
 
 
 method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
-       doc="Kill every background process in the registry (``/stop``), answering the count killed.")
+       doc="``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a "
+           "standalone sidecar kills every process it holds. Answers the count killed.")
 
 
 class AgentsListParams(Params):

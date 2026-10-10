@@ -112,6 +112,10 @@ def ink_cell(cmd, gateway, ink, served):
     if entry is None:
         return "slash.exec" if gateway != "refused" else "slash.exec: refused"
     _, block = entry
+    if "canonical.controls.notAvailable" in block:
+        # The shared gateway refuses it in the client (no owner verb yet), whatever it calls on a
+        # standalone backend; never reported as a working route.
+        return "refused: not available yet"
     if "isCanonical" in block:
         return "canonical route"
     methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))

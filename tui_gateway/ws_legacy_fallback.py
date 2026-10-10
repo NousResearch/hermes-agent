@@ -34,13 +34,23 @@ _SESSION_FALLBACK_ALLOWED = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "session.workspace.move",
 })
+# Sidecar verbs whose handler acts on PROCESS-global state. In a TUI's own sidecar that state was
+# that TUI's alone; on the shared owner it is every chat's, Desktop window's and served profile's:
+# ``process.stop`` = ``kill_all`` over the whole registry (persisted jobs included),
+# ``delegation.pause`` = the global spawn gate, ``reload.mcp`` = tear down and rediscover every MCP
+# server, ``reload.env`` = rewrite ``os.environ`` from the launch profile's ``.env``, ``agents.list``
+# = every chat's process commands. The owner serves the session-scoped ``process.stop`` itself
+# (``gateway/session_ancillary.py``); ``process.kill`` stays: its handler is already session-scoped.
+_PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})
 
 
 def legacy_fallback_allowed(actor: Any, method: str) -> bool:
     """True when the connection's grant covers the interactive purpose (the authority's own
-    capability map; never a second list that could drift) and *method* is not a session verb
-    the authority owns."""
+    capability map; never a second list that could drift) and *method* is neither a session verb
+    the authority owns nor a process-global sidecar verb."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    if method in _PROCESS_GLOBAL:
+        return False
     if method.startswith(_SESSION_NAMESPACES) and method not in _SESSION_FALLBACK_ALLOWED:
         return False
     return _PURPOSE_CAPABILITIES["interactive"] <= frozenset(getattr(actor, "capabilities", ()) or ())

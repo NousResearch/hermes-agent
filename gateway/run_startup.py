@@ -1370,7 +1370,8 @@ class GatewayStartupMixin:
         from tools.process_registry import process_registry as _pr
         # The launch profile's durable completions replay here, not at import (#123265); the
         # secondaries' ledgers are replayed by _restore_secondary_completion_ledgers below.
-        _pr.restore_completions()
+        # Off the loop: the replay writes state.db, and the liveness watchdog is already armed.
+        await asyncio.to_thread(_pr.restore_completions)
         # Secondary-profile adapters connect under their own home + credential scope.
         try:
             connected_count += await self._start_secondary_profile_adapters()

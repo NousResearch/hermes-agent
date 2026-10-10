@@ -1021,7 +1021,8 @@ class GatewayAdapterLifecycleMixin:
         if configs is not None:
             for profile_name in [p for p in configs if p not in self._served_profile_signatures]:
                 configs.pop(profile_name, None)
-        self._restore_secondary_completion_ledgers(profile_homes)
+        # Off the loop: each replay writes a profile's state.db (the scope travels with the context).
+        await asyncio.to_thread(self._restore_secondary_completion_ledgers, profile_homes)
         return connected
 
     def _primary_resource_claims(self, active: str) -> dict[tuple, str]:

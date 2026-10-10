@@ -442,6 +442,51 @@ class GatewayAgentCacheMixin:
                 # Never fails the boundary itself, but a surviving ON would come back after a restart.
                 logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
 
+    def _reserve_ordinary_session_run_generation(self, session_key: str, source: SessionSource) -> int | None:
+        """Journal ordinary admission only; Stop's generic bump must not create executions."""
+        from gateway.chat_execution_recovery import ChatExecutionStore
+        try:
+            store = ChatExecutionStore(self._resolve_profile_home_for_source(source))
+            generation = store.reserve(session_key, self._current_session_run_generation(session_key), 0)
+            if generation is not None:
+                self._session_state(session_key).persistent.chat_execution_reservation = (
+                    str(store.home), session_key, generation)
+            return generation
+        except Exception:
+            logger.exception("Failed durable inbound admission for %s", session_key)
+            return None
+
+    def _chat_execution_reservation_for_turn(self, session_key: str, generation: int | None):
+        """Keep an admitted turn explicit even if Stop already cleared its active slot."""
+        if generation is None or not session_key:
+            return None
+        state = self._peek_session_state(session_key)
+        reservation = state.persistent.chat_execution_reservation if state is not None else None
+        if reservation is not None and reservation[1:] != (session_key, generation):
+            raise RuntimeError("Durable worker reservation was displaced")
+        return reservation
+
+    def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+        """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
+
+        With ``run_generation`` (the turn finalizer) the restore happens only while that generation
+        is still current; a stop/reset/eviction has already settled the snapshot itself (see
+        ``_invalidate_session_run_generation``), so the displaced finalizer finds nothing to do.
+        Without it (the settlement paths) the restore is unconditional."""
+        if not session_key:
+            return
+        try:
+            _otr_state = self._peek_session_state(session_key)
+            if _otr_state is None or not _otr_state.conversation.one_turn_restore:
+                return
+            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+                return
+            snapshot = _otr_state.conversation.one_turn_restore
+            _otr_state.conversation.one_turn_restore = None
+            self._restore_session_model_override(session_key, snapshot)
+        except Exception:
+            logger.debug("Failed to restore one-turn model override", exc_info=True)
+
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result
         from a worker /stop or /new invalidated is recognized and dropped."""

@@ -4,6 +4,10 @@ Workers keep execution middleware on its original stack. Only command approval
 runs ahead; the existing sequential executor releases each worker and persists
 its result before releasing the next. No terminal environment/cwd is acquired
 while preparing, and the real execution still runs every command guard.
+
+The durable prepared-terminal resource tracks this physical slot thread only.
+A middleware-owned continuation created by ``bind_prepared_dispatch`` can outlive
+that slot; its lifetime is explicitly not closed by this ledger entry.
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ class _TerminalSlot:
         self.decision = None
         self.guard_key = None
         self.claimed = False
+        self.resource = None
 
     def check_cancelled(self):
         if self.batch.cancelled.is_set() or self.batch.agent._interrupt_requested:
@@ -68,11 +73,24 @@ class _TerminalSlot:
             self.check_cancelled()
         self.check_cancelled()
 
-    def run(self):
+    def run(self, resource=None):
         from agent import tool_executor as te
-        token = _slot.set(self)
-        pc, batch = self.parsed, self.batch
-        ref = pc.ref(batch.task_id)
+        from agent.chat_execution_context import bind_concurrent_tool_resource
+        try:
+            with bind_concurrent_tool_resource(resource) as admitted:
+                if not admitted:
+                    raise RuntimeError("Durable prepared terminal worker admission refused")
+                token = _slot.set(self)
+                try:
+                    pc, batch = self.parsed, self.batch
+                    ref = pc.ref(batch.task_id)
+                    return self._run_admitted(te, batch, ref, pc)
+                finally:
+                    _slot.reset(token)
+        finally:
+            self.ready.set()
+
+    def _run_admitted(self, te, batch, ref, pc):
         try:
             with te._registered_tool_worker(batch.agent) as tid:
                 self.tids.append(tid)
@@ -85,7 +103,6 @@ class _TerminalSlot:
                 )
         finally:
             self.ready.set()
-            _slot.reset(token)
 
 
 class _TerminalBatch:
@@ -107,9 +124,12 @@ class _TerminalBatch:
 
     def start(self):
         from agent.tool_executor import _resolve_sequential_tool_timeout
+        from agent.chat_execution_context import concurrent_tool_resource_for_submit
         for slot in self.slots:
             slot.check_cancelled()
-            slot.future = self.executor.submit(propagate_context_to_thread(slot.run))
+            from uuid import uuid4
+            slot.resource = concurrent_tool_resource_for_submit(f"prepared:{slot.parsed.ref(self.task_id).call_id}:{uuid4()}", kind="prepared_terminal_tool_thread")
+            slot.future = self.executor.submit(propagate_context_to_thread(slot.run), slot.resource)
             timeout = _resolve_sequential_tool_timeout()
             started = time.monotonic()
             baseline = self.authorization_gate.excluded_seconds()

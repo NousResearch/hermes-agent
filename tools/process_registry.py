@@ -1210,6 +1210,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
+        from tools.process_registry_chat_execution import reserve_local_process, spawn_local_pipe
+        resource = reserve_local_process() if _IS_LINUX and not use_pty else None
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1226,31 +1228,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                             "to avoid duplicate command execution"
                         ) from e
                     session.systemd_unit = ""
-        # Pipe path (non-PTY or PTY fallback).
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-        unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
-        spawn_env = self._spawn_env(env_vars)
-        if session.systemd_unit:
-            spawn_env = systemd_user_bus_env(spawn_env)
-        # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
-        # give the worker a new session, so from an interactive TUI the worker would
-        # share the foreground process group and background spawns would stop the whole
-        # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
-        # the scope attaches to the invoked process, not the spawning session.
-        proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
-        session.process = proc
-        session.pid = proc.pid
-        session.host_start_time = self._safe_host_start_time(session.pid)
-        try:
-            self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
-        except Exception:
-            self._reap_untracked(session, proc)
-            raise
-        return session
+        # Pipe path (non-PTY or unchanged legacy PTY fallback).
+        return spawn_local_pipe(self, session, safe_command, env_vars, pty_scope_attempted, resource)
 
     def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
         """Post-Popen setup failed: kill the orphaned subprocess (and any setsid

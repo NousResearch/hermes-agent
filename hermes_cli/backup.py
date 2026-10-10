@@ -26,7 +26,8 @@ from hermes_state_holders import read_only_db_uri
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli import backup_sqlite as _backup_sqlite
+from hermes_cli.backup_sqlite import _close_quietly
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -402,6 +403,60 @@ _SQLITE_HEADER = b"SQLite format 3\0"
 # structural probe. Sessions databases in the tens of GB are normal for heavy users, so the size-unbounded
 # check is never an acceptable default on the update path. See #70553.
 DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
+
+
+def _warn_if_source_malformed(src: Path) -> Optional[str]:
+    """Warn when *src* is ALREADY corrupt before we copy it; returns the message or None.
+
+    ``conn.backup()`` copies pages without validating them, so a source database that is
+    already corrupt is reproduced faithfully into the snapshot/backup and the corruption
+    travels silently into the thing the user is relying on to recover. Downstream
+    ``copy_db_and_verify()`` only checks the DESTINATION, so it reports "backup failed
+    integrity verification" — which reads as "the backup broke" when the truth is "your
+    live database was already broken". Naming that distinction is the whole point here.
+
+    Uses ``verify_sqlite_integrity`` so this inherits the project's existing size policy
+    (#70553): databases above ``DEFAULT_INTEGRITY_CHECK_MAX_BYTES`` get the O(1) header +
+    schema probe instead of a full page walk, so a 30 GB ``state.db`` never turns
+    ``hermes update`` into a multi-minute CPU stall.
+
+    Advisory only — it never blocks the copy. A corrupt source is exactly when you most
+    want whatever salvage a backup can give you.
+    """
+    try:
+        result = verify_sqlite_integrity(src)
+    except Exception as exc:  # a failed check must never break the backup
+        logger.debug("Source integrity check skipped for %s: %s", src, exc)
+        return None
+    if result.get("valid"):
+        return None
+    message = (
+        f"Warning: {src} is already malformed BEFORE this copy "
+        f"({result.get('message')}). The snapshot/backup will faithfully preserve the "
+        f"corruption — it is not a usable recovery point. Investigate the source database.")
+    # Both surfaces on purpose: logger.warning lands in agent.log/errors.log, but a normal
+    # (non-verbose) CLI run installs no console handler, so the log alone is invisible to
+    # the person running `hermes backup`. See review on #39758.
+    logger.warning("%s", message)
+    print(message)
+    return message
+
+
+def _safe_copy_db(src: Path, dst: Path, **kwargs) -> bool:
+    """``backup_sqlite._safe_copy_db`` plus the source-corruption warning, for every
+    application-level copy (full backup, quick snapshot, ``copy_db_and_verify``).
+
+    Deliberately NOT inside ``backup_sqlite._safe_copy_db`` itself. That module must stay
+    standard-library-only because Desktop executes it directly when application imports
+    cannot load, and its ``__main__`` emits ``preflight_state_db``'s result as JSON on
+    stdout — which calls ``_safe_copy_db``. A warning printed there would corrupt the
+    JSON Desktop parses, and precisely when the database is broken.
+
+    Resolved through the module at call time (not bound at import) so monkeypatching
+    ``backup_sqlite._safe_copy_db`` still reaches every caller here.
+    """
+    _warn_if_source_malformed(src)
+    return _backup_sqlite._safe_copy_db(src, dst, **kwargs)
 
 
 def verify_sqlite_integrity(

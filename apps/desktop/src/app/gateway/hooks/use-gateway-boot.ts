@@ -22,7 +22,12 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -216,6 +221,59 @@ export async function connectInitialGateway({
   }
 }
 
+/** Boot phase main publishes while it parks a launch behind a live update (electron/main.ts). */
+const UPDATE_WAIT_BOOT_PHASE = 'backend.update-wait'
+/** Main's own cap on that park (UPDATE_WAIT_TIMEOUT_MS in electron/main.ts). */
+const UPDATE_PARK_MAX_MS = 20 * 60 * 1000
+
+// A Desktop opened while an update runs (the window vanished for the update
+// hand-off, so users reopen it) is parked by main for up to its 20-minute
+// update wait — far past the renderer's cold-boot budget, which then failed
+// the boot with "Timed out connecting to Hermes backend" while main was still
+// correctly waiting. Keep extending the budget while main reports the park;
+// once it ends, the next budget that expires fails the boot as before. The
+// extension is bounded by main's own cap: past it main starts the backend
+// anyway and publishes new phases, so a park still reported then means main is
+// wedged, and the boot fails instead of waiting forever. Exported for tests.
+export async function awaitBackendPastUpdateWait<T>({
+  isCancelled,
+  isParkedForUpdate,
+  maxParkMs = UPDATE_PARK_MAX_MS,
+  message,
+  pending,
+  timeoutMs
+}: {
+  isCancelled: () => boolean
+  isParkedForUpdate: () => boolean
+  maxParkMs?: number
+  message: string
+  pending: Promise<T>
+  timeoutMs: number
+}): Promise<T> {
+  const parkDeadline = Date.now() + maxParkMs
+
+  for (;;) {
+    try {
+      return await withTimeout(pending, timeoutMs, message)
+    } catch (err) {
+      if (!isTimeoutError(err) || !isParkedForUpdate() || isCancelled() || Date.now() >= parkDeadline) {
+        throw err
+      }
+    }
+  }
+}
+
+// Quit teardown rejects in-flight IPC with this (electron/local-backend-lifecycle.ts).
+// The window is closing — on macOS/Linux typically the update hand-off stopping
+// a Desktop that was opened mid-update, right before it relaunches the rebuilt
+// app — so it is not a boot failure. Painting "Hermes couldn't start" over it
+// makes a successful update read as a failed one. Exported for tests.
+export function isDesktopQuittingError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+
+  return message.includes('Hermes Desktop is quitting')
+}
+
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
@@ -336,6 +394,9 @@ export function useGatewayBoot({
     // wait (#112899). Cleared wherever a FRESH boot lifecycle starts: a soft
     // switch and the renderer's own bounded retry (#82679).
     let bootFailed = false
+    // Main's latest boot phase is its update park: this launch raced a live
+    // update and main is holding the backend start until it finishes.
+    let mainParkedForUpdate = false
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -924,6 +985,8 @@ export function useGatewayBoot({
         return
       }
 
+      mainParkedForUpdate = payload.phase === UPDATE_WAIT_BOOT_PHASE
+
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
       // cold-boot CONNECTING overlay stays down. A boot that ended in failure
       // is concluded too: replaying its steps would take the recovery overlay
@@ -1466,12 +1529,15 @@ export function useGatewayBoot({
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
         // rides out a full backend cold spawn, so it gets the shared 45s
-        // backend-boot budget, not the 20s reconnect budget.
-        const conn = await withTimeout(
-          getWindowBackend(true),
-          BACKEND_BOOT_WAIT_TIMEOUT_MS,
-          'Timed out connecting to Hermes backend'
-        )
+        // backend-boot budget, not the 20s reconnect budget — extended while
+        // main holds this launch behind a running update.
+        const conn = await awaitBackendPastUpdateWait({
+          isCancelled: () => cancelled,
+          isParkedForUpdate: () => mainParkedForUpdate,
+          message: 'Timed out connecting to Hermes backend',
+          pending: getWindowBackend(true),
+          timeoutMs: BACKEND_BOOT_WAIT_TIMEOUT_MS
+        })
 
         if (cancelled) {
           return
@@ -1602,7 +1668,7 @@ export function useGatewayBoot({
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !isDesktopQuittingError(err)) {
           const message = err instanceof Error ? err.message : String(err)
 
           // Main's classification (#82679) still decides every failure it can

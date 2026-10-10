@@ -378,8 +378,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return
         }
 
-        const previousSid = getUiState().sid
-
         return gw
           .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
@@ -421,10 +419,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
-
-            if (previousSid && previousSid !== r.session_id) {
-              void closeSession(previousSid)
-            }
           })
           .catch((e: Error) => {
             sys(`error: ${e.message}`)
@@ -432,7 +426,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(

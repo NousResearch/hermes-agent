@@ -1158,15 +1158,27 @@ class RelayAdapter(BasePlatformAdapter):
         data = payload.get("data") or {}
         message_type = MessageType.TEXT
         if itype == 2:
-            # Normalize to a leading-slash command string ("/name arg…"), the
-            # shape the dispatcher and the connector's Slack slash lane expect.
+            # Normalize both chat-input and context-menu commands. Context-menu
+            # interactions carry their target separately from the command name;
+            # include it so relaying does not silently turn a targeted command into
+            # a target-less one.
             text = ("/" + str(data.get("name") or "")).rstrip("/") or ""
             if text:
                 parts = [text] + self._render_interaction_options(data.get("options"))
+                target = self._render_context_target(data)
+                if target:
+                    parts.append(target)
                 text = " ".join(parts).strip()
                 message_type = MessageType.COMMAND
         elif itype == 3:
             text = str(data.get("custom_id") or "")
+            values = data.get("values")
+            if isinstance(values, list):
+                selected = [str(value).strip() for value in values if str(value).strip()]
+                if selected:
+                    text = " ".join(part for part in (text, *selected) if part)
+        elif itype == 5:
+            text = self._render_modal_components(data.get("components"))
         else:
             text = ""
         member = payload.get("member") or {}
@@ -1202,7 +1214,7 @@ class RelayAdapter(BasePlatformAdapter):
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;
             # foreign custom_ids keep the best-effort TEXT shape.
-            decoded = self._decode_prompt_token(text)
+            decoded = self._decode_prompt_token(str(data.get("custom_id") or ""))
             if decoded:
                 prompt_id, option_id = decoded
                 msg = payload.get("message") or {}
@@ -1225,6 +1237,91 @@ class RelayAdapter(BasePlatformAdapter):
         if not _PROMPT_ID_RE.match(parts[1]) or not _PROMPT_ID_RE.match(parts[2]):
             return None
         return parts[1], parts[2]
+
+    @staticmethod
+    def _render_modal_components(components) -> str:
+        fields = []
+        for row in components if isinstance(components, list) else []:
+            for component in row.get("components", []) if isinstance(row, dict) else []:
+                if not isinstance(component, dict):
+                    continue
+                value = str(component.get("value") or "").strip()
+                if value:
+                    custom_id = str(component.get("custom_id") or "").strip()
+                    fields.append(f"{custom_id}={value}" if custom_id else value)
+        return " ".join(fields)
+
+    @staticmethod
+    def _safe_context_value(value, limit: int = 512) -> str:
+        """Keep resolved Discord fields compact and single-line before relaying them."""
+        text = " ".join(str(value or "").split())
+        if len(text) > limit:
+            return text[: limit - 1].rstrip() + "…"
+        return text
+
+    @classmethod
+    def _render_context_target(cls, data) -> str:
+        target_id = cls._safe_context_value(data.get("target_id"), 128)
+        if not target_id:
+            return ""
+        resolved = data.get("resolved") or {}
+        target: dict[str, Any] = {}
+        target_kind = ""
+        for collection in ("messages", "users", "members"):
+            values = resolved.get(collection) if isinstance(resolved, dict) else None
+            if isinstance(values, dict) and isinstance(values.get(target_id), dict):
+                target = values[target_id]
+                target_kind = collection
+                break
+
+        parts = [f"target={target_id}"]
+        if target_kind == "users":
+            display = target.get("global_name") or target.get("username")
+            username = target.get("username")
+            if display:
+                parts.append(f"user={cls._safe_context_value(display)}")
+            if username and username != display:
+                parts.append(f"username={cls._safe_context_value(username)}")
+        elif target_kind == "members":
+            user = target.get("user") if isinstance(target.get("user"), dict) else {}
+            display = target.get("nick") or user.get("global_name") or user.get("username")
+            if display:
+                parts.append(f"user={cls._safe_context_value(display)}")
+        elif target_kind == "messages":
+            content = cls._safe_context_value(target.get("content"))
+            if content:
+                parts.append(f"content={content}")
+            author = target.get("author") if isinstance(target.get("author"), dict) else {}
+            author_name = author.get("global_name") or author.get("username")
+            if author_name:
+                parts.append(f"author={cls._safe_context_value(author_name)}")
+            attachments = target.get("attachments")
+            filenames = []
+            if isinstance(attachments, list):
+                for attachment in attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    name = attachment.get("filename") or attachment.get("url")
+                    if name:
+                        filenames.append(cls._safe_context_value(name, 256))
+            if filenames:
+                parts.append(f"attachments={','.join(filenames)}")
+            embeds = target.get("embeds")
+            embed_values = []
+            if isinstance(embeds, list):
+                for embed in embeds:
+                    if not isinstance(embed, dict):
+                        continue
+                    value = " ".join(
+                        cls._safe_context_value(embed.get(field), 256)
+                        for field in ("title", "description", "url")
+                        if embed.get(field)
+                    )
+                    if value:
+                        embed_values.append(value)
+            if embed_values:
+                parts.append(f"embeds={' | '.join(embed_values)}")
+        return " ".join(parts)
 
     @staticmethod
     def _render_interaction_options(options) -> list:

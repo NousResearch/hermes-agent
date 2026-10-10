@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fuzzyRank, fuzzyScore, fuzzyScoreMulti } from './fuzzy'
+import { fuzzyRank, fuzzyScore, fuzzyScoreMulti, searchFold } from './fuzzy'
 
 describe('fuzzyScore', () => {
   it('matches a query as a subsequence (g4o → gpt-4o)', () => {
@@ -112,6 +112,21 @@ describe('fuzzyRank', () => {
     expect(ranked[0]!.positions.every(i => i >= 0 && i < expected.length)).toBe(true)
   })
 
+  // Aggregator ids carry a `/` between owner and model. A query typed with any other
+  // separator must still find the row.
+  it.each([
+    ['Qwen-3.8', 'Qwen/Qwen3.8-Flash'],
+    ['qwen-3.8-flash', 'Qwen/Qwen3.8-Flash'],
+    ['deepseek-v4-flash', 'deepseek-ai/DeepSeek-V4-Flash'],
+    ['deepseek/v4', 'deepseek-ai/DeepSeek-V4-Flash']
+  ])('finds a vendor-prefixed id typed as %s', (query, expected) => {
+    const catalog = ['Qwen/Qwen3.8-Flash', 'deepseek-ai/DeepSeek-V4-Flash']
+    const ranked = fuzzyRank(catalog, query, m => m)
+
+    expect(ranked[0]?.item).toBe(expected)
+    expect(ranked[0]!.positions.every(i => i >= 0 && i < expected.length)).toBe(true)
+  })
+
   it('matches across a derived key, not just the raw string', () => {
     const providers = [
       { slug: 'openai', name: 'OpenAI' },
@@ -120,5 +135,19 @@ describe('fuzzyRank', () => {
 
     const ranked = fuzzyRank(providers, 'anth', p => `${p.name} ${p.slug}`)
     expect(ranked[0]?.item.slug).toBe('anthropic')
+  })
+})
+
+describe('searchFold', () => {
+  // The fold must cover every character WORD_BOUNDARY treats as a separator: a query
+  // typed with one separator still has to match a target written with another.
+  it.each(['-', '_', '/', '.'])('folds %s to a space', separator => {
+    expect(searchFold(`a${separator}b`)).toBe('a b')
+  })
+
+  it('preserves length so match positions still index the original target', () => {
+    const value = 'Qwen/Qwen3.8-Flash'
+
+    expect(searchFold(value)).toHaveLength(value.length)
   })
 })

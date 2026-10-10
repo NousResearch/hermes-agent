@@ -28,15 +28,19 @@ export const firstStringField = (record: Record<string, unknown>, keys: readonly
   return ''
 }
 
-/** Search-equivalence fold: separators (`-`, `_`, `.`) and case stop matter —
+/** Search-equivalence fold: separators (`-`, `_`, `/`, `.`) and case stop matter —
  *  `qwen3.8-flash`, `Qwen3.8 Flash` and `qwen3 8_flash` all fold to the same
- *  string. One char in, one char out (length preserved), so highlight ranges
+ *  string, and a vendor-prefixed id folds its `/` too, so `Qwen/Qwen3.8-Flash`
+ *  answers to a query typed with a space or a hyphen in the separator's place.
+ *  One char in, one char out (length preserved), so highlight ranges
  *  computed on folded text index the ORIGINAL text unchanged. Model ids use
- *  hyphens, display names use spaces, quants use underscores — a picker search
- *  must not care. Filter and highlight MUST call this on BOTH sides; a fold on
- *  only one is what made hyphen queries match without ever highlighting. */
+ *  hyphens, display names use spaces, quants use underscores, aggregators use a
+ *  vendor prefix — a picker search must not care. Filter and highlight MUST
+ *  call this on BOTH sides, and the shared ranker (`@hermes/shared/fuzzy`)
+ *  folds the same set; a fold on only one is what made hyphen queries match
+ *  without ever highlighting. */
 export function searchFold(v: unknown): string {
-  return asText(v).toLowerCase().replace(/[-_.]/g, ' ')
+  return asText(v).toLowerCase().replace(/[-_/.]/g, ' ')
 }
 
 /** `searchFold` + substring: the one matcher every searchable picker uses. */

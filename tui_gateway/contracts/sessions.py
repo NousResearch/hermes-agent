@@ -6,6 +6,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -62,6 +64,15 @@ class AutoContinue(Result):
     interrupted_at: float
 
 
+class GoalInterrupted(Result):
+    """An ACTIVE goal's turn died with the backend and was NOT auto-continued: the goal card offers
+    ``goal.continue`` instead (``session_auto_continue._goal_auto_continue``)."""
+
+    goal_interrupted: Literal[True]
+    goal_title: str
+    interrupted_at: float
+
+
 class LiveSessionStatus(WireEnum):
     idle = "idle"
     starting = "starting"
@@ -96,7 +107,7 @@ class LiveSessionSnapshot(Result):
     # payload: the card restores with the server's deadline after a reconnect or restart.
     pending_connection: ConnectionRequestPayload | None = None
     todo_state: TodoState | None = None
-    auto_continue: AutoContinue | None = None
+    auto_continue: AutoContinue | GoalInterrupted | None = None
 
 
 # ── session.create ────────────────────────────────────────────────────────────────────────────

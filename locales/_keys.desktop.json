@@ -4735,6 +4735,7 @@
     "statusStack.goalActive",
     "statusStack.goalBlocked",
     "statusStack.goalDone",
+    "statusStack.goalInterrupted",
     "statusStack.goalPaused",
     "statusStack.goalWaiting",
     "statusStack.hideStack",

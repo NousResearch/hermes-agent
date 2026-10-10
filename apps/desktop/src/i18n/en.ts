@@ -3666,6 +3666,7 @@ export const en: Translations = {
     goalActive: 'Goal active',
     goalBlocked: 'Goal blocked',
     goalDone: 'Goal done',
+    goalInterrupted: 'Interrupted',
     goalPaused: 'Goal paused',
     goalWaiting: 'Goal waiting',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,

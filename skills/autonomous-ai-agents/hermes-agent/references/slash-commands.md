@@ -23,7 +23,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /queue (/q) <prompt>     Queue prompt for next turn
 /steer <prompt>          Inject a message after the next tool call
 /agents (/tasks)         Show active agents and running tasks
-/goal [text|sub]         Standing goal across turns (status|pause|resume|clear)
+/goal [text|sub]         Standing goal across turns (status|pause|resume|continue|unpause|recover|clear)
 /subgoal [text]          Add/manage criteria on the active goal
 /branch (/fork) [name]   Branch the session
 /resume [name]           Resume a named session

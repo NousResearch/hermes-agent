@@ -41,7 +41,7 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
         runner._resume_caller_is_admin = lambda source: True
         def execute(arg):
             event = SimpleNamespace(get_command_args=lambda: arg, source=None)
-            if arg == 'show':
+            if arg == 'show' or arg.startswith('recover'):
                 return asyncio.run(runner._busy_goal_command(event, mgr.session_id, None))
             return asyncio.run(runner._handle_goal_command(event))
         return execute
@@ -60,7 +60,8 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
 @pytest.mark.parametrize('command', [
     'show', 'draft', 'draft build it', 'drafting docs', 'wait', 'wait nope',
     'wait {pid} build', 'unwait', 'gate add true', 'gate remove 1',
-    'gate clear', 'gate list', 'pause', 'resume', 'clear', 'stop', 'done',
+    'gate clear', 'gate list', 'pause', 'resume', 'continue', 'unpause', 'recover',
+    'recover the work', '-- recover the work', 'clear', 'stop', 'done',
     'build it\nverify: test passes', 'status', '',
 ])
 def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
@@ -127,6 +128,7 @@ def _dispatch(mgr, arg):
 @pytest.mark.parametrize('command, paused, status', [
     ('resume last goal', False, 'active'), ('continue the work', True, 'active'),
     ('pause for now', False, 'paused'), ('status please', False, 'active'),
+    ('recover the work', False, 'active'), ('recover the work', True, 'paused'),
 ])
 def test_control_verb_with_trailing_words_never_replaces_the_goal(command, paused, status):
     goals._DB_CACHE.clear()
@@ -155,3 +157,28 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
     _dispatch(fresh, '--dry-run the migration')
     assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'
+
+
+@pytest.mark.parametrize('verb', ['resume', 'continue', 'unpause', 'continue the work', 'unpause last goal'])
+@pytest.mark.parametrize('paused', [False, True])
+def test_resume_aliases_reset_the_budget_and_unpause(verb, paused):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='resume-alias')
+    mgr.set('original objective')
+    assert mgr.state is not None
+    mgr.state.turns_used = 7
+    mgr._save()
+    if paused:
+        mgr.pause()
+    result = _dispatch(mgr, verb)
+    state = goals.load_goal(mgr.session_id)
+    assert state is not None
+    assert (state.goal, state.status, state.turns_used) == ('original objective', 'active', 0)
+    assert result.prompt == mgr.next_continuation_prompt()
+
+
+def test_recover_is_discoverable_in_shared_help():
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    goal = next(command for command in COMMAND_REGISTRY if command.name == 'goal')
+    assert 'recover' in goal.args_hint

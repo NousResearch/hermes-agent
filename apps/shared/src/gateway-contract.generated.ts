@@ -896,6 +896,7 @@ export interface GoalSnapshot {
   paused_reason?: string | null
   last_verdict?: string | null
   last_reason?: string | null
+  interrupted_at?: number | null
   wait_barrier?: WaitBarrierUntil | WaitBarrierTarget | null
 }
 /** ``hermes_cli/goals.py::GoalContract.to_dict``. */
@@ -3112,7 +3113,7 @@ export interface SessionResumeResult {
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
-  auto_continue?: AutoContinue | null
+  auto_continue?: AutoContinue | GoalInterrupted | null
 }
 /** ``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting client rebuilds its bubbles from. */
 export interface InflightTurn {
@@ -3156,6 +3157,12 @@ export interface AutoContinue {
   attempt: number
   interrupted_at: number
 }
+/** An ACTIVE goal's turn died with the backend and was NOT auto-continued: the goal card offers ``goal.continue`` instead (``session_auto_continue._goal_auto_continue``). */
+export interface GoalInterrupted {
+  goal_interrupted: true
+  goal_title: string
+  interrupted_at: number
+}
 export interface SessionActivateParams {
   session_id: string
   profile?: string | null
@@ -3182,7 +3189,7 @@ export interface SessionActivateResult {
   open_requests?: OpenRequestEntry[] | null
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
-  auto_continue?: AutoContinue | null
+  auto_continue?: AutoContinue | GoalInterrupted | null
 }
 export interface SessionListParams {
   profile?: string | null

@@ -906,7 +906,7 @@ def _cmd_goal(rid, params, session, name, arg):
         payload = {"type": "send", "notice": result.output, "message": result.prompt}
         if not result.kickoff:
             payload["notice"] += "\nContinuing now — taking the next step."
-            payload["display"] = "/goal resume"
+            payload["display"] = "/goal recover" if arg.split(None, 1)[0].lower() == "recover" else "/goal resume"
         return _ok(rid, payload)
 
 

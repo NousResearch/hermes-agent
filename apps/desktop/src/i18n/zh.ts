@@ -3575,6 +3575,7 @@ export const zhOverrides = {
     goalActive: '目标进行中',
     goalBlocked: '目标受阻',
     goalDone: '目标已完成',
+    goalInterrupted: '已中断',
     goalPaused: '目标已暂停',
     goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,

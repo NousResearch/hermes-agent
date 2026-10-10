@@ -134,18 +134,6 @@ def _is_cron_approval_context() -> bool:
 # interactive round-trip that blocks for the full timeout with nobody to answer.
 _UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
 
-
-def _is_unattended_platform_approval_context() -> bool:
-    """True when the session platform is a programmatic/unattended surface.
-
-    Webhook, msgraph_webhook, and api_server sessions bind ``HERMES_SESSION_PLATFORM`` like chat gateways
-    do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
-    blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
-    in #37284/#87509.
-    """
-    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
-
-
 # Platforms where a *registered* gateway notify callback still does not mean a human can answer:
 # the generic TurnRunner lane registers one for every inbound turn
 # (``_run_conversation_with_approval`` registers unconditionally, no platform branch), while the
@@ -153,6 +141,40 @@ def _is_unattended_platform_approval_context() -> bool:
 # fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
 # "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
 _NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+
+
+def _is_unattended_platform_approval_context() -> bool:
+    """True when the session platform is a programmatic/unattended surface *without* a
+    registered approval transport.
+
+    Webhook, msgraph_webhook, and api_server sessions bind ``HERMES_SESSION_PLATFORM`` like chat gateways
+    do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
+    blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
+    in #37284/#87509.
+
+    The exclusion is transport-scoped, not platform-wide (#98728): a session is NOT unattended
+    once its exact session key registered a gateway approval transport via
+    ``register_gateway_notify`` — ``/v1/runs`` and the streaming chat bridge bind a callback
+    resolvable through ``POST /v1/runs/{run_id}/approval``, so a pending approval there has a
+    live listener. Listener-less routes never register one and keep the instant deny/approve
+    behavior. webhook/msgraph_webhook stay unattended even with a registered callback: their
+    generic lane registers one for every inbound turn that no surface can answer
+    (``_NOTIFIER_BLIND_APPROVAL_PLATFORMS``).
+    """
+    platform = _get_session_platform()
+    if platform not in _UNATTENDED_APPROVAL_PLATFORMS:
+        return False
+    if platform in _NOTIFIER_BLIND_APPROVAL_PLATFORMS:
+        return True
+    session_key = get_current_session_key(default="")
+    if not session_key:
+        return True
+    # Lazy import: tools.approval imports this module at load; the facade owns the
+    # notify registry and its lock.
+    from tools import approval as _approval
+
+    with _approval._lock:
+        return session_key not in _approval._gateway_notify_cbs
 
 
 def _is_single_query_approval_context() -> bool:
@@ -184,7 +206,10 @@ def _is_gateway_approval_context() -> bool:
     reason: those adapters have no ``send_exec_approval`` and no way to receive ``/approve`` replies.
     Submitting a pending approval there blocks the session for the full approval timeout (60-300 s) with no
     human who can resolve it (#37284, 87509). Their dangerous-command handling is governed by
-    ``approvals.unattended_mode`` config (default deny), mirroring cron.
+    ``approvals.unattended_mode`` config (default deny), mirroring cron. The exclusion is
+    transport-scoped, not platform-wide: once a session registers a gateway approval transport
+    (``register_gateway_notify``, e.g. a ``/v1/runs`` run with its run-scoped callback), it is
+    treated as an interactive gateway context again (#98728).
     """
     if _is_cron_approval_context() or _is_unattended_platform_approval_context():
         return False

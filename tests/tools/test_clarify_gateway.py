@@ -410,3 +410,57 @@ class TestNativeRejectClassification:
         )
         assert value is None
         assert reason == "prose"
+
+
+class TestSecondPendingTextReply:
+    """A typed reply to the second of two pending clarifies must reach it (#135339)."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_second_reply_resolves_second_entry(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("a", "sk", "First?", None)
+        cm.register("b", "sk", "Second?", None)
+        assert cm.attempt_text_response_for_session("sk", "answer A") == cm.TEXT_RESOLVED
+        assert cm.attempt_text_response_for_session("sk", "answer B") == cm.TEXT_RESOLVED
+        assert cm._entries["b"].event.is_set()
+        assert cm._entries["b"].response == "answer B"
+
+    def test_answered_head_is_not_pending(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("a", "sk", "First?", None)
+        cm.register("b", "sk", "Second?", None)
+        cm.attempt_text_response_for_session("sk", "answer A")
+        # The answered head no longer counts; the second clarify is still pending.
+        assert cm.get_pending_for_session("sk") is cm._entries["b"]
+        cm.attempt_text_response_for_session("sk", "answer B")
+        assert cm.has_pending("sk") is False
+        assert cm.get_pending_for_session("sk") is None
+
+    def test_concurrent_replies_split_across_entries(self):
+        """Two simultaneous replies must resolve both entries, never the same one twice."""
+        from tools import clarify_gateway as cm
+
+        for _ in range(20):
+            _clear_clarify_state()
+            cm.register("c1", "sk", "First?", None)
+            cm.register("c2", "sk", "Second?", None)
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                outcomes = list(pool.map(
+                    lambda i: cm.attempt_text_response_for_session("sk", f"answer {i}"),
+                    range(5)))
+            assert outcomes.count(cm.TEXT_RESOLVED) == 2
+            assert cm._entries["c1"].event.is_set()
+            assert cm._entries["c2"].event.is_set()
+
+    def test_callback_resolved_entry_is_skipped_by_text(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("g", "sk", "First?", None)
+        cm.register("h", "sk", "Second?", None)
+        assert cm.resolve_gateway_clarify("g", "button")
+        assert cm.attempt_text_response_for_session("sk", "typed") == cm.TEXT_RESOLVED
+        assert cm._entries["h"].response == "typed"

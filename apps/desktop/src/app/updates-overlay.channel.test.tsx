@@ -15,7 +15,13 @@ afterEach((): void => {
 })
 
 async function openWith(status: Partial<DesktopUpdateStatus>): Promise<void> {
-  $desktopVersion.set({ appVersion: '0.21.6', electronVersion: '37', hermesRoot: '/h', nodeVersion: '22', platform: 'linux' })
+  $desktopVersion.set({
+    appVersion: '0.21.6',
+    electronVersion: '37',
+    hermesRoot: '/h',
+    nodeVersion: '22',
+    platform: 'linux'
+  })
   $updateStatus.set({ behind: 0, mechanism: 'posix-handoff', ...status, supported: true })
   $updateOverlayTarget.set('client')
   $updateOverlayOpen.set(true)

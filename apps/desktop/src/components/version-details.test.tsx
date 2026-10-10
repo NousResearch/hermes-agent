@@ -139,7 +139,10 @@ describe('VersionDetails', () => {
     const render_ = (action?: boolean) =>
       render(
         <I18nProvider>
-          <VersionDetails channelAction={action ? <button type="button">Change</button> : undefined} version={baseVersion} />
+          <VersionDetails
+            channelAction={action ? <button type="button">Change</button> : undefined}
+            version={baseVersion}
+          />
         </I18nProvider>
       )
 

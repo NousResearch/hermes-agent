@@ -84,7 +84,14 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   return ordinaryUpdateStatus(input)
 }
 
-function ordinaryUpdateStatus({ apply, checking, latestRelease, status, target, u }: UpdateStatusInput): UpdateStatusView {
+function ordinaryUpdateStatus({
+  apply,
+  checking,
+  latestRelease,
+  status,
+  target,
+  u
+}: UpdateStatusInput): UpdateStatusView {
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
@@ -137,11 +144,7 @@ function ordinaryUpdateStatus({ apply, checking, latestRelease, status, target, 
     return {
       applying,
       line:
-        target === 'backend'
-          ? u.latestBodyBackend
-          : pinned
-            ? latestRelease(`v${status.sourceVersion}`)
-            : u.latestBody,
+        target === 'backend' ? u.latestBodyBackend : pinned ? latestRelease(`v${status.sourceVersion}`) : u.latestBody,
       supported,
       tone: 'idle',
       updateAvailable

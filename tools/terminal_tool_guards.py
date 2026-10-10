@@ -97,6 +97,51 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
 
+# Package-manager subcommands that take package-name arguments.
+_PM_INSTALL_VERBS = re.compile(
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|update|up(?:grade)?|remove|uninstall|rm)\b",
+    re.IGNORECASE,
+)
+
+# A package-name argument list ends at the first shell separator (including
+# separators glued to a package token, e.g. ``npm install vite; vite``) —
+# everything after belongs to another command segment, never to the list.
+_SHELL_CUT_RE = re.compile(r"[;&|<>#]")
+
+
+def _pm_package_arg_spans(command: str) -> set:
+    """Absolute (start, end) spans of package-name argument tokens of
+    package-manager install/update commands.
+
+    ``npm update vite`` names a package to update; it does not start the vite
+    dev server. Flags (``-``-prefixed) and everything from the first shell
+    separator on belong to other command segments, never to the package list.
+    """
+    spans = set()
+    for verb_m in _PM_INSTALL_VERBS.finditer(command):
+        segment = command[verb_m.end():]
+        cut = _SHELL_CUT_RE.search(segment)
+        if cut:
+            segment = segment[:cut.start()]
+        base = verb_m.end()
+        for tok_m in re.finditer(r"\S+", segment):
+            if not tok_m.group().startswith("-"):
+                spans.add((base + tok_m.start(), base + tok_m.end()))
+    return spans
+
+
+def _long_lived_foreground_hit(command: str) -> bool:
+    """True when a long-lived pattern matches outside a package-manager argument slot."""
+    exempt = _pm_package_arg_spans(command)
+    for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
+        for m in pattern.finditer(command):
+            token = m.group().strip()
+            lead = len(m.group()) - len(m.group().lstrip())
+            if (m.start() + lead, m.start() + lead + len(token)) not in exempt:
+                return True
+    return False
+
+
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
 _FOREGROUND_GUIDANCE = (
     (
@@ -113,7 +158,7 @@ _FOREGROUND_GUIDANCE = (
         "for bounded jobs — then run health checks and tests in follow-up terminal calls.",
     ),
     (
-        lambda s: any(p.search(s) for p in _LONG_LIVED_FOREGROUND_PATTERNS),
+        _long_lived_foreground_hit,
         "This foreground command appears to start a long-lived server/watch process. "
         "Run it with background=true, verify readiness (health endpoint/log signal), "
         "then execute tests in a separate command.",

@@ -419,6 +419,39 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_abi_matches(venv_dir: Path) -> bool:
+    """True when the venv was built for the running interpreter's ABI.
+
+    A venv from another Python (e.g. the pre-PM 3.11 tree under a PM-managed
+    3.14 runtime) imports pure-Python packages fine but fails every binary
+    extension (pydantic_core, ...). Unmarked/unparseable trees keep the
+    legacy try-it behavior.
+    """
+    try:
+        cfg = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    found: dict[str, str] = {}
+    for line in cfg.splitlines():
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip() in ("version", "version_info"):
+            found.setdefault(name.strip(), value.strip())
+    # stdlib venvs write `version`, uv writes `version_info`.
+    version = found.get("version_info", found.get("version"))
+    if not version:
+        return True
+    try:
+        major, minor = version.split(".")[:2]
+        return (int(major), int(minor)) == tuple(sys.version_info[:2])
+    except (ValueError, IndexError):
+        return True
+
+
+def _order_venv_candidates(candidates: list[Path]) -> list[Path]:
+    """ABI-matching venvs first; the rest stay behind as fallback."""
+    return sorted(candidates, key=lambda v: not _venv_abi_matches(v))
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -434,9 +467,41 @@ def _ensure_windows_gateway_venv_imports() -> None:
     if committed_venv(project_root) is not None:
         return
     candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    # PM-managed installs run on the committed generation: the pre-PM venv
+    # left on disk belongs to another Python, so it must never shadow the
+    # committed tree. Use committed_venv (never the in-tree venv), not
+    # selected_venv whose base_venv fallback silently returns <root>/venv
+    # when no generation is recorded (#122183 review).
+    try:
+        from hermes_cli._launchers import resolve_store_python
+        from pm.environments import committed_venv, running_from_selected_environment
+
+        pm_managed = resolve_store_python(project_root) is not None
+    except Exception:
+        pm_managed = False
+    if pm_managed:
+        try:
+            committed = committed_venv(project_root)
+        except Exception:
+            committed = None
+        if committed is None:
+            return
+        try:
+            if running_from_selected_environment(project_root):
+                return
+            candidates.append(committed)
+        except Exception:
+            # PM-managed: never guess. A failed probe must not fall through
+            # to the legacy block and load the stale tree it exists to
+            # exclude (fail closed, same as the uncommitted arm above).
+            return
+    if not candidates:
+        if os.environ.get("VIRTUAL_ENV"):
+            candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+        candidates.append(project_root / "venv")
+    # An ABI-mismatched venv shadows the right one and breaks binary
+    # extensions, so matching candidates go first; the rest stay as fallback.
+    candidates = _order_venv_candidates(candidates)
 
     seen: set[str] = set()
     for venv_dir in candidates:

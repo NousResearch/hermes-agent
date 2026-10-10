@@ -411,6 +411,32 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _agent_scheduling_allowed(cfg: dict) -> bool:
+    """``cron.allow_agent_scheduling`` — the one read of the gate, so the run note and the toolset
+    this agent gets can never disagree (#130896)."""
+    return bool(((cfg or {}).get("cron") or {}).get("allow_agent_scheduling"))
+
+
+def _agent_scheduling_allowed_from_disk() -> bool:
+    """Same gate for the run note, which is assembled before the run's config is loaded.
+
+    Reads it through the same loader and the same path ``_load_cron_job_config`` uses for the
+    toolset decision, so a tick reads one value (the effective-config cache is keyed on the file
+    signature). Unreadable config answers False, which keeps the run note exactly as it was —
+    the prompt can then only ever under-promise a toolset, never over-promise one.
+    """
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        cfg_path = Path(_get_hermes_home() / "config.yaml")
+        if not os.path.exists(cfg_path):
+            return False
+        return _agent_scheduling_allowed(load_user_config_effective(cfg_path))
+    except Exception as exc:
+        logger.debug("Cron job: unreadable config while resolving the scheduling gate: %s", exc)
+        return False
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive: ``messaging``/``clarify`` always
     (interactive); ``cronjob`` by default (loop prevention, not a security boundary —
@@ -419,8 +445,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
 
     See #25752.
     """
-    cron_cfg = (cfg or {}).get("cron") or {}
-    if cron_cfg.get("allow_agent_scheduling"):
+    if _agent_scheduling_allowed(cfg):
         disabled = ["messaging", "clarify"]
     else:
         disabled = ["cronjob", "messaging", "clarify"]
@@ -2284,6 +2309,7 @@ def _prepare_job_prompt(
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt,
             runtime_data_prompt=monitor_context,
+            allow_agent_scheduling=_agent_scheduling_allowed_from_disk(),
         )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.

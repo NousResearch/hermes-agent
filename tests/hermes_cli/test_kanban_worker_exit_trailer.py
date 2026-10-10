@@ -83,6 +83,38 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert run["outcome"] == "rate_limited"
 
 
+def test_previous_runs_trailer_is_not_booked_against_the_current_run(kanban_home):
+    """The log is append-mode across re-runs: run 1's ``rc=0`` trailer sits above run 2's spawn
+    marker. Run 2 dies without writing a trailer (killed/OOM) — that is a plain crash, not a
+    protocol violation, and run 1's final text is not quoted as run 2's output."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_log(conn, tid, 72001, 0)
+        with open(kb.worker_log_path(tid), "a", encoding="utf-8") as f:
+            f.write(f"{kbd.KANBAN_WORKER_SPAWN_MARKER}2\nQuery: work kanban task\n")
+
+        kbd.detect_crashed_workers(conn)
+
+        ev = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? AND kind != 'gave_up' "
+            "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        assert ev["kind"] == "crashed"
+        assert "the model said something" not in (ev["payload"] or "")
+        assert kbd._protocol_violation_streak(conn, tid) == 0
+
+
+def test_retry_gets_the_launch_grace_from_its_own_run(kanban_home, monkeypatch):
+    """``tasks.started_at`` keeps the FIRST run's start, so keying the crash grace on it gave
+    every retry zero grace. A retry whose run just started is inside the window: not reclaimed."""
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "30")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="retry", assignee="a")
+        _dead_worker_with_log(conn, tid, 73001, 0)  # task.started_at = 2 min ago, run just started
+
+        assert kbd.detect_crashed_workers(conn) == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
     """The third consecutive clean exit trips the violation budget and ``recompute_ready``
     must not promote the card back the same tick (``consecutive_failures`` is still below

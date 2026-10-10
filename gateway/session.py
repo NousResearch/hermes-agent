@@ -264,7 +264,7 @@ def _discord_tools_loaded() -> bool:
 _MAX_PROMPT_METADATA_CHARS = 240
 
 
-def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+def format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
     """Render untrusted gateway metadata as an inert quoted string."""
     text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
     text = "".join(ch if ch >= " " or ch in "\n\t" else " " for ch in text)
@@ -400,15 +400,15 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             user = src.user_name or (_hash_sender_id(src.user_id) if src.user_id else "user")
             chat = src.chat_name or _chat_label(src.chat_id)
             desc = SessionSource._describe(src.chat_type, user, chat)
-        lines.append(f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})")
+        lines.append(f"**Source:** {platform_name} ({format_untrusted_prompt_value(desc)})")
 
     if src.chat_topic:
-        lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")
+        lines.append(f"**Channel Topic:** {format_untrusted_prompt_value(src.chat_topic)}")
 
     if src.platform == Platform.MATRIX:
         lines += [
             "",
-            f"**Matrix Room:** {_format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
+            f"**Matrix Room:** {format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
             f"**Matrix Room ID:** {_chat_label(src.chat_id)}",
         ]
         if src.thread_id:
@@ -428,10 +428,10 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             "Multiple users may participate."
         )
     elif src.user_name:
-        lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")
+        lines.append(f"**User:** {format_untrusted_prompt_value(src.user_name)}")
     elif src.user_id:
         uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+        lines.append(f"**User ID:** {format_untrusted_prompt_value(uid)}")
 
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [
@@ -442,8 +442,8 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if context.home_channels:
         lines += ["", "**Home Channels (default destinations):**"]
         for platform, home in context.home_channels.items():
-            safe_name = _format_untrusted_prompt_value(home.name)
-            safe_id = _format_untrusted_prompt_value(_chat_label(home.chat_id))
+            safe_name = format_untrusted_prompt_value(home.name)
+            safe_id = format_untrusted_prompt_value(_chat_label(home.chat_id))
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     lines += ["", "**Delivery options for scheduled tasks:**"]
@@ -451,12 +451,12 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if src.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        _origin_label = _format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
+        _origin_label = format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
     lines.append(f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)")
     for platform, home in context.home_channels.items():
-        home_name = _format_untrusted_prompt_value(home.name)
+        home_name = format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
     lines += ["", "*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*"]

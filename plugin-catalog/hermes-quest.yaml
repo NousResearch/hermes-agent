@@ -1,7 +1,7 @@
 name: hermes-quest
 description: "Read-only pixel-art RPG dashboard for Hermes Agent Kanban activity, with live events and replay; free text is hidden by default."
 repo: https://github.com/ap08960695/hermes-quest
-sha: "9b849bace2696979862a2a2bcab3db6be70b271a"
+sha: "653e48084be92139dd7da897f5f9d6dcd710bdc6"
 tier: community
 category: desktop
 maintainer: ap08960695
@@ -10,7 +10,7 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
-version: "0.1.0"
+version: "0.1.2"
 docs_url: https://github.com/ap08960695/hermes-quest
 screenshots:
-  - "https://github.com/ap08960695/hermes-quest/releases/download/v0.1.0/demo.gif"
+  - "https://raw.githubusercontent.com/ap08960695/hermes-quest/v0.1.2/docs/screenshots/overview.png"

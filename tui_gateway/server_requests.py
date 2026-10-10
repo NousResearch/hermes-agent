@@ -111,7 +111,7 @@ _clients: Callable[[str], list] = lambda sid: []
 _observation_owner: Callable[[str], Any] = lambda sid: None
 
 # Only actual human questions. Desktop read/act and tour bridges are technical RPCs.
-_HUMAN_REQUEST_KINDS = {"clarify": "question", "approval": "approval", "sudo": "approval",
+_HUMAN_REQUEST_KINDS = {"clarify": "question", "setup_choose": "question", "approval": "approval", "sudo": "approval",
                         "secret": "question", "vault.unlock_prompt": "question",
                         "vault.save_login": "question", "vault.code": "question"}
 

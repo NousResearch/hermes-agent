@@ -94,7 +94,7 @@ requires the exact request ID and its turn; `turn_id` always fences the **curren
 generation. Resolving a badge is **not approval to mutate any business data**.
 
 `tui_gateway.server_requests` brackets real `send`/`send_async` requests, not
-tool-name heuristics. The closed human-method list is `clarify`, `approval`,
+tool-name heuristics. The closed human-method list is `clarify`, `setup_choose`, `approval`,
 `sudo`, `secret`, `vault.unlock_prompt`, `vault.save_login`, `vault.code`.
 Publication precedes the request frame; full response, final clarify lock,
 timeout, cancellation, undelivered refusal and frame-write failure settle it.
@@ -182,7 +182,7 @@ Use `HERMES_PYTHON=<isolated-test-env>/bin/python scripts/run_tests.sh` for
 `tests/hermes_state/test_conversation_observations.py`,
 `test_observation_terminal.py`, `test_observation_identity.py`,
 `tests/agent/test_conversation_observations.py`,
-`tests/tui_gateway/test_conversation_observations.py` and
+`tests/tui_gateway/test_conversation_observations.py`, `test_observation_native_requests.py` and
 `tests/hermes_cli/test_session_observations.py`, plus native lease/protocol tests.
 The coverage includes crash uncertainty, late generations, sealed terminals,
 legacy admission invalidation, compression/reopen, profile A→B→A, authenticated

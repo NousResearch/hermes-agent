@@ -564,7 +564,7 @@ On the PID-1 path, `/init`:
 3. Starts the static `main-hermes` and `dashboard` s6-rc services.
 4. Exec's the container's CMD as the main program (`/opt/hermes/docker/main-wrapper.sh`), which routes the arguments the user passed to `docker run`:
    - no args → `hermes` (the default)
-   - first arg is an executable on PATH (e.g. `sleep`, `bash`) → exec it directly
+   - first arg is an executable on PATH (e.g. `sleep`, `bash`) → exec it directly, unless it is also a hermes subcommand: `mcp` and `login` always run `hermes mcp` / `hermes login`
    - anything else → `hermes <args>` (subcommand passthrough)
    The container exits when this main program exits, with its exit code.
 
